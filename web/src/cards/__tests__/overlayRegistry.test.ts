@@ -36,6 +36,7 @@ describe('overlayRegistry', () => {
     expectTypeOf<
       ReturnType<typeof useTypedCardOverlay<'status'>>
     >().toEqualTypeOf<StatusOverlayPayload | null>();
+    // type-only; hook never executed
     expectTypeOf<
       ReturnType<typeof useTypedCardOverlay<'plugin-foo'>>
     >().toEqualTypeOf<unknown>();

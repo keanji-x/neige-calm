@@ -12,9 +12,16 @@ export interface TextOverlayPayload {
   text: string;
 }
 
+export interface LayoutOverlayPosition {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface LayoutOverlayPayload {
   schemaVersion?: number;
-  cards: unknown[];
+  positions: Record<string, LayoutOverlayPosition>;
 }
 
 export interface FileViewerNavOverlayPayload {
@@ -65,4 +72,10 @@ export function useTypedCardOverlay<K extends string>(
   overlayKind: K,
 ): OverlayPayload<K> | null {
   return useCardOverlay<OverlayPayload<K>>(cardId, overlayKind);
+}
+
+export function useCardStatusOverlay(
+  cardId: string | undefined,
+): StatusOverlayPayload | null {
+  return useTypedCardOverlay(cardId, 'status');
 }

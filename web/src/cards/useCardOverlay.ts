@@ -1,10 +1,6 @@
 import { useEffect } from 'react';
 import { sharedEventStream } from '../api/events';
 import { useState } from '../shared/state';
-import { useTypedCardOverlay } from './overlayRegistry';
-import type { StatusOverlayPayload } from './overlayRegistry';
-
-export type { StatusOverlayPayload } from './overlayRegistry';
 
 export function useCardOverlay<T>(
   cardId: string | undefined,
@@ -49,10 +45,4 @@ export function useCardOverlay<T>(
   }, [cardId, overlayKind]);
 
   return payload;
-}
-
-export function useCardStatusOverlay(
-  cardId: string | undefined,
-): StatusOverlayPayload | null {
-  return useTypedCardOverlay(cardId, 'status');
 }

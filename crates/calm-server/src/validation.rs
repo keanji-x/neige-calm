@@ -122,18 +122,18 @@ impl OverlayKindRegistry {
     }
 }
 
-fn validate_as<T>(kind: &str, label: &str, max_version: u32, payload: &Value) -> Result<()>
+fn validate_as<T>(kind: &str, max_version: u32, payload: &Value) -> Result<()>
 where
     T: DeserializeOwned,
 {
     check_schema_version(kind, payload, max_version)?;
     serde_json::from_value::<T>(payload.clone())
         .map(|_| ())
-        .map_err(|e| CalmError::BadRequest(format!("invalid {label} payload: {e}")))
+        .map_err(|e| CalmError::BadRequest(format!("invalid {kind} payload: {e}")))
 }
 
 macro_rules! simple_overlay {
-    ($fn_name:ident, $shape_name:ident, $kind:literal, $label:literal, $version:expr, {
+    ($fn_name:ident, $shape_name:ident, $kind:literal, $version:expr, {
         $field:ident: $field_ty:ty
     }) => {
         fn $fn_name(payload: &Value) -> Result<()> {
@@ -142,7 +142,7 @@ macro_rules! simple_overlay {
             struct $shape_name {
                 $field: $field_ty,
             }
-            validate_as::<$shape_name>($kind, $label, $version, payload)
+            validate_as::<$shape_name>($kind, $version, payload)
         }
     };
 }
@@ -151,14 +151,12 @@ simple_overlay!(
     validate_status_overlay_payload,
     StatusPayload,
     "status",
-    "status",
     OVERLAY_STATUS_SCHEMA_VERSION,
     { state: String }
 );
 simple_overlay!(
     validate_progress_overlay_payload,
     ProgressPayload,
-    "progress",
     "progress",
     OVERLAY_PROGRESS_SCHEMA_VERSION,
     { value: f64 }
@@ -167,14 +165,12 @@ simple_overlay!(
     validate_eta_overlay_payload,
     EtaPayload,
     "eta",
-    "eta",
     OVERLAY_ETA_SCHEMA_VERSION,
     { text: String }
 );
 simple_overlay!(
     validate_now_overlay_payload,
     NowPayload,
-    "now",
     "now",
     OVERLAY_NOW_SCHEMA_VERSION,
     { text: String }
@@ -208,7 +204,6 @@ fn validate_file_viewer_nav_overlay_payload(payload: &Value) -> Result<()> {
 
     validate_as::<FileViewerNavPayload>(
         "file-viewer-nav",
-        "file-viewer-nav",
         OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION,
         payload,
     )
@@ -226,7 +221,6 @@ fn validate_any_card_needs_input_overlay_payload(payload: &Value) -> Result<()> 
     }
 
     validate_as::<AnyCardNeedsInputPayload>(
-        "any_card_needs_input",
         "any_card_needs_input",
         OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
         payload,
@@ -656,6 +650,39 @@ mod tests {
                 OVERLAY_KIND_REGISTRY.validate(kind, &invalid),
                 Err(CalmError::BadRequest(_))
             ));
+        }
+    }
+
+    #[test]
+    fn overlay_kind_registry_rejects_unknown_schema_version_per_kind() {
+        let cases = [
+            ("status", json!({ "schemaVersion": 99, "state": "running" })),
+            ("progress", json!({ "schemaVersion": 99, "value": 0.5 })),
+            ("eta", json!({ "schemaVersion": 99, "text": "5m" })),
+            ("now", json!({ "schemaVersion": 99, "text": "writing" })),
+            (
+                "layout",
+                json!({ "schemaVersion": 99, "positions": { "c": { "x": 0, "y": 0, "w": 1, "h": 1 } } }),
+            ),
+            (
+                "file-viewer-nav",
+                json!({
+                    "schemaVersion": 99,
+                    "tab": "code",
+                    "folderPath": "/",
+                    "selectedPath": null,
+                    "diffSelected": null
+                }),
+            ),
+            (
+                "any_card_needs_input",
+                json!({ "schemaVersion": 99, "value": true }),
+            ),
+        ];
+
+        for (kind, payload) in cases {
+            let err = OVERLAY_KIND_REGISTRY.validate(kind, &payload).unwrap_err();
+            assert!(matches!(err, CalmError::BadRequest(_)), "kind={kind}");
         }
     }
 
