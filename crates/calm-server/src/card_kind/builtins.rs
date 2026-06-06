@@ -63,10 +63,7 @@ impl CardKindHandler for CodexCardHandler {
             return Ok(());
         }
         if !payload.is_object() {
-            return Err(bad(
-                self.kind_id(),
-                "codex payload must be an object or null",
-            ));
+            return Err(raw_bad("codex payload must be an object or null"));
         }
         check_schema_version(self.kind_id(), payload, CODEX_PAYLOAD_SCHEMA_VERSION)
     }
@@ -92,10 +89,7 @@ impl CardKindHandler for ClaudeCardHandler {
             return Ok(());
         }
         if !payload.is_object() {
-            return Err(bad(
-                self.kind_id(),
-                "claude payload must be an object or null",
-            ));
+            return Err(raw_bad("claude payload must be an object or null"));
         }
         check_schema_version(self.kind_id(), payload, CLAUDE_PAYLOAD_SCHEMA_VERSION)
     }
@@ -187,6 +181,10 @@ fn bad(kind: &str, msg: impl ToString) -> CardKindError {
     }
 }
 
+fn raw_bad(msg: impl ToString) -> CardKindError {
+    CardKindError::BadRequest(msg.to_string())
+}
+
 fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> CardKindResult<()> {
     if !payload.is_object() {
         return Ok(());
@@ -195,19 +193,15 @@ fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> CardKindR
         return Ok(());
     };
     let Some(version) = raw.as_u64() else {
-        return Err(bad(
-            kind,
-            format!("invalid schemaVersion for kind `{kind}`: expected u32, got {raw}"),
-        ));
+        return Err(raw_bad(format!(
+            "invalid schemaVersion for kind `{kind}`: expected u32, got {raw}"
+        )));
     };
     if version as u32 == expected {
         Ok(())
     } else {
-        Err(bad(
-            kind,
-            format!(
-                "unsupported schemaVersion {version} for kind `{kind}`; this kernel supports {expected}"
-            ),
-        ))
+        Err(raw_bad(format!(
+            "unsupported schemaVersion {version} for kind `{kind}`; this kernel supports {expected}"
+        )))
     }
 }

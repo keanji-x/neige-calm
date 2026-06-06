@@ -5,6 +5,8 @@
 
 mod builtins;
 
+use std::sync::OnceLock;
+
 use serde_json::Value;
 
 use crate::actor::Actor;
@@ -51,6 +53,8 @@ impl Default for CardPersistenceInvariants {
 pub enum CardKindError {
     #[error("bad payload for {kind}: {message}")]
     BadPayload { kind: String, message: String },
+    #[error("{0}")]
+    BadRequest(String),
     #[error("internal card kind error: {0}")]
     Internal(String),
 }
@@ -61,13 +65,15 @@ impl From<CardKindError> for CalmError {
             CardKindError::BadPayload { kind, message } => {
                 CalmError::BadRequest(format!("invalid {kind} payload: {message}"))
             }
+            CardKindError::BadRequest(message) => CalmError::BadRequest(message),
             CardKindError::Internal(message) => CalmError::Internal(message),
         }
     }
 }
 
 #[async_trait::async_trait]
-pub trait CardKindHandler: Send + Sync + 'static {
+#[allow(dead_code)]
+pub(crate) trait CardKindHandler: Send + Sync + 'static {
     fn kind_id(&self) -> &'static str;
 
     fn matcher(&self) -> CardKindMatcher {
@@ -93,7 +99,8 @@ pub trait CardKindHandler: Send + Sync + 'static {
     }
 }
 
-pub struct CardDeleteContext<'a> {
+#[allow(dead_code)]
+pub(crate) struct CardDeleteContext<'a> {
     pub app: &'a AppState,
     pub actor: &'a Actor,
     pub card_id: CardId,
@@ -106,7 +113,7 @@ pub struct CardKindRegistry {
 }
 
 impl CardKindRegistry {
-    pub fn new(handlers: Vec<Box<dyn CardKindHandler>>) -> Self {
+    pub(crate) fn new(handlers: Vec<Box<dyn CardKindHandler>>) -> Self {
         Self { handlers }
     }
 
@@ -121,7 +128,7 @@ impl CardKindRegistry {
         ])
     }
 
-    pub fn handler_for(&self, kind: &str) -> Option<&dyn CardKindHandler> {
+    pub(crate) fn handler_for(&self, kind: &str) -> Option<&dyn CardKindHandler> {
         if let Some(handler) = self.handlers.iter().find(
             |handler| matches!(handler.matcher(), CardKindMatcher::Exact(exact) if exact == kind),
         ) {
@@ -148,6 +155,15 @@ impl CardKindRegistry {
         self.handler_for(kind)
             .map_or(Ok(()), |handler| handler.validate_payload(payload))
     }
+}
+
+static BUILTIN_CARD_KIND_REGISTRY: OnceLock<CardKindRegistry> = OnceLock::new();
+
+pub(crate) fn validate_card_kind_global(kind: &str, payload: &Value) -> crate::error::Result<()> {
+    BUILTIN_CARD_KIND_REGISTRY
+        .get_or_init(CardKindRegistry::builtins)
+        .validate_payload(kind, payload)
+        .map_err(CalmError::from)
 }
 
 #[cfg(test)]
@@ -242,6 +258,59 @@ mod tests {
             registry
                 .validate_payload("ui://plugin/foo", &json!({ "anything": 1 }))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn global_validator_uses_builtin_registry_contract() {
+        validate_card_kind_global("ui://plugin/foo", &json!({ "anything": 1 })).unwrap();
+        validate_card_kind_global(
+            "terminal",
+            &json!({ "schemaVersion": 1, "terminal_id": "t1" }),
+        )
+        .unwrap();
+    }
+
+    fn bad_request_message(err: CalmError) -> String {
+        let CalmError::BadRequest(message) = err else {
+            panic!("expected BadRequest");
+        };
+        message
+    }
+
+    #[test]
+    fn codex_type_error_matches_legacy_wire_format() {
+        let err = validate_card_kind_global("codex", &json!([])).unwrap_err();
+        assert_eq!(
+            bad_request_message(err),
+            "codex payload must be an object or null"
+        );
+    }
+
+    #[test]
+    fn claude_type_error_matches_legacy_wire_format() {
+        let err = validate_card_kind_global("claude", &json!("bad")).unwrap_err();
+        assert_eq!(
+            bad_request_message(err),
+            "claude payload must be an object or null"
+        );
+    }
+
+    #[test]
+    fn schema_version_error_matches_legacy_wire_format() {
+        let err = validate_card_kind_global("codex", &json!({ "schemaVersion": 2 })).unwrap_err();
+        assert_eq!(
+            bad_request_message(err),
+            "unsupported schemaVersion 2 for kind `codex`; this kernel supports 1"
+        );
+    }
+
+    #[test]
+    fn serde_error_still_wraps_with_invalid_payload_prefix() {
+        let err = validate_card_kind_global("terminal", &json!({ "terminal_id": 42 })).unwrap_err();
+        assert_eq!(
+            bad_request_message(err),
+            "invalid terminal payload: invalid type: integer `42`, expected a string"
         );
     }
 
