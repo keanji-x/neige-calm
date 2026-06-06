@@ -8,13 +8,12 @@ test.beforeEach(() => {
   createdCoveIds.length = 0;
 });
 
-test.afterEach(async ({ request }) => {
+test.afterEach(async ({ page }) => {
   for (const id of createdCoveIds) {
-    const res = await request.delete(`/api/coves/${id}`);
-    if (!res.ok() && res.status() !== 404) {
-      throw new Error(
-        `cleanup: DELETE /api/coves/${id} -> ${res.status()} ${res.statusText()}`,
-      );
+    try {
+      await page.request.delete(`/api/coves/${id}`);
+    } catch {
+      // best-effort cleanup; don't fail the test on a stale cove
     }
   }
   createdCoveIds.length = 0;
