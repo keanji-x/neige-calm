@@ -198,7 +198,66 @@ pub struct SharedCodexAppServer {
     needs_respawn_on_next_thread_start: Arc<AtomicBool>,
     taken_over_pid_watcher: Mutex<Option<JoinHandle<()>>>,
     last_error: Arc<Mutex<Option<String>>>,
+    // ----- #480 PR5a additions (parallel state — read+written by transition APIs;
+    // existing fields remain authoritative until PR5b migration) -----
+    /// #480 §C — typestate-companion state machine. PR5b migrates readers.
+    core: Arc<tokio::sync::Mutex<SupervisorCore>>,
+    /// #480 §C — serializes process transitions (replaces `restart_lock` in PR5b).
+    transition_serial: Arc<tokio::sync::Mutex<()>>,
     ingest_url: String,
+}
+
+/// #480 PR5a — typestate companion to the existing `SharedDaemonState`.
+/// Carries process-ownership data per variant; PR5b will migrate readers
+/// and remove the old scattered fields.
+///
+/// Hard boundaries (§F):
+/// - `Child` MUST stay private; only transition APIs may kill/replace.
+/// - Sibling attribution (thread_cache, active_turns, pending) is NOT
+///   part of typestate — those survive process restarts.
+pub enum SupervisorState {
+    Idle,
+    Starting {
+        backoff_until: Option<Instant>,
+        socket_path: PathBuf,
+    },
+    Running {
+        child: Option<Child>,
+        client: Arc<CodexAppServer>,
+        runtime: SharedDaemonRuntime,
+        watcher: SupervisorWatcher,
+    },
+    Restarting {
+        prev_pid: Option<i32>,
+        reason: String,
+        attempts: u32,
+    },
+    Failed {
+        last_error: String,
+        since: Instant,
+    },
+}
+
+pub enum WatcherKind {
+    SpawnedChild,
+    TakenOverPid { pid: i32 },
+}
+
+pub struct SupervisorWatcher {
+    pub kind: WatcherKind,
+    pub handle: JoinHandle<()>,
+}
+
+pub struct SupervisorCore {
+    pub state: SupervisorState,
+    pub attempts: u32,
+}
+
+pub struct LaunchedSharedDaemon {
+    pub child: Option<Child>,
+    pub client: Arc<CodexAppServer>,
+    pub runtime: SharedDaemonRuntime,
+    pub watcher: SupervisorWatcher,
 }
 
 impl SharedCodexAppServer {
@@ -248,6 +307,11 @@ impl SharedCodexAppServer {
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
             taken_over_pid_watcher: Mutex::new(None),
             last_error: Arc::new(Mutex::new(None)),
+            core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
+                state: SupervisorState::Idle,
+                attempts: 0,
+            })),
+            transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: "http://127.0.0.1:0".into(),
         })
     }
@@ -290,6 +354,11 @@ impl SharedCodexAppServer {
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
             taken_over_pid_watcher: Mutex::new(None),
             last_error: Arc::new(Mutex::new(None)),
+            core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
+                state: SupervisorState::Idle,
+                attempts: 0,
+            })),
+            transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: cfg.codex_ingest_url_resolved(),
         })
     }
@@ -1082,6 +1151,65 @@ impl SharedCodexAppServer {
                 })
                 .await;
         }
+    }
+}
+
+impl SharedCodexAppServer {
+    /// #480 §C — typestate transition: begin/finish a fresh process spawn.
+    /// **Invariant**: must hold `transition_serial` for the duration.
+    /// PR5a stub: parallel-writes the new state but does NOT replace the
+    /// existing `start_new_process` impl. PR5b makes this the canonical
+    /// path.
+    #[allow(dead_code)]
+    pub(crate) async fn start_new_process_typestate<F, Fut>(&self, spawn: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(PathBuf) -> Fut + Send,
+        Fut: std::future::Future<Output = anyhow::Result<LaunchedSharedDaemon>> + Send,
+    {
+        let _serial = self.transition_serial.lock().await;
+        let socket_path = self.sock.clone();
+        {
+            let mut core = self.core.lock().await;
+            core.state = SupervisorState::Starting {
+                backoff_until: None,
+                socket_path: socket_path.clone(),
+            };
+        }
+        match spawn(socket_path).await {
+            Ok(launched) => {
+                let mut core = self.core.lock().await;
+                core.state = SupervisorState::Running {
+                    child: launched.child,
+                    client: launched.client,
+                    runtime: launched.runtime,
+                    watcher: launched.watcher,
+                };
+                Ok(())
+            }
+            Err(err) => {
+                let mut core = self.core.lock().await;
+                core.state = SupervisorState::Failed {
+                    last_error: err.to_string(),
+                    since: Instant::now(),
+                };
+                Err(err)
+            }
+        }
+    }
+
+    /// #480 §C — typestate transition: mark a restart in progress.
+    /// **Invariant**: must hold `transition_serial`.
+    #[allow(dead_code)]
+    pub(crate) async fn begin_restart(&self, prev_pid: Option<i32>, reason: String) {
+        let _serial = self.transition_serial.lock().await;
+        let mut core = self.core.lock().await;
+        core.attempts = core.attempts.saturating_add(1);
+        let attempts = core.attempts;
+        core.state = SupervisorState::Restarting {
+            prev_pid,
+            reason,
+            attempts,
+        };
     }
 }
 
