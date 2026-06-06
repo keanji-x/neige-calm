@@ -13,10 +13,12 @@
 //!   * `post_terminal_card_atomic_emits_single_card_added_event` — exactly
 //!     one `card.added` on the bus carrying the final payload; zero
 //!     `card.updated`.
-//!   * `post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_but_persists_row`
-//!     — 500 to the client, but the card + terminal rows are in the DB.
+//!   * `post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_and_rolls_back`
+//!     — 500 to the client, and the operation compensation removes the rows.
 //!   * `post_terminal_card_atomic_404_on_unknown_wave` — 404 + no leaked
 //!     rows.
+//!   * `post_terminal_card_same_idempotency_key_returns_same_card` — same
+//!     key and payload returns 201 with the same card body.
 //!   * `post_terminal_card_atomic_defaults_program_to_shell` — empty body
 //!     stamps `$SHELL` (or `/bin/sh`) onto the terminal row.
 
@@ -27,25 +29,43 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderValue, Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
+use calm_server::ids::ActorId;
 use calm_server::model::{NewCove, NewWave};
+use calm_server::operation::terminal_adapter::TerminalAdapter;
+use calm_server::operation::{OperationRuntime, SpawnCtx, SpawnHandle, SqlxOperationRepo};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::terminal_renderer::RendererConfig;
+use futures::future::BoxFuture;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use sqlx::Row;
 use tempfile::TempDir;
 use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
+    state: AppState,
     wave_id: String,
     events: EventBus,
     repo: Arc<dyn Repo>,
     _tmp: TempDir,
 }
+
+type TestSpawnHook = Arc<
+    dyn Fn(
+            String,
+            String,
+            String,
+            Value,
+        ) -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>>
+        + Send
+        + Sync,
+>;
 
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
@@ -99,20 +119,75 @@ async fn boot() -> Boot {
         None,
         None,
     );
+    let state = install_success_spawn_runtime(state, repo.clone(), events.clone());
 
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
     Boot {
         app,
+        state,
         wave_id: wave.id.to_string(),
         events,
         repo,
         _tmp: tmp,
     }
+}
+
+fn install_success_spawn_runtime(
+    state: AppState,
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+) -> AppState {
+    let hook = Arc::new(
+        move |terminal_id: String,
+              _program: String,
+              _cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            Box::pin(async move {
+                Ok(SpawnHandle {
+                    renderer_id: terminal_id.clone(),
+                    terminal_id,
+                })
+            })
+        },
+    );
+    install_spawn_runtime_with_hook(state, repo, events, hook)
+}
+
+fn install_spawn_runtime_with_hook(
+    state: AppState,
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    hook: TestSpawnHook,
+) -> AppState {
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let operation_repo = Arc::new(SqlxOperationRepo::new(
+        repo.sqlite_pool()
+            .expect("terminal endpoint tests require sqlite repo"),
+    ));
+    let adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
+        route_repo.clone(),
+        state.card_role_cache.clone(),
+        state.wave_cove_cache.clone(),
+        hook,
+    ));
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![adapter],
+        events.clone(),
+        SpawnCtx::new(
+            route_repo,
+            state.daemon.clone(),
+            state.terminal_renderer.clone(),
+            events,
+        ),
+    ));
+    state.with_operation_runtime(runtime)
 }
 
 async fn boot_happy() -> Boot {
@@ -176,10 +251,11 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
     Boot {
         app,
+        state,
         wave_id: wave.id.to_string(),
         events,
         repo,
@@ -188,14 +264,26 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
 }
 
 async fn post(app: axum::Router, uri: String, body: Value) -> (StatusCode, Value) {
+    post_with_idempotency(app, uri, body, None).await
+}
+
+async fn post_with_idempotency(
+    app: axum::Router,
+    uri: String,
+    body: Value,
+    idempotency_key: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(key) = idempotency_key {
+        req = req.header("Idempotency-Key", key);
+    }
     let resp = app
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
+            req.body(Body::from(body.to_string()))
+                .expect("build terminal-card POST request"),
         )
         .await
         .unwrap();
@@ -203,6 +291,163 @@ async fn post(app: axum::Router, uri: String, body: Value) -> (StatusCode, Value
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
+}
+
+async fn post_with_actor(
+    app: axum::Router,
+    uri: String,
+    body: Value,
+    actor: &str,
+) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", actor)
+                .body(Body::from(body.to_string()))
+                .expect("build terminal-card POST request"),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+async fn delete(app: axum::Router, uri: String) -> StatusCode {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .body(Body::empty())
+                .expect("build DELETE request"),
+        )
+        .await
+        .unwrap();
+    resp.status()
+}
+
+#[tokio::test]
+async fn post_terminal_card_same_idempotency_key_returns_same_card() {
+    let boot = boot_happy().await;
+    let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
+    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+
+    let (first_status, first_card) = post_with_idempotency(
+        boot.app.clone(),
+        uri.clone(),
+        body.clone(),
+        Some("terminal-route-retry-key"),
+    )
+    .await;
+    let (second_status, second_card) = post_with_idempotency(
+        boot.app.clone(),
+        uri,
+        body,
+        Some("terminal-route-retry-key"),
+    )
+    .await;
+
+    assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
+    assert_eq!(second_status, StatusCode::CREATED, "body={second_card:?}");
+    assert_eq!(first_card, second_card);
+}
+
+#[tokio::test]
+async fn post_terminal_card_rejects_malformed_idempotency_key() {
+    let boot = boot_happy().await;
+    let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
+    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("build terminal-card POST request");
+    req.headers_mut().insert(
+        "Idempotency-Key",
+        HeaderValue::from_bytes(b"\xff").expect("build non-ASCII header value"),
+    );
+
+    let resp = boot.app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={json:?}");
+}
+
+#[tokio::test]
+async fn post_terminal_card_idempotency_retry_skips_validation_after_wave_delete() {
+    let boot = boot_happy().await;
+    let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
+    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+
+    let (first_status, first_card) = post_with_idempotency(
+        boot.app.clone(),
+        uri.clone(),
+        body.clone(),
+        Some("terminal-route-retry-after-wave-delete"),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
+
+    let delete_status = delete(boot.app.clone(), format!("/api/waves/{}", boot.wave_id)).await;
+    assert_eq!(delete_status, StatusCode::NO_CONTENT);
+
+    let (retry_status, retry_card) = post_with_idempotency(
+        boot.app.clone(),
+        uri,
+        body,
+        Some("terminal-route-retry-after-wave-delete"),
+    )
+    .await;
+    assert_eq!(
+        retry_status,
+        StatusCode::CREATED,
+        "retry must return the stored operation instead of revalidating the deleted wave: {retry_card:?}"
+    );
+    assert_eq!(retry_card, first_card);
+}
+
+#[tokio::test]
+async fn post_terminal_card_prepare_forbidden_returns_403_and_marks_failed() {
+    let boot = boot_happy().await;
+    let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
+    let uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+
+    let (status, response) = post_with_actor(boot.app.clone(), uri, body, "ai:codex").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "prepare-time role errors must surface as 403: {response:?}"
+    );
+
+    let pool = boot
+        .repo
+        .sqlite_pool()
+        .expect("terminal endpoint tests require sqlite repo");
+    let row = sqlx::query(
+        "SELECT phase, phase_detail_json FROM operations ORDER BY created_at_ms DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let phase: String = row.try_get("phase").unwrap();
+    assert_eq!(phase, "failed");
+    let detail_text: String = row.try_get("phase_detail_json").unwrap();
+    let detail: Value = serde_json::from_str(&detail_text).unwrap();
+    assert_eq!(detail["last_error_class"], "forbidden");
+
+    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert!(
+        cards.is_empty(),
+        "prepare-time Forbidden must roll back the opened transaction"
+    );
 }
 
 async fn get(app: axum::Router, uri: String) -> (StatusCode, Value) {
@@ -322,14 +567,15 @@ async fn post_terminal_card_atomic_emits_single_card_added_event() {
 }
 
 #[tokio::test]
-async fn post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_but_persists_row() {
+async fn post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_and_rolls_back() {
     // Point the renderer at a supervisor socket that definitely doesn't exist.
     // The handler must:
     //   (a) propagate the 500 to the caller, AND
-    //   (b) NOT roll back the card+terminal txn (the sweeper cleans up).
+    //   (b) roll back the card+terminal rows through operation compensation.
     let bad_sock = std::env::temp_dir().join("definitely-not-a-real-proc-supervisor.sock");
     let _ = std::fs::remove_file(&bad_sock);
     let boot = boot_with_bad_supervisor(bad_sock).await;
+    let mut rx = boot.events.subscribe();
 
     let (status, body) = post(
         boot.app.clone(),
@@ -343,27 +589,197 @@ async fn post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_but_persi
         "expected 500 on daemon spawn failure: {body:?}"
     );
 
-    // Even though spawn failed, the card + terminal row must remain in the
-    // DB — the orphan-terminal sweeper is responsible for cleanup.
+    let mut added: Vec<BroadcastEnvelope> = Vec::new();
+    let mut deleted: Vec<BroadcastEnvelope> = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline - now;
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(env)) => match &env.event {
+                Event::CardAdded(_) => added.push(env),
+                Event::CardDeleted { .. } => deleted.push(env),
+                _ => {}
+            },
+            Ok(Err(_)) => break,
+            Err(_) => break,
+        }
+    }
+    assert_eq!(
+        added.len(),
+        1,
+        "spawn-failure rollback must still expose the optimistic card.added exactly once"
+    );
+    assert_eq!(
+        deleted.len(),
+        1,
+        "spawn-failure rollback must emit exactly one matching card.deleted"
+    );
+    let added_card = match &added[0].event {
+        Event::CardAdded(card) => card,
+        other => panic!("expected CardAdded, got {other:?}"),
+    };
+    match &deleted[0].event {
+        Event::CardDeleted { id, wave_id } => {
+            assert_eq!(id, &added_card.id);
+            assert_eq!(wave_id.as_str(), boot.wave_id.as_str());
+        }
+        other => panic!("expected CardDeleted, got {other:?}"),
+    }
+
     let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
     assert_eq!(
         cards.len(),
-        1,
-        "exactly one card persisted; got {}",
+        0,
+        "operation compensation must roll back the failed card; got {}",
         cards.len()
     );
-    let card = &cards[0];
-    assert_eq!(card.kind, "terminal");
-    let terminal_id = card.payload["terminal_id"]
-        .as_str()
-        .expect("payload.terminal_id stamped before spawn attempt");
-    let term = boot
-        .repo
-        .terminal_get(terminal_id)
-        .await
-        .unwrap()
-        .expect("terminal row persisted despite spawn failure");
-    assert_eq!(term.card_id, card.id);
+}
+
+#[tokio::test]
+async fn post_terminal_card_spawn_failure_reaps_renderer_before_rollback() {
+    let base = boot().await;
+    let renderer = base.state.terminal_renderer.clone();
+    let repo_for_hook = base.repo.clone();
+    let supervisor_sock = base
+        .state
+        .daemon
+        .data_dir
+        .join("missing-proc-supervisor.sock");
+    let hook = Arc::new(
+        move |terminal_id: String,
+              program: String,
+              cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let renderer = renderer.clone();
+            let repo = repo_for_hook.clone();
+            let supervisor_sock = supervisor_sock.clone();
+            Box::pin(async move {
+                repo.terminal_set_pid(&terminal_id, Some(999_999_999))
+                    .await?;
+                renderer.insert_test_entry(RendererConfig {
+                    terminal_id: terminal_id.clone(),
+                    cols: 80,
+                    rows: 24,
+                    buffer_bytes: 1 << 20,
+                    terminal_fg: (216, 219, 226),
+                    terminal_bg: (15, 20, 24),
+                    program,
+                    args: Vec::new(),
+                    envs: Vec::new(),
+                    cwd,
+                    supervisor_sock,
+                });
+                Err(calm_server::error::CalmError::Internal(
+                    "injected spawn failure after renderer entry".into(),
+                ))
+            })
+        },
+    );
+    let Boot {
+        state,
+        wave_id,
+        events,
+        repo,
+        _tmp,
+        ..
+    } = base;
+    let state = install_spawn_runtime_with_hook(state, repo.clone(), events.clone(), hook);
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state.clone());
+    let boot = Boot {
+        app,
+        state,
+        wave_id,
+        events,
+        repo,
+        _tmp,
+    };
+    let mut rx = boot.events.subscribe();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        format!("/api/waves/{}/terminal-cards", boot.wave_id),
+        json!({ "program": "/bin/sh", "cwd": "/tmp", "env": {}, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "expected injected spawn failure: {body:?}"
+    );
+
+    let mut added: Vec<BroadcastEnvelope> = Vec::new();
+    let mut deleted: Vec<BroadcastEnvelope> = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline - now;
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(env)) => match &env.event {
+                Event::CardAdded(_) => added.push(env),
+                Event::CardDeleted { .. } => deleted.push(env),
+                _ => {}
+            },
+            Ok(Err(_)) => break,
+            Err(_) => break,
+        }
+    }
+    assert_eq!(added.len(), 1, "expected one optimistic card.added");
+    assert_eq!(deleted.len(), 1, "expected one rollback card.deleted");
+    assert_eq!(
+        deleted[0].actor,
+        ActorId::Kernel,
+        "compensation rollback must be audited as kernel"
+    );
+
+    let added_card = match &added[0].event {
+        Event::CardAdded(card) => card,
+        other => panic!("expected CardAdded, got {other:?}"),
+    };
+    let terminal_id = added_card
+        .payload
+        .get("terminal_id")
+        .and_then(Value::as_str)
+        .expect("card payload has terminal_id")
+        .to_string();
+    match &deleted[0].event {
+        Event::CardDeleted { id, wave_id } => {
+            assert_eq!(id, &added_card.id);
+            assert_eq!(wave_id.as_str(), boot.wave_id.as_str());
+        }
+        other => panic!("expected CardDeleted, got {other:?}"),
+    }
+    assert!(
+        boot.state.terminal_renderer.get(&terminal_id).is_none(),
+        "rollback must reap the live renderer entry before deleting the terminal row"
+    );
+    assert!(
+        boot.repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "terminal row must be removed by rollback"
+    );
+    assert!(
+        boot.repo
+            .card_get(added_card.id.as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "card row must be removed by rollback"
+    );
 }
 
 #[tokio::test]

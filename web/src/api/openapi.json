@@ -2754,7 +2754,7 @@
             }
           },
           "500": {
-            "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "description": "Daemon spawn failed; the saga rolled back the committed transaction (no leaked rows).",
             "content": {
               "application/json": {
                 "schema": {

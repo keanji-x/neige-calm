@@ -88,6 +88,14 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
     reconcile_supervisor_on_boot(state).await;
 }
 
+pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error::Result<()> {
+    let plan = state.operation_runtime.recover_on_boot().await?;
+    for item in &plan.items {
+        tracing::info!(item = ?item, "operation recovery plan item");
+    }
+    state.operation_runtime.apply_recovery(plan).await
+}
+
 pub(crate) async fn probe_supervisor_for_terminal(
     state: &state::AppState,
     terminal_id: &str,
@@ -1011,6 +1019,7 @@ pub mod ids;
 pub mod mcp_server;
 pub mod model;
 pub mod openapi;
+pub mod operation;
 pub mod pending_codex_threads;
 pub mod plugin_host;
 pub(crate) mod proc_supervisor;
@@ -1032,3 +1041,22 @@ pub mod wave_lifecycle;
 pub mod wave_report;
 pub mod wave_report_doc;
 pub mod ws;
+
+#[cfg(test)]
+mod boot_order_tests {
+    #[test]
+    fn main_boot_order_keeps_operation_recovery_after_supervisor_reconcile() {
+        let main_rs = include_str!("main.rs");
+        let reconcile = main_rs
+            .find("reconcile_supervisor_on_boot(&state).await")
+            .expect("main boot calls reconcile_supervisor_on_boot");
+        let recover = main_rs
+            .find("recover_operations_on_boot(&state).await")
+            .expect("main boot calls recover_operations_on_boot");
+        let takeover = main_rs
+            .find("takeover_shared_spec_cards_on_boot(&state).await")
+            .expect("main boot calls takeover_shared_spec_cards_on_boot");
+        assert!(reconcile < recover);
+        assert!(recover < takeover);
+    }
+}

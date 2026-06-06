@@ -13,6 +13,8 @@ use crate::event::EventBus;
 use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
 use crate::model::CardRole;
+use crate::operation::terminal_adapter::TerminalAdapter;
+use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -78,6 +80,7 @@ pub struct RouteState {
     pub db_instance_id: Arc<String>,
     pub write: WriteContext,
     pub aspects: Arc<AspectRegistry>,
+    pub operation_runtime: Arc<OperationRuntime>,
 }
 
 /// #480 PR1 worker-facing state slice for dispatcher/background flows.
@@ -127,6 +130,7 @@ pub struct BootState {
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     pub aspects: Arc<AspectRegistry>,
+    pub operation_runtime: Arc<OperationRuntime>,
 }
 
 impl BootState {
@@ -139,6 +143,7 @@ impl BootState {
             db_instance_id: self.db_instance_id.clone(),
             write: write.clone(),
             aspects: self.aspects.clone(),
+            operation_runtime: self.operation_runtime.clone(),
         };
         let worker = WorkerState {
             repo: self.repo.clone(),
@@ -175,6 +180,7 @@ impl BootState {
             pending_codex_threads: self.pending_codex_threads,
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial,
             aspects: self.aspects,
+            operation_runtime: self.operation_runtime,
             raw: self.repo,
             route,
             worker,
@@ -287,6 +293,7 @@ pub struct AppState {
     /// override surface (test paths bypass via the bare
     /// [`SpecPushRegistry::insert`](crate::spec_push::SpecPushRegistry::insert)).
     pub aspects: Arc<AspectRegistry>,
+    pub operation_runtime: Arc<OperationRuntime>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -363,6 +370,26 @@ impl AppState {
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
         let wave_cove_cache = wave_cove_cache.unwrap_or_default();
+        let operation_repo = Arc::new(SqlxOperationRepo::new(
+            repo.sqlite_pool()
+                .expect("AppState::from_parts requires a sqlite-backed Repo"),
+        ));
+        let terminal_adapter = Arc::new(TerminalAdapter::new(
+            route_repo.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
+            operation_repo,
+            vec![terminal_adapter],
+            events.clone(),
+            SpawnCtx::new(
+                route_repo.clone(),
+                daemon.clone(),
+                terminal_renderer.clone(),
+                events.clone(),
+            ),
+        ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
@@ -428,8 +455,16 @@ impl AppState {
             // `SpecPushRegistry::park`) trips the same aspects production
             // would.
             aspects: build_aspect_registry(),
+            operation_runtime,
         }
         .into_app_state()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_operation_runtime(mut self, runtime: Arc<OperationRuntime>) -> Self {
+        self.operation_runtime = runtime.clone();
+        self.route.operation_runtime = runtime;
+        self
     }
 
     #[cfg(feature = "fixtures")]
@@ -580,6 +615,29 @@ impl AppState {
 
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        let operation_repo = Arc::new(SqlxOperationRepo::new(
+            repo.sqlite_pool()
+                .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
+        ));
+        let terminal_adapter = Arc::new(TerminalAdapter::new(
+            route_repo.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let operation_runtime = Arc::new(
+            OperationRuntime::new(
+                operation_repo,
+                vec![terminal_adapter],
+                events.clone(),
+                SpawnCtx::new(
+                    route_repo.clone(),
+                    daemon.clone(),
+                    terminal_renderer.clone(),
+                    events.clone(),
+                ),
+            )
+            .await?,
+        );
 
         // PR5 (#136) — dispatcher worker. Subscribes to
         // `*.job_requested` envelopes and mints worker-roled cards
@@ -668,6 +726,7 @@ impl AppState {
             // #322 — aspect registry, boot-installed once and shared via
             // `Arc` to every handler / actor that needs it.
             aspects: build_aspect_registry(),
+            operation_runtime,
         };
         let state = state.into_app_state();
 

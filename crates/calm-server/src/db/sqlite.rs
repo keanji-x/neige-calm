@@ -31,7 +31,7 @@ use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{
-    CardCodexThreadRow, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw,
+    CardCodexThreadRow, Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw,
     SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithEventFn,
     WriteWithEventsFn,
 };
@@ -91,12 +91,14 @@ impl SqlxRepo {
         opts = opts.log_statements(tracing::log::LevelFilter::Debug);
 
         let pool = SqlitePoolOptions::new()
-            // Belt-and-braces: also re-issue the pragma on every fresh
-            // connection in case `foreign_keys(true)` is silently dropped
-            // for some URL forms (e.g. memory).
+            // Belt-and-braces: also re-issue the pragmas on every fresh
+            // connection in case connect options are silently dropped for
+            // some URL forms (e.g. memory).
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
+                    conn.execute("PRAGMA busy_timeout = 5000;").await?;
+                    conn.execute("PRAGMA journal_mode = WAL;").await?;
                     Ok(())
                 })
             })
@@ -240,6 +242,22 @@ impl SqlxRepo {
         tx.commit().await?;
         Ok(id)
     }
+}
+
+impl Repo for SqlxRepo {
+    fn sqlite_pool(&self) -> Option<SqlitePool> {
+        Some(self.pool.clone())
+    }
+}
+
+pub(crate) async fn event_append_for_operation_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    actor: &ActorId,
+    scope: &EventScope,
+    correlation: Option<&str>,
+    event: &Event,
+) -> Result<i64> {
+    SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await
 }
 
 // ---- helpers -----------------------------------------------------------------
@@ -3086,6 +3104,19 @@ impl RepoOutOfDomain for SqlxRepo {
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
+        if res.rows_affected() == 0 {
+            return Err(CalmError::NotFound(format!("terminal {id}")));
+        }
+        Ok(())
+    }
+
+    async fn terminal_clear_exit_for_spawn(&self, id: &str) -> Result<()> {
+        let res = sqlx::query(
+            "UPDATE terminals SET pid = NULL, exit_code = NULL, signal_killed = 0 WHERE id = ?1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
         }

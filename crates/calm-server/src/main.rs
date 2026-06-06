@@ -67,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
     // supervisor PTY registry. No daemon binary respawn happens here.
     calm_server::reconcile_supervisor_on_boot(&state).await;
 
+    calm_server::recover_operations_on_boot(&state).await?;
+
     // #313/#410 - boot-time **takeover** of in-flight shared spec waves.
     // Legacy per-card spec rows were cleaned above before the shared daemon
     // rebuilt its thread cache. For every remaining shared spec card whose
@@ -101,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
             axum::http::Method::PATCH,
             axum::http::Method::DELETE,
         ])
-        .allow_headers([axum::http::header::CONTENT_TYPE])
+        .allow_headers(cors_allowed_headers())
         .allow_credentials(true);
 
     // Issue #189 — global session gate.
@@ -204,6 +206,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cors_allowed_headers() -> [axum::http::HeaderName; 2] {
+    [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderName::from_static("idempotency-key"),
+    ]
+}
+
 fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
     let url = cfg.codex_ingest_url_resolved();
     let Ok(uri) = url.parse::<axum::http::Uri>() else {
@@ -223,6 +232,20 @@ fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
         tracing::warn!(
             worker_hook_callback_url = %url,
             "worker hook callback resolves to a non-loopback address; worker hooks will be rejected by the internal hook loopback boundary. Bind CALM_LISTEN to 0.0.0.0 so the server stays LAN-reachable while workers call back over loopback, bind the server to loopback, or set CALM_CODEX_INGEST_URL to a loopback address the server actually listens on. Tracked by #362."
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cors_allows_idempotency_key_header() {
+        let headers = super::cors_allowed_headers();
+        assert!(headers.contains(&axum::http::header::CONTENT_TYPE));
+        assert!(
+            headers
+                .iter()
+                .any(|header| header.as_str() == "idempotency-key")
         );
     }
 }

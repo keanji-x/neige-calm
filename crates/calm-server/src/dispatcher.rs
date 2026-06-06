@@ -74,8 +74,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
     card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
-    card_with_terminal_rollback_tx, runtime_bind_attribution_tx, runtime_get_active_for_card_tx,
-    runtime_set_status_tx,
+    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
 use crate::db::{Repo, RouteRepo};
 use crate::db::{write_in_tx_typed, write_with_event_typed};
@@ -96,6 +95,8 @@ use crate::spec_push::SpecPushRegistry;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_sweeper::{reap_terminal_artifacts_with_renderer, reap_terminal_pid_only};
+
+pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
@@ -170,6 +171,15 @@ impl Dispatcher {
     /// Configured permit count. Exposed for assertions in tests.
     pub fn permits(&self) -> usize {
         self.permits
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn recently_seen_contains(&self, key: &str) -> bool {
+        self.inner
+            .recently_seen
+            .lock()
+            .map(|seen| seen.contains(key))
+            .unwrap_or(false)
     }
 
     /// #313 problem #1 (boot takeover) — seed the in-memory push watermark
@@ -940,6 +950,12 @@ impl Inner {
                 context: context.clone(),
                 acceptance_criteria: acceptance_criteria.clone(),
             },
+            // #481 PR1 N4 guard marker: route-origin `terminal-create` is
+            // framework-owned by OperationRuntime/TerminalAdapter and no
+            // longer emits `Event::TerminalJobRequested`. This dispatcher arm
+            // is only for spec/worker terminal jobs. If a future framework
+            // emitter adds an origin field, framework-owned terminal-create
+            // envelopes must short-circuit before `recently_seen` install.
             Event::TerminalJobRequested {
                 idempotency_key,
                 cmd,

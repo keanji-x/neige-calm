@@ -1,0 +1,1840 @@
+pub mod terminal_adapter;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use tokio::sync::{Mutex, broadcast};
+
+use crate::error::{CalmError, Result};
+use crate::event::{BroadcastEnvelope, EventBus};
+use crate::model::{new_id, now_ms};
+use crate::routes::terminal::spawn_terminal_with_parts;
+use crate::state::DaemonClient;
+use crate::terminal_renderer::TerminalRendererRegistry;
+
+pub type OperationId = String;
+pub type TimestampMs = i64;
+pub type Tx<'tx> = Transaction<'tx, Sqlite>;
+
+#[derive(Clone, Debug)]
+pub struct OperationKey {
+    pub operation_key: String,
+    pub idempotency_key: Option<String>,
+    pub payload_hash: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Operation {
+    pub id: OperationId,
+    pub operation_key: String,
+    pub kind: String,
+    pub idempotency_key: Option<String>,
+    pub payload_hash: String,
+    pub target_type: String,
+    pub target_id: Option<String>,
+    pub target: Value,
+    pub payload: Value,
+    pub tx_output: Option<TxOutput>,
+    pub phase: Phase,
+    pub phase_detail: Option<Value>,
+    pub attempt: i32,
+    pub last_error: Option<String>,
+    pub compensation_state: Option<Value>,
+    pub lease_owner: Option<String>,
+    pub lease_until_ms: Option<TimestampMs>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TxOutput {
+    pub target_type: String,
+    pub target_id: Option<String>,
+    pub result: Value,
+    #[serde(default)]
+    pub data: Value,
+    #[serde(skip)]
+    pub post_commit_events: Vec<BroadcastEnvelope>,
+}
+
+impl TxOutput {
+    pub fn new(target_type: impl Into<String>, target_id: Option<String>, result: Value) -> Self {
+        Self {
+            target_type: target_type.into(),
+            target_id,
+            result,
+            data: Value::Null,
+            post_commit_events: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SpawnCtx {
+    pub repo: Arc<dyn crate::db::RouteRepo>,
+    pub daemon: Arc<DaemonClient>,
+    pub terminal_renderer: Arc<TerminalRendererRegistry>,
+    pub events: EventBus,
+}
+
+impl SpawnCtx {
+    pub fn new(
+        repo: Arc<dyn crate::db::RouteRepo>,
+        daemon: Arc<DaemonClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        events: EventBus,
+    ) -> Self {
+        Self {
+            repo,
+            daemon,
+            terminal_renderer,
+            events,
+        }
+    }
+
+    pub async fn spawn_terminal(
+        &self,
+        term: &crate::model::Terminal,
+        program: &str,
+        cwd: &str,
+        env: &Value,
+    ) -> Result<SpawnHandle> {
+        let entry = spawn_terminal_with_parts(
+            self.daemon.as_ref(),
+            self.terminal_renderer.as_ref(),
+            self.repo.as_ref(),
+            term,
+            program,
+            cwd,
+            env,
+        )
+        .await?;
+        Ok(SpawnHandle {
+            terminal_id: term.id.clone(),
+            renderer_id: entry.terminal_id.clone(),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SpawnHandle {
+    pub terminal_id: String,
+    pub renderer_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum AppServerInteractOutcome {
+    NotApplicable,
+    MintedAndAwaited { thread_id: String },
+    RegisteredPendingForLaterAttribution { entry_id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Pending,
+    TxCommitted,
+    AppServerInteract { kind: AppServerInteractKind },
+    SpawnStarted,
+    SpawnSucceeded,
+    Succeeded,
+    Compensating,
+    Failed,
+    Stuck { reason: String, since: TimestampMs },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppServerInteractKind {
+    MintAndAwait { thread_id: Option<String> },
+    RegisterPending { entry_id: Option<String> },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseTag {
+    Pending,
+    TxCommitted,
+    AppServerInteract,
+    SpawnStarted,
+    SpawnSucceeded,
+    Succeeded,
+    Compensating,
+    Failed,
+    Stuck,
+}
+
+impl PhaseTag {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PhaseTag::Pending => "pending",
+            PhaseTag::TxCommitted => "tx_committed",
+            PhaseTag::AppServerInteract => "app_server_interact",
+            PhaseTag::SpawnStarted => "spawn_started",
+            PhaseTag::SpawnSucceeded => "spawn_succeeded",
+            PhaseTag::Succeeded => "succeeded",
+            PhaseTag::Compensating => "compensating",
+            PhaseTag::Failed => "failed",
+            PhaseTag::Stuck => "stuck",
+        }
+    }
+
+    pub fn from_db_str(raw: &str) -> Result<Self> {
+        match raw {
+            "pending" => Ok(Self::Pending),
+            "tx_committed" => Ok(Self::TxCommitted),
+            "app_server_interact" => Ok(Self::AppServerInteract),
+            "spawn_started" => Ok(Self::SpawnStarted),
+            "spawn_succeeded" => Ok(Self::SpawnSucceeded),
+            "succeeded" => Ok(Self::Succeeded),
+            "compensating" => Ok(Self::Compensating),
+            "failed" => Ok(Self::Failed),
+            "stuck" => Ok(Self::Stuck),
+            other => Err(CalmError::Internal(format!(
+                "unknown operation phase {other}"
+            ))),
+        }
+    }
+}
+
+impl Phase {
+    pub fn tag(&self) -> PhaseTag {
+        match self {
+            Phase::Pending => PhaseTag::Pending,
+            Phase::TxCommitted => PhaseTag::TxCommitted,
+            Phase::AppServerInteract { .. } => PhaseTag::AppServerInteract,
+            Phase::SpawnStarted => PhaseTag::SpawnStarted,
+            Phase::SpawnSucceeded => PhaseTag::SpawnSucceeded,
+            Phase::Succeeded => PhaseTag::Succeeded,
+            Phase::Compensating => PhaseTag::Compensating,
+            Phase::Failed => PhaseTag::Failed,
+            Phase::Stuck { .. } => PhaseTag::Stuck,
+        }
+    }
+
+    pub fn serialize_split(&self) -> (PhaseTag, Option<Value>) {
+        match self {
+            Phase::AppServerInteract { kind } => {
+                let detail = match kind {
+                    AppServerInteractKind::MintAndAwait { thread_id } => json!({
+                        "kind": "mint_and_await",
+                        "thread_id": thread_id,
+                    }),
+                    AppServerInteractKind::RegisterPending { entry_id } => json!({
+                        "kind": "register_pending",
+                        "entry_id": entry_id,
+                    }),
+                };
+                (PhaseTag::AppServerInteract, Some(detail))
+            }
+            Phase::Stuck { reason, since } => (
+                PhaseTag::Stuck,
+                Some(json!({
+                    "reason": reason,
+                    "since": since,
+                })),
+            ),
+            _ => (self.tag(), None),
+        }
+    }
+
+    pub fn deserialize_join(disc: &str, detail: Option<&Value>) -> Result<Self> {
+        match PhaseTag::from_db_str(disc)? {
+            PhaseTag::Pending => Ok(Self::Pending),
+            PhaseTag::TxCommitted => Ok(Self::TxCommitted),
+            PhaseTag::AppServerInteract => {
+                let detail = detail.ok_or_else(|| {
+                    CalmError::Internal("app_server_interact missing phase detail".into())
+                })?;
+                let kind = detail.get("kind").and_then(Value::as_str).ok_or_else(|| {
+                    CalmError::Internal("app_server_interact missing kind".into())
+                })?;
+                match kind {
+                    "mint_and_await" => Ok(Self::AppServerInteract {
+                        kind: AppServerInteractKind::MintAndAwait {
+                            thread_id: detail
+                                .get("thread_id")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned),
+                        },
+                    }),
+                    "register_pending" => Ok(Self::AppServerInteract {
+                        kind: AppServerInteractKind::RegisterPending {
+                            entry_id: detail
+                                .get("entry_id")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned),
+                        },
+                    }),
+                    other => Err(CalmError::Internal(format!(
+                        "unknown app_server_interact kind {other}"
+                    ))),
+                }
+            }
+            PhaseTag::SpawnStarted => Ok(Self::SpawnStarted),
+            PhaseTag::SpawnSucceeded => Ok(Self::SpawnSucceeded),
+            PhaseTag::Succeeded => Ok(Self::Succeeded),
+            PhaseTag::Compensating => Ok(Self::Compensating),
+            PhaseTag::Failed => Ok(Self::Failed),
+            PhaseTag::Stuck => {
+                let detail =
+                    detail.ok_or_else(|| CalmError::Internal("stuck missing detail".into()))?;
+                let reason = detail
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| CalmError::Internal("stuck missing reason".into()))?
+                    .to_string();
+                let since = detail
+                    .get("since")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| CalmError::Internal("stuck missing since".into()))?;
+                Ok(Self::Stuck { reason, since })
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompensationStep {
+    pub op: String,
+    pub args: Value,
+    pub completed: bool,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompensationStateVersioned {
+    pub version: u32,
+    pub from_phase: PhaseTag,
+    pub reason: String,
+    pub steps: Vec<CompensationStep>,
+}
+
+#[derive(Clone, Debug)]
+pub enum OperationOutcome {
+    Succeeded {
+        result: Value,
+    },
+    SucceededViaCollision {
+        existing_op_id: OperationId,
+        result: Value,
+    },
+    Failed {
+        last_error: String,
+        from_phase: PhaseTag,
+        last_error_class: Option<String>,
+    },
+    Stuck {
+        reason: String,
+        from_phase: PhaseTag,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct OperationResult {
+    pub op_id: OperationId,
+    pub outcome: OperationOutcome,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecoveryPlan {
+    pub items: Vec<RecoveryItem>,
+}
+
+#[derive(Clone, Debug)]
+pub enum RecoveryItem {
+    Recover {
+        op_id: OperationId,
+        from_phase: Phase,
+        action: String,
+    },
+    Compensate {
+        op_id: OperationId,
+        reason: String,
+    },
+    Skip {
+        op_id: OperationId,
+        reason: String,
+    },
+}
+
+#[async_trait]
+pub trait ProviderAdapter: Send + Sync {
+    fn kind(&self) -> &'static str;
+    fn phases(&self) -> &'static [PhaseTag];
+
+    async fn validate(&self, input: &Value) -> Result<()>;
+
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        op: &Operation,
+    ) -> Result<TxOutput>;
+
+    async fn app_server_interact(
+        &self,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<AppServerInteractOutcome>;
+
+    async fn spawn_side_effect(
+        &self,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<SpawnHandle>;
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        op: &Operation,
+    ) -> Result<CompensationStateVersioned>;
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<()>;
+}
+
+#[async_trait]
+pub trait OperationRepo: Send + Sync {
+    async fn assert_sqlite_version(&self) -> Result<()>;
+    async fn insert_operation(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+    ) -> Result<OperationId>;
+    async fn find_by_idempotency_key(
+        &self,
+        kind: &str,
+        key: &OperationKey,
+    ) -> Result<Option<Operation>>;
+    async fn get_operation(&self, op_id: &str) -> Result<Option<Operation>>;
+    async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
+    async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>>;
+    /// Reserved for PR2 background driver loop (design §B.3).
+    async fn abandoned_running_operations_steady_state(&self) -> Result<Vec<Operation>>;
+    async fn claim_operation_for_recovery(&self, op_id: &str) -> Result<Option<Operation>>;
+    async fn prepare_tx_and_advance(
+        &self,
+        op: &Operation,
+        adapter: &dyn ProviderAdapter,
+    ) -> Result<Option<(Operation, Vec<BroadcastEnvelope>)>>;
+    async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>>;
+    async fn set_compensating(
+        &self,
+        op: &Operation,
+        state: &CompensationStateVersioned,
+    ) -> Result<Option<Operation>>;
+    async fn update_compensation_state(
+        &self,
+        op: &Operation,
+        state: &CompensationStateVersioned,
+    ) -> Result<Option<Operation>>;
+    async fn mark_failed(
+        &self,
+        op: &Operation,
+        last_error: String,
+        from_phase: PhaseTag,
+        last_error_class: Option<String>,
+    ) -> Result<Option<OperationResult>>;
+    async fn mark_stuck(
+        &self,
+        op: &Operation,
+        reason: String,
+        from_phase: PhaseTag,
+    ) -> Result<Option<OperationResult>>;
+}
+
+#[derive(Clone)]
+pub struct SqlxOperationRepo {
+    pool: SqlitePool,
+}
+
+impl SqlxOperationRepo {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    async fn claim_operation_for_boot_recovery(&self, op_id: &str) -> Result<Option<Operation>> {
+        let now = now_ms();
+        let lease_owner = new_id();
+        let lease_until = now + 30_000;
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET lease_owner = ?1,
+                   lease_until_ms = ?2,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND phase IN (
+                   'pending',
+                   'tx_committed',
+                   'app_server_interact',
+                   'spawn_started',
+                   'spawn_succeeded',
+                   'compensating'
+                 )"#,
+        )
+        .bind(&lease_owner)
+        .bind(lease_until)
+        .bind(now)
+        .bind(op_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.find_by_id(op_id).await
+    }
+}
+
+/// Completion fan-out uses a broadcast channel rather than a oneshot map.
+/// That lets `wait()` first check the durable row, then subscribe without
+/// losing a completion that raced just before the waiter arrived.
+#[derive(Clone)]
+pub struct OperationCompletionBus {
+    tx: broadcast::Sender<OperationResult>,
+}
+
+impl OperationCompletionBus {
+    pub fn new() -> Self {
+        let (tx, _rx) = broadcast::channel(128);
+        Self { tx }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<OperationResult> {
+        self.tx.subscribe()
+    }
+
+    pub fn complete(&self, result: OperationResult) {
+        let _ = self.tx.send(result);
+    }
+}
+
+impl Default for OperationCompletionBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct OperationRuntime {
+    repo: Arc<dyn OperationRepo>,
+    kinds: HashMap<&'static str, Arc<dyn ProviderAdapter>>,
+    completion: OperationCompletionBus,
+    events: EventBus,
+    spawn_ctx: SpawnCtx,
+    // PR2: replace with a singleton background driver loop per design §B.3.
+    drive_mutex: Mutex<()>,
+}
+
+impl OperationRuntime {
+    pub async fn new(
+        repo: Arc<dyn OperationRepo>,
+        kinds: Vec<Arc<dyn ProviderAdapter>>,
+        events: EventBus,
+        spawn_ctx: SpawnCtx,
+    ) -> Result<Self> {
+        repo.assert_sqlite_version().await?;
+        Ok(Self::new_unchecked(repo, kinds, events, spawn_ctx))
+    }
+
+    pub fn new_unchecked(
+        repo: Arc<dyn OperationRepo>,
+        kinds: Vec<Arc<dyn ProviderAdapter>>,
+        events: EventBus,
+        spawn_ctx: SpawnCtx,
+    ) -> Self {
+        let kinds = kinds
+            .into_iter()
+            .map(|adapter| (adapter.kind(), adapter))
+            .collect();
+        Self {
+            repo,
+            kinds,
+            completion: OperationCompletionBus::new(),
+            events,
+            spawn_ctx,
+            drive_mutex: Mutex::new(()),
+        }
+    }
+
+    pub async fn submit(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+    ) -> Result<OperationId> {
+        let adapter = self.adapter(kind)?;
+        if let Some(existing) = self.repo.find_by_idempotency_key(kind, &key).await? {
+            if existing.payload_hash == key.payload_hash {
+                let op_id = existing.id;
+                self.drive().await?;
+                return Ok(op_id);
+            }
+            let idempotency_key = key
+                .idempotency_key
+                .as_deref()
+                .unwrap_or("<missing idempotency key>");
+            return Err(CalmError::Conflict(format!(
+                "operation idempotency key {idempotency_key} already used with different payload"
+            )));
+        }
+        adapter.validate(&payload).await?;
+        let op_id = self.repo.insert_operation(kind, key, payload).await?;
+        self.drive().await?;
+        Ok(op_id)
+    }
+
+    pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {
+        if let Some(result) = self.repo.operation_result(op_id).await? {
+            return Ok(result);
+        }
+        let mut rx = self.completion.subscribe();
+        loop {
+            tokio::select! {
+                received = rx.recv() => {
+                    match received {
+                        Ok(result) if result.op_id == *op_id => return Ok(result),
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(CalmError::Internal("operation completion bus closed".into()));
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {
+                    if let Some(result) = self.repo.operation_result(op_id).await? {
+                        return Ok(result);
+                    }
+                    self.drive().await?;
+                }
+            }
+        }
+    }
+
+    pub async fn drive(&self) -> Result<()> {
+        let _g = self.drive_mutex.lock().await;
+        loop {
+            let batch = self.repo.claim_drive_batch(32).await?;
+            if batch.is_empty() {
+                return Ok(());
+            }
+            for op in batch {
+                let from_phase = op.phase.tag();
+                let adapter = self.adapter(&op.kind)?;
+                if let Err(e) = self.drive_one(adapter, op.clone()).await {
+                    if let Some(result) = self
+                        .repo
+                        .mark_stuck(&op, format!("operation drive failed: {e}"), from_phase)
+                        .await?
+                    {
+                        self.completion.complete(result);
+                    } else {
+                        log_lost_lease(&op, PhaseTag::Stuck);
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn recover_on_boot(&self) -> Result<RecoveryPlan> {
+        let rows = self.repo.abandoned_running_operations_on_boot().await?;
+        let mut items = Vec::new();
+        for op in rows {
+            let adapter = self.adapter(&op.kind)?;
+            items.push(self.plan_recovery_for(adapter.as_ref(), &op).await?);
+        }
+        Ok(RecoveryPlan { items })
+    }
+
+    pub async fn apply_recovery(&self, plan: RecoveryPlan) -> Result<()> {
+        for item in plan.items {
+            match self.apply_recovery_item(item.clone()).await {
+                Ok(()) => {
+                    if let Err(e) = self.drive().await {
+                        tracing::error!(
+                            error = %e,
+                            item = ?item,
+                            "operation recovery drive failed; continuing"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        item = ?item,
+                        "operation recovery item failed; continuing"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn adapter(&self, kind: &str) -> Result<Arc<dyn ProviderAdapter>> {
+        self.kinds
+            .get(kind)
+            .cloned()
+            .ok_or_else(|| CalmError::BadRequest(format!("unknown operation kind {kind}")))
+    }
+
+    async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {
+        match op.phase.clone() {
+            Phase::Pending => {
+                let prepared = self
+                    .repo
+                    .prepare_tx_and_advance(&op, adapter.as_ref())
+                    .await;
+                let Some((_next, events)) = (match prepared {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        if let Some((last_error, last_error_class)) = client_failure_parts(&e) {
+                            if let Some(result) = self
+                                .repo
+                                .mark_failed(
+                                    &op,
+                                    last_error,
+                                    PhaseTag::Pending,
+                                    Some(last_error_class.to_string()),
+                                )
+                                .await?
+                            {
+                                self.completion.complete(result);
+                            } else {
+                                log_lost_lease(&op, PhaseTag::Failed);
+                            }
+                            return Ok(());
+                        }
+                        return Err(e);
+                    }
+                }) else {
+                    log_lost_lease(&op, PhaseTag::TxCommitted);
+                    return Ok(());
+                };
+                for envelope in events {
+                    self.events.emit_envelope(envelope);
+                }
+                Ok(())
+            }
+            Phase::TxCommitted => {
+                if adapter.phases().contains(&PhaseTag::AppServerInteract) {
+                    return Err(CalmError::Internal(
+                        "app_server_interact adapters are not implemented in PR1".into(),
+                    ));
+                }
+                if self
+                    .repo
+                    .set_phase(&op, Phase::SpawnStarted)
+                    .await?
+                    .is_none()
+                {
+                    log_lost_lease(&op, PhaseTag::SpawnStarted);
+                }
+                Ok(())
+            }
+            Phase::AppServerInteract { .. } => {
+                let output = required_output(&op)?;
+                match adapter
+                    .app_server_interact(output, &op, &self.spawn_ctx)
+                    .await?
+                {
+                    AppServerInteractOutcome::NotApplicable => {
+                        if self
+                            .repo
+                            .set_phase(&op, Phase::SpawnStarted)
+                            .await?
+                            .is_none()
+                        {
+                            log_lost_lease(&op, PhaseTag::SpawnStarted);
+                        }
+                    }
+                    AppServerInteractOutcome::MintedAndAwaited { .. }
+                    | AppServerInteractOutcome::RegisteredPendingForLaterAttribution { .. } => {
+                        return Err(CalmError::Internal(
+                            "app_server_interact outcomes are not implemented in PR1".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            Phase::SpawnStarted => {
+                let output = required_output(&op)?;
+                match adapter
+                    .spawn_side_effect(output, &op, &self.spawn_ctx)
+                    .await
+                {
+                    Ok(_handle) => {
+                        if self
+                            .repo
+                            .set_phase(&op, Phase::SpawnSucceeded)
+                            .await?
+                            .is_none()
+                        {
+                            log_lost_lease(&op, PhaseTag::SpawnSucceeded);
+                        }
+                    }
+                    Err(e) => {
+                        self.fail_with_compensation(
+                            adapter.as_ref(),
+                            op,
+                            PhaseTag::SpawnStarted,
+                            e.to_string(),
+                        )
+                        .await?;
+                    }
+                }
+                Ok(())
+            }
+            Phase::SpawnSucceeded => {
+                if let Some(result) = self.repo.set_phase(&op, Phase::Succeeded).await? {
+                    if let Some(result) = operation_result_from(&result)? {
+                        self.completion.complete(result);
+                    }
+                } else {
+                    log_lost_lease(&op, PhaseTag::Succeeded);
+                }
+                Ok(())
+            }
+            Phase::Compensating => {
+                if let Some(result) = self
+                    .resume_compensation(adapter.as_ref(), op.clone())
+                    .await?
+                {
+                    self.completion.complete(result);
+                } else {
+                    log_lost_lease(&op, PhaseTag::Failed);
+                }
+                Ok(())
+            }
+            Phase::Succeeded | Phase::Failed | Phase::Stuck { .. } => {
+                if let Some(result) = operation_result_from(&op)? {
+                    self.completion.complete(result);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn fail_with_compensation(
+        &self,
+        adapter: &dyn ProviderAdapter,
+        op: Operation,
+        from_phase: PhaseTag,
+        reason: String,
+    ) -> Result<()> {
+        let output = required_output(&op)?.clone();
+        let state = adapter
+            .plan_compensation(from_phase, &reason, &output, &op)
+            .await?;
+        if self.repo.set_compensating(&op, &state).await?.is_none() {
+            log_lost_lease(&op, PhaseTag::Compensating);
+        }
+        Ok(())
+    }
+
+    async fn resume_compensation(
+        &self,
+        adapter: &dyn ProviderAdapter,
+        op: Operation,
+    ) -> Result<Option<OperationResult>> {
+        let state = op
+            .compensation_state
+            .clone()
+            .ok_or_else(|| {
+                CalmError::Internal(format!("operation {} missing compensation_state", op.id))
+            })
+            .and_then(|value| {
+                serde_json::from_value::<CompensationStateVersioned>(value).map_err(CalmError::from)
+            })?;
+        let output = required_output(&op)?.clone();
+        let reason = state.reason.clone();
+        let from_phase = state.from_phase;
+        match self
+            .apply_compensation_steps(adapter, op.clone(), state, output)
+            .await
+        {
+            Ok(()) => {
+                self.repo
+                    .mark_failed(&op, reason, from_phase, Some("internal".into()))
+                    .await
+            }
+            Err(e) => {
+                self.repo
+                    .mark_stuck(
+                        &op,
+                        format!("compensation failed: {e}"),
+                        PhaseTag::Compensating,
+                    )
+                    .await
+            }
+        }
+    }
+
+    async fn apply_compensation_steps(
+        &self,
+        adapter: &dyn ProviderAdapter,
+        op: Operation,
+        mut state: CompensationStateVersioned,
+        output: TxOutput,
+    ) -> Result<()> {
+        for idx in 0..state.steps.len() {
+            if state.steps[idx].completed {
+                continue;
+            }
+            match adapter
+                .compensate_step(&state.steps[idx], &output, &op, &self.spawn_ctx)
+                .await
+            {
+                Ok(()) => {
+                    state.steps[idx].completed = true;
+                    state.steps[idx].last_error = None;
+                    if self
+                        .repo
+                        .update_compensation_state(&op, &state)
+                        .await?
+                        .is_none()
+                    {
+                        log_lost_lease(&op, PhaseTag::Compensating);
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    state.steps[idx].attempts += 1;
+                    state.steps[idx].last_error = Some(e.to_string());
+                    if self
+                        .repo
+                        .update_compensation_state(&op, &state)
+                        .await?
+                        .is_none()
+                    {
+                        log_lost_lease(&op, PhaseTag::Compensating);
+                        return Ok(());
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn plan_recovery_for(
+        &self,
+        _adapter: &dyn ProviderAdapter,
+        op: &Operation,
+    ) -> Result<RecoveryItem> {
+        let item = match &op.phase {
+            Phase::Pending
+            | Phase::TxCommitted
+            | Phase::AppServerInteract { .. }
+            | Phase::SpawnStarted
+            | Phase::SpawnSucceeded => RecoveryItem::Recover {
+                op_id: op.id.clone(),
+                from_phase: op.phase.clone(),
+                action: format!("drive from {}", op.phase.tag().as_str()),
+            },
+            Phase::Compensating => RecoveryItem::Compensate {
+                op_id: op.id.clone(),
+                reason: op
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "resume compensation".into()),
+            },
+            Phase::Succeeded | Phase::Failed | Phase::Stuck { .. } => RecoveryItem::Skip {
+                op_id: op.id.clone(),
+                reason: "terminal state".into(),
+            },
+        };
+        Ok(item)
+    }
+
+    async fn apply_recovery_item(&self, item: RecoveryItem) -> Result<()> {
+        match item {
+            RecoveryItem::Recover {
+                op_id, from_phase, ..
+            } => {
+                let Some(op) = self.repo.claim_operation_for_recovery(&op_id).await? else {
+                    return Ok(());
+                };
+                let adapter = self.adapter(&op.kind)?;
+                if let Err(e) = self.drive_one(adapter, op.clone()).await {
+                    if let Some(result) = self
+                        .repo
+                        .mark_stuck(
+                            &op,
+                            format!("operation recovery apply failed: {e}"),
+                            from_phase.tag(),
+                        )
+                        .await?
+                    {
+                        self.completion.complete(result);
+                    } else {
+                        log_lost_lease(&op, PhaseTag::Stuck);
+                    }
+                }
+                Ok(())
+            }
+            RecoveryItem::Compensate { op_id, .. } => {
+                let Some(op) = self.repo.claim_operation_for_recovery(&op_id).await? else {
+                    return Ok(());
+                };
+                let adapter = self.adapter(&op.kind)?;
+                match self.resume_compensation(adapter.as_ref(), op.clone()).await {
+                    Ok(Some(result)) => self.completion.complete(result),
+                    Ok(None) => log_lost_lease(&op, PhaseTag::Failed),
+                    Err(e) => {
+                        if let Some(result) = self
+                            .repo
+                            .mark_stuck(
+                                &op,
+                                format!("operation compensation recovery failed: {e}"),
+                                PhaseTag::Compensating,
+                            )
+                            .await?
+                        {
+                            self.completion.complete(result);
+                        } else {
+                            log_lost_lease(&op, PhaseTag::Stuck);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            RecoveryItem::Skip { .. } => Ok(()),
+        }
+    }
+}
+
+#[async_trait]
+impl OperationRepo for SqlxOperationRepo {
+    async fn assert_sqlite_version(&self) -> Result<()> {
+        let row = sqlx::query("SELECT sqlite_version() AS version")
+            .fetch_one(&self.pool)
+            .await?;
+        let version: String = row.try_get("version")?;
+        if sqlite_version_at_least(&version, 3, 30) {
+            return Ok(());
+        }
+        Err(CalmError::Internal(
+            "SQLite < 3.30 does not support partial unique index; upgrade required".into(),
+        ))
+    }
+
+    async fn insert_operation(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+    ) -> Result<OperationId> {
+        if let Some(idempotency_key) = key.idempotency_key.as_deref()
+            && let Some(existing) = self.find_by_kind_idempotency(kind, idempotency_key).await?
+        {
+            if existing.payload_hash == key.payload_hash {
+                return Ok(existing.id);
+            }
+            return Err(CalmError::Conflict(format!(
+                "operation idempotency key {idempotency_key} already used with different payload"
+            )));
+        }
+
+        let id = new_id();
+        let now = now_ms();
+        let (target_type, target_id, target_json) = target_from_payload(&payload);
+        let target_json_text = serde_json::to_string(&target_json)?;
+        let payload_json_text = serde_json::to_string(&payload)?;
+        let inserted = sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   phase, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
+        )
+        .bind(&id)
+        .bind(&key.operation_key)
+        .bind(kind)
+        .bind(&key.idempotency_key)
+        .bind(&key.payload_hash)
+        .bind(&target_type)
+        .bind(&target_id)
+        .bind(&target_json_text)
+        .bind(&payload_json_text)
+        .bind(now)
+        .execute(&self.pool)
+        .await;
+
+        match inserted {
+            Ok(_) => Ok(id),
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                if let Some(idempotency_key) = key.idempotency_key.as_deref()
+                    && let Some(existing) =
+                        self.find_by_kind_idempotency(kind, idempotency_key).await?
+                {
+                    if existing.payload_hash == key.payload_hash {
+                        return Ok(existing.id);
+                    }
+                    return Err(CalmError::Conflict(format!(
+                        "operation idempotency key {idempotency_key} already used with different payload"
+                    )));
+                }
+                Err(CalmError::Conflict(format!(
+                    "operation key {} already exists",
+                    key.operation_key
+                )))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn find_by_idempotency_key(
+        &self,
+        kind: &str,
+        key: &OperationKey,
+    ) -> Result<Option<Operation>> {
+        let Some(idempotency_key) = key.idempotency_key.as_deref() else {
+            return Ok(None);
+        };
+        self.find_by_kind_idempotency(kind, idempotency_key).await
+    }
+
+    async fn get_operation(&self, op_id: &str) -> Result<Option<Operation>> {
+        self.find_by_id(op_id).await
+    }
+
+    async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>> {
+        let Some(op) = self.find_by_id(op_id).await? else {
+            return Ok(None);
+        };
+        operation_result_from(&op)
+    }
+
+    async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>> {
+        let now = now_ms();
+        let lease_owner = new_id();
+        let lease_until = now + 30_000;
+        let mut tx = self.pool.begin().await?;
+        let ids = sqlx::query(
+            r#"SELECT id
+               FROM operations
+               WHERE phase IN (
+                 'pending',
+                 'tx_committed',
+                 'app_server_interact',
+                 'spawn_started',
+                 'spawn_succeeded',
+                 'compensating'
+               )
+               AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
+               ORDER BY created_at_ms ASC
+               LIMIT ?2"#,
+        )
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut claimed = Vec::new();
+        for row in ids {
+            let id: String = row.try_get("id")?;
+            let result = sqlx::query(
+                r#"UPDATE operations
+                   SET lease_owner = ?1,
+                       lease_until_ms = ?2,
+                       updated_at_ms = ?3
+                   WHERE id = ?4
+                     AND phase IN (
+                       'pending',
+                       'tx_committed',
+                       'app_server_interact',
+                       'spawn_started',
+                       'spawn_succeeded',
+                       'compensating'
+                     )
+                     AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
+            )
+            .bind(&lease_owner)
+            .bind(lease_until)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() == 1 {
+                let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
+                    .bind(&id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                claimed.push(operation_from_row(&row)?);
+            }
+        }
+        tx.commit().await?;
+        Ok(claimed)
+    }
+
+    async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>> {
+        let rows = sqlx::query(
+            r#"SELECT *
+               FROM operations
+               WHERE phase IN (
+                 'pending',
+                 'tx_committed',
+                 'app_server_interact',
+                 'spawn_started',
+                 'spawn_succeeded',
+                 'compensating'
+               )
+               ORDER BY created_at_ms ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(operation_from_row).collect()
+    }
+
+    async fn abandoned_running_operations_steady_state(&self) -> Result<Vec<Operation>> {
+        let now = now_ms();
+        let rows = sqlx::query(
+            r#"SELECT *
+               FROM operations
+               WHERE phase IN (
+                 'pending',
+                 'tx_committed',
+                 'app_server_interact',
+                 'spawn_started',
+                 'spawn_succeeded',
+                 'compensating'
+               )
+               AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
+               ORDER BY created_at_ms ASC"#,
+        )
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(operation_from_row).collect()
+    }
+
+    async fn claim_operation_for_recovery(&self, op_id: &str) -> Result<Option<Operation>> {
+        self.claim_operation_for_boot_recovery(op_id).await
+    }
+
+    async fn prepare_tx_and_advance(
+        &self,
+        op: &Operation,
+        adapter: &dyn ProviderAdapter,
+    ) -> Result<Option<(Operation, Vec<BroadcastEnvelope>)>> {
+        let mut tx = self.pool.begin().await?;
+        let output = match adapter.prepare_tx(&mut tx, &op.payload, op).await {
+            Ok(output) => output,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        let events = output.post_commit_events.clone();
+        let mut output_for_db = output.clone();
+        output_for_db.post_commit_events.clear();
+        let output_text = serde_json::to_string(&output_for_db)?;
+        let now = now_ms();
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET tx_output_json = ?1,
+                   target_type = ?2,
+                   target_id = ?3,
+                   target_json = ?4,
+                   phase = 'tx_committed',
+                   phase_detail_json = NULL,
+                   lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   updated_at_ms = ?5
+               WHERE id = ?6
+                 AND lease_owner = ?7"#,
+        )
+        .bind(&output_text)
+        .bind(&output.target_type)
+        .bind(&output.target_id)
+        .bind(serde_json::to_string(&json!({
+            "type": output.target_type,
+            "id": output.target_id,
+        }))?)
+        .bind(now)
+        .bind(&op.id)
+        .bind(required_lease_owner(op)?)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            let _ = tx.rollback().await;
+            return Ok(None);
+        }
+        tx.commit().await?;
+        let next = self
+            .find_by_id(&op.id)
+            .await?
+            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))?;
+        Ok(Some((next, events)))
+    }
+
+    async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>> {
+        let (tag, detail) = phase.serialize_split();
+        let detail_text = optional_json_text(detail.as_ref())?;
+        let completed_at = matches!(
+            phase,
+            Phase::Succeeded | Phase::Failed | Phase::Stuck { .. }
+        )
+        .then(now_ms);
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET phase = ?1,
+                   phase_detail_json = ?2,
+                   lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   completed_at_ms = COALESCE(?3, completed_at_ms),
+                   updated_at_ms = ?4
+               WHERE id = ?5
+                 AND lease_owner = ?6"#,
+        )
+        .bind(tag.as_str())
+        .bind(detail_text)
+        .bind(completed_at)
+        .bind(now_ms())
+        .bind(&op.id)
+        .bind(required_lease_owner(op)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.find_by_id(&op.id)
+            .await?
+            .map(Some)
+            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+    }
+
+    async fn set_compensating(
+        &self,
+        op: &Operation,
+        state: &CompensationStateVersioned,
+    ) -> Result<Option<Operation>> {
+        let text = serde_json::to_string(state)?;
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET phase = 'compensating',
+                   phase_detail_json = ?1,
+                   compensation_state = ?2,
+                   last_error = ?3,
+                   lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   updated_at_ms = ?4
+               WHERE id = ?5
+                 AND lease_owner = ?6"#,
+        )
+        .bind(serde_json::to_string(&json!({
+            "from_phase": state.from_phase,
+            "reason": state.reason,
+        }))?)
+        .bind(text)
+        .bind(&state.reason)
+        .bind(now_ms())
+        .bind(&op.id)
+        .bind(required_lease_owner(op)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.find_by_id(&op.id)
+            .await?
+            .map(Some)
+            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+    }
+
+    async fn update_compensation_state(
+        &self,
+        op: &Operation,
+        state: &CompensationStateVersioned,
+    ) -> Result<Option<Operation>> {
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET compensation_state = ?1,
+                   updated_at_ms = ?2
+               WHERE id = ?3
+                 AND lease_owner = ?4"#,
+        )
+        .bind(serde_json::to_string(state)?)
+        .bind(now_ms())
+        .bind(&op.id)
+        .bind(required_lease_owner(op)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.find_by_id(&op.id)
+            .await?
+            .map(Some)
+            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+    }
+
+    async fn mark_failed(
+        &self,
+        op: &Operation,
+        last_error: String,
+        from_phase: PhaseTag,
+        last_error_class: Option<String>,
+    ) -> Result<Option<OperationResult>> {
+        let now = now_ms();
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET phase = 'failed',
+                   phase_detail_json = ?1,
+                   last_error = ?2,
+                   lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   completed_at_ms = ?3,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND lease_owner = ?5"#,
+        )
+        .bind(serde_json::to_string(&json!({
+            "from_phase": from_phase,
+            "last_error_class": last_error_class,
+        }))?)
+        .bind(&last_error)
+        .bind(now)
+        .bind(&op.id)
+        .bind(required_lease_owner(op)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        Ok(Some(OperationResult {
+            op_id: op.id.clone(),
+            outcome: OperationOutcome::Failed {
+                last_error,
+                from_phase,
+                last_error_class,
+            },
+        }))
+    }
+
+    async fn mark_stuck(
+        &self,
+        op: &Operation,
+        reason: String,
+        from_phase: PhaseTag,
+    ) -> Result<Option<OperationResult>> {
+        let now = now_ms();
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET phase = 'stuck',
+                   phase_detail_json = ?1,
+                   last_error = ?2,
+                   lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   completed_at_ms = ?3,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND lease_owner = ?5"#,
+        )
+        .bind(serde_json::to_string(&json!({
+            "reason": reason,
+            "since": now,
+            "from_phase": from_phase,
+        }))?)
+        .bind(&reason)
+        .bind(now)
+        .bind(&op.id)
+        .bind(required_lease_owner(op)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        Ok(Some(OperationResult {
+            op_id: op.id.clone(),
+            outcome: OperationOutcome::Stuck { reason, from_phase },
+        }))
+    }
+}
+
+impl SqlxOperationRepo {
+    async fn find_by_id(&self, op_id: &str) -> Result<Option<Operation>> {
+        let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
+            .bind(op_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(operation_from_row).transpose()
+    }
+
+    async fn find_by_kind_idempotency(
+        &self,
+        kind: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<Operation>> {
+        let row = sqlx::query(
+            "SELECT * FROM operations WHERE kind = ?1 AND idempotency_key = ?2 LIMIT 1",
+        )
+        .bind(kind)
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(operation_from_row).transpose()
+    }
+}
+
+fn operation_from_row(row: &SqliteRow) -> Result<Operation> {
+    let target_json: String = row.try_get("target_json")?;
+    let payload_json: String = row.try_get("payload_json")?;
+    let phase_text: String = row.try_get("phase")?;
+    let phase_detail_json: Option<String> = row.try_get("phase_detail_json")?;
+    let phase_detail = phase_detail_json
+        .as_deref()
+        .map(serde_json::from_str::<Value>)
+        .transpose()?;
+    let tx_output_json: Option<String> = row.try_get("tx_output_json")?;
+    let tx_output = tx_output_json
+        .as_deref()
+        .map(serde_json::from_str::<TxOutput>)
+        .transpose()?;
+    let compensation_state_text: Option<String> = row.try_get("compensation_state")?;
+    let compensation_state = compensation_state_text
+        .as_deref()
+        .map(serde_json::from_str::<Value>)
+        .transpose()?;
+    Ok(Operation {
+        id: row.try_get("id")?,
+        operation_key: row.try_get("operation_key")?,
+        kind: row.try_get("kind")?,
+        idempotency_key: row.try_get("idempotency_key")?,
+        payload_hash: row.try_get("payload_hash")?,
+        target_type: row.try_get("target_type")?,
+        target_id: row.try_get("target_id")?,
+        target: serde_json::from_str(&target_json)?,
+        payload: serde_json::from_str(&payload_json)?,
+        tx_output,
+        phase: Phase::deserialize_join(&phase_text, phase_detail.as_ref())?,
+        phase_detail,
+        attempt: row.try_get("attempt")?,
+        last_error: row.try_get("last_error")?,
+        compensation_state,
+        lease_owner: row.try_get("lease_owner")?,
+        lease_until_ms: row.try_get("lease_until_ms")?,
+    })
+}
+
+fn required_lease_owner(op: &Operation) -> Result<&str> {
+    op.lease_owner.as_deref().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "operation {} is not claimed by the current driver",
+            op.id
+        ))
+    })
+}
+
+fn log_lost_lease(op: &Operation, intended_phase: PhaseTag) {
+    tracing::warn!(
+        op_id = %op.id,
+        intended_phase = intended_phase.as_str(),
+        "operation transition skipped because driver lost lease"
+    );
+}
+
+fn operation_result_from(op: &Operation) -> Result<Option<OperationResult>> {
+    match &op.phase {
+        Phase::Succeeded => {
+            if let Some(detail) = &op.phase_detail
+                && detail.get("completion").and_then(Value::as_str) == Some("idempotency_collision")
+            {
+                return Ok(Some(OperationResult {
+                    op_id: op.id.clone(),
+                    outcome: OperationOutcome::SucceededViaCollision {
+                        existing_op_id: detail
+                            .get("existing_operation_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        result: op
+                            .tx_output
+                            .as_ref()
+                            .map(|o| o.result.clone())
+                            .unwrap_or(Value::Null),
+                    },
+                }));
+            }
+            Ok(Some(OperationResult {
+                op_id: op.id.clone(),
+                outcome: OperationOutcome::Succeeded {
+                    result: op
+                        .tx_output
+                        .as_ref()
+                        .map(|o| o.result.clone())
+                        .unwrap_or(Value::Null),
+                },
+            }))
+        }
+        Phase::Failed => Ok(Some(OperationResult {
+            op_id: op.id.clone(),
+            outcome: OperationOutcome::Failed {
+                last_error: op
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "operation failed".into()),
+                from_phase: phase_detail_from_phase(op.phase_detail.as_ref()),
+                last_error_class: error_class_from_phase(op.phase_detail.as_ref()),
+            },
+        })),
+        Phase::Stuck { reason, .. } => Ok(Some(OperationResult {
+            op_id: op.id.clone(),
+            outcome: OperationOutcome::Stuck {
+                reason: reason.clone(),
+                from_phase: phase_detail_from_phase(op.phase_detail.as_ref()),
+            },
+        })),
+        _ => Ok(None),
+    }
+}
+
+fn phase_detail_from_phase(detail: Option<&Value>) -> PhaseTag {
+    detail
+        .and_then(|v| v.get("from_phase"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or(PhaseTag::Failed)
+}
+
+fn error_class_from_phase(detail: Option<&Value>) -> Option<String> {
+    detail
+        .and_then(|v| v.get("last_error_class"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn client_failure_parts(error: &CalmError) -> Option<(String, &'static str)> {
+    match error {
+        CalmError::BadRequest(message) => Some((message.clone(), "bad_request")),
+        CalmError::NotFound(message) => Some((message.clone(), "not_found")),
+        CalmError::Forbidden(message) => Some((message.clone(), "forbidden")),
+        CalmError::Conflict(message) => Some((message.clone(), "conflict")),
+        CalmError::Unauthorized => Some(("unauthorized".into(), "unauthorized")),
+        // PR2: extend when codex/claude adapters land and can raise
+        // plugin/reset-specific client errors from prepare-time validation.
+        _ => None,
+    }
+}
+
+fn required_output(op: &Operation) -> Result<&TxOutput> {
+    op.tx_output
+        .as_ref()
+        .ok_or_else(|| CalmError::Internal(format!("operation {} missing tx_output_json", op.id)))
+}
+
+fn optional_json_text(value: Option<&Value>) -> Result<Option<String>> {
+    value
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn target_from_payload(payload: &Value) -> (String, Option<String>, Value) {
+    if let Some(wave_id) = payload.get("wave_id").and_then(Value::as_str) {
+        return (
+            "wave".to_string(),
+            Some(wave_id.to_string()),
+            json!({ "type": "wave", "id": wave_id }),
+        );
+    }
+    (
+        "unknown".to_string(),
+        None,
+        json!({ "type": "unknown", "id": Value::Null }),
+    )
+}
+
+fn sqlite_version_at_least(version: &str, want_major: u64, want_minor: u64) -> bool {
+    let mut parts = version.split('.');
+    let major = parts
+        .next()
+        .and_then(|p| p.parse::<u64>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse::<u64>().ok())
+        .unwrap_or(0);
+    (major, minor) >= (want_major, want_minor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_split_round_trips_all_variants() {
+        let cases = vec![
+            Phase::Pending,
+            Phase::TxCommitted,
+            Phase::AppServerInteract {
+                kind: AppServerInteractKind::MintAndAwait {
+                    thread_id: Some("thread-1".into()),
+                },
+            },
+            Phase::AppServerInteract {
+                kind: AppServerInteractKind::RegisterPending {
+                    entry_id: Some("pending-1".into()),
+                },
+            },
+            Phase::SpawnStarted,
+            Phase::SpawnSucceeded,
+            Phase::Succeeded,
+            Phase::Compensating,
+            Phase::Failed,
+            Phase::Stuck {
+                reason: "needs operator".into(),
+                since: 1_718_000_000,
+            },
+        ];
+
+        for phase in cases {
+            let (tag, detail) = phase.serialize_split();
+            let joined = Phase::deserialize_join(tag.as_str(), detail.as_ref()).unwrap();
+            assert_eq!(joined, phase);
+        }
+    }
+
+    #[tokio::test]
+    async fn same_idempotency_key_different_hash_conflicts() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+        let key = OperationKey {
+            operation_key: "op-a".into(),
+            idempotency_key: Some("same-key".into()),
+            payload_hash: "hash-a".into(),
+        };
+        let payload = json!({ "wave_id": "wave-a" });
+        let first = repo
+            .insert_operation("terminal-create", key, payload.clone())
+            .await
+            .unwrap();
+        assert!(!first.is_empty());
+
+        let err = repo
+            .insert_operation(
+                "terminal-create",
+                OperationKey {
+                    operation_key: "op-b".into(),
+                    idempotency_key: Some("same-key".into()),
+                    payload_hash: "hash-b".into(),
+                },
+                payload,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CalmError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn set_phase_clears_lease_and_rejects_stale_owner() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+        let op_id = repo
+            .insert_operation(
+                "terminal-create",
+                OperationKey {
+                    operation_key: "phase-fence-op".into(),
+                    idempotency_key: None,
+                    payload_hash: "hash".into(),
+                },
+                json!({ "wave_id": "wave-a" }),
+            )
+            .await
+            .unwrap();
+        let mut claimed = repo.claim_drive_batch(1).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+        let op = claimed.pop().unwrap();
+        assert!(op.lease_owner.is_some());
+
+        let next = repo
+            .set_phase(&op, Phase::TxCommitted)
+            .await
+            .unwrap()
+            .expect("claimed owner advances");
+        assert_eq!(next.phase, Phase::TxCommitted);
+        assert!(next.lease_owner.is_none());
+        assert!(next.lease_until_ms.is_none());
+
+        let stale = repo.set_phase(&op, Phase::SpawnStarted).await.unwrap();
+        assert!(
+            stale.is_none(),
+            "stale owner must not advance after set_phase clears the lease"
+        );
+        let stored = repo.get_operation(&op_id).await.unwrap().unwrap();
+        assert_eq!(stored.phase, Phase::TxCommitted);
+    }
+
+    #[tokio::test]
+    async fn stale_driver_cannot_win_final_transition_after_reclaim() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+        let op_id = repo
+            .insert_operation(
+                "terminal-create",
+                OperationKey {
+                    operation_key: "final-fence-op".into(),
+                    idempotency_key: None,
+                    payload_hash: "hash".into(),
+                },
+                json!({ "wave_id": "wave-a" }),
+            )
+            .await
+            .unwrap();
+        let now = now_ms();
+        sqlx::query(
+            r#"UPDATE operations
+               SET phase = 'spawn_succeeded',
+                   lease_owner = 'driver-a',
+                   lease_until_ms = ?1,
+                   updated_at_ms = ?2
+               WHERE id = ?3"#,
+        )
+        .bind(now - 1)
+        .bind(now)
+        .bind(&op_id)
+        .execute(sqlx_repo.pool())
+        .await
+        .unwrap();
+        let stale_driver = repo.get_operation(&op_id).await.unwrap().unwrap();
+        assert_eq!(stale_driver.lease_owner.as_deref(), Some("driver-a"));
+
+        let mut claimed = repo.claim_drive_batch(1).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+        let driver_b = claimed.pop().unwrap();
+        assert_ne!(driver_b.lease_owner, stale_driver.lease_owner);
+
+        let stale = repo
+            .set_phase(&stale_driver, Phase::Succeeded)
+            .await
+            .unwrap();
+        assert!(stale.is_none(), "driver A's stale final transition loses");
+        let winner = repo
+            .set_phase(&driver_b, Phase::Succeeded)
+            .await
+            .unwrap()
+            .expect("driver B owns the final transition");
+        assert_eq!(winner.phase, Phase::Succeeded);
+
+        let stored = repo.get_operation(&op_id).await.unwrap().unwrap();
+        assert_eq!(stored.phase, Phase::Succeeded);
+        assert!(stored.lease_owner.is_none());
+    }
+}
