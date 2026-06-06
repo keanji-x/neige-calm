@@ -2,6 +2,29 @@
 -- table. Each pass is idempotent so test resets and partially-upgraded DBs
 -- can safely re-run the migration body.
 
+-- PR2a addendum: complete stale-active runtime rows whose backing terminal
+-- has already exited. Covers the "deploy PR1, terminal exits, then upgrade
+-- to PR2a" path where PR1 dual-write left rows in `starting` but no PR1
+-- completion path existed yet. Signalled exits -> 'failed'; clean exits ->
+-- 'exited'. Limited to terminal-backed runtimes.
+UPDATE runtimes
+SET
+  status = CASE
+    WHEN (SELECT COALESCE(t.signal_killed, 0) FROM terminals t WHERE t.id = runtimes.terminal_run_id) = 1
+      THEN 'failed'
+    ELSE 'exited'
+  END,
+  updated_at_ms = CAST(strftime('%s','now') AS INTEGER) * 1000,
+  completed_at_ms = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE
+  terminal_run_id IS NOT NULL
+  AND status IN ('starting', 'running', 'idle', 'turn_pending')
+  AND EXISTS (
+    SELECT 1 FROM terminals t
+    WHERE t.id = runtimes.terminal_run_id
+      AND (t.exit_code IS NOT NULL OR COALESCE(t.signal_killed, 0) = 1)
+  );
+
 INSERT INTO runtimes (
   id, card_id, kind, agent_provider, status, terminal_run_id,
   thread_id, session_id, active_turn_id, handle_state_json,

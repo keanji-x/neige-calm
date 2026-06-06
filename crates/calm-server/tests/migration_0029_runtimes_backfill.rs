@@ -133,6 +133,18 @@ async fn apply_sql(pool: &SqlitePool, name: &str, sql: &str) {
     }
 }
 
+async fn runtime_status_and_completed(pool: &SqlitePool, card_id: &str) -> (String, Option<i64>) {
+    let row = sqlx::query("SELECT status, completed_at_ms FROM runtimes WHERE card_id = ?1")
+        .bind(card_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    (
+        row.try_get::<String, _>("status").unwrap(),
+        row.try_get::<Option<i64>, _>("completed_at_ms").unwrap(),
+    )
+}
+
 async fn pool_staged_at_0027() -> SqlitePool {
     let unique = format!(
         "file:mig0029_{}?mode=memory&cache=shared",
@@ -181,7 +193,9 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('card-legacy-spec', 'wave-3', 'codex', 7.0, '{"terminal_id":"term-legacy-spec","codex_source":"legacy"}', 1800, 1800, 'spec', 0),
               ('card-codex-shared-worker', 'wave-2', 'codex', 8.0, '{"codex_source":"shared","appserver_sock":"/tmp/codex.sock"}', 1900, 1900, 'worker', 1),
               ('card-codex-shared-plain', 'wave-2', 'codex', 9.0, '{"codex_source":"shared"}', 2000, 2000, 'plain', 1),
-              ('card-claude-sessionless', 'wave-2', 'claude', 10.0, '{"terminal_id":"term-claude-sessionless"}', 2100, 2100, 'worker', 1)"#,
+              ('card-claude-sessionless', 'wave-2', 'claude', 10.0, '{"terminal_id":"term-claude-sessionless"}', 2100, 2100, 'worker', 1),
+              ('card-stale-clean-exit', 'wave-2', 'terminal', 11.0, '{"terminal_id":"term-stale-clean-exit"}', 2200, 2200, 'plain', 1),
+              ('card-stale-signal', 'wave-2', 'terminal', 12.0, '{"terminal_id":"term-stale-signal"}', 2300, 2300, 'plain', 1)"#,
     )
     .execute(pool)
     .await
@@ -198,7 +212,9 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('term-legacy-spec', 'card-legacy-spec', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1800, NULL, 0),
               ('term-codex-shared-worker', 'card-codex-shared-worker', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1900, NULL, 0),
               ('term-codex-shared-plain', 'card-codex-shared-plain', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2000, NULL, 0),
-              ('term-claude-sessionless', 'card-claude-sessionless', 'claude', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2100, NULL, 0)"#,
+              ('term-claude-sessionless', 'card-claude-sessionless', 'claude', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2100, NULL, 0),
+              ('term-stale-clean-exit', 'card-stale-clean-exit', 'bash', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2200, 0, 0),
+              ('term-stale-signal', 'card-stale-signal', 'bash', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2300, NULL, 1)"#,
     )
     .execute(pool)
     .await
@@ -230,7 +246,11 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
                lease_owner, lease_until_ms, created_at_ms, updated_at_ms, completed_at_ms)
            VALUES
               ('runtime-preexisting', 'card-preexisting', 'terminal', NULL, 'starting', 'term-preexisting',
-               NULL, NULL, NULL, NULL, NULL, NULL, 1600, 1600, NULL)"#,
+               NULL, NULL, NULL, NULL, NULL, NULL, 1600, 1600, NULL),
+              ('runtime-stale-clean-exit', 'card-stale-clean-exit', 'terminal', NULL, 'starting', 'term-stale-clean-exit',
+               NULL, NULL, NULL, NULL, NULL, NULL, 2200, 2200, NULL),
+              ('runtime-stale-signal', 'card-stale-signal', 'terminal', NULL, 'starting', 'term-stale-signal',
+               NULL, NULL, NULL, NULL, NULL, NULL, 2300, 2300, NULL)"#,
     )
     .execute(&pool)
     .await
@@ -239,7 +259,7 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
     apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
 
     let rows = sqlx::query(
-        r#"SELECT card_id, kind, agent_provider, status, terminal_run_id, thread_id, session_id
+        r#"SELECT card_id, kind, agent_provider, status, terminal_run_id, thread_id, session_id, completed_at_ms
            FROM runtimes
            ORDER BY card_id ASC"#,
     )
@@ -440,12 +460,50 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
         preexisting.try_get::<String, _>("status").unwrap(),
         "starting"
     );
-    assert_eq!(by_card.len(), 10);
+
+    let stale_clean = by_card
+        .get("card-stale-clean-exit")
+        .expect("stale clean-exit runtime");
+    assert_eq!(
+        stale_clean.try_get::<String, _>("status").unwrap(),
+        "exited"
+    );
+    let stale_clean_completed_at_ms = stale_clean
+        .try_get::<Option<i64>, _>("completed_at_ms")
+        .unwrap();
+    assert!(
+        stale_clean_completed_at_ms.is_some(),
+        "clean-exit stale runtime should be completed"
+    );
+
+    let stale_signal = by_card
+        .get("card-stale-signal")
+        .expect("stale signal runtime");
+    assert_eq!(
+        stale_signal.try_get::<String, _>("status").unwrap(),
+        "failed"
+    );
+    let stale_signal_completed_at_ms = stale_signal
+        .try_get::<Option<i64>, _>("completed_at_ms")
+        .unwrap();
+    assert!(
+        stale_signal_completed_at_ms.is_some(),
+        "signal-killed stale runtime should be completed"
+    );
+    assert_eq!(by_card.len(), 12);
 
     apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 10);
+    assert_eq!(count, 12);
+    assert_eq!(
+        runtime_status_and_completed(&pool, "card-stale-clean-exit").await,
+        ("exited".to_string(), stale_clean_completed_at_ms)
+    );
+    assert_eq!(
+        runtime_status_and_completed(&pool, "card-stale-signal").await,
+        ("failed".to_string(), stale_signal_completed_at_ms)
+    );
 }
