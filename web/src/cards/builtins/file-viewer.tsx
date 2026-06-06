@@ -37,6 +37,10 @@ const LazyDiffPane = lazy(() =>
   import('./file-viewer-codemirror').then((m) => ({ default: m.DiffPane })),
 );
 
+function createPaneRefSlot(): { current: HTMLElement | null } {
+  return { current: null };
+}
+
 const fileViewerPayloadSchema = z.object({
   path: z.string().min(1),
 });
@@ -128,9 +132,9 @@ function FileViewerCard({
   const { resolved: theme } = useTheme();
   const queryClient = useQueryClient();
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const [paneRefSlot] = useCardInstanceCtx().useInstance<{
+  const [paneRefSlot] = useCardInstanceCtx().useCardSlot<{
     current: HTMLElement | null;
-  }>('fvPaneRef', { current: null });
+  }>('fvPaneRef', createPaneRefSlot);
   const defaultNav = useMemo(() => seedNav(card.path), [card.path]);
   const navOverlayQueryKey = overlayStateQueryKey(
     'kernel',
@@ -656,9 +660,9 @@ export const FileViewerEntry: CardEntry<FileViewerCardData> = {
     };
   },
   wheelTarget(_card, instance) {
-    const [paneRefSlot] = instance.useInstance<{ current: HTMLElement | null }>(
+    const [paneRefSlot] = instance.useCardSlot<{ current: HTMLElement | null }>(
       'fvPaneRef',
-      { current: null },
+      createPaneRefSlot,
     );
     return { kind: 'native-scroll', ref: paneRefSlot };
   },

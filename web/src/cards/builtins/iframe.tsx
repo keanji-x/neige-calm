@@ -4,7 +4,7 @@ import * as api from '../../api/calm';
 import { useState } from '../../shared/state';
 import { dlog } from '../../util/debug';
 import { CardHead } from '../CardHead';
-import { useInstanceValue, type CardEntry } from '../registry';
+import { useCardSlotValue, type CardEntry } from '../registry';
 
 declare module '../../types' {
   interface WaveCardDataMap {
@@ -42,7 +42,7 @@ function IframeCard({
 }) {
   const [currentUrl, setCurrentUrl] = useState(card.url);
   const [draftUrl, setDraftUrl] = useState(card.url);
-  const epoch = useInstanceValue<number>('epoch', 0);
+  const epoch = useCardSlotValue<number>('epoch', 0);
   const pendingUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -137,7 +137,7 @@ export const IframeEntry: CardEntry<IframeCardData> = {
     },
   },
   actions(_card, ctx) {
-    const [, setEpoch] = ctx.useInstance<number>('epoch', 0);
+    const [, setEpoch] = ctx.useCardSlot<number>('epoch', 0);
     return [
       {
         kind: 'button',

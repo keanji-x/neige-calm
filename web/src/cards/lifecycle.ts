@@ -32,7 +32,7 @@ export type CardRuntimeCommand = { type: 'refresh' };
 export interface CardControllerContext<T extends WaveCardData = WaveCardData> {
   card: T;
   lifecycle: CardLifecycleStore;
-  instance: Pick<CardInstanceCtx, 'cardId' | 'deletable' | 'useInstance'>;
+  instance: Pick<CardInstanceCtx, 'cardId' | 'deletable' | 'useCardSlot'>;
   emit(cmd: CardRuntimeCommand): void;
 }
 
@@ -123,7 +123,7 @@ declare module './registry' {
     ): CardController;
     wheelTarget?(
       card: T extends WaveCardData ? T : WaveCardData,
-      instance: Pick<CardInstanceCtx, 'cardId' | 'useInstance'>,
+      instance: Pick<CardInstanceCtx, 'cardId' | 'useCardSlot'>,
     ): CardWheelTargetDecl | null;
     refreshBacking?: 'controller' | 'epoch' | 'none';
   }

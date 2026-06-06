@@ -130,7 +130,7 @@ describe('TerminalEntry.fromKernel', () => {
     const handle = { current: { marker: 'xterm' } };
     const instance = {
       cardId: 'card_1',
-      useInstance<S>(): [S, (next: S | ((prev: S) => S)) => void] {
+      useCardSlot<S>(): [S, (next: S | ((prev: S) => S)) => void] {
         return [handle as S, () => {}];
       },
     };

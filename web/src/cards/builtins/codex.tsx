@@ -123,6 +123,10 @@ type AgentCardLogoStyle = CSSProperties & {
   '--agent-card-logo-fg'?: string;
 };
 
+function createXtermRefSlot(): { current: XtermViewHandle | null } {
+  return { current: null };
+}
+
 function AgentCardLogo({
   provider,
   bg,
@@ -228,9 +232,9 @@ function CodexCardImpl({
   // XtermView callback re-emits on every state transition.
   const [role, setRole] = useState<Role | null>(null);
   const ctx = useCardInstanceCtx();
-  const [xtermRefSlot] = ctx.useInstance<{ current: XtermViewHandle | null }>(
+  const [xtermRefSlot] = ctx.useCardSlot<{ current: XtermViewHandle | null }>(
     'xtermRef',
-    { current: null },
+    createXtermRefSlot,
   );
   const setXtermRef = useCallback(
     (handle: XtermViewHandle | null) => {
@@ -246,7 +250,7 @@ function CodexCardImpl({
   // Fallback for tests that mount CodexCard outside CardInstanceProvider; production always has a provider.
   const [localResetOpen, setLocalResetOpen] = useState(false);
   const [resetOpen, setResetOpen] =
-    instanceCtx?.useInstance<boolean>('resetOpen', false) ?? [
+    instanceCtx?.useCardSlot<boolean>('resetOpen', false) ?? [
       localResetOpen,
       setLocalResetOpen,
     ];
@@ -501,11 +505,12 @@ function truncate(s: string, n: number): string {
 }
 
 function xtermRefSlotFor(
-  instance: Pick<CardInstanceCtx, 'cardId' | 'useInstance'>,
+  instance: Pick<CardInstanceCtx, 'cardId' | 'useCardSlot'>,
 ) {
-  return instance.useInstance<{ current: XtermViewHandle | null }>('xtermRef', {
-    current: null,
-  })[0];
+  return instance.useCardSlot<{ current: XtermViewHandle | null }>(
+    'xtermRef',
+    createXtermRefSlot,
+  )[0];
 }
 
 function specSessionActions(
@@ -513,7 +518,7 @@ function specSessionActions(
   ctx: CardInstanceCtx,
 ) {
   if (!canShowSpecSessionActions(card, ctx.deletable)) return [];
-  const [, setResetOpen] = ctx.useInstance<boolean>('resetOpen', false);
+  const [, setResetOpen] = ctx.useCardSlot<boolean>('resetOpen', false);
   return [
     {
       kind: 'imperative' as const,
