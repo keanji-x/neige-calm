@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { KernelCard } from '../../api/wire';
+
+const mocks = vi.hoisted(() => ({
+  dlog: vi.fn(),
+}));
 
 vi.mock('../../api/calm', async () => {
   const actual =
@@ -11,6 +15,10 @@ vi.mock('../../api/calm', async () => {
   };
 });
 
+vi.mock('../../util/debug', () => ({
+  dlog: mocks.dlog,
+}));
+
 import { IframeEntry } from './iframe';
 import * as api from '../../api/calm';
 import {
@@ -18,6 +26,10 @@ import {
   CardInstanceProvider,
   registerCard,
 } from '../registry';
+import {
+  __resetCardEntryResolverRegistryForTest,
+  resolveCardById,
+} from '../resolver';
 import type { IframeCardData } from './iframe';
 
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
@@ -40,7 +52,7 @@ function renderIframe(
 ) {
   const Component = IframeEntry.Component;
   return render(
-    <CardInstanceProvider cardId={card.id} deletable>
+    <CardInstanceProvider cardId={card.id} deletable card={card}>
       <Component card={card} onClose={opts.onClose} />
     </CardInstanceProvider>,
   );
@@ -86,9 +98,10 @@ describe('IframeEntry.fromKernel', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('registers epoch refresh backing without a controller', () => {
+  it('registers epoch refresh backing without onRefresh conflict', () => {
     __resetRegistryForTest();
     expect(() => registerCard(IframeEntry)).not.toThrow();
+    expect(IframeEntry.refreshBacking).toBe('epoch');
   });
 });
 
@@ -97,13 +110,16 @@ describe('IframeCard rendering', () => {
 
   beforeEach(() => {
     __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
     registerCard(IframeEntry);
+    mocks.dlog.mockClear();
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(api.updateCard).mockResolvedValue(makeKernelCard());
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    __resetCardEntryResolverRegistryForTest();
     warnSpy.mockRestore();
   });
 
@@ -283,5 +299,21 @@ describe('IframeCard rendering', () => {
       expect(after).not.toBe(before);
     });
     expect(after).toHaveAttribute('src', 'https://example.com');
+  });
+
+  it('logs visibility hints without returning onRefresh', async () => {
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+
+    await waitFor(() =>
+      expect(resolveCardById('iframe_1')?.writer).toBeDefined(),
+    );
+    act(() => {
+      resolveCardById('iframe_1')!.writer.setVisible(false);
+    });
+
+    expect(mocks.dlog).toHaveBeenCalledWith('IframeCard', 'visibility', {
+      cardId: 'iframe_1',
+      visible: false,
+    });
   });
 });

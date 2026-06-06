@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('../api/calm', async () => {
   const actual = await vi.importActual<typeof import('../api/calm')>(
@@ -37,6 +37,10 @@ import {
   useCardInstanceCtx,
   useCardLifecycle,
 } from './registry';
+import {
+  __resetCardEntryResolverRegistryForTest,
+  resolveCardById,
+} from './resolver';
 
 declare module '../types' {
   interface WaveCardDataMap {
@@ -143,6 +147,7 @@ function entry<T extends WaveCardData>(
 
 beforeEach(() => {
   __resetRegistryForTest();
+  __resetCardEntryResolverRegistryForTest();
   vi.clearAllMocks();
 });
 
@@ -434,6 +439,45 @@ describe('card controller lifecycle contract', () => {
         </>,
       ),
     ).not.toThrow();
+  });
+
+  it('exposes the lifecycle writer only through the host resolver', async () => {
+    let childLifecycle: ReturnType<typeof useCardLifecycle> | null = null;
+
+    function LifecycleProbe() {
+      childLifecycle = useCardLifecycle();
+      return <div>probe</div>;
+    }
+
+    registerCard(
+      entry<TestControllerEpochCardData>({
+        type: 'test-controller-epoch',
+        Component: LifecycleProbe,
+      }),
+    );
+
+    render(
+      <>
+        {renderCard({
+          type: 'test-controller-epoch',
+          id: 'card_lifecycle',
+        })}
+      </>,
+    );
+
+    await waitFor(() =>
+      expect(resolveCardById('card_lifecycle')?.writer).toBeDefined(),
+    );
+
+    const resolved = resolveCardById('card_lifecycle');
+    expect(resolved?.writer.setVisible).toEqual(expect.any(Function));
+    expect(resolved?.writer.setFocused).toEqual(expect.any(Function));
+    expect(childLifecycle).not.toBeNull();
+    if (!childLifecycle) throw new Error('LifecycleProbe did not render');
+    expect(Object.isFrozen(childLifecycle)).toBe(true);
+    expect('setVisible' in childLifecycle).toBe(false);
+    expect('setFocused' in childLifecycle).toBe(false);
+    expect(childLifecycle).not.toBe(resolved?.writer);
   });
 
   it('routes emitted refresh commands through the lifecycle epoch', () => {

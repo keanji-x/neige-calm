@@ -8,6 +8,8 @@ import type { ClaudeCardData, CodexCardData } from './codex';
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   resetSpecCard: vi.fn(),
+  dlog: vi.fn(),
+  xtermUnmount: vi.fn(),
 }));
 
 vi.mock('../../XtermView', async () => {
@@ -18,6 +20,7 @@ vi.mock('../../XtermView', async () => {
       ref: Ref<{ refresh(): void }>,
     ) => {
       React.useImperativeHandle(ref, () => ({ refresh: mocks.refresh }), []);
+      React.useEffect(() => () => mocks.xtermUnmount(), []);
       return React.createElement('div', {
         'data-testid': 'xterm-view-stub',
         'data-terminal-id': props.terminalId,
@@ -26,6 +29,10 @@ vi.mock('../../XtermView', async () => {
   );
   return { XtermView };
 });
+
+vi.mock('../../util/debug', () => ({
+  dlog: mocks.dlog,
+}));
 
 vi.mock('../../api/calm', () => ({
   getTerminalForCard: vi.fn().mockRejectedValue(new Error('no terminal seed')),
@@ -47,6 +54,10 @@ import {
   registerCard,
   useCardInstanceCtx,
 } from '../registry';
+import {
+  __resetCardEntryResolverRegistryForTest,
+  resolveCardById,
+} from '../resolver';
 
 const codexCard: CodexCardData = {
   type: 'codex',
@@ -116,10 +127,13 @@ function EmitRefreshButton() {
 describe('Codex spec-card refresh control', () => {
   beforeEach(() => {
     __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
     registerCard(CodexEntry);
     registerCard(ClaudeEntry);
     mocks.refresh.mockClear();
     mocks.resetSpecCard.mockReset();
+    mocks.dlog.mockClear();
+    mocks.xtermUnmount.mockClear();
   });
 
   it('renders Refresh terminal for a kernel-owned spec card', async () => {
@@ -240,6 +254,24 @@ describe('Codex spec-card refresh control', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'emit refresh' }));
 
     expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs visibility hints without tearing down XtermView', async () => {
+    renderAgentCard(codexCard, { deletable: false });
+
+    await screen.findByTestId('xterm-view-stub');
+    await waitFor(() =>
+      expect(resolveCardById('card_spec')?.writer).toBeDefined(),
+    );
+    act(() => {
+      resolveCardById('card_spec')!.writer.setVisible(false);
+    });
+
+    expect(mocks.dlog).toHaveBeenCalledWith('CodexCard', 'visibility', {
+      cardId: 'card_spec',
+      visible: false,
+    });
+    expect(mocks.xtermUnmount).not.toHaveBeenCalled();
   });
 
   it('opens Reset confirmation with Cancel focused', async () => {

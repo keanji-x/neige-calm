@@ -42,6 +42,7 @@ import { useTheme } from '../../app/theme';
 import { Icon } from '../../Icon';
 import { IconButton } from '../../pages/_shared';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
+import { dlog } from '../../util/debug';
 import { CardHead } from '../CardHead';
 import {
   useCardInstanceCtx,
@@ -556,7 +557,11 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
   refreshBacking: 'controller',
   createController(ctx) {
     const xtermRefSlot = xtermRefSlotFor(ctx.instance);
+    const cardId = ctx.card.id;
     return {
+      onVisibleChange(visible) {
+        dlog('CodexCard', 'visibility', { cardId, visible });
+      },
       onRefresh() {
         xtermRefSlot.current?.refresh();
       },

@@ -1,10 +1,18 @@
 import { useCallback } from 'react';
 import type { WaveCardData } from '../types';
 import type { CardInstanceCtx } from './registry';
+import type { CardLifecycleWriter } from './lifecycle';
+
+export type { CardLifecycleWriter } from './lifecycle';
 
 export interface CardEntryResolverValue {
   card: WaveCardData;
   instance: Pick<CardInstanceCtx, 'cardId' | 'useInstance'>;
+  /**
+   * Host-only lifecycle back-channel. Card children must keep using
+   * `useCardLifecycle()`, which exposes the frozen read-only store.
+   */
+  writer: CardLifecycleWriter;
 }
 
 export type ResolveCardById = (

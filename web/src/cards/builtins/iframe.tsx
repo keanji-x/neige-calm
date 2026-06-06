@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { z } from 'zod';
 import * as api from '../../api/calm';
 import { useState } from '../../shared/state';
+import { dlog } from '../../util/debug';
 import { CardHead } from '../CardHead';
 import { useInstanceValue, type CardEntry } from '../registry';
 
@@ -119,6 +120,13 @@ export const IframeEntry: CardEntry<IframeCardData> = {
   Component: IframeCard,
   defaultSize: { w: 6, h: 10, minW: 3, minH: 4 },
   refreshBacking: 'epoch',
+  createController({ card }) {
+    return {
+      onVisibleChange(visible) {
+        dlog('IframeCard', 'visibility', { cardId: card.id, visible });
+      },
+    };
+  },
   claim: { mode: 'exact', kind: 'iframe' },
   title: (card) => card.url,
   accessibleName: (card) => `Web page: ${card.url}`,

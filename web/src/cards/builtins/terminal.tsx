@@ -214,6 +214,13 @@ export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> =
   Component: TerminalCard,
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
   refreshBacking: 'none',
+  createController({ card }) {
+    return {
+      onVisibleChange(visible) {
+        dlog('TerminalCard', 'visibility', { cardId: card.id, visible });
+      },
+    };
+  },
   wheelTarget(_card, instance) {
     const [xtermRefSlot] = instance.useInstance<{
       current: XtermViewHandle | null;

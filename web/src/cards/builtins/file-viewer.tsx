@@ -16,6 +16,7 @@ import {
   useOverlayState,
 } from '../../hooks/useOverlayState';
 import { useState } from '../../shared/state';
+import { dlog } from '../../util/debug';
 
 declare module '../../types' {
   interface WaveCardDataMap {
@@ -647,6 +648,13 @@ export const FileViewerEntry: CardEntry<FileViewerCardData> = {
   Component: FileViewerCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 6 },
   refreshBacking: 'none',
+  createController({ card }) {
+    return {
+      onVisibleChange(visible) {
+        dlog('FileViewerCard', 'visibility', { cardId: card.id, visible });
+      },
+    };
+  },
   wheelTarget(_card, instance) {
     const [paneRefSlot] = instance.useInstance<{ current: HTMLElement | null }>(
       'fvPaneRef',

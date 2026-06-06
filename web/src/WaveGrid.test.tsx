@@ -14,10 +14,17 @@
 // `onLayoutChange` callback. The real RGL is a heavy DOM library that
 // brings nothing to a position-persistence assertion.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, waitFor, cleanup } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  act,
+  fireEvent,
+  render,
+  waitFor,
+  cleanup,
+  screen,
+} from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 
 vi.mock('./api/calm', () => ({
   listOverlays: vi.fn(),
@@ -58,6 +65,54 @@ import * as api from './api/calm';
 import { WaveGrid } from './WaveGrid';
 import type { WaveCardSlot, WaveCardData } from './types';
 import type { KernelOverlay } from './api/wire';
+import {
+  __resetRegistryForTest,
+  registerCard,
+  type CardEntry,
+} from './cards/registry';
+import { __resetCardEntryResolverRegistryForTest } from './cards/resolver';
+
+declare module './types' {
+  interface WaveCardDataMap {
+    'grid-visibility-test': GridVisibilityCardData;
+  }
+}
+
+interface GridVisibilityCardData {
+  type: 'grid-visibility-test';
+  id: string;
+}
+
+const originalIntersectionObserver = globalThis.IntersectionObserver;
+
+class FakeIntersectionObserver {
+  static instances: FakeIntersectionObserver[] = [];
+
+  private readonly callback: IntersectionObserverCallback;
+  observed = new Set<Element>();
+  observe = vi.fn((target: Element) => {
+    this.observed.add(target);
+  });
+  unobserve = vi.fn((target: Element) => {
+    this.observed.delete(target);
+  });
+  disconnect = vi.fn(() => {
+    this.observed.clear();
+  });
+  takeRecords = vi.fn(() => []);
+
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+    FakeIntersectionObserver.instances.push(this);
+  }
+
+  fire(entries: Array<Partial<IntersectionObserverEntry> & { target: Element }>) {
+    this.callback(
+      entries as IntersectionObserverEntry[],
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
 
 function card(
   id: string,
@@ -73,6 +128,50 @@ function card(
   // (`undefined`) means "user-deletable" per WaveGrid's
   // `card.deletable !== false` check.
   return { kind: 'card', card: data, deletable: opts.deletable };
+}
+
+function visibilityCard(id: string): WaveCardSlot {
+  return {
+    kind: 'card',
+    card: { type: 'grid-visibility-test', id },
+  };
+}
+
+function registerVisibilityEntry({
+  onVisibleChange = vi.fn(),
+  onFocusChange = vi.fn(),
+  onUnmount = vi.fn(),
+}: {
+  onVisibleChange?: (visible: boolean) => void;
+  onFocusChange?: (focused: boolean) => void;
+  onUnmount?: () => void;
+}) {
+  function VisibilityCard() {
+    useEffect(() => () => onUnmount());
+    return (
+      <div data-testid="grid-visibility-card">
+        <button type="button" aria-label="Head focus target">
+          head
+        </button>
+        <button type="button" aria-label="Body focus target">
+          body
+        </button>
+      </div>
+    );
+  }
+
+  registerCard({
+    type: 'grid-visibility-test',
+    Component: VisibilityCard,
+    defaultSize: { w: 4, h: 3, minW: 2, minH: 2 },
+    title: () => 'visibility',
+    accessibleName: () => 'Visibility test card',
+    create: { mode: 'kernel-minted-only' },
+    createController: () => ({
+      onVisibleChange,
+      onFocusChange,
+    }),
+  } as CardEntry<GridVisibilityCardData>);
 }
 
 function layoutOverlay(
@@ -110,9 +209,26 @@ function Wrapper({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetRegistryForTest();
+  __resetCardEntryResolverRegistryForTest();
+  FakeIntersectionObserver.instances = [];
+  globalThis.IntersectionObserver =
+    FakeIntersectionObserver as unknown as typeof IntersectionObserver;
   grid.layout = [];
   grid.onLayoutChange = null;
   cleanup();
+});
+
+afterEach(() => {
+  if (originalIntersectionObserver) {
+    globalThis.IntersectionObserver = originalIntersectionObserver;
+  } else {
+    const mutableGlobal = globalThis as {
+      IntersectionObserver?: typeof IntersectionObserver;
+    };
+    delete mutableGlobal.IntersectionObserver;
+  }
+  __resetCardEntryResolverRegistryForTest();
 });
 
 describe('WaveGrid — overlay-backed layout', () => {
@@ -235,6 +351,81 @@ describe('WaveGrid — overlay-backed layout', () => {
     );
     const closeButtons = container.querySelectorAll('button.card-grid-close');
     expect(closeButtons.length).toBe(1);
+  });
+
+  it('routes shell intersection changes to the card controller without unmounting', async () => {
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const onVisibleChange = vi.fn();
+    const onUnmount = vi.fn();
+    registerVisibilityEntry({ onVisibleChange, onUnmount });
+
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveGrid
+          waveId="w1"
+          cards={[visibilityCard('grid_visibility')]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    const shell = screen
+      .getByTestId('grid-visibility-card')
+      .closest<HTMLElement>('[data-card-id]');
+    expect(shell).not.toBeNull();
+    await waitFor(() =>
+      expect(FakeIntersectionObserver.instances[0]?.observe).toHaveBeenCalledWith(
+        shell,
+      ),
+    );
+
+    act(() => {
+      FakeIntersectionObserver.instances[0]!.fire([
+        { target: shell!, isIntersecting: false },
+      ]);
+    });
+    expect(onVisibleChange).toHaveBeenCalledWith(false);
+    expect(onUnmount).not.toHaveBeenCalled();
+    expect(screen.getByTestId('grid-visibility-card')).toBeInTheDocument();
+
+    act(() => {
+      FakeIntersectionObserver.instances[0]!.fire([
+        { target: shell!, isIntersecting: true },
+      ]);
+    });
+    expect(onVisibleChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('routes focus into, within, and out of a card shell', async () => {
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const onFocusChange = vi.fn();
+    registerVisibilityEntry({ onFocusChange });
+    const outside = document.createElement('button');
+    document.body.append(outside);
+
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveGrid
+          waveId="w1"
+          cards={[visibilityCard('grid_focus')]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    const head = screen.getByRole('button', { name: 'Head focus target' });
+    const body = screen.getByRole('button', { name: 'Body focus target' });
+    await waitFor(() => expect(FakeIntersectionObserver.instances[0]).toBeDefined());
+
+    fireEvent.focusIn(head);
+    await waitFor(() => expect(onFocusChange).toHaveBeenCalledWith(true));
+
+    fireEvent.focusOut(head, { relatedTarget: body });
+    fireEvent.focusIn(body, { relatedTarget: head });
+    expect(onFocusChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.focusOut(body, { relatedTarget: outside });
+    await waitFor(() => expect(onFocusChange).toHaveBeenLastCalledWith(false));
   });
 
   it('drag end fires a single POST with the new positions', async () => {
