@@ -41,6 +41,10 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, WaveId};
 use crate::model::*;
+use crate::runtime_repo::{
+    AgentProvider, CardRuntime, Result as RuntimeResult, RunStatus, RuntimeId, RuntimeInit,
+    RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution, Tx as RuntimeTx,
+};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
 };
@@ -1131,6 +1135,27 @@ pub async fn card_with_terminal_create_tx(
     )
     .await?;
 
+    let runtime_init = RuntimeInit {
+        id: new_id(),
+        card_id: card.id.to_string(),
+        kind: RuntimeKind::Terminal,
+        agent_provider: None,
+        status: RunStatus::Starting,
+        terminal_run_id: Some(term.id.clone()),
+        thread_id: None,
+        session_id: None,
+        active_turn_id: None,
+        handle_state_json: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        now_ms: now_ms(),
+    };
+    if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
+        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+    } else {
+        runtime_start_tx(tx, runtime_init).await?;
+    }
+
     Ok((card, term))
 }
 
@@ -1180,9 +1205,9 @@ pub async fn card_with_terminal_rollback_tx(
     Ok(())
 }
 
-/// Atomically create a `codex`-kind card AND its associated terminal row
-/// inside a single transaction, stamping `terminal_id` (+ optional `cwd`)
-/// onto the card's payload before returning.
+/// Atomically create a `codex`-kind card, its associated terminal row, and
+/// the initial `Starting` runtime row inside a single transaction, stamping
+/// `terminal_id` (+ optional `cwd`) onto the card's payload before returning.
 ///
 /// Twin of [`card_with_terminal_create_tx`] for the codex-card flow (#117).
 /// Differs in two places from the terminal helper:
@@ -1345,6 +1370,23 @@ pub async fn card_with_codex_create_tx(
         None
     };
 
+    let runtime_init = RuntimeInit {
+        id: new_id(),
+        card_id: card.id.to_string(),
+        kind: RuntimeKind::CodexCard,
+        agent_provider: Some(AgentProvider::Codex),
+        status: RunStatus::Starting,
+        terminal_run_id: Some(term.id.clone()),
+        thread_id: None,
+        session_id: None,
+        active_turn_id: None,
+        handle_state_json: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        now_ms: now_ms(),
+    };
+    runtime_start_tx(tx, runtime_init).await?;
+
     Ok((card, term, mcp_token))
 }
 
@@ -1413,7 +1455,7 @@ pub async fn card_with_claude_create_tx(
     );
     payload.insert(
         "claude_session_id".into(),
-        serde_json::Value::String(claude_session_id),
+        serde_json::Value::String(claude_session_id.clone()),
     );
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));
@@ -1441,6 +1483,27 @@ pub async fn card_with_claude_create_tx(
         },
     )
     .await?;
+
+    let runtime_init = RuntimeInit {
+        id: new_id(),
+        card_id: card.id.to_string(),
+        kind: RuntimeKind::ClaudeCard,
+        agent_provider: Some(AgentProvider::Claude),
+        status: RunStatus::Starting,
+        terminal_run_id: Some(term.id.clone()),
+        thread_id: None,
+        session_id: Some(claude_session_id),
+        active_turn_id: None,
+        handle_state_json: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        now_ms: now_ms(),
+    };
+    if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
+        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+    } else {
+        runtime_start_tx(tx, runtime_init).await?;
+    }
 
     Ok((card, term))
 }
@@ -1511,6 +1574,453 @@ pub async fn card_codex_thread_delete_by_card_tx(
         .bind(card_id)
         .execute(&mut **tx)
         .await?;
+    Ok(())
+}
+
+fn runtime_kind_to_db(kind: &RuntimeKind) -> &'static str {
+    match kind {
+        RuntimeKind::Terminal => "terminal",
+        RuntimeKind::CodexCard => "codex",
+        RuntimeKind::ClaudeCard => "claude",
+        RuntimeKind::SharedSpec => "shared-spec",
+    }
+}
+
+fn runtime_kind_from_db(value: &str) -> RuntimeResult<RuntimeKind> {
+    match value {
+        "terminal" => Ok(RuntimeKind::Terminal),
+        "codex" => Ok(RuntimeKind::CodexCard),
+        "claude" => Ok(RuntimeKind::ClaudeCard),
+        "shared-spec" => Ok(RuntimeKind::SharedSpec),
+        other => Err(RuntimeRepoError::Message {
+            message: format!("unknown runtime kind {other:?}"),
+        }),
+    }
+}
+
+fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
+    match provider {
+        AgentProvider::Codex => "codex",
+        AgentProvider::Claude => "claude",
+    }
+}
+
+fn agent_provider_from_db(value: &str) -> RuntimeResult<AgentProvider> {
+    match value {
+        "codex" => Ok(AgentProvider::Codex),
+        "claude" => Ok(AgentProvider::Claude),
+        other => Err(RuntimeRepoError::Message {
+            message: format!("unknown runtime agent provider {other:?}"),
+        }),
+    }
+}
+
+fn run_status_to_db(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Starting => "starting",
+        RunStatus::Running => "running",
+        RunStatus::Idle => "idle",
+        RunStatus::TurnPending => "turn_pending",
+        RunStatus::Failed => "failed",
+        RunStatus::Exited => "exited",
+        RunStatus::Superseded => "superseded",
+    }
+}
+
+fn run_status_from_db(value: &str) -> RuntimeResult<RunStatus> {
+    match value {
+        "starting" => Ok(RunStatus::Starting),
+        "running" => Ok(RunStatus::Running),
+        "idle" => Ok(RunStatus::Idle),
+        "turn_pending" => Ok(RunStatus::TurnPending),
+        "failed" => Ok(RunStatus::Failed),
+        "exited" => Ok(RunStatus::Exited),
+        "superseded" => Ok(RunStatus::Superseded),
+        other => Err(RuntimeRepoError::Message {
+            message: format!("unknown runtime status {other:?}"),
+        }),
+    }
+}
+
+fn runtime_message(message: impl Into<String>) -> RuntimeRepoError {
+    RuntimeRepoError::Message {
+        message: message.into(),
+    }
+}
+
+fn runtime_status_transition_allowed(from: &RunStatus, to: &RunStatus) -> bool {
+    match from {
+        RunStatus::Starting => matches!(
+            to,
+            RunStatus::Running | RunStatus::Idle | RunStatus::TurnPending | RunStatus::Failed
+        ),
+        RunStatus::Running => matches!(to, RunStatus::Idle | RunStatus::Failed | RunStatus::Exited),
+        RunStatus::Idle => matches!(
+            to,
+            RunStatus::Running | RunStatus::Failed | RunStatus::Exited
+        ),
+        RunStatus::TurnPending => matches!(to, RunStatus::Running | RunStatus::Failed),
+        RunStatus::Failed | RunStatus::Exited | RunStatus::Superseded => false,
+    }
+}
+
+fn ensure_runtime_status_transition(
+    id: &RuntimeId,
+    from: &RunStatus,
+    to: &RunStatus,
+) -> RuntimeResult<()> {
+    if runtime_status_transition_allowed(from, to) {
+        Ok(())
+    } else {
+        Err(RuntimeRepoError::IllegalStatusTransition {
+            id: id.clone(),
+            attempted: to.clone(),
+        })
+    }
+}
+
+async fn runtime_current_status_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+) -> RuntimeResult<RunStatus> {
+    let row = sqlx::query("SELECT status FROM runtimes WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(row) = row else {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    };
+    run_status_from_db(row.try_get::<String, _>("status")?.as_str())
+}
+
+fn card_runtime_from_row(row: &sqlx::sqlite::SqliteRow) -> RuntimeResult<CardRuntime> {
+    let kind = runtime_kind_from_db(row.try_get::<String, _>("kind")?.as_str())?;
+    let agent_provider = row
+        .try_get::<Option<String>, _>("agent_provider")?
+        .as_deref()
+        .map(agent_provider_from_db)
+        .transpose()?;
+    let status = run_status_from_db(row.try_get::<String, _>("status")?.as_str())?;
+    let handle_state_json = row
+        .try_get::<Option<String>, _>("handle_state_json")?
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?;
+
+    Ok(CardRuntime {
+        id: row.try_get("id")?,
+        card_id: row.try_get("card_id")?,
+        kind,
+        agent_provider,
+        status,
+        terminal_run_id: row.try_get("terminal_run_id")?,
+        terminal_ref: None,
+        thread_id: row.try_get("thread_id")?,
+        session_id: row.try_get("session_id")?,
+        active_turn_id: row.try_get("active_turn_id")?,
+        handle_state_json,
+        lease_owner: row.try_get("lease_owner")?,
+        lease_until_ms: row.try_get("lease_until_ms")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+        completed_at_ms: row.try_get("completed_at_ms")?,
+    })
+}
+
+async fn runtime_get_by_id_from_pool(
+    pool: &SqlitePool,
+    id: &RuntimeId,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE id = ?1"#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+async fn runtime_get_active_for_card_from_pool(
+    pool: &SqlitePool,
+    card_id: &str,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE card_id = ?1
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+    )
+    .bind(card_id)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+pub async fn runtime_get_by_id_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE id = ?1"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+pub async fn runtime_get_active_for_card_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE card_id = ?1
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+    )
+    .bind(card_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+pub async fn runtime_start_tx(
+    tx: &mut RuntimeTx<'_>,
+    init: RuntimeInit,
+) -> RuntimeResult<CardRuntime> {
+    let kind = runtime_kind_to_db(&init.kind);
+    let agent_provider = init.agent_provider.as_ref().map(agent_provider_to_db);
+    let status = run_status_to_db(&init.status);
+    let handle_state_json = init
+        .handle_state_json
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+
+    sqlx::query(
+        r#"INSERT INTO runtimes (
+               id, card_id, kind, agent_provider, status, terminal_run_id,
+               thread_id, session_id, active_turn_id, handle_state_json,
+               lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+               completed_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL)"#,
+    )
+    .bind(&init.id)
+    .bind(&init.card_id)
+    .bind(kind)
+    .bind(agent_provider)
+    .bind(status)
+    .bind(&init.terminal_run_id)
+    .bind(&init.thread_id)
+    .bind(&init.session_id)
+    .bind(&init.active_turn_id)
+    .bind(&handle_state_json)
+    .bind(&init.lease_owner)
+    .bind(init.lease_until_ms)
+    .bind(init.now_ms)
+    .execute(&mut **tx)
+    .await?;
+
+    runtime_get_by_id_tx(tx, &init.id)
+        .await?
+        .ok_or_else(|| runtime_message(format!("runtime {} missing after insert", init.id)))
+}
+
+pub async fn runtime_supersede_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    new_init: RuntimeInit,
+) -> RuntimeResult<CardRuntime> {
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET status = 'superseded',
+                  updated_at_ms = ?1,
+                  completed_at_ms = COALESCE(completed_at_ms, ?1)
+            WHERE id = ?2
+              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(new_init.now_ms)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!(
+            "active runtime {id} not found for supersede"
+        )));
+    }
+
+    runtime_start_tx(tx, new_init).await
+}
+
+pub async fn runtime_set_status_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    status: RunStatus,
+) -> RuntimeResult<()> {
+    if status == RunStatus::Superseded {
+        return Err(RuntimeRepoError::IllegalStatusTransition {
+            id: id.clone(),
+            attempted: status,
+        });
+    }
+
+    let current = runtime_current_status_tx(tx, id).await?;
+    ensure_runtime_status_transition(id, &current, &status)?;
+
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET status = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(run_status_to_db(&status))
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    }
+    Ok(())
+}
+
+pub async fn runtime_bind_attribution_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    attr: ThreadAttribution,
+) -> RuntimeResult<()> {
+    if &attr.runtime_id != id {
+        return Err(runtime_message(format!(
+            "runtime attribution id mismatch: arg={id}, attr={}",
+            attr.runtime_id
+        )));
+    }
+
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET agent_provider = ?1,
+                  thread_id = ?2,
+                  session_id = ?3,
+                  active_turn_id = ?4,
+                  updated_at_ms = ?5
+            WHERE id = ?6"#,
+    )
+    .bind(agent_provider_to_db(&attr.provider))
+    .bind(&attr.thread_id)
+    .bind(&attr.session_id)
+    .bind(&attr.active_turn_id)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    }
+    Ok(())
+}
+
+pub async fn runtime_set_handle_state_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    state: Option<serde_json::Value>,
+) -> RuntimeResult<()> {
+    let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET handle_state_json = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(&state_text)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    }
+    Ok(())
+}
+
+pub async fn runtime_set_active_turn_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    turn_id: Option<&str>,
+) -> RuntimeResult<()> {
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET active_turn_id = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(turn_id)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    }
+    Ok(())
+}
+
+pub async fn runtime_complete_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    terminal_status: RunStatus,
+) -> RuntimeResult<()> {
+    if !matches!(terminal_status, RunStatus::Failed | RunStatus::Exited) {
+        return Err(RuntimeRepoError::IllegalStatusTransition {
+            id: id.clone(),
+            attempted: terminal_status,
+        });
+    }
+
+    let current = runtime_current_status_tx(tx, id).await?;
+    ensure_runtime_status_transition(id, &current, &terminal_status)?;
+
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET status = ?1,
+                  updated_at_ms = ?2,
+                  completed_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(run_status_to_db(&terminal_status))
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    }
     Ok(())
 }
 
@@ -2291,6 +2801,87 @@ impl RepoRead for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+}
+
+#[async_trait]
+impl RuntimeRepo for SqlxRepo {
+    async fn runtime_get_active_for_card(
+        &self,
+        card_id: &crate::runtime_repo::CardId,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        runtime_get_active_for_card_from_pool(&self.pool, card_id).await
+    }
+
+    async fn runtime_get_by_id(&self, id: &RuntimeId) -> RuntimeResult<Option<CardRuntime>> {
+        runtime_get_by_id_from_pool(&self.pool, id).await
+    }
+
+    async fn runtime_start_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        init: RuntimeInit,
+    ) -> RuntimeResult<CardRuntime> {
+        runtime_start_tx(tx, init).await
+    }
+
+    async fn runtime_supersede_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        id: &RuntimeId,
+        new_init: RuntimeInit,
+    ) -> RuntimeResult<CardRuntime> {
+        runtime_supersede_tx(tx, id, new_init).await
+    }
+
+    async fn runtime_set_status_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        id: &RuntimeId,
+        status: RunStatus,
+    ) -> RuntimeResult<()> {
+        runtime_set_status_tx(tx, id, status).await
+    }
+
+    async fn runtime_bind_attribution_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        id: &RuntimeId,
+        attr: ThreadAttribution,
+    ) -> RuntimeResult<()> {
+        runtime_bind_attribution_tx(tx, id, attr).await
+    }
+
+    async fn runtime_set_handle_state_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        id: &RuntimeId,
+        state: Option<serde_json::Value>,
+    ) -> RuntimeResult<()> {
+        runtime_set_handle_state_tx(tx, id, state).await
+    }
+
+    async fn runtime_set_active_turn_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        id: &RuntimeId,
+        turn_id: Option<&str>,
+    ) -> RuntimeResult<()> {
+        runtime_set_active_turn_tx(tx, id, turn_id).await
+    }
+
+    async fn runtime_complete_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        id: &RuntimeId,
+        terminal_status: RunStatus,
+    ) -> RuntimeResult<()> {
+        runtime_complete_tx(tx, id, terminal_status).await
+    }
+
+    async fn runtimes_recover_orphans_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
+        // PR1: scaffolding; real recovery wired in a later PR.
+        Ok(vec![])
     }
 }
 

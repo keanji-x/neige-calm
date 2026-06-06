@@ -74,7 +74,8 @@ use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
     card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
-    card_with_terminal_rollback_tx,
+    card_with_terminal_rollback_tx, runtime_bind_attribution_tx, runtime_get_active_for_card_tx,
+    runtime_set_status_tx,
 };
 use crate::db::{Repo, RouteRepo};
 use crate::db::{write_in_tx_typed, write_with_event_typed};
@@ -88,6 +89,7 @@ use crate::model::{CardPatch, CardRole};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_with_parts;
+use crate::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::spec_card::build_codex_env_map;
 use crate::spec_push::SpecPushRegistry;
@@ -2684,7 +2686,7 @@ async fn persist_shared_worker_runtime_fields(
             );
             map.insert(
                 "codex_thread_id".into(),
-                serde_json::Value::String(thread_id_for_tx),
+                serde_json::Value::String(thread_id_for_tx.clone()),
             );
             map.insert(
                 "appserver_sock".into(),
@@ -2702,6 +2704,26 @@ async fn persist_shared_worker_runtime_fields(
                 },
             )
             .await?;
+            let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::Internal(format!(
+                        "worker card {card_id_for_tx} has no active runtime to bind"
+                    ))
+                })?;
+            runtime_bind_attribution_tx(
+                tx,
+                &runtime.id,
+                ThreadAttribution {
+                    runtime_id: runtime.id.clone(),
+                    provider: AgentProvider::Codex,
+                    thread_id: Some(thread_id_for_tx),
+                    session_id: None,
+                    active_turn_id: None,
+                },
+            )
+            .await?;
+            runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
             Ok(updated)
         })
     })

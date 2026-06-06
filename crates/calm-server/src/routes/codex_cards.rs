@@ -5,12 +5,12 @@
 //! empty payload) followed by `POST /api/cards/:id/codex` (spawn PTY +
 //! stamp `terminal_id`) — into a single endpoint:
 //!
-//! 1. Inside one DB transaction, `card_with_codex_create_tx` writes both
-//!    the `codex`-kind card AND the linked `terminal` row, stamping
-//!    `{schemaVersion, terminal_id, cwd?}` onto the card payload. The
-//!    transaction also persists the `card.added` event with the final
-//!    payload, so a single broadcast carries the fully-formed card to
-//!    peers — no `card.updated` follow-up, no intermediate
+//! 1. Inside one DB transaction, `card_with_codex_create_tx` writes the
+//!    `codex`-kind card, linked `terminal` row, and initial `Starting`
+//!    runtime row, stamping `{schemaVersion, terminal_id, cwd?}` onto the
+//!    card payload. The transaction also persists the `card.added` event
+//!    with the final payload, so a single broadcast carries the fully-formed
+//!    card to peers — no `card.updated` follow-up, no intermediate
 //!    `payload=null` flash for the renderer's "Codex is starting…"
 //!    placeholder to react to.
 //! 2. After commit, the handler starts the terminal renderer via the same
@@ -25,7 +25,10 @@
 
 use crate::actor::Actor;
 use crate::codex_appserver::{InputItem, Notification};
-use crate::db::sqlite::{card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx};
+use crate::db::sqlite::{
+    card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
+    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_set_status_tx,
+};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
@@ -34,6 +37,7 @@ use crate::pending_codex_threads::{PendingEntry, card_payload_clear_pending_stat
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_for_route;
+use crate::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use axum::{
     Json, Router,
@@ -383,6 +387,26 @@ pub(crate) async fn create_codex_card(
                         Some(wave_id_for_tx.as_str()),
                     )
                     .await?;
+                    let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                        .await?
+                        .ok_or_else(|| {
+                            CalmError::Internal(format!(
+                                "codex card {card_id_for_tx} has no active runtime to bind"
+                            ))
+                        })?;
+                    runtime_bind_attribution_tx(
+                        tx,
+                        &runtime.id,
+                        ThreadAttribution {
+                            runtime_id: runtime.id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id_for_tx.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await?;
+                    runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
                     let card = card_update_tx(
                         tx,
                         &card_id_for_tx,
@@ -447,6 +471,14 @@ pub(crate) async fn create_codex_card(
             &s.write,
             move |tx| {
                 Box::pin(async move {
+                    let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                        .await?
+                        .ok_or_else(|| {
+                            CalmError::Internal(format!(
+                                "codex card {card_id_for_tx} has no active runtime to mark pending"
+                            ))
+                        })?;
+                    runtime_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
                     let card = card_update_tx(
                         tx,
                         &card_id_for_tx,

@@ -14,12 +14,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::db::sqlite::{card_codex_thread_upsert_tx, card_update_tx};
+use crate::db::sqlite::{
+    card_codex_thread_upsert_tx, card_update_tx, runtime_bind_attribution_tx, runtime_complete_tx,
+    runtime_get_active_for_card_tx, runtime_set_status_tx,
+};
 use crate::db::{Repo, RepoEventWrite, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
 use crate::model::{CardPatch, CardRole};
+use crate::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -346,6 +350,23 @@ impl PendingThreadStartRegistry {
                         wave_id_for_tx.as_deref(),
                     )
                     .await?;
+                    if let Some(runtime) =
+                        runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
+                    {
+                        runtime_bind_attribution_tx(
+                            tx,
+                            &runtime.id,
+                            ThreadAttribution {
+                                runtime_id: runtime.id.clone(),
+                                provider: AgentProvider::Codex,
+                                thread_id: Some(thread_id_for_tx.clone()),
+                                session_id: None,
+                                active_turn_id: None,
+                            },
+                        )
+                        .await?;
+                        runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                    }
                     let card = card_update_tx(
                         tx,
                         &card_id_for_tx,
@@ -402,6 +423,9 @@ pub(crate) async fn card_payload_clear_pending_status(
         &write,
         move |tx| {
             Box::pin(async move {
+                if let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? {
+                    runtime_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
+                }
                 let card = card_update_tx(
                     tx,
                     &card_id_for_tx,
