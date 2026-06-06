@@ -441,6 +441,62 @@ async fn runtime_start_tx_shared_spec_thread_present_running() {
 }
 
 #[tokio::test]
+async fn runtime_shared_spec_reset_supersedes_active_runtime() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut first_init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::SharedSpec,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    first_init.thread_id = Some("T1".into());
+    let mut second_init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::SharedSpec,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    second_init.thread_id = Some("T2".into());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let first = runtime_start_tx(&mut tx, first_init).await.unwrap();
+    let second = runtime_supersede_tx(&mut tx, &first.id, second_init)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let old = repo
+        .runtime_get_by_id(&first.id)
+        .await
+        .unwrap()
+        .expect("old runtime");
+    assert_eq!(old.status, RunStatus::Superseded);
+    assert_eq!(old.thread_id.as_deref(), Some("T1"));
+
+    let active = repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime");
+    assert_eq!(active.id, second.id);
+    assert_eq!(active.kind, RuntimeKind::SharedSpec);
+    assert_eq!(active.status, RunStatus::Running);
+    assert_eq!(active.thread_id.as_deref(), Some("T2"));
+
+    let active_count: (i64,) = sqlx::query_as(
+        r#"SELECT COUNT(*) FROM runtimes
+           WHERE card_id = ?1
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(card.id.as_str())
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(active_count.0, 1);
+}
+
+#[tokio::test]
 async fn runtime_start_tx_shared_spec_absent_turn_pending() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;

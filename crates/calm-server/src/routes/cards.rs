@@ -14,18 +14,18 @@ use crate::codex_appserver::{InputItem, Notification};
 use crate::db::RepoRead;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx, card_update_tx,
-    terminal_delete_tx,
+    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx, terminal_delete_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::new_id;
-use crate::model::{Card, CardPatch, CardRole, NewCard};
+use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::waves::{
     await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
 };
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -868,7 +868,7 @@ async fn persist_shared_reset_runtime_fields(
                 };
                 map.insert(
                     "codex_thread_id".into(),
-                    serde_json::Value::String(thread_id_for_tx),
+                    serde_json::Value::String(thread_id_for_tx.clone()),
                 );
                 map.insert(
                     "codex_source".into(),
@@ -879,6 +879,27 @@ async fn persist_shared_reset_runtime_fields(
                 map.remove("appserver_start_time");
                 map.remove("appserver_boot_id");
                 map.remove("appserver_needs_initial_prompt");
+                let runtime_init = RuntimeInit {
+                    id: new_id(),
+                    card_id: card_id_for_tx.clone(),
+                    kind: RuntimeKind::SharedSpec,
+                    agent_provider: Some(AgentProvider::Codex),
+                    status: RunStatus::Running,
+                    terminal_run_id: None,
+                    thread_id: Some(thread_id_for_tx.clone()),
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: None,
+                    lease_owner: None,
+                    lease_until_ms: None,
+                    now_ms: now_ms(),
+                };
+                if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
+                {
+                    runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                } else {
+                    runtime_start_tx(tx, runtime_init).await?;
+                }
                 let card = card_update_tx(
                     tx,
                     &card_id_for_tx,
