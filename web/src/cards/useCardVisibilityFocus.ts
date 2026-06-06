@@ -63,7 +63,7 @@ export function useCardVisibilityFocus(
             resolveCardById(cardId)?.writer.setVisible(entry.isIntersecting);
           }
         },
-        { root: scrollRoot, threshold: 0 },
+        { root: null, threshold: 0 },
       );
 
       for (const shell of scrollRoot.querySelectorAll<HTMLElement>(
