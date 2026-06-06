@@ -30,7 +30,7 @@ use crate::actor::Actor;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
-use crate::state::AppState;
+use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -119,7 +119,7 @@ impl HookProvider {
 /// require the middleware to admit `kernel`/`ai:codex` from this path,
 /// which conflicts with its "reserved namespace" gate.)
 pub(crate) async fn ingest_hook(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     _actor: Actor,
     Query(q): Query<IngestQuery>,
     Json(payload): Json<Value>,
@@ -130,7 +130,7 @@ pub(crate) async fn ingest_hook(
 
 #[allow(deprecated)]
 pub(crate) async fn ingest_provider_hook(
-    s: &AppState,
+    s: &RouteState,
     card_id_str: String,
     payload: Value,
     provider: HookProvider,
@@ -174,8 +174,8 @@ pub(crate) async fn ingest_provider_hook(
             scope,
             None,
             &s.events,
-            s.write().role_cache(),
-            s.write().cove_cache(),
+            s.write.role_cache(),
+            s.write.cove_cache(),
             provider.event(card_id_typed, kind, payload),
         )
         .await?;

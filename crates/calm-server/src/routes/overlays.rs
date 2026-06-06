@@ -15,7 +15,7 @@ use crate::db::write_with_event_typed;
 use crate::error::{ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::model::{NewOverlay, Overlay};
-use crate::state::AppState;
+use crate::state::{AppState, RouteState};
 use crate::validation::{
     OVERLAY_ENTITY_SCOPE_REGISTRY, should_skip_overlay, validate_overlay_payload,
 };
@@ -68,7 +68,7 @@ pub struct OverlayQuery {
     ),
 )]
 pub(crate) async fn list_overlays(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Query(q): Query<OverlayQuery>,
 ) -> Result<Json<Vec<Overlay>>> {
     let overlays = match q.entity_id.as_deref() {
@@ -124,7 +124,7 @@ pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec
     ),
 )]
 pub(crate) async fn upsert_overlay(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     actor: Actor,
     Json(p): Json<NewOverlay>,
 ) -> Result<Json<Overlay>> {
@@ -138,7 +138,7 @@ pub(crate) async fn upsert_overlay(
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let overlay = overlay_upsert_tx(tx, p).await?;
@@ -169,7 +169,7 @@ pub struct OverlayDeleteBody {
     ),
 )]
 pub(crate) async fn delete_overlay(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     actor: Actor,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
@@ -180,7 +180,7 @@ pub(crate) async fn delete_overlay(
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 overlay_delete_tx(tx, &b.plugin_id, &b.entity_kind, &b.entity_id, &b.kind).await?;

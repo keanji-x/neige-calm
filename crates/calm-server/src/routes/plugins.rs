@@ -35,7 +35,7 @@ use crate::model::{NewPlugin, Plugin};
 use crate::plugin_host::{
     Manifest, PluginRegistry, PluginRuntimeStatus, ResourceError, RpcError, read_ui_resource,
 };
-use crate::state::AppState;
+use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
     Json, Router,
     body::Body,
@@ -226,11 +226,14 @@ fn default_arguments() -> Value {
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn list_plugins(State(s): State<AppState>) -> Result<Json<Vec<PluginListItem>>> {
+pub(crate) async fn list_plugins(
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
+) -> Result<Json<Vec<PluginListItem>>> {
     let rows = s.repo.plugins_list_all().await?;
     let mut out = Vec::with_capacity(rows.len());
     for plug in rows {
-        let runtime = s.plugin.status(&plug.id).await;
+        let runtime = cs.plugin.status(&plug.id).await;
         let (state, last_error) = match runtime {
             Some(snap) => (
                 snap.status.wire_name().to_string(),
@@ -280,7 +283,8 @@ pub(crate) async fn list_plugins(State(s): State<AppState>) -> Result<Json<Vec<P
     ),
 )]
 pub(crate) async fn get_plugin_detail(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
     let plug = s
@@ -288,7 +292,7 @@ pub(crate) async fn get_plugin_detail(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    Ok(Json(build_detail(&s, plug).await))
+    Ok(Json(build_detail(&cs, plug).await))
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +313,8 @@ pub(crate) async fn get_plugin_detail(
     ),
 )]
 pub(crate) async fn install_plugin(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Json(body): Json<InstallBody>,
 ) -> Result<(StatusCode, Json<PluginDetail>)> {
     let raw_path = match body.source {
@@ -374,7 +379,7 @@ pub(crate) async fn install_plugin(
     // copy the tree (Windows fallback). Either way the install path the
     // registry remembers is the in-plugins-dir target, not the user-supplied
     // source — supervision must point at a path under our control.
-    let install_dir = s.plugin.plugins_dir.join(&manifest.id);
+    let install_dir = cs.plugin.plugins_dir.join(&manifest.id);
     materialize_install_tree(&src_path, &install_dir)?;
 
     // Slice H replaces the install-time placeholder: the token row is now
@@ -397,9 +402,9 @@ pub(crate) async fn install_plugin(
     // implicitly: the manifest carries the perms, and the registry/permission
     // checker reads them directly on every callback — no separate "granted"
     // table to update in M3.
-    s.plugin.registry().insert(manifest, Some(install_dir));
+    cs.plugin.registry().insert(manifest, Some(install_dir));
 
-    let detail = build_detail(&s, plug).await;
+    let detail = build_detail(&cs, plug).await;
     Ok((StatusCode::CREATED, Json(detail)))
 }
 
@@ -420,7 +425,8 @@ pub(crate) async fn install_plugin(
     ),
 )]
 pub(crate) async fn enable_plugin(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
     s.repo
@@ -431,7 +437,7 @@ pub(crate) async fn enable_plugin(
     // Spawn errors leave enabled=true so the supervisor (autospawn_enabled on
     // next boot) will keep trying. We do surface the error to the caller so
     // the UI can show it immediately rather than waiting for a state event.
-    if let Err(e) = s.plugin.spawn(&id).await {
+    if let Err(e) = cs.plugin.spawn(&id).await {
         return Err(spawn_error_to_calm(e));
     }
     let plug = s
@@ -439,7 +445,7 @@ pub(crate) async fn enable_plugin(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    Ok(Json(build_detail(&s, plug).await))
+    Ok(Json(build_detail(&cs, plug).await))
 }
 
 #[utoipa::path(
@@ -454,7 +460,8 @@ pub(crate) async fn enable_plugin(
     ),
 )]
 pub(crate) async fn disable_plugin(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
     s.repo
@@ -465,7 +472,7 @@ pub(crate) async fn disable_plugin(
     // Best-effort stop. NotFound here means the host wasn't running this
     // plugin (already exited / never spawned); benign for the flip-to-disabled
     // outcome we're trying to achieve.
-    match s.plugin.stop(&id).await {
+    match cs.plugin.stop(&id).await {
         Ok(()) => {}
         Err(crate::plugin_host::HostError::NotFound(_)) => {}
         Err(e) => return Err(CalmError::Internal(format!("stop failed: {e}"))),
@@ -475,7 +482,7 @@ pub(crate) async fn disable_plugin(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    Ok(Json(build_detail(&s, plug).await))
+    Ok(Json(build_detail(&cs, plug).await))
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +502,8 @@ pub(crate) async fn disable_plugin(
     ),
 )]
 pub(crate) async fn patch_plugin_config(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<PluginDetail>> {
@@ -510,7 +518,7 @@ pub(crate) async fn patch_plugin_config(
     // doesn't pin a method name, plugin authors haven't seen this hook yet,
     // and most M3 plugins won't read user_config dynamically. We can wire the
     // notification later without an API break.
-    Ok(Json(build_detail(&s, plug).await))
+    Ok(Json(build_detail(&cs, plug).await))
 }
 
 // ---------------------------------------------------------------------------
@@ -529,7 +537,8 @@ pub(crate) async fn patch_plugin_config(
     ),
 )]
 pub(crate) async fn uninstall_plugin(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     s.repo
@@ -538,7 +547,7 @@ pub(crate) async fn uninstall_plugin(
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
     // Stop first so the process can't write into the state we're about to
     // delete out from under it. NotFound is fine (already stopped).
-    match s.plugin.stop(&id).await {
+    match cs.plugin.stop(&id).await {
         Ok(()) => {}
         Err(crate::plugin_host::HostError::NotFound(_)) => {}
         Err(e) => return Err(CalmError::Internal(format!("stop failed: {e}"))),
@@ -551,7 +560,7 @@ pub(crate) async fn uninstall_plugin(
     let _ = s.repo.plugin_kv_clear(&id).await;
     let _ = s.repo.overlays_clear_by_plugin(&id).await;
     s.repo.plugin_delete(&id).await?;
-    s.plugin.registry().remove(&id);
+    cs.plugin.registry().remove(&id);
 
     // The on-disk tree is left in place: removing it would race with any
     // observers (the user pointing the install at a checked-out repo loses
@@ -579,7 +588,8 @@ pub(crate) async fn uninstall_plugin(
     ),
 )]
 pub(crate) async fn tail_plugin_log(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
     Query(q): Query<LogQuery>,
 ) -> Result<Json<Vec<String>>> {
@@ -591,7 +601,7 @@ pub(crate) async fn tail_plugin_log(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
     let n = q.n.unwrap_or(200).min(1024);
-    let lines = s.plugin.stderr_tail(&id, n).await.unwrap_or_default();
+    let lines = cs.plugin.stderr_tail(&id, n).await.unwrap_or_default();
     Ok(Json(lines))
 }
 
@@ -613,7 +623,8 @@ pub(crate) async fn tail_plugin_log(
     ),
 )]
 pub(crate) async fn reload_plugin(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
     let plug = s
@@ -622,7 +633,7 @@ pub(crate) async fn reload_plugin(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
     // Stop first (NotFound is fine — could have crashed).
-    match s.plugin.stop(&id).await {
+    match cs.plugin.stop(&id).await {
         Ok(()) => {}
         Err(crate::plugin_host::HostError::NotFound(_)) => {}
         Err(e) => return Err(CalmError::Internal(format!("stop failed: {e}"))),
@@ -668,10 +679,10 @@ pub(crate) async fn reload_plugin(
     // this — this just keeps the detail endpoint from lying.
     let manifest_value = serde_json::to_value(&manifest)
         .map_err(|e| CalmError::Internal(format!("manifest re-serialize after reload: {e}")))?;
-    s.plugin.registry().insert(manifest, Some(install_dir));
+    cs.plugin.registry().insert(manifest, Some(install_dir));
     s.repo.plugin_update_manifest(&id, manifest_value).await?;
     if plug.enabled
-        && let Err(e) = s.plugin.spawn(&id).await
+        && let Err(e) = cs.plugin.spawn(&id).await
     {
         return Err(spawn_error_to_calm(e));
     }
@@ -680,7 +691,7 @@ pub(crate) async fn reload_plugin(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    Ok(Json(build_detail(&s, plug).await))
+    Ok(Json(build_detail(&cs, plug).await))
 }
 
 // ---------------------------------------------------------------------------
@@ -697,13 +708,14 @@ pub(crate) async fn reload_plugin(
     ),
 )]
 pub(crate) async fn list_plugin_views(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
 ) -> Result<Json<Vec<ViewCatalogEntry>>> {
     // Only emit entries for plugins that are currently enabled — disabled
     // plugins can't actually render. Take a snapshot of the installed table
     // and join against the registry's manifest cache.
     let installed = s.repo.plugins_list_all().await?;
-    let registry: &PluginRegistry = s.plugin.registry();
+    let registry: &PluginRegistry = cs.plugin.registry();
     let mut out = Vec::new();
     for plug in installed {
         if !plug.enabled {
@@ -769,11 +781,11 @@ pub(crate) async fn list_plugin_views(
     ),
 )]
 pub(crate) async fn get_plugin_view_html(
-    State(s): State<AppState>,
+    State(cs): State<CodexShellState>,
     Path((id, view_id)): Path<(String, String)>,
 ) -> Response {
     let uri = format!("ui://{id}/{view_id}");
-    match read_ui_resource(s.plugin.registry(), &uri) {
+    match read_ui_resource(cs.plugin.registry(), &uri) {
         Ok(contents) => {
             let entry = match contents.contents.into_iter().next() {
                 Some(e) => e,
@@ -918,7 +930,7 @@ fn csp_header_from_meta(meta: Option<&Value>) -> Option<String> {
     ),
 )]
 pub(crate) async fn plugin_tool_call(
-    State(s): State<AppState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
     Json(body): Json<ToolCallBody>,
 ) -> Response {
@@ -938,7 +950,7 @@ pub(crate) async fn plugin_tool_call(
     // Plugin must be running for any neige.* dispatch (permissions live on
     // the manifest, but the registry copy + subscription table sit on the
     // RunningPlugin record).
-    if s.plugin.status(&id).await.is_none() {
+    if cs.plugin.status(&id).await.is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -960,7 +972,7 @@ pub(crate) async fn plugin_tool_call(
     // the operator notice via the response code. (In practice the registry
     // is populated at install + spawn time and dropped only on uninstall,
     // by which point `status()` above would already have returned None.)
-    let manifest_allows = s
+    let manifest_allows = cs
         .plugin
         .registry()
         .get(&id)
@@ -985,7 +997,7 @@ pub(crate) async fn plugin_tool_call(
     // that sends `call_id: ""` behaves identically to one that omits the
     // field — see scope-β review feedback on PR #37.
     let call_id = body.call_id.as_deref().filter(|s| !s.is_empty());
-    match s
+    match cs
         .plugin
         .dispatch_neige_callback(&id, &body.name, body.arguments, call_id)
         .await
@@ -1011,7 +1023,8 @@ pub(crate) async fn plugin_tool_call(
     ),
 )]
 pub(crate) async fn rotate_plugin_token(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
     // 404 if unknown — gives the UI a clear "wrong id" signal rather than the
@@ -1020,7 +1033,7 @@ pub(crate) async fn rotate_plugin_token(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    s.plugin
+    cs.plugin
         .rotate_plugin_token(&id)
         .await
         .map_err(|e| CalmError::Internal(format!("rotate failed: {e}")))?;
@@ -1029,7 +1042,7 @@ pub(crate) async fn rotate_plugin_token(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    Ok(Json(build_detail(&s, plug).await))
+    Ok(Json(build_detail(&cs, plug).await))
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,8 +1189,8 @@ fn copy_dir_recursive(src: &StdPath, dst: &StdPath) -> std::io::Result<()> {
 
 /// Assemble the `PluginDetail` payload by joining the persisted row with the
 /// current runtime status (if any).
-async fn build_detail(s: &AppState, plug: Plugin) -> PluginDetail {
-    let runtime = s.plugin.status(&plug.id).await;
+async fn build_detail(cs: &CodexShellState, plug: Plugin) -> PluginDetail {
+    let runtime = cs.plugin.status(&plug.id).await;
     let (state, last_error) = match runtime {
         Some(snap) => (
             snap.status.wire_name().to_string(),

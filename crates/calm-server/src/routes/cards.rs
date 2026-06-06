@@ -28,8 +28,10 @@ use crate::routes::waves::{
 };
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
-use crate::state::AppState;
-use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
+use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
+use crate::terminal_sweeper::{
+    reap_spec_push_from_registry, reap_terminal_artifacts_with_renderer,
+};
 
 use axum::{
     Json, Router,
@@ -68,11 +70,11 @@ fn is_shared_codex_card(card: &Card) -> bool {
     card.payload.get("codex_source").and_then(Value::as_str) == Some("shared")
 }
 
-pub(crate) async fn interrupt_shared_card_active_turn(s: &AppState, card: &Card) {
+pub(crate) async fn interrupt_shared_card_active_turn(cs: &CodexShellState, card: &Card) {
     if !is_shared_codex_card(card) {
         return;
     }
-    if let Err(e) = s
+    if let Err(e) = cs
         .shared_codex_appserver
         .interrupt_active_turn_for_card(card.id.as_str())
         .await
@@ -111,7 +113,7 @@ pub fn router() -> Router<AppState> {
     ),
 )]
 pub(crate) async fn list_cards_by_wave(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Path(wave_id): Path<String>,
 ) -> Result<Json<Vec<Card>>> {
     let cards = s.repo.cards_by_wave(&wave_id).await?;
@@ -487,7 +489,9 @@ pub struct ResetSpecCardResponse {
     ),
 )]
 pub(crate) async fn reset_spec_card(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     Path(id): Path<String>,
 ) -> Result<Json<ResetSpecCardResponse>> {
     let card = s
@@ -496,7 +500,7 @@ pub(crate) async fn reset_spec_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let role = s
-        .write()
+        .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if card.kind != "codex" || role != CardRole::Spec {
@@ -504,7 +508,7 @@ pub(crate) async fn reset_spec_card(
             "card {id} is not a spec codex card",
         )));
     }
-    let response = reset_spec_card_shared(s, card).await?;
+    let response = reset_spec_card_shared(s, w, cs, card).await?;
     Ok(Json(response))
 }
 
@@ -522,8 +526,13 @@ struct SharedResetStarted {
     push_args: SpecPushDaemonArgs,
 }
 
-async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCardResponse> {
-    if !s.shared_codex_appserver.is_running() {
+async fn reset_spec_card_shared(
+    s: RouteState,
+    w: WorkerState,
+    cs: CodexShellState,
+    card: Card,
+) -> Result<ResetSpecCardResponse> {
+    if !cs.shared_codex_appserver.is_running() {
         return Err(CalmError::Internal(format!(
             "shared codex daemon is not running for spec card reset {}",
             card.id
@@ -558,7 +567,7 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
     let terminal_id = terminal.id.clone();
-    let dispatcher = s.dispatcher.clone();
+    let dispatcher = w.dispatcher.clone();
     let reset = dispatcher
         .with_push_lock(&wave_id, async {
             tracing::info!(
@@ -574,13 +583,13 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
                 .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
             let watermark = push_watermark_from_payload(&card_at_lock.payload);
 
-            let started = spawn_reset_via_shared_daemon(&s, card_id.as_str(), &wave).await?;
+            let started = spawn_reset_via_shared_daemon(&s, &cs, card_id.as_str(), &wave).await?;
             // Rotate the per-card MCP token only AFTER the shared thread is
             // committed (thread_start + turn_start + lifecycle all passed).
             // From here on the OLD TUI is going to be reaped immediately, so
             // invalidating its token is the safe ordering.
             let mcp_token = crate::mcp_server::auth::CardMcpToken::generate().into_inner();
-            if s.mcp_server.is_some() {
+            if w.mcp_server.is_some() {
                 let card_id_for_tx = card.id.to_string();
                 let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
                 write_in_tx_typed(s.repo.as_ref(), move |tx| {
@@ -596,10 +605,10 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
                 map.insert(
                     "CODEX_HOME".into(),
                     serde_json::Value::String(
-                        s.codex.codex_home_dir().to_string_lossy().to_string(),
+                        cs.codex.codex_home_dir().to_string_lossy().to_string(),
                     ),
                 );
-                if let Some(server) = s.mcp_server.as_ref() {
+                if let Some(server) = w.mcp_server.as_ref() {
                     map.insert(
                         "NEIGE_MCP_TOKEN".into(),
                         serde_json::Value::String(mcp_token.clone()),
@@ -612,22 +621,29 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
                     );
                 }
             }
-            reap_spec_push(&s, &wave_id).await;
-            reap_terminal_artifacts(&s, &terminal).await;
+            reap_spec_push_from_registry(&w.spec_push, &wave_id).await;
+            reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &terminal)
+                .await;
             s.repo.terminal_set_pid(&terminal.id, None).await?;
             s.repo.terminal_set_exit(&terminal.id, None, false).await?;
-            persist_shared_reset_runtime_fields(&s, card_id.as_str(), &wave, &started.thread_id)
-                .await?;
+            persist_shared_reset_runtime_fields(
+                &s,
+                &cs,
+                card_id.as_str(),
+                &wave,
+                &started.thread_id,
+            )
+            .await?;
 
             let handle = spec_push::park_shared_handle(
-                s.shared_codex_appserver.clone(),
+                cs.shared_codex_appserver.clone(),
                 Some(started.thread_id.clone()),
                 started.notifications,
                 started.status,
                 None,
                 spec_push::TurnWatchdogConfig::default(),
             );
-            install_spec_push_sinks_and_park(&s, card_id.as_str(), &wave, handle).await;
+            install_spec_push_sinks_and_park(&s, &w, card_id.as_str(), &wave, handle).await;
             tracing::info!(
                 target: "shared_codex_daemon::spec_card_reset",
                 card_id = %card_id,
@@ -636,8 +652,9 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
                 "handle_replaced"
             );
 
-            crate::rehydrate_and_catch_up_parked_spec_push_under_lock(
+            crate::rehydrate_and_catch_up_parked_spec_push_under_lock_parts(
                 &s,
+                &w,
                 card_id.as_str(),
                 &wave_id,
                 watermark,
@@ -646,6 +663,7 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
 
             if let Err(e) = seed_and_spawn_spec_daemon(
                 s.clone(),
+                w.clone(),
                 card_id.to_string(),
                 wave_id.to_string(),
                 wave.cwd.clone(),
@@ -693,7 +711,8 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
 }
 
 async fn spawn_reset_via_shared_daemon(
-    s: &AppState,
+    s: &RouteState,
+    cs: &CodexShellState,
     spec_card_id: &str,
     wave: &crate::model::Wave,
 ) -> Result<SharedResetStarted> {
@@ -703,14 +722,14 @@ async fn spawn_reset_via_shared_daemon(
         ));
     }
     let old_mapping = s.repo.card_codex_thread_get_by_card(spec_card_id).await?;
-    let mut notifications = s.shared_codex_appserver.subscribe_notifications();
+    let mut notifications = cs.shared_codex_appserver.subscribe_notifications();
     let status: spec_push::SharedStatus =
         std::sync::Arc::new(tokio::sync::Mutex::new(SpecPushStatus::default()));
     let developer_instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Spec.prompt_template(),
         wave.id.as_str(),
     );
-    let thread_id = s
+    let thread_id = cs
         .shared_codex_appserver
         .thread_start_for_card(
             spec_card_id,
@@ -738,7 +757,7 @@ async fn spawn_reset_via_shared_daemon(
     );
 
     let turn_result = async {
-        s.shared_codex_appserver
+        cs.shared_codex_appserver
             .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
             .await?;
         await_shared_spec_initial_turn_lifecycle(&mut notifications, &thread_id, &status).await?;
@@ -789,7 +808,7 @@ async fn spawn_reset_via_shared_daemon(
 
     if let Some(row) = old_mapping.as_ref()
         && row.thread_id != thread_id
-        && let Err(e) = s
+        && let Err(e) = cs
             .shared_codex_appserver
             .interrupt_active_turn(&row.thread_id)
             .await
@@ -811,14 +830,15 @@ async fn spawn_reset_via_shared_daemon(
         status,
         push_args: SpecPushDaemonArgs {
             thread_id: Some(thread_id),
-            sock_uri: s.shared_codex_appserver.remote_uri(),
+            sock_uri: cs.shared_codex_appserver.remote_uri(),
             developer_instructions: None,
         },
     })
 }
 
 async fn persist_shared_reset_runtime_fields(
-    s: &AppState,
+    s: &RouteState,
+    cs: &CodexShellState,
     spec_card_id: &str,
     wave: &crate::model::Wave,
     thread_id: &str,
@@ -830,14 +850,14 @@ async fn persist_shared_reset_runtime_fields(
     };
     let card_id_for_tx = spec_card_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
-    let remote_uri = s.shared_codex_appserver.remote_uri();
+    let remote_uri = cs.shared_codex_appserver.remote_uri();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         ActorId::Kernel,
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -906,7 +926,9 @@ async fn s_repo_card_get(
 )]
 #[allow(deprecated)]
 pub(crate) async fn delete_card(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
@@ -930,7 +952,7 @@ pub(crate) async fn delete_card(
     let wave_id = card.wave_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
 
-    interrupt_shared_card_active_turn(&s, &card).await;
+    interrupt_shared_card_active_turn(&cs, &card).await;
 
     // Issue #197 — eager teardown. The `terminals.card_id` FK is
     // `ON DELETE RESTRICT` (migration 0011); the row must be removed,
@@ -950,18 +972,18 @@ pub(crate) async fn delete_card(
     // `terminals` table with no role-specific cleanup divergence.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;
     if let Some(t) = term.as_ref() {
-        reap_terminal_artifacts(&s, t).await;
+        reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), t).await;
     }
     let terminal_id = term.map(|t| t.id);
 
-    let write_for_tx = s.write().clone();
+    let write_for_tx = s.write.clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 // Drop the terminal row first so the RESTRICT FK lets the

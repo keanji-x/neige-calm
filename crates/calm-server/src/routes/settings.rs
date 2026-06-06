@@ -28,7 +28,7 @@
 //! without a wire-level migration.
 
 use crate::error::{ErrorBody, Result};
-use crate::state::AppState;
+use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -64,7 +64,7 @@ pub struct SettingsPutBody {
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn get_settings(State(s): State<AppState>) -> Result<Json<SettingsBag>> {
+pub(crate) async fn get_settings(State(s): State<RouteState>) -> Result<Json<SettingsBag>> {
     let rows = s.repo.settings_get_all().await?;
     let mut map = BTreeMap::new();
     for (k, v) in rows {
@@ -84,7 +84,8 @@ pub(crate) async fn get_settings(State(s): State<AppState>) -> Result<Json<Setti
     ),
 )]
 pub(crate) async fn put_settings(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(cs): State<CodexShellState>,
     Json(p): Json<SettingsPutBody>,
 ) -> Result<Json<SettingsBag>> {
     let before = load_settings(s.repo.as_ref()).await?;
@@ -121,7 +122,7 @@ pub(crate) async fn put_settings(
         }
     }
     if proxy_changed {
-        s.shared_codex_appserver.mark_needs_respawn();
+        cs.shared_codex_appserver.mark_needs_respawn();
     }
     let rows = s.repo.settings_get_all().await?;
     let mut map = BTreeMap::new();

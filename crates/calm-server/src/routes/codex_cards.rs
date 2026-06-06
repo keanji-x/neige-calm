@@ -33,8 +33,8 @@ use crate::model::{Card, CardPatch, CardRole, new_id};
 use crate::pending_codex_threads::{PendingEntry, card_payload_clear_pending_status};
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_terminal_for;
-use crate::state::AppState;
+use crate::routes::terminal::spawn_terminal_for_route;
+use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -122,7 +122,9 @@ pub struct NewCodexCardBody {
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_codex_card(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     actor: Actor,
     Path(wave_id): Path<String>,
     Json(p): Json<NewCodexCardBody>,
@@ -175,7 +177,7 @@ pub(crate) async fn create_codex_card(
         .filter(|s| !s.is_empty())
         .map(String::from);
 
-    if !s.shared_codex_appserver.is_running() {
+    if !cs.shared_codex_appserver.is_running() {
         return Err(CalmError::Internal(
             "shared codex app-server is not running".into(),
         ));
@@ -186,7 +188,7 @@ pub(crate) async fn create_codex_card(
     //    pulled from `load_settings`. Only inject HTTP(S)_PROXY when the
     //    user has a non-empty override — empty would *clear* the container
     //    default which is the opposite of what the user expects.
-    let codex_home_path = s.codex.codex_home_dir().to_string_lossy().to_string();
+    let codex_home_path = cs.codex.codex_home_dir().to_string_lossy().to_string();
     let settings = load_settings(s.repo.as_ref()).await?;
     let mut env_map = serde_json::Map::new();
     env_map.insert(
@@ -199,7 +201,7 @@ pub(crate) async fn create_codex_card(
     );
     env_map.insert(
         "NEIGE_CALM_BASE_URL".to_string(),
-        serde_json::Value::String(s.codex.ingest_url.clone()),
+        serde_json::Value::String(cs.codex.ingest_url.clone()),
     );
     if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
         // codex (and the OpenAI client it links) reads `HTTPS_PROXY` /
@@ -253,14 +255,14 @@ pub(crate) async fn create_codex_card(
     )
     .await?;
     let wave_id_for_tx = wave_id.clone();
-    let write_for_tx = s.write().clone();
+    let write_for_tx = s.write.clone();
     let (mut card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let (card, _term, _token) = card_with_codex_create_tx(
@@ -311,7 +313,7 @@ pub(crate) async fn create_codex_card(
         })?;
 
     let _pending_spawn_serial_guard = if prompt.is_none() {
-        Some(s.pending_codex_threads_spawn_serial.lock().await)
+        Some(cs.pending_codex_threads_spawn_serial.lock().await)
     } else {
         None
     };
@@ -320,8 +322,8 @@ pub(crate) async fn create_codex_card(
         // Non-empty user prompt cards run turn #1 on the server-wide shared
         // app-server, then the PTY TUI attaches to that durable thread via
         // `codex resume ... --remote`.
-        let mut notifs = s.shared_codex_appserver.subscribe_notifications();
-        let thread_id = match s
+        let mut notifs = cs.shared_codex_appserver.subscribe_notifications();
+        let thread_id = match cs
             .shared_codex_appserver
             .thread_start_for_card(
                 card.id.as_ref(),
@@ -370,7 +372,7 @@ pub(crate) async fn create_codex_card(
             scope,
             None,
             &s.events,
-            s.write(),
+            &s.write,
             move |tx| {
                 Box::pin(async move {
                     card_codex_thread_upsert_tx(
@@ -399,7 +401,7 @@ pub(crate) async fn create_codex_card(
         .await?;
         card = updated;
 
-        s.shared_codex_appserver
+        cs.shared_codex_appserver
             .turn_start(&thread_id, vec![InputItem::text(prompt_text)])
             .await?;
         await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await?;
@@ -414,10 +416,10 @@ pub(crate) async fn create_codex_card(
         format!(
             "codex resume {} --remote {}",
             shell_single_quote(&thread_id),
-            shell_single_quote(&s.shared_codex_appserver.remote_uri()),
+            shell_single_quote(&cs.shared_codex_appserver.remote_uri()),
         )
     } else {
-        s.shared_codex_appserver
+        cs.shared_codex_appserver
             .ensure_respawn_for_current_settings()
             .await?;
 
@@ -442,7 +444,7 @@ pub(crate) async fn create_codex_card(
             scope,
             None,
             &s.events,
-            s.write(),
+            &s.write,
             move |tx| {
                 Box::pin(async move {
                     let card = card_update_tx(
@@ -463,7 +465,7 @@ pub(crate) async fn create_codex_card(
         .await?;
         card = updated;
 
-        s.pending_codex_threads
+        cs.pending_codex_threads
             .register(PendingEntry::new(
                 card.id.to_string(),
                 Some(wave_id.clone()),
@@ -473,15 +475,15 @@ pub(crate) async fn create_codex_card(
 
         format!(
             "codex --remote {}",
-            shell_single_quote(&s.shared_codex_appserver.remote_uri()),
+            shell_single_quote(&cs.shared_codex_appserver.remote_uri()),
         )
     };
 
     // 7. Persisted rows remain on spawn failure, but shared empty-card
     //    pending state must be rolled back immediately.
-    if let Err(e) = spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await {
+    if let Err(e) = spawn_terminal_for_route(&s, &w, &term, &command_line, &cwd, &env).await {
         if prompt.is_none() {
-            let removed = s
+            let removed = cs
                 .pending_codex_threads
                 .remove_by_card(card.id.as_ref())
                 .await;

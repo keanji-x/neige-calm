@@ -14,7 +14,7 @@
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{CoveFolder, CoveResolve, FolderConflict, FolderConflictKind, NewCoveFolder};
-use crate::state::AppState;
+use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -92,7 +92,7 @@ pub(crate) fn is_descendant_of(parent: &str, candidate: &str) -> bool {
     ),
 )]
 pub(crate) async fn list_folders(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Path(cove_id): Path<String>,
 ) -> Result<Json<Vec<CoveFolder>>> {
     let folders = s.repo.cove_folders_by_cove(&cove_id).await?;
@@ -117,7 +117,7 @@ pub(crate) async fn list_folders(
     ),
 )]
 pub(crate) async fn create_folder(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Path(cove_id): Path<String>,
     Json(body): Json<NewCoveFolder>,
 ) -> Result<Response> {
@@ -178,7 +178,7 @@ pub(crate) async fn create_folder(
     ),
 )]
 pub(crate) async fn delete_folder(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Path((cove_id, folder_id)): Path<(String, i64)>,
 ) -> Result<StatusCode> {
     // Verify the folder both exists and belongs to the cove in the
@@ -216,7 +216,7 @@ pub struct ResolveQuery {
     ),
 )]
 pub(crate) async fn resolve_path(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Query(q): Query<ResolveQuery>,
 ) -> Result<Json<Option<CoveResolve>>> {
     if !q.path.starts_with('/') {

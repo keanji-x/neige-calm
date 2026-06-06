@@ -45,7 +45,7 @@
 use crate::event::SYNC_EVENT_VERSION;
 use crate::mcp_server::transport::KERNEL_MCP_PROTOCOL_VERSION;
 use crate::plugin_host::mcp::KERNEL_PROTOCOL_VERSION;
-use crate::state::AppState;
+use crate::state::{AppState, RouteState};
 use axum::{Json, Router, extract::State, routing::get};
 use calm_session::SUPERVISOR_CONTROL_VERSION;
 use serde::Serialize;
@@ -163,7 +163,7 @@ pub fn current_version_info(db_instance_id: String) -> VersionInfo {
         (status = 200, description = "Kernel + protocol version metadata", body = VersionInfo),
     ),
 )]
-pub(crate) async fn get_version(State(state): State<AppState>) -> Json<VersionInfo> {
+pub(crate) async fn get_version(State(state): State<RouteState>) -> Json<VersionInfo> {
     Json(current_version_info((*state.db_instance_id).clone()))
 }
 

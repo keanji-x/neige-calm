@@ -79,8 +79,10 @@ use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::load_settings;
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SharedStatus, SpecPushPhase, SpecPushStatus, TurnWatchdogConfig};
-use crate::state::AppState;
-use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
+use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
+use crate::terminal_sweeper::{
+    reap_spec_push_from_registry, reap_terminal_artifacts_with_renderer,
+};
 use crate::wave_lifecycle::validate_transition;
 use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
 use axum::{
@@ -121,7 +123,7 @@ pub fn router() -> Router<AppState> {
     ),
 )]
 pub(crate) async fn list_waves_by_cove(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Path(cove_id): Path<String>,
 ) -> Result<Json<Vec<Wave>>> {
     let waves = s.repo.waves_by_cove(&cove_id).await?;
@@ -180,7 +182,7 @@ pub struct WavesWindowQuery {
     ),
 )]
 pub(crate) async fn list_waves_window(
-    State(state): State<AppState>,
+    State(state): State<RouteState>,
     Query(q): Query<WavesWindowQuery>,
 ) -> Result<Json<Vec<Wave>>> {
     if let (Some(since), Some(until)) = (q.since, q.until)
@@ -209,7 +211,7 @@ pub(crate) async fn list_waves_window(
     ),
 )]
 pub(crate) async fn get_wave_detail(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Path(id): Path<String>,
 ) -> Result<Json<WaveDetail>> {
     let mut detail = s
@@ -242,7 +244,9 @@ pub(crate) async fn get_wave_detail(
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_wave(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     actor: Actor,
     Json(mut p): Json<NewWave>,
 ) -> Result<Response> {
@@ -402,7 +406,7 @@ pub(crate) async fn create_wave(
     // from `card_mcp_tokens` + `mcp_server.shim_config`, but that's
     // not exercised today (PR8 followup).
     let env = build_codex_env_map(
-        s.codex.as_ref(),
+        cs.codex.as_ref(),
         &spec_card_id,
         settings.http_proxy.as_deref(),
         settings.https_proxy.as_deref(),
@@ -426,7 +430,7 @@ pub(crate) async fn create_wave(
     //    No `EventScope::Cove`-fallback dance: by the time the closure
     //    runs, we know wave_id, so each event gets its tightest scope.
     let actor_id = actor.to_actor_id();
-    let write_for_tx = s.write().clone();
+    let write_for_tx = s.write.clone();
     let env_for_tx = env.clone();
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
@@ -444,7 +448,7 @@ pub(crate) async fn create_wave(
         actor_id,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 // 3.0. Issue #250 PR 2 — optional folder attach.
@@ -669,7 +673,7 @@ pub(crate) async fn create_wave(
     //    fix (re-mint token + update hash) is deferred to an issue
     //    #236 follow-up.
     let mut env_for_spawn = env;
-    if let (Some(token), Some(server)) = (mcp_token.as_deref(), s.mcp_server.as_ref())
+    if let (Some(token), Some(server)) = (mcp_token.as_deref(), w.mcp_server.as_ref())
         && let Some(map) = env_for_spawn.as_object_mut()
     {
         map.insert(
@@ -738,7 +742,7 @@ pub(crate) async fn create_wave(
     if let Some(map) = spec_tui_env.as_object_mut() {
         map.insert(
             "CODEX_HOME".into(),
-            serde_json::Value::String(s.codex.codex_home_dir().to_string_lossy().to_string()),
+            serde_json::Value::String(cs.codex.codex_home_dir().to_string_lossy().to_string()),
         );
         // KEEP NEIGE_MCP_TOKEN — the spec TUI's shell still needs the
         // per-card credential so `neige state`/`ls`/`cat` work (CLI does
@@ -750,12 +754,12 @@ pub(crate) async fn create_wave(
 
     let serialize_shared_empty_spec_spawn = wave.title.trim().is_empty();
     let _pending_spawn_serial_guard = if serialize_shared_empty_spec_spawn {
-        Some(s.pending_codex_threads_spawn_serial.lock().await)
+        Some(cs.pending_codex_threads_spawn_serial.lock().await)
     } else {
         None
     };
 
-    let push_args = match spawn_push_via_shared_daemon(&s, &spec_card_id, &wave).await {
+    let push_args = match spawn_push_via_shared_daemon(&s, &w, &cs, &spec_card_id, &wave).await {
         Ok(args) => Some(args),
         Err(e) => {
             tracing::warn!(
@@ -779,6 +783,7 @@ pub(crate) async fn create_wave(
         let rollback_shared_pending = push_args.thread_id.is_none();
         if let Err(e) = seed_and_spawn_spec_daemon(
             s.clone(),
+            w.clone(),
             spec_card_id.clone(),
             wave.id.as_str().to_string(),
             wave.cwd.clone(),
@@ -795,15 +800,15 @@ pub(crate) async fn create_wave(
             // Empty shared specs have no TUI-owned thread yet, so roll back
             // their pending registry entry and parked handle immediately.
             if rollback_shared_pending {
-                let pending_removed = s
+                let pending_removed = cs
                     .pending_codex_threads
                     .remove_by_card(spec_card_id.as_ref())
                     .await;
-                let handle_removed = s.spec_push.remove(&wave.id).is_some();
+                let handle_removed = w.spec_push.remove(&wave.id).is_some();
                 // Clear all shared markers so the failed spec card becomes a
                 // plain inert row the user can delete.
                 let payload_cleared =
-                    clear_shared_spec_runtime_fields(&s, spec_card_id.as_ref(), &wave)
+                    clear_shared_spec_runtime_fields(&s, &cs, spec_card_id.as_ref(), &wave)
                         .await
                         .is_ok();
                 tracing::warn!(
@@ -841,12 +846,14 @@ pub(crate) async fn create_wave(
 }
 
 pub(crate) async fn spawn_push_via_shared_daemon(
-    s: &AppState,
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
     spec_card_id: &str,
     wave: &Wave,
 ) -> Result<SpecPushDaemonArgs> {
     let needs_initial_prompt = wave.title.trim().is_empty();
-    let mut notifications = s.shared_codex_appserver.subscribe_notifications();
+    let mut notifications = cs.shared_codex_appserver.subscribe_notifications();
     let status: SharedStatus = if needs_initial_prompt {
         std::sync::Arc::new(tokio::sync::Mutex::new(SpecPushStatus {
             phase: SpecPushPhase::PendingThreadStart,
@@ -865,15 +872,15 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             .ok_or_else(|| {
                 CalmError::Internal(format!("spec terminal row missing for card {spec_card_id}"))
             })?;
-        s.shared_codex_appserver
+        cs.shared_codex_appserver
             .ensure_respawn_for_current_settings()
             .await?;
         // Empty-goal path: thread is fresh-started by TUI; payload needs the
         // shared marker stamped here without a thread_id before the pending
         // FIFO mutates. If this persist fails, no stale pending entry can
         // consume a later unrelated thread/started notification.
-        persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
-        s.pending_codex_threads
+        persist_shared_spec_runtime_fields(s, cs, spec_card_id, wave, None).await?;
+        cs.pending_codex_threads
             .register(
                 PendingEntry::new(
                     spec_card_id.to_string(),
@@ -889,7 +896,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             crate::spec_card::SeededCardRole::Spec.prompt_template(),
             wave.id.as_str(),
         );
-        let thread_id = s
+        let thread_id = cs
             .shared_codex_appserver
             .thread_start_for_card(
                 spec_card_id,
@@ -918,9 +925,9 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         // and the payload stamp — the goal was never delivered to the thread,
         // so leaving it as resumable would silently drop the user's wave
         // title.
-        persist_shared_spec_runtime_fields(s, spec_card_id, wave, Some(&thread_id)).await?;
+        persist_shared_spec_runtime_fields(s, cs, spec_card_id, wave, Some(&thread_id)).await?;
         let initial_turn_result = async {
-            s.shared_codex_appserver
+            cs.shared_codex_appserver
                 .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
                 .await?;
             await_shared_spec_initial_turn_lifecycle(&mut notifications, &thread_id, &status)
@@ -941,7 +948,8 @@ pub(crate) async fn spawn_push_via_shared_daemon(
                     "card_codex_thread delete failed during turn_start rollback"
                 );
             }
-            if let Err(rollback_err) = clear_shared_spec_runtime_fields(s, spec_card_id, wave).await
+            if let Err(rollback_err) =
+                clear_shared_spec_runtime_fields(s, cs, spec_card_id, wave).await
             {
                 tracing::warn!(
                     target: "shared_codex_daemon::spec_card",
@@ -957,14 +965,14 @@ pub(crate) async fn spawn_push_via_shared_daemon(
     };
 
     let handle = spec_push::park_shared_handle(
-        s.shared_codex_appserver.clone(),
+        cs.shared_codex_appserver.clone(),
         thread_id.clone(),
         notifications,
         status,
         needs_initial_prompt.then(|| spec_card_id.to_string()),
         TurnWatchdogConfig::default(),
     );
-    install_spec_push_sinks_and_park(s, spec_card_id, wave, handle).await;
+    install_spec_push_sinks_and_park(s, w, spec_card_id, wave, handle).await;
 
     tracing::info!(
         target: "shared_codex_daemon::spec_card",
@@ -977,7 +985,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
 
     Ok(SpecPushDaemonArgs {
         thread_id,
-        sock_uri: s.shared_codex_appserver.remote_uri(),
+        sock_uri: cs.shared_codex_appserver.remote_uri(),
         developer_instructions: needs_initial_prompt.then(|| {
             crate::spec_card::render_system_prompt(
                 crate::spec_card::SeededCardRole::Spec.prompt_template(),
@@ -993,7 +1001,10 @@ pub async fn spawn_push_via_shared_daemon_for_test(
     spec_card_id: &str,
     wave: &Wave,
 ) -> Result<()> {
-    spawn_push_via_shared_daemon(s, spec_card_id, wave)
+    let route: RouteState = axum::extract::FromRef::from_ref(s);
+    let worker: WorkerState = axum::extract::FromRef::from_ref(s);
+    let codex_shell: CodexShellState = axum::extract::FromRef::from_ref(s);
+    spawn_push_via_shared_daemon(&route, &worker, &codex_shell, spec_card_id, wave)
         .await
         .map(|_| ())
 }
@@ -1046,7 +1057,8 @@ pub(crate) async fn await_shared_spec_initial_turn_lifecycle(
 }
 
 async fn persist_shared_spec_runtime_fields(
-    s: &AppState,
+    s: &RouteState,
+    cs: &CodexShellState,
     spec_card_id: &str,
     wave: &Wave,
     thread_id: Option<&str>,
@@ -1058,14 +1070,14 @@ async fn persist_shared_spec_runtime_fields(
     };
     let card_id_for_tx = spec_card_id.to_string();
     let thread_id_for_tx = thread_id.map(str::to_string);
-    let remote_uri = s.shared_codex_appserver.remote_uri();
+    let remote_uri = cs.shared_codex_appserver.remote_uri();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         ActorId::Kernel,
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -1118,7 +1130,8 @@ async fn persist_shared_spec_runtime_fields(
 /// when `turn_start` / initial-lifecycle fails for a non-empty shared
 /// spec wave.
 async fn clear_shared_spec_runtime_fields(
-    s: &AppState,
+    s: &RouteState,
+    _cs: &CodexShellState,
     spec_card_id: &str,
     wave: &Wave,
 ) -> Result<()> {
@@ -1134,7 +1147,7 @@ async fn clear_shared_spec_runtime_fields(
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -1170,29 +1183,30 @@ async fn clear_shared_spec_runtime_fields(
 }
 
 pub(crate) async fn install_spec_push_sinks_and_park(
-    s: &AppState,
+    s: &RouteState,
+    w: &WorkerState,
     spec_card_id: &str,
     wave: &Wave,
     handle: spec_push::SpecPushHandle,
 ) {
     let card_key: crate::ids::CardId = spec_card_id.to_string().into();
-    let sink = s.dispatcher.watermark_sink_for(card_key.clone());
+    let sink = w.dispatcher.watermark_sink_for(card_key.clone());
     handle.install_watermark_sink(sink).await;
     let initial_prompt_ready = if handle.thread_id.is_none() {
-        s.dispatcher.initial_prompt_ready_sink_for(
+        w.dispatcher.initial_prompt_ready_sink_for(
             card_key.clone(),
             wave.id.clone(),
             wave.cove_id.clone(),
         )
     } else {
-        s.dispatcher.initial_prompt_clear_sink_for(card_key.clone())
+        w.dispatcher.initial_prompt_clear_sink_for(card_key.clone())
     };
     handle
         .install_initial_prompt_ready_sink(initial_prompt_ready)
         .await;
-    let persist = s.dispatcher.queue_persist_for(card_key);
+    let persist = w.dispatcher.queue_persist_for(card_key);
     handle.install_queue_persist(persist).await;
-    s.spec_push
+    w.spec_push
         .park(wave.id.clone(), handle, s.aspects.as_ref())
         .await;
 }
@@ -1230,7 +1244,7 @@ async fn s_repo_card_get(
     ),
 )]
 pub(crate) async fn update_wave(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
     Json(p): Json<WavePatch>,
@@ -1304,7 +1318,7 @@ pub(crate) async fn update_wave(
         actor_id,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
@@ -1343,7 +1357,9 @@ pub(crate) async fn update_wave(
 )]
 #[allow(deprecated)]
 pub(crate) async fn delete_wave(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
@@ -1387,14 +1403,14 @@ pub(crate) async fn delete_wave(
     // when the flag is off or no handle exists. Done alongside the
     // PTY-daemon reaping below so both processes are torn down before the
     // rows drop.
-    reap_spec_push(&s, &wave_id).await;
+    reap_spec_push_from_registry(&w.spec_push, &wave_id).await;
 
     let mut terminal_ids: Vec<String> = Vec::new();
     let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
     for card in &cards {
-        interrupt_shared_card_active_turn(&s, card).await;
+        interrupt_shared_card_active_turn(&cs, card).await;
         if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
-            reap_terminal_artifacts(&s, &t).await;
+            reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t).await;
             terminal_ids.push(t.id);
         }
     }
@@ -1403,14 +1419,14 @@ pub(crate) async fn delete_wave(
         wave: wave_id.clone(),
         cove: cove_id.clone(),
     };
-    let write_for_tx = s.write().clone();
+    let write_for_tx = s.write.clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first so the RESTRICT FK lets the
@@ -1519,7 +1535,7 @@ pub struct UpdateWaveReportBody {
     ),
 )]
 pub(crate) async fn update_wave_report(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     // `Principal` extraction implicitly asserts the session middleware
     // has run — a missing/invalid cookie surfaces as 401 from
     // `auth::require_session` long before this handler is invoked.
@@ -1587,7 +1603,7 @@ pub(crate) async fn update_wave_report(
     let updated = persist_report(
         s.repo.as_ref(),
         &s.events,
-        s.write(),
+        &s.write,
         ActorId::User,
         EditAuthor::User,
         wave,

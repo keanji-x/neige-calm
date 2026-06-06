@@ -877,14 +877,15 @@ async fn register_and_catch_up(
 /// Rehydrate durable queue rows and replay event-log rows for a reset-created,
 /// already-parked spec push handle. The caller must hold the per-wave push
 /// lock; this helper intentionally uses `catch_up_push_under_lock`.
-pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock(
-    state: &state::AppState,
+pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock_parts(
+    route: &state::RouteState,
+    worker: &state::WorkerState,
     card_id: &str,
     wave_id: &crate::ids::WaveId,
     watermark: i64,
 ) {
     let card_key: crate::ids::CardId = card_id.to_string().into();
-    let rehydrated_ids = state
+    let rehydrated_ids = worker
         .spec_push
         .rehydrate_queue_from_persist(wave_id, watermark)
         .await;
@@ -897,10 +898,18 @@ pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock(
             "reset: rehydrated spec push queue from durable rows",
         );
     }
-    state
+    worker
         .dispatcher
         .reset_push_cursor_to_watermark(card_key, watermark);
-    replay_spec_push_catch_up_under_lock(state, card_id, wave_id, watermark, rehydrated_ids).await;
+    replay_spec_push_catch_up_under_lock_parts(
+        route,
+        worker,
+        card_id,
+        wave_id,
+        watermark,
+        rehydrated_ids,
+    )
+    .await;
 }
 
 async fn replay_spec_push_catch_up_under_lock(
@@ -910,9 +919,30 @@ async fn replay_spec_push_catch_up_under_lock(
     watermark: i64,
     rehydrated_ids: Vec<i64>,
 ) {
+    let route: state::RouteState = axum::extract::FromRef::from_ref(state);
+    let worker: state::WorkerState = axum::extract::FromRef::from_ref(state);
+    replay_spec_push_catch_up_under_lock_parts(
+        &route,
+        &worker,
+        card_id,
+        wave_id,
+        watermark,
+        rehydrated_ids,
+    )
+    .await;
+}
+
+async fn replay_spec_push_catch_up_under_lock_parts(
+    route: &state::RouteState,
+    worker: &state::WorkerState,
+    card_id: &str,
+    wave_id: &crate::ids::WaveId,
+    watermark: i64,
+    rehydrated_ids: Vec<i64>,
+) {
     let rehydrated_skip: std::collections::HashSet<i64> = rehydrated_ids.iter().copied().collect();
     let rehydrated_count = rehydrated_ids.len();
-    let rows = match state.repo.events_since(watermark, None).await {
+    let rows = match route.repo.events_since(watermark, None).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(
@@ -931,14 +961,14 @@ async fn replay_spec_push_catch_up_under_lock(
         if ev_wave != wave_id {
             continue;
         }
-        if !dispatcher::event_warrants_spec_push(&ev, state.write()) {
+        if !dispatcher::event_warrants_spec_push(&ev, &route.write) {
             continue;
         }
         if rehydrated_skip.contains(&id) {
             skipped_rehydrated += 1;
             continue;
         }
-        state
+        worker
             .dispatcher
             .catch_up_push_under_lock(wave_id.clone(), ev, id)
             .await;
@@ -958,7 +988,7 @@ async fn replay_spec_push_catch_up_under_lock(
 
     if rehydrated_count > 0
         && replayed == 0
-        && let Some(pusher) = state.spec_push.pusher(wave_id)
+        && let Some(pusher) = worker.spec_push.pusher(wave_id)
     {
         pusher.flush_pending().await;
     }

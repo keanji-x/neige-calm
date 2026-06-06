@@ -70,6 +70,7 @@ use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::Terminal;
+use crate::spec_push::SpecPushRegistry;
 use crate::state::AppState;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use calm_session::control::ProcSignal;
@@ -335,7 +336,11 @@ pub async fn wait_for_pid_exit(pid: i64, timeout: Duration) -> WaitForPidExit {
 /// shared spec-card recovery is now handled by the shared appserver supervisor
 /// and thread-mapping takeover.
 pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
-    let Some(handle) = state.spec_push.remove(wave_id) else {
+    reap_spec_push_from_registry(&state.spec_push, wave_id).await;
+}
+
+pub async fn reap_spec_push_from_registry(spec_push: &SpecPushRegistry, wave_id: &WaveId) {
+    let Some(handle) = spec_push.remove(wave_id) else {
         return;
     };
     if handle.is_shared() {
