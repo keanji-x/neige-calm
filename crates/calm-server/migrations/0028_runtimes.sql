@@ -37,9 +37,9 @@ CREATE TABLE runtimes (
   ),
   CHECK (
     (kind = 'terminal' AND agent_provider IS NULL) OR
-    (kind = 'codex' AND agent_provider = 'codex') OR
-    (kind = 'claude' AND agent_provider = 'claude') OR
-    (kind = 'shared-spec' AND agent_provider = 'codex')
+    (kind = 'codex' AND agent_provider IS NOT NULL AND agent_provider = 'codex') OR
+    (kind = 'claude' AND agent_provider IS NOT NULL AND agent_provider = 'claude') OR
+    (kind = 'shared-spec' AND agent_provider IS NOT NULL AND agent_provider = 'codex')
   )
 );
 

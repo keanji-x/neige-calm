@@ -181,6 +181,52 @@ async fn runtime_one_active_per_card_invariant_enforced() {
     ));
 }
 
+async fn insert_raw_runtime(
+    repo: &SqlxRepo,
+    card_id: &str,
+    kind: &str,
+    agent_provider: Option<&str>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO runtimes
+           (id, card_id, kind, agent_provider, status, created_at_ms, updated_at_ms)
+           VALUES (?1, ?2, ?3, ?4, 'exited', ?5, ?6)"#,
+    )
+    .bind(new_id())
+    .bind(card_id)
+    .bind(kind)
+    .bind(agent_provider)
+    .bind(now)
+    .bind(now)
+    .execute(repo.pool())
+    .await
+}
+
+#[tokio::test]
+async fn runtime_check_rejects_null_agent_provider_for_non_terminal_kinds() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+
+    for kind in ["codex", "claude", "shared-spec"] {
+        let err = insert_raw_runtime(&repo, card.id.as_str(), kind, None)
+            .await
+            .unwrap_err();
+        let sqlx::Error::Database(db_err) = err else {
+            panic!("expected database error for {kind}");
+        };
+        assert!(
+            db_err.message().to_ascii_uppercase().contains("CHECK"),
+            "expected CHECK constraint error for {kind}, got: {}",
+            db_err.message()
+        );
+    }
+
+    insert_raw_runtime(&repo, card.id.as_str(), "terminal", None)
+        .await
+        .expect("terminal runtime with null agent_provider should pass");
+}
+
 #[tokio::test]
 async fn runtime_supersede_tx_atomic() {
     let repo = fresh_repo().await;
