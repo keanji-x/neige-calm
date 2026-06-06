@@ -12,6 +12,7 @@ use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{CardRole, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::theme::RequestTheme;
+use crate::runtime_repo::RunStatus;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -73,6 +74,29 @@ impl TerminalAdapter {
             wave_cove_cache,
             spawn_hook: Some(spawn_hook),
         }
+    }
+
+    async fn spawn_terminal_from_output(
+        &self,
+        terminal_id: String,
+        program: String,
+        cwd: String,
+        env: Value,
+        ctx: &SpawnCtx,
+    ) -> Result<SpawnHandle> {
+        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+        let term = ctx
+            .repo
+            .terminal_get(&terminal_id)
+            .await?
+            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
+
+        #[cfg(feature = "fixtures")]
+        if let Some(hook) = &self.spawn_hook {
+            return hook(terminal_id, program, cwd, env).await;
+        }
+
+        ctx.spawn_terminal(&term, &program, &cwd, &env).await
     }
 }
 
@@ -214,23 +238,38 @@ impl ProviderAdapter for TerminalAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnHandle> {
+        let card_id = output_card_id(output)?;
         let terminal_id = output_string(output, "terminal_id")?;
         let program = output_string(output, "program")?;
         let cwd = output_string(output, "cwd")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
-        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
-        let term = ctx
-            .repo
-            .terminal_get(&terminal_id)
-            .await?
-            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
-        #[cfg(feature = "fixtures")]
-        if let Some(hook) = &self.spawn_hook {
-            return hook(terminal_id, program, cwd, env).await;
+        match self
+            .spawn_terminal_from_output(terminal_id.clone(), program, cwd, env, ctx)
+            .await
+        {
+            Ok(handle) => {
+                ctx.repo
+                    .runtime_set_status_for_card(&card_id, RunStatus::Running)
+                    .await?;
+                Ok(handle)
+            }
+            Err(e) => {
+                if let Err(mark_err) = ctx
+                    .repo
+                    .runtime_complete_for_card(&card_id, RunStatus::Failed)
+                    .await
+                {
+                    tracing::warn!(
+                        card_id = %card_id,
+                        terminal_id = %terminal_id,
+                        error = %mark_err,
+                        "failed to mark terminal runtime failed after spawn error"
+                    );
+                }
+                Err(e)
+            }
         }
-
-        ctx.spawn_terminal(&term, &program, &cwd, &env).await
     }
 
     async fn plan_compensation(
@@ -343,6 +382,14 @@ fn output_wave_id(output: &TxOutput) -> Result<&str> {
         .get("wave_id")
         .and_then(Value::as_str)
         .ok_or_else(|| CalmError::Internal("terminal tx_output missing wave_id".into()))
+}
+
+fn output_card_id(output: &TxOutput) -> Result<String> {
+    output
+        .target_id
+        .clone()
+        .or_else(|| output.data.get("card_id").and_then(Value::as_str).map(str::to_owned))
+        .ok_or_else(|| CalmError::Internal("terminal tx_output missing card_id".into()))
 }
 
 fn output_string(output: &TxOutput, key: &str) -> Result<String> {

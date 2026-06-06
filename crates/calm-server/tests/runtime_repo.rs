@@ -1,8 +1,9 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
-    runtime_bind_attribution_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
-    runtime_get_by_id_tx, runtime_set_status_tx, runtime_start_tx, runtime_supersede_tx,
+    runtime_bind_attribution_tx, runtime_complete_for_card_tx, runtime_complete_tx,
+    runtime_get_active_for_card_tx, runtime_get_by_id_tx, runtime_set_status_for_card_tx,
+    runtime_set_status_tx, runtime_start_tx, runtime_supersede_tx,
 };
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_repo::{
@@ -109,6 +110,161 @@ async fn runtime_start_tx_terminal_persists_active_row() {
     assert_eq!(active.kind, RuntimeKind::Terminal);
     assert_eq!(active.status, RunStatus::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
+}
+
+#[tokio::test]
+async fn runtime_complete_for_terminal_exited_path() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, term) = card_with_terminal_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+        CardRole::Plain,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let active = repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime");
+    repo.runtime_complete_for_terminal(&term.id, RunStatus::Exited)
+        .await
+        .unwrap();
+
+    let completed = repo
+        .runtime_get_by_id(&active.id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(completed.kind, RuntimeKind::Terminal);
+    assert_eq!(completed.status, RunStatus::Exited);
+    assert_eq!(completed.terminal_run_id.as_deref(), Some(term.id.as_str()));
+    assert!(completed.completed_at_ms.is_some());
+    assert!(
+        repo.runtime_get_active_for_card(&card.id.to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn runtime_complete_for_terminal_failed_path() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, term) = card_with_terminal_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+        CardRole::Plain,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let active = repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime");
+    repo.runtime_complete_for_terminal(&term.id, RunStatus::Failed)
+        .await
+        .unwrap();
+
+    let completed = repo
+        .runtime_get_by_id(&active.id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(completed.status, RunStatus::Failed);
+    assert_eq!(completed.terminal_run_id.as_deref(), Some(term.id.as_str()));
+    assert!(completed.completed_at_ms.is_some());
+}
+
+#[tokio::test]
+async fn runtime_complete_for_terminal_noop_when_no_active() {
+    let repo = fresh_repo().await;
+    repo.runtime_complete_for_terminal("missing-terminal", RunStatus::Exited)
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, _term) = card_with_terminal_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+        CardRole::Plain,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    let runtime_id = runtime_get_active_for_card_tx(&mut tx, card.id.as_ref())
+        .await
+        .unwrap()
+        .expect("active runtime")
+        .id;
+    runtime_set_status_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Running)
+        .await
+        .unwrap();
+    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Failed)
+        .await
+        .unwrap();
+    let completed = runtime_get_by_id_tx(&mut tx, &runtime_id)
+        .await
+        .unwrap()
+        .expect("completed runtime");
+    let active_after_complete = runtime_get_active_for_card_tx(&mut tx, card.id.as_ref())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(completed.status, RunStatus::Failed);
+    assert!(completed.completed_at_ms.is_some());
+    assert!(active_after_complete.is_none());
+    let row: (String, Option<i64>) =
+        sqlx::query_as("SELECT status, completed_at_ms FROM runtimes WHERE card_id = ?1")
+            .bind(card.id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(row.0, "failed");
+    assert!(row.1.is_some());
 }
 
 #[tokio::test]

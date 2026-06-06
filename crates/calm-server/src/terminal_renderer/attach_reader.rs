@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 
 use super::{SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo};
 use crate::db::RouteRepo;
+use crate::runtime_repo::RunStatus;
 use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
 use std::sync::Arc;
 
@@ -75,6 +76,25 @@ pub fn spawn_supervisor_attach_reader(
                             error = %e,
                             "failed to persist terminal exit from supervisor"
                         );
+                    }
+                    if let Some(repo) = repo.as_ref() {
+                        let terminal_status = if signalled {
+                            RunStatus::Failed
+                        } else {
+                            RunStatus::Exited
+                        };
+                        if let Err(e) = repo
+                            .runtime_complete_for_terminal(&terminal_id, terminal_status)
+                            .await
+                        {
+                            tracing::warn!(
+                                terminal_id = %terminal_id,
+                                exit_code = ?exit_code,
+                                signal_killed = signalled,
+                                error = %e,
+                                "failed to complete runtime from supervisor terminal exit"
+                            );
+                        }
                     }
                     break;
                 }

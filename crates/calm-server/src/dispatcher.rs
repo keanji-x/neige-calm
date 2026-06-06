@@ -2002,6 +2002,7 @@ impl Inner {
                 ))
             })?;
 
+        let mut spawn_preserved_failure = false;
         if let Err(e) = spawn_terminal_with_parts(
             self.daemon.as_ref(),
             self.terminal_renderer.as_ref(),
@@ -2046,6 +2047,10 @@ impl Inner {
                     return Err(e);
                 }
                 RollbackOutcome::Preserved => {
+                    self.repo
+                        .runtime_complete_for_card(card_id.as_ref(), RunStatus::Failed)
+                        .await?;
+                    spawn_preserved_failure = true;
                     tracing::info!(
                         card_id = %card_id,
                         wave_id = %wave_id,
@@ -2057,6 +2062,12 @@ impl Inner {
                     // so subscribers learn about the preserved card.
                 }
             }
+        }
+
+        if !spawn_preserved_failure {
+            self.repo
+                .runtime_set_status_for_card(card_id.as_ref(), RunStatus::Running)
+                .await?;
         }
 
         // Issue #310 — broadcast `CardAdded` post-spawn-success so the

@@ -32,6 +32,7 @@ pub mod actor;
 pub mod aspect;
 pub mod auth;
 pub mod card_kind;
+use crate::runtime_repo::RunStatus;
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
@@ -69,6 +70,17 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                         terminal_id = %term.id,
                         error = %e,
                         "failed to mark stale terminal exited during boot reconcile"
+                    );
+                }
+                if let Err(e) = state
+                    .repo
+                    .runtime_complete_for_terminal(&term.id, RunStatus::Exited)
+                    .await
+                {
+                    tracing::warn!(
+                        terminal_id = %term.id,
+                        error = %e,
+                        "failed to complete stale terminal runtime during boot reconcile"
                     );
                 }
             }

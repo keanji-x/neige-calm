@@ -531,6 +531,17 @@ pub(crate) async fn create_codex_card(
                 error = %e,
                 "PTY spawn failed; rolled back pending registry + payload"
             );
+        } else if let Err(mark_err) = w
+            .repo
+            .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+            .await
+        {
+            tracing::warn!(
+                card_id = %card.id,
+                terminal_id = %term.id,
+                error = %mark_err,
+                "failed to mark prompt codex runtime failed after spawn error"
+            );
         }
         return Err(e);
     }
