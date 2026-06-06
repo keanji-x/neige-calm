@@ -20,13 +20,12 @@
 //!     legacy token fallback while older clients and worker launches
 //!     catch up.
 
-use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::event::EventBus;
 use crate::ids::{ActorId, CardId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::state::WriteContext;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
@@ -152,12 +151,8 @@ pub struct AppContext {
     pub repo: Arc<dyn RouteRepo>,
     /// Event bus for `write_with_event_typed` broadcasts.
     pub events: EventBus,
-    /// Role cache, threaded through to `write_with_event_typed` so the
-    /// in-tx role gate runs without a DB lookup.
-    pub card_role_cache: CardRoleCache,
-    /// #234 — parallel wave→cove cache the role gate consults alongside
-    /// `card_role_cache`.
-    pub wave_cove_cache: WaveCoveCache,
+    /// #480 PR2 write-surface caches shared with REST/worker paths.
+    pub write: WriteContext,
     /// Optional server-wide MCP daemon token hash. When present, the
     /// initialize handshake accepts this as daemon trust without binding a
     /// legacy per-card identity.

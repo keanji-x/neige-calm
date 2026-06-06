@@ -119,8 +119,7 @@ async fn boot() -> Boot {
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         events,
-        card_role_cache,
-        wave_cove_cache,
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
     });
 

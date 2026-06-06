@@ -116,8 +116,7 @@ async fn boot_with_registry_and_daemon_hash(
     let server = McpServer::spawn(
         repo.clone(),
         EventBus::new(),
-        card_role_cache.clone(),
-        wave_cove_cache,
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

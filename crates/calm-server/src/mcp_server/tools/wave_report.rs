@@ -409,8 +409,7 @@ async fn call_persist_report(
     match persist_report(
         ctx.repo.as_ref(),
         &ctx.events,
-        &ctx.card_role_cache,
-        &ctx.wave_cove_cache,
+        &ctx.write,
         actor,
         EditAuthor::Spec,
         wave,

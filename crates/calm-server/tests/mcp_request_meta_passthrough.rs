@@ -129,8 +129,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, seed_legacy_car
     let server = McpServer::spawn(
         repo,
         events,
-        card_role_cache,
-        wave_cove_cache,
+        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

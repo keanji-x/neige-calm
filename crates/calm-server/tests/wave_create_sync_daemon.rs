@@ -109,8 +109,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-sync-daemon-test"),
             Vec::new(),
             EventBus::new(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         )),
         // #293 cutover — `POST /api/waves` now boots a kernel-owned codex
         // app-server before returning 201. Point `codex_bin` at the
@@ -219,8 +218,7 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
             std::env::temp_dir().join("calm-plugins-data-broken-codex-test"),
             Vec::new(),
             EventBus::new(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(codex),
         Some(card_role_cache.clone()),

@@ -122,8 +122,7 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
     Dispatcher::spawn_with_terminal_renderer(
         boot.repo.clone(),
         boot.events.clone(),
-        boot.cache.clone(),
-        boot.wcc.clone(),
+        calm_server::state::WriteContext::new(boot.cache.clone(), boot.wcc.clone()),
         boot.codex.clone(),
         boot.daemon.clone(),
         boot.renderer.clone(),

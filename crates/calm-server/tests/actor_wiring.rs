@@ -81,8 +81,10 @@ fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events,
-            calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         None,
@@ -148,8 +150,10 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            cache.clone(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                cache.clone(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
@@ -333,8 +337,10 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
-        calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -487,8 +493,10 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
-        calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -636,8 +644,10 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
-        calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");

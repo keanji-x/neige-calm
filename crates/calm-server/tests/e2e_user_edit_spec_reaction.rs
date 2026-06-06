@@ -159,8 +159,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-e2e-user-edit"),
             Vec::new(),
             events.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
@@ -179,8 +178,7 @@ async fn boot() -> Boot {
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         events: events.clone(),
-        card_role_cache,
-        wave_cove_cache,
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
     });
     let mut registry = ToolRegistry::new();

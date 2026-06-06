@@ -89,10 +89,9 @@ use crate::routes::terminal::spawn_terminal_with_parts;
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::spec_card::build_codex_env_map;
 use crate::spec_push::SpecPushRegistry;
-use crate::state::{CodexClient, DaemonClient};
+use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_sweeper::{reap_terminal_artifacts_with_renderer, reap_terminal_pid_only};
-use crate::wave_cove_cache::WaveCoveCache;
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
@@ -286,8 +285,8 @@ impl Dispatcher {
     ) -> crate::spec_push::InitialPromptReadySink {
         let repo = Arc::clone(&self.inner.repo);
         let events = self.inner.events.clone();
-        let card_role_cache = self.inner.card_role_cache.clone();
-        let wave_cove_cache = self.inner.wave_cove_cache.clone();
+        let card_role_cache = self.inner.write.role_cache().clone();
+        let wave_cove_cache = self.inner.write.cove_cache().clone();
         Arc::new(move |thread_id: String| {
             let repo = Arc::clone(&repo);
             let spec_card_id = spec_card_id.clone();
@@ -582,8 +581,7 @@ impl Dispatcher {
     pub fn spawn(
         repo: Arc<dyn Repo>,
         events: EventBus,
-        card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        write: WriteContext,
         codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
@@ -596,8 +594,7 @@ impl Dispatcher {
         Self::spawn_with_terminal_renderer(
             repo,
             events,
-            card_role_cache,
-            wave_cove_cache,
+            write,
             codex,
             daemon,
             terminal_renderer,
@@ -612,8 +609,7 @@ impl Dispatcher {
     pub fn spawn_with_terminal_renderer(
         repo: Arc<dyn Repo>,
         events: EventBus,
-        card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        write: WriteContext,
         codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
         terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -645,8 +641,7 @@ impl Dispatcher {
         let inner = Arc::new(Inner {
             repo,
             events: events.clone(),
-            card_role_cache,
-            wave_cove_cache,
+            write,
             codex,
             daemon,
             terminal_renderer,
@@ -744,10 +739,7 @@ impl Dispatcher {
 struct Inner {
     repo: Arc<dyn Repo>,
     events: EventBus,
-    card_role_cache: CardRoleCache,
-    /// #234 — parallel wave→cove cache the role gate consults alongside
-    /// `card_role_cache`.
-    wave_cove_cache: WaveCoveCache,
+    write: WriteContext,
     /// #272 (N3) — `Weak` so this dispatcher doesn't cycle with
     /// `AppState.codex` (the strong owner). The dispatcher's background
     /// task is held alive by the broadcast bus; if it also held a
@@ -829,7 +821,7 @@ impl Inner {
         // untouched.
         match &envelope.event {
             Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                if event_warrants_spec_push(&envelope.event, &self.card_role_cache) {
+                if event_warrants_spec_push(&envelope.event, self.write.role_cache()) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.push_to_spec(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -847,7 +839,7 @@ impl Inner {
             } => {
                 // Only user edits warrant a push. The spec authored
                 // Spec/Kernel edits itself; re-notifying it would loop.
-                if event_warrants_spec_push(&envelope.event, &self.card_role_cache) {
+                if event_warrants_spec_push(&envelope.event, self.write.role_cache()) {
                     self.push_to_spec(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
                 } else {
@@ -869,7 +861,7 @@ impl Inner {
                 // worker cards should notify the spec. Stop hooks carry no
                 // result/artifacts, so the pushed observation is a light
                 // wake-up that asks the spec to re-read wave state.
-                if event_warrants_spec_push(&envelope.event, &self.card_role_cache) {
+                if event_warrants_spec_push(&envelope.event, self.write.role_cache()) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.push_to_spec(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -1056,8 +1048,8 @@ impl Inner {
                     scope,
                     None,
                     &self.events,
-                    &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    self.write.role_cache(),
+                    self.write.cove_cache(),
                     fail_event,
                 )
                 .await
@@ -1343,7 +1335,7 @@ impl Inner {
             }
         };
         cards.into_iter().find_map(|c| {
-            if self.card_role_cache.get(&c.id) == Some(CardRole::Spec) {
+            if self.write.role_cache().get(&c.id) == Some(CardRole::Spec) {
                 Some(c.id)
             } else {
                 None
@@ -1430,7 +1422,7 @@ impl Inner {
     ) -> crate::error::Result<()> {
         let idem_for_tx = idempotency_key.clone();
         let wave_for_tx = wave_id.clone();
-        let cache_for_tx = self.card_role_cache.clone();
+        let cache_for_tx = self.write.role_cache().clone();
         let repo_for_scope = self.repo.clone();
 
         // Pre-mint id so we can stamp the EventScope::Card with the
@@ -1726,7 +1718,7 @@ impl Inner {
             let _ = rollback_orphan_worker(
                 self.repo.as_ref(),
                 self.terminal_renderer.as_ref(),
-                &self.card_role_cache,
+                self.write.role_cache(),
                 card_id.as_str(),
                 term.id.as_str(),
             )
@@ -1760,8 +1752,8 @@ impl Inner {
                 scope,
                 None,
                 &self.events,
-                &self.card_role_cache,
-                &self.wave_cove_cache,
+                self.write.role_cache(),
+                self.write.cove_cache(),
                 Event::CardAdded(card_for_added),
             )
             .await
@@ -1809,7 +1801,7 @@ impl Inner {
     ) -> crate::error::Result<()> {
         let idem_for_tx = idempotency_key.clone();
         let wave_for_tx = wave_id.clone();
-        let cache_for_tx = self.card_role_cache.clone();
+        let cache_for_tx = self.write.role_cache().clone();
         let new_card_id = crate::model::new_id();
         let new_card_id_for_tx = new_card_id.clone();
 
@@ -2004,7 +1996,7 @@ impl Inner {
             match rollback_orphan_worker(
                 self.repo.as_ref(),
                 self.terminal_renderer.as_ref(),
-                &self.card_role_cache,
+                self.write.role_cache(),
                 card_id.as_str(),
                 term.id.as_str(),
             )
@@ -2045,8 +2037,8 @@ impl Inner {
                 scope,
                 None,
                 &self.events,
-                &self.card_role_cache,
-                &self.wave_cove_cache,
+                self.write.role_cache(),
+                self.write.cove_cache(),
                 Event::CardAdded(card),
             )
             .await
@@ -2386,7 +2378,7 @@ async fn spawn_codex_worker_via_shared_daemon(
             let _ = rollback_orphan_worker(
                 inner.repo.as_ref(),
                 inner.terminal_renderer.as_ref(),
-                &inner.card_role_cache,
+                inner.write.role_cache(),
                 card_id,
                 ctx.term.id.as_str(),
             )
@@ -2428,7 +2420,7 @@ async fn spawn_codex_worker_via_shared_daemon(
         let _ = rollback_orphan_worker(
             inner.repo.as_ref(),
             inner.terminal_renderer.as_ref(),
-            &inner.card_role_cache,
+            inner.write.role_cache(),
             card_id,
             ctx.term.id.as_str(),
         )
@@ -2482,7 +2474,7 @@ async fn spawn_codex_worker_via_shared_daemon(
             let _ = rollback_orphan_worker(
                 inner.repo.as_ref(),
                 inner.terminal_renderer.as_ref(),
-                &inner.card_role_cache,
+                inner.write.role_cache(),
                 card_id,
                 ctx.term.id.as_str(),
             )
@@ -2554,7 +2546,7 @@ async fn spawn_codex_worker_via_shared_daemon(
         match rollback_orphan_worker(
             inner.repo.as_ref(),
             inner.terminal_renderer.as_ref(),
-            &inner.card_role_cache,
+            inner.write.role_cache(),
             card_id,
             ctx.term.id.as_str(),
         )

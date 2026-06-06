@@ -344,6 +344,7 @@ impl AppState {
         let card_role_cache = card_role_cache.unwrap_or_default();
         let wave_cove_cache = wave_cove_cache.unwrap_or_default();
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
+        let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
@@ -363,8 +364,7 @@ impl AppState {
         let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            write.clone(),
             codex.clone(),
             daemon.clone(),
             terminal_renderer.clone(),
@@ -430,6 +430,10 @@ impl AppState {
         &self.card_kind_registry
     }
 
+    pub fn write(&self) -> &WriteContext {
+        &self.route.write
+    }
+
     /// Real boot-time constructor. Loads the plugin manifest registry from
     /// `cfg.plugins_dir`, creating the directory if it doesn't exist (fresh
     /// install path), wires up `DaemonClient` + `EventBus` + `PluginHost`,
@@ -490,17 +494,13 @@ impl AppState {
         let wave_cove_cache = WaveCoveCache::new();
         repo.seed_wave_cove_cache(&wave_cove_cache).await?;
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
+        let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
 
         // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
         // and projects `codex.hook` events onto a 6-state FSM, writing
         // `Overlay { kind: "status" }` rows for cards and wave-union rows
         // for waves. See `card_fsm` module docs for the scope rationale.
-        crate::card_fsm::spawn(
-            repo.clone(),
-            events.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        );
+        crate::card_fsm::spawn(repo.clone(), events.clone(), write.clone());
 
         // Share one `DaemonClient` + `CodexClient` between the
         // dispatcher and the `AppState` fields — both are
@@ -541,8 +541,7 @@ impl AppState {
         let mcp_server = crate::mcp_server::McpServer::spawn(
             repo.clone(),
             events.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            write.clone(),
             mcp_socket_path,
             mcp_shim_bin,
             mcp_registry,
@@ -593,8 +592,7 @@ impl AppState {
         let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            write.clone(),
             codex.clone(),
             daemon.clone(),
             terminal_renderer.clone(),
@@ -615,8 +613,7 @@ impl AppState {
             plugins_data_dir,
             cfg.plugins_disabled.clone(),
             events.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            write.clone(),
         ));
 
         // Auto-spawn every enabled plugin row. Per-plugin errors are logged

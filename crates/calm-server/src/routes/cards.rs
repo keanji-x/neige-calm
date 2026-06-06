@@ -216,15 +216,15 @@ pub(crate) async fn create_card(
         payload,
     };
     let card_id_for_tx = card_id.0.clone();
-    let cache = s.card_role_cache.clone();
+    let cache = s.write().role_cache().clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plain user-driven creates are
@@ -357,15 +357,15 @@ async fn create_via_tool_call(
         .await
         .map_err(|e| e.into_response())?;
     let card_id_for_tx = card_id.0.clone();
-    let cache = s.card_role_cache.clone();
+    let cache = s.write().role_cache().clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor,
         scope,
         Some(&correlation),
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plain user-driven creates are
@@ -442,8 +442,8 @@ pub(crate) async fn update_card(
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 let card = card_update_tx(tx, &id, p).await?;
@@ -485,7 +485,8 @@ pub(crate) async fn reset_spec_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let role = s
-        .card_role_cache
+        .write()
+        .role_cache()
         .get(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if card.kind != "codex" || role != CardRole::Spec {
@@ -826,8 +827,8 @@ async fn persist_shared_reset_runtime_fields(
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -943,15 +944,15 @@ pub(crate) async fn delete_card(
     }
     let terminal_id = term.map(|t| t.id);
 
-    let cache = s.card_role_cache.clone();
+    let cache = s.write().role_cache().clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 // Drop the terminal row first so the RESTRICT FK lets the

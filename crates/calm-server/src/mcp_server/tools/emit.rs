@@ -319,8 +319,8 @@ async fn emit_event_for_identity(
         scope,
         None,
         &ctx.events,
-        &ctx.card_role_cache,
-        &ctx.wave_cove_cache,
+        ctx.write.role_cache(),
+        ctx.write.cove_cache(),
         move |_tx| {
             let event = event.clone();
             Box::pin(async move { Ok(((), event)) })

@@ -91,8 +91,10 @@ async fn user_prompt_card_first_turn_true_binary() {
             tmp.path().join("plugins-data"),
             Vec::new(),
             EventBus::new(),
-            calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         None,

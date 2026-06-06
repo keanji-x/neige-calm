@@ -49,8 +49,10 @@ async fn fresh_state() -> AppState {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
-            calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         None,
@@ -193,15 +195,18 @@ async fn hook_boot() -> HookBoot {
             std::env::temp_dir().join("calm-plugins-data-hook-auth"),
             Vec::new(),
             events.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
     );
 
-    calm_server::card_fsm::spawn(repo_dyn.clone(), events, card_role_cache, wave_cove_cache);
+    calm_server::card_fsm::spawn(
+        repo_dyn.clone(),
+        events,
+        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+    );
     tokio::task::yield_now().await;
 
     HookBoot {

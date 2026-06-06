@@ -148,8 +148,7 @@ async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_t
         plugin_data_root.path().to_path_buf(),
         Vec::new(),
         EventBus::new(),
-        card_role_cache.clone(),
-        wave_cove_cache.clone(),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
     ));
 
     let state = AppState::from_parts(
@@ -264,8 +263,7 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
         plugin_data_root.path().to_path_buf(),
         Vec::new(),
         EventBus::new(),
-        card_role_cache.clone(),
-        wave_cove_cache.clone(),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
     ));
 
     // Construction-shape mirrors the integration tests that triggered

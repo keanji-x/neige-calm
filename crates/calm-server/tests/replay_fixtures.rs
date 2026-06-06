@@ -781,8 +781,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         std::env::temp_dir().join("calm-plugins-data-schema-fwd"),
         Vec::new(),
         events.clone(),
-        card_role_cache.clone(),
-        wave_cove_cache.clone(),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
     ));
     let state = AppState::from_parts(
         repo,

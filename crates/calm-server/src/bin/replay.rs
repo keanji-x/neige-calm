@@ -465,8 +465,8 @@ async fn dev_force_wave_lifecycle(
         actor,
         None,
         &s.app.events,
-        &s.app.card_role_cache,
-        &s.app.wave_cove_cache,
+        s.app.write().role_cache(),
+        s.app.write().cove_cache(),
         move |tx| {
             let scope = scope.clone();
             let patch = patch.clone();

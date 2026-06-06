@@ -119,8 +119,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-auth-path"),
             Vec::new(),
             events,
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         )),
         {
             // Deterministically-broken codex bin (absolute, absent) so the

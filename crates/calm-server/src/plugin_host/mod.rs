@@ -51,6 +51,7 @@ use tokio::sync::{Mutex, mpsc};
 use crate::db::RouteRepo;
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
+use crate::state::WriteContext;
 
 use callbacks::{CallbackCtx, SubscriptionRecord};
 
@@ -174,14 +175,8 @@ pub struct PluginHost {
     /// (test shims) we still create a private bus here so dispatch keeps
     /// working — emissions just go nowhere visible.
     events_arc: Arc<EventBus>,
-    /// PR3 (#136) — role cache threaded into every `CallbackCtx`. Clone-
-    /// cheap; the host holds one handle, hands clones out to dispatches
-    /// + to `emit_state`'s `log_pure_event` invocation.
-    card_role_cache: crate::card_role_cache::CardRoleCache,
-    /// #234 — parallel wave→cove cache the role gate consults alongside
-    /// `card_role_cache`. Same plumbing rules: held here, cloned into
-    /// dispatches + `emit_state`.
-    wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+    /// #480 PR2 — write-surface caches shared with REST/worker paths.
+    write: WriteContext,
     processes: Mutex<HashMap<String, RunningPlugin>>,
 }
 
@@ -200,8 +195,7 @@ impl PluginHost {
         plugins_data_dir: PathBuf,
         plugins_disabled: Vec<String>,
         events: EventBus,
-        card_role_cache: crate::card_role_cache::CardRoleCache,
-        wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+        write: WriteContext,
     ) -> Self {
         let events_arc = Arc::new(events.clone());
         Self {
@@ -212,8 +206,7 @@ impl PluginHost {
             plugins_disabled,
             events: Some(events),
             events_arc,
-            card_role_cache,
-            wave_cove_cache,
+            write,
             processes: Mutex::new(HashMap::new()),
         }
     }
@@ -221,6 +214,10 @@ impl PluginHost {
     /// Convenience accessor — most call sites only need the registry handle.
     pub fn registry(&self) -> &Arc<PluginRegistry> {
         &self.registry
+    }
+
+    pub fn write(&self) -> &WriteContext {
+        &self.write
     }
 
     /// `Arc<EventBus>` handle for the Slice C router. Always returns a real
@@ -416,8 +413,7 @@ impl PluginHost {
                 Arc::clone(&subscriptions),
                 inbound,
                 inbound_notifs,
-                self.card_role_cache.clone(),
-                self.wave_cove_cache.clone(),
+                self.write.clone(),
             )
         } else {
             tracing::info!(
@@ -619,8 +615,7 @@ impl PluginHost {
             mcp,
             subscriptions,
             call_id,
-            card_role_cache: self.card_role_cache.clone(),
-            wave_cove_cache: self.wave_cove_cache.clone(),
+            write: self.write.clone(),
         };
         callbacks::dispatch(&ctx, method, params).await
     }
@@ -648,8 +643,8 @@ impl PluginHost {
                     EventScope::System,
                     None,
                     bus,
-                    &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    self.write.role_cache(),
+                    self.write.cove_cache(),
                     event,
                 )
                 .await
@@ -804,8 +799,7 @@ fn spawn_neige_router(
     subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
     mut inbound: mpsc::Receiver<InboundRequest>,
     inbound_notifs: Option<mpsc::Receiver<InboundNotification>>,
-    card_role_cache: crate::card_role_cache::CardRoleCache,
-    wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+    write: WriteContext,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Drain notifications in a separate task — they're lossy by spec and
@@ -837,8 +831,7 @@ fn spawn_neige_router(
                 // tracing id (the route layer is where `call_id` enters);
                 // resulting event rows get `correlation = NULL`.
                 call_id: None,
-                card_role_cache: card_role_cache.clone(),
-                wave_cove_cache: wave_cove_cache.clone(),
+                write: write.clone(),
             };
             let outcome = callbacks::dispatch(&ctx, &req.method, req.params).await;
             // If the responder is gone (plugin disconnected mid-call), drop

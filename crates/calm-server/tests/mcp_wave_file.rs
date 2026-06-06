@@ -151,8 +151,7 @@ async fn boot() -> Boot {
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         events,
-        card_role_cache,
-        wave_cove_cache,
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
     });
 
@@ -243,8 +242,8 @@ async fn log_wave_event_as(
             },
             None,
             &boot.ctx.events,
-            &boot.ctx.card_role_cache,
-            &boot.ctx.wave_cove_cache,
+            boot.ctx.write.role_cache(),
+            boot.ctx.write.cove_cache(),
             event,
         )
         .await
@@ -262,8 +261,8 @@ async fn log_worker_card_event(boot: &Boot, event: Event) -> i64 {
             },
             None,
             &boot.ctx.events,
-            &boot.ctx.card_role_cache,
-            &boot.ctx.wave_cove_cache,
+            boot.ctx.write.role_cache(),
+            boot.ctx.write.cove_cache(),
             event,
         )
         .await
@@ -286,8 +285,8 @@ async fn log_card_hook_event(boot: &Boot, card_id: &CardId, event: Event) -> i64
             },
             None,
             &boot.ctx.events,
-            &boot.ctx.card_role_cache,
-            &boot.ctx.wave_cove_cache,
+            boot.ctx.write.role_cache(),
+            boot.ctx.write.cove_cache(),
             event,
         )
         .await
@@ -403,7 +402,8 @@ async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
         .await
         .expect("create worker card");
     boot.ctx
-        .card_role_cache
+        .write
+        .role_cache()
         .insert(card.id.clone(), CardRole::Worker, boot.wave_id.clone());
     card.id
 }
@@ -803,7 +803,8 @@ async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads(
         .await
         .expect("create decoy card");
     boot.ctx
-        .card_role_cache
+        .write
+        .role_cache()
         .insert(decoy.id, CardRole::Spec, boot.wave_id.clone());
 
     request_codex(&boot, "real-run").await;

@@ -126,8 +126,10 @@ async fn boot_state() -> (AppState, TempDir, PathBuf) {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
-        calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
     ));
     let state = AppState::from_parts(
         repo,

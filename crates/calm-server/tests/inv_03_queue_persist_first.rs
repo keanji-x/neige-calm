@@ -122,8 +122,7 @@ async fn dispatcher_for(repo: Arc<SqlxRepo>) -> Dispatcher {
     Dispatcher::spawn(
         Arc::clone(&repo) as Arc<dyn Repo>,
         bus,
-        card_role_cache,
-        wave_cove_cache,
+        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         codex,
         daemon,
         None, // mcp_server: not exercised by queue_persist_for

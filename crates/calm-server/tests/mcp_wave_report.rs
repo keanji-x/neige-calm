@@ -136,8 +136,7 @@ async fn boot() -> Boot {
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         events,
-        card_role_cache,
-        wave_cove_cache,
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
     });
 
@@ -917,7 +916,8 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         .await
         .unwrap();
     boot.ctx
-        .card_role_cache
+        .write
+        .role_cache()
         .insert(spec2.id.clone(), CardRole::Spec, wave2.id.clone());
 
     // Call from spec2's identity.
