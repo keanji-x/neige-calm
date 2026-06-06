@@ -60,7 +60,6 @@ LEFT JOIN card_codex_threads ct ON ct.card_id = c.id
 JOIN terminals t ON t.card_id = c.id
 WHERE c.kind = 'codex'
   AND c.role != 'spec'
-  AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') != 'shared'
   AND t.exit_code IS NULL
   AND COALESCE(t.signal_killed, 0) = 0
   AND NOT EXISTS (

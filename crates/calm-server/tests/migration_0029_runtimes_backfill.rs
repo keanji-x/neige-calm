@@ -178,7 +178,9 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('card-shared-pending', 'wave-2', 'codex', 4.0, '{"codex_source":"shared"}', 1500, 1500, 'spec', 0),
               ('card-preexisting', 'wave-1', 'terminal', 5.0, '{"terminal_id":"term-preexisting"}', 1600, 1600, 'plain', 1),
               ('card-codex-threadless', 'wave-1', 'codex', 6.0, '{"terminal_id":"term-codex-threadless"}', 1700, 1700, 'plain', 1),
-              ('card-legacy-spec', 'wave-3', 'codex', 7.0, '{"terminal_id":"term-legacy-spec","codex_source":"legacy"}', 1800, 1800, 'spec', 0)"#,
+              ('card-legacy-spec', 'wave-3', 'codex', 7.0, '{"terminal_id":"term-legacy-spec","codex_source":"legacy"}', 1800, 1800, 'spec', 0),
+              ('card-codex-shared-worker', 'wave-2', 'codex', 8.0, '{"codex_source":"shared","appserver_sock":"/tmp/codex.sock"}', 1900, 1900, 'worker', 1),
+              ('card-codex-shared-plain', 'wave-2', 'codex', 9.0, '{"codex_source":"shared"}', 2000, 2000, 'plain', 1)"#,
     )
     .execute(pool)
     .await
@@ -192,7 +194,9 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('term-claude', 'card-claude', 'claude', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1300, NULL, 0),
               ('term-preexisting', 'card-preexisting', 'bash', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1600, NULL, 0),
               ('term-codex-threadless', 'card-codex-threadless', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1700, NULL, 0),
-              ('term-legacy-spec', 'card-legacy-spec', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1800, NULL, 0)"#,
+              ('term-legacy-spec', 'card-legacy-spec', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1800, NULL, 0),
+              ('term-codex-shared-worker', 'card-codex-shared-worker', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1900, NULL, 0),
+              ('term-codex-shared-plain', 'card-codex-shared-plain', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2000, NULL, 0)"#,
     )
     .execute(pool)
     .await
@@ -203,7 +207,8 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
            VALUES
               ('thread-codex', 'card-codex', 'plain', 'wave-1', 1200, 1200),
               ('thread-shared', 'card-shared-thread', 'spec', 'wave-1', 1400, 1400),
-              ('thread-legacy-spec', 'card-legacy-spec', 'spec', 'wave-3', 1800, 1800)"#,
+              ('thread-legacy-spec', 'card-legacy-spec', 'spec', 'wave-3', 1800, 1800),
+              ('t-shared-worker', 'card-codex-shared-worker', 'worker', 'wave-2', 1900, 1900)"#,
     )
     .execute(pool)
     .await
@@ -302,6 +307,51 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
         "legacy spec codex card must not be backfilled as a plain codex runtime"
     );
 
+    let shared_worker = by_card
+        .get("card-codex-shared-worker")
+        .expect("shared worker codex runtime");
+    assert_eq!(shared_worker.try_get::<String, _>("kind").unwrap(), "codex");
+    assert_eq!(
+        shared_worker.try_get::<String, _>("status").unwrap(),
+        "running"
+    );
+    assert_eq!(
+        shared_worker
+            .try_get::<Option<String>, _>("thread_id")
+            .unwrap()
+            .as_deref(),
+        Some("t-shared-worker")
+    );
+    assert_eq!(
+        shared_worker
+            .try_get::<Option<String>, _>("terminal_run_id")
+            .unwrap()
+            .as_deref(),
+        Some("term-codex-shared-worker")
+    );
+
+    let shared_plain = by_card
+        .get("card-codex-shared-plain")
+        .expect("shared plain codex runtime");
+    assert_eq!(shared_plain.try_get::<String, _>("kind").unwrap(), "codex");
+    assert_eq!(
+        shared_plain.try_get::<String, _>("status").unwrap(),
+        "turn_pending"
+    );
+    assert!(
+        shared_plain
+            .try_get::<Option<String>, _>("thread_id")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        shared_plain
+            .try_get::<Option<String>, _>("terminal_run_id")
+            .unwrap()
+            .as_deref(),
+        Some("term-codex-shared-plain")
+    );
+
     let claude = by_card.get("card-claude").expect("claude runtime");
     assert_eq!(claude.try_get::<String, _>("kind").unwrap(), "claude");
     assert_eq!(claude.try_get::<String, _>("status").unwrap(), "starting");
@@ -363,12 +413,12 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
         preexisting.try_get::<String, _>("status").unwrap(),
         "starting"
     );
-    assert_eq!(by_card.len(), 7);
+    assert_eq!(by_card.len(), 9);
 
     apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 7);
+    assert_eq!(count, 9);
 }
