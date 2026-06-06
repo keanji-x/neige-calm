@@ -44,7 +44,7 @@ import { IconButton } from '../../pages/_shared';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { dlog } from '../../util/debug';
 import { CardHead } from '../CardHead';
-import { useCardStatusOverlay } from '../useCardOverlay';
+import { useCardStatusOverlay } from '../overlayRegistry';
 import {
   useCardInstanceCtx,
   useOptionalCardInstanceCtx,

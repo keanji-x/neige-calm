@@ -13,12 +13,13 @@
 //!   * Card `PATCH` with bad payload for an existing `terminal` card → 400.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::EventBus;
+use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::model::{NewCard, NewCove, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -98,6 +99,24 @@ fn app(state: AppState) -> axum::Router {
 async fn body_to_json(resp: axum::http::Response<Body>) -> Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+async fn collect_envelopes(events: EventBus, n: usize) -> Vec<BroadcastEnvelope> {
+    let mut rx = events.subscribe();
+    let mut out = Vec::with_capacity(n);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while out.len() < n {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            panic!("expected {n} envelopes; got {}", out.len());
+        }
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(env)) => out.push(env),
+            Ok(Err(err)) => panic!("broadcast recv error: {err:?}"),
+            Err(_) => continue,
+        }
+    }
+    out
 }
 
 async fn post_card(app: axum::Router, wave_id: &str, body: Value) -> axum::http::Response<Body> {
@@ -318,6 +337,76 @@ async fn post_status_overlay_with_valid_payload_returns_200() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
+    let (state, wave_id) = boot().await;
+    let wave = state
+        .raw_repo()
+        .wave_get(&wave_id)
+        .await
+        .unwrap()
+        .expect("seeded wave");
+    let card = state
+        .raw_repo()
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+
+    let cases = [
+        (
+            "card",
+            card.id.as_str(),
+            EventScope::Card {
+                card: card.id.clone(),
+                wave: wave.id.clone(),
+                cove: wave.cove_id.clone(),
+            },
+        ),
+        (
+            "wave",
+            wave.id.as_str(),
+            EventScope::Wave {
+                wave: wave.id.clone(),
+                cove: wave.cove_id.clone(),
+            },
+        ),
+        ("view", "main", EventScope::System),
+        ("system", "global", EventScope::System),
+    ];
+
+    for (entity_kind, entity_id, expected_scope) in cases {
+        let events = state.events.clone();
+        let subscription = tokio::spawn(async move { collect_envelopes(events, 1).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let resp = post_overlay(
+            app(state.clone()),
+            json!({
+                "plugin_id": "p1",
+                "entity_kind": entity_kind,
+                "entity_id": entity_id,
+                "kind": "status",
+                "payload": { "state": "running" }
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK, "{entity_kind} should write");
+
+        let envelopes = subscription.await.unwrap();
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0].scope, expected_scope);
+        assert!(
+            matches!(envelopes[0].event, Event::OverlaySet(_)),
+            "expected OverlaySet event for {entity_kind}"
+        );
+    }
 }
 
 #[tokio::test]

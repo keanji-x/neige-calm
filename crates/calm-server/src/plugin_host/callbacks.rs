@@ -29,7 +29,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::validation::validate_overlay_payload;
+use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};
 use crate::wave_cove_cache::WaveCoveCache;
 
 use super::events::SubscriptionFilter;
@@ -97,40 +97,17 @@ impl<'a> CallbackCtx<'a> {
 }
 
 /// Build the `EventScope` for a plugin overlay write keyed by
-/// `(entity_kind, entity_id)`. Mirrors `routes::overlays::overlay_scope`
-/// — overlays are polymorphic so we pattern-match on the declared kind.
-/// Missing rows collapse to `EventScope::System` rather than failing the
-/// dispatch.
+/// `(entity_kind, entity_id)`. Missing rows or transient read errors collapse
+/// to `EventScope::System` rather than failing the dispatch.
 async fn overlay_scope_for_callback(
     repo: &dyn RepoRead,
     entity_kind: &str,
     entity_id: &str,
 ) -> EventScope {
-    match entity_kind {
-        "card" => {
-            let Ok(Some(card)) = repo.card_get(entity_id).await else {
-                return EventScope::System;
-            };
-            let Ok(Some(wave)) = repo.wave_get(card.wave_id.as_str()).await else {
-                return EventScope::System;
-            };
-            EventScope::Card {
-                card: card.id,
-                wave: wave.id,
-                cove: wave.cove_id,
-            }
-        }
-        "wave" => {
-            let Ok(Some(wave)) = repo.wave_get(entity_id).await else {
-                return EventScope::System;
-            };
-            EventScope::Wave {
-                wave: wave.id,
-                cove: wave.cove_id,
-            }
-        }
-        _ => EventScope::System,
-    }
+    OVERLAY_ENTITY_SCOPE_REGISTRY
+        .route_scope(repo, entity_kind, entity_id)
+        .await
+        .unwrap_or(EventScope::System)
 }
 
 /// Build a `EventScope::Card { card, wave, cove }` for the given wave +
@@ -284,10 +261,13 @@ struct OverlaySetParams {
 
 async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: OverlaySetParams = parse_params("neige.overlay.set", &params)?;
-    if p.entity_kind != "wave" && p.entity_kind != "card" {
+    if !OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable(&p.entity_kind) {
+        let kinds = OVERLAY_ENTITY_SCOPE_REGISTRY
+            .plugin_writable_kinds()
+            .join(", ");
         return Err(RpcError::invalid_params(format!(
-            "entity_kind must be `wave` or `card`, got `{}`",
-            p.entity_kind
+            "entity_kind must be one of [{kinds}], got `{}`",
+            p.entity_kind,
         )));
     }
     let perms = manifest_permissions(ctx)?;
@@ -341,10 +321,13 @@ struct OverlayDeleteParams {
 
 async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: OverlayDeleteParams = parse_params("neige.overlay.delete", &params)?;
-    if p.entity_kind != "wave" && p.entity_kind != "card" {
+    if !OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable(&p.entity_kind) {
+        let kinds = OVERLAY_ENTITY_SCOPE_REGISTRY
+            .plugin_writable_kinds()
+            .join(", ");
         return Err(RpcError::invalid_params(format!(
-            "entity_kind must be `wave` or `card`, got `{}`",
-            p.entity_kind
+            "entity_kind must be one of [{kinds}], got `{}`",
+            p.entity_kind,
         )));
     }
     let perms = manifest_permissions(ctx)?;
@@ -880,7 +863,7 @@ mod tests {
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
-    use crate::model::{NewCove, NewPlugin, NewWave};
+    use crate::model::{NewCard, NewCove, NewPlugin, NewWave};
     use crate::plugin_host::manifest::Manifest;
     use crate::plugin_host::mcp::McpClient;
     use crate::plugin_host::registry::PluginRegistry;
@@ -1134,6 +1117,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlay_set_accepts_plugin_writable_entity_kinds() {
+        let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
+        let card = h
+            .ctx_storage
+            .repo
+            .card_create(NewCard {
+                wave_id: h.wave_id.clone().into(),
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+
+        for (entity_kind, entity_id) in [("wave", h.wave_id.as_str()), ("card", card.id.as_str())] {
+            let res = dispatch(
+                &h.ctx(),
+                "neige.overlay.set",
+                json!({
+                    "entity_kind": entity_kind,
+                    "entity_id": entity_id,
+                    "kind": "status",
+                    "payload": { "state": "running" }
+                }),
+            )
+            .await
+            .expect("set");
+            assert!(res["overlay_id"].is_string());
+        }
+    }
+
+    #[tokio::test]
     async fn overlay_set_denied_without_permission() {
         let h = Harness::new("p1", manifest_no_perms("p1")).await;
         let err = dispatch(
@@ -1206,6 +1221,30 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn overlay_set_rejects_non_plugin_writable_entity_kinds() {
+        let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
+        for entity_kind in ["view", "system"] {
+            let err = dispatch(
+                &h.ctx(),
+                "neige.overlay.set",
+                json!({
+                    "entity_kind": entity_kind,
+                    "entity_id": "x",
+                    "kind": "status",
+                    "payload": { "state": "running" }
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.code, RpcError::INVALID_PARAMS);
+            assert_eq!(
+                err.message,
+                format!("entity_kind must be one of [card, wave], got `{entity_kind}`")
+            );
+        }
     }
 
     // ----- card --------------------------------------------------------------

@@ -49,12 +49,16 @@
 //! Plugin-owned overlay payloads are explicitly **not** inspected for a
 //! `schemaVersion` — they pass through opaquely (no version policy from us).
 
+use std::future::Future;
+use std::pin::Pin;
+
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::db::RepoRead;
 use crate::error::{CalmError, Result};
-use crate::event::Event;
+use crate::event::{Event, EventScope};
 use crate::model::Overlay;
 
 // ---------------- Per-kind schema versions (Tier A) ----------------
@@ -264,6 +268,114 @@ pub static OVERLAY_KIND_REGISTRY: OverlayKindRegistry = OverlayKindRegistry::new
         max_schema_version: OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
     },
 ]);
+
+pub type OverlayScopeFuture<'a> = Pin<Box<dyn Future<Output = Result<EventScope>> + Send + 'a>>;
+pub type OverlayRouteScopeFn = for<'a> fn(&'a dyn RepoRead, &'a str) -> OverlayScopeFuture<'a>;
+
+pub struct OverlayEntityScopeEntry {
+    pub kind: &'static str,
+    pub route_scope_fn: OverlayRouteScopeFn,
+    pub plugin_writable: bool,
+}
+
+pub struct OverlayEntityScopeRegistry {
+    entries: &'static [OverlayEntityScopeEntry],
+}
+
+impl OverlayEntityScopeRegistry {
+    pub const fn new(entries: &'static [OverlayEntityScopeEntry]) -> Self {
+        Self { entries }
+    }
+
+    pub fn lookup(&self, kind: &str) -> Option<&'static OverlayEntityScopeEntry> {
+        self.entries.iter().find(|entry| entry.kind == kind)
+    }
+
+    pub async fn route_scope(
+        &self,
+        repo: &dyn RepoRead,
+        kind: &str,
+        id: &str,
+    ) -> Result<EventScope> {
+        match self.lookup(kind) {
+            Some(entry) => (entry.route_scope_fn)(repo, id).await,
+            None => Ok(EventScope::System),
+        }
+    }
+
+    pub fn plugin_writable(&self, kind: &str) -> bool {
+        self.lookup(kind)
+            .map(|entry| entry.plugin_writable)
+            .unwrap_or(false)
+    }
+
+    pub fn plugin_writable_kinds(&self) -> Vec<&'static str> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.plugin_writable)
+            .map(|entry| entry.kind)
+            .collect()
+    }
+}
+
+fn card_overlay_scope<'a>(repo: &'a dyn RepoRead, id: &'a str) -> OverlayScopeFuture<'a> {
+    Box::pin(async move {
+        let card = match repo.card_get(id).await? {
+            Some(card) => card,
+            None => return Ok(EventScope::System),
+        };
+        let wave = match repo.wave_get(card.wave_id.as_str()).await? {
+            Some(wave) => wave,
+            None => return Ok(EventScope::System),
+        };
+        Ok(EventScope::Card {
+            card: card.id,
+            wave: wave.id,
+            cove: wave.cove_id,
+        })
+    })
+}
+
+fn wave_overlay_scope<'a>(repo: &'a dyn RepoRead, id: &'a str) -> OverlayScopeFuture<'a> {
+    Box::pin(async move {
+        let wave = match repo.wave_get(id).await? {
+            Some(wave) => wave,
+            None => return Ok(EventScope::System),
+        };
+        Ok(EventScope::Wave {
+            wave: wave.id,
+            cove: wave.cove_id,
+        })
+    })
+}
+
+fn system_overlay_scope<'a>(_repo: &'a dyn RepoRead, _id: &'a str) -> OverlayScopeFuture<'a> {
+    Box::pin(async { Ok(EventScope::System) })
+}
+
+pub static OVERLAY_ENTITY_SCOPE_REGISTRY: OverlayEntityScopeRegistry =
+    OverlayEntityScopeRegistry::new(&[
+        OverlayEntityScopeEntry {
+            kind: "card",
+            route_scope_fn: card_overlay_scope,
+            plugin_writable: true,
+        },
+        OverlayEntityScopeEntry {
+            kind: "wave",
+            route_scope_fn: wave_overlay_scope,
+            plugin_writable: true,
+        },
+        OverlayEntityScopeEntry {
+            kind: "view",
+            route_scope_fn: system_overlay_scope,
+            plugin_writable: false,
+        },
+        OverlayEntityScopeEntry {
+            kind: "system",
+            route_scope_fn: system_overlay_scope,
+            plugin_writable: false,
+        },
+    ]);
 
 /// Return the maximum `schemaVersion` this kernel knows how to interpret for
 /// an overlay `kind`. `Some(N)` for kernel-owned kinds; `None` for
@@ -498,12 +610,43 @@ fn validate_layout_payload(payload: &Value) -> Result<()> {
 mod tests {
     use super::*;
     use crate::card_kind::CardKindRegistry;
+    use crate::db::sqlite::SqlxRepo;
     use serde_json::json;
 
     fn validate_builtin_card(kind: &str, payload: &Value) -> Result<()> {
         CardKindRegistry::builtins()
             .validate_payload(kind, payload)
             .map_err(CalmError::from)
+    }
+
+    #[test]
+    fn overlay_entity_scope_registry_4_entries() {
+        let kinds: Vec<_> = OVERLAY_ENTITY_SCOPE_REGISTRY
+            .entries
+            .iter()
+            .map(|entry| entry.kind)
+            .collect();
+        assert_eq!(kinds, vec!["card", "wave", "view", "system"]);
+        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("card"));
+        assert!(OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("wave"));
+        assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("view"));
+        assert!(!OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable("system"));
+        assert_eq!(
+            OVERLAY_ENTITY_SCOPE_REGISTRY.plugin_writable_kinds(),
+            vec!["card", "wave"]
+        );
+    }
+
+    #[tokio::test]
+    async fn overlay_entity_scope_registry_unknown_kind_falls_back_to_system() {
+        let repo = SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo");
+        let scope = OVERLAY_ENTITY_SCOPE_REGISTRY
+            .route_scope(&repo, "weird", "x")
+            .await
+            .unwrap();
+        assert_eq!(scope, EventScope::System);
     }
 
     // ---------------- Card: terminal ----------------
