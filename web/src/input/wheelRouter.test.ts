@@ -1,6 +1,15 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, render } from '@testing-library/react';
 import { createElement, useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { CardWheelTargetDecl } from '../cards/lifecycle';
+import {
+  __resetRegistryForTest,
+  registerCard,
+  type CardEntry,
+  type CardInstanceCtx,
+} from '../cards/registry';
+import type { WaveCardData } from '../types';
 import {
   getActiveCardShell,
   pixelDelta,
@@ -10,6 +19,8 @@ import {
 import type { XtermWheelTarget } from './xtermAdapter';
 import { useWheelRouter } from './useWheelRouter';
 import { registerXtermShell, unregisterXtermShell } from './wheelTargets';
+
+type WheelInstance = Pick<CardInstanceCtx, 'cardId' | 'useInstance'>;
 
 function setScrollSize(
   el: HTMLElement,
@@ -67,8 +78,55 @@ function dispatchWheel(target: Element, init: WheelEventInit = {}): WheelEvent {
   return event;
 }
 
+function fakeInstance(): WheelInstance {
+  const slots = new Map<string, unknown>();
+  return {
+    cardId: 'card_1',
+    useInstance<S>(key: string, initial: S) {
+      if (!slots.has(key)) slots.set(key, initial);
+      const setValue = (next: S | ((prev: S) => S)) => {
+        const current = slots.get(key) as S;
+        slots.set(
+          key,
+          typeof next === 'function'
+            ? (next as (prev: S) => S)(current)
+            : next,
+        );
+      };
+      return [slots.get(key) as S, setValue];
+    },
+  };
+}
+
+function fakeCard(): WaveCardData {
+  return {
+    type: 'terminal',
+    id: 'card_1',
+    title: 'terminal',
+    lines: [],
+  } as unknown as WaveCardData;
+}
+
+function registerWheelEntry(
+  wheelTarget: (
+    card: WaveCardData,
+    instance: WheelInstance,
+  ) => CardWheelTargetDecl | null,
+) {
+  registerCard({
+    type: 'terminal',
+    Component: () => null,
+    defaultSize: { w: 1, h: 1, minW: 1, minH: 1 },
+    title: () => 'terminal',
+    accessibleName: () => 'terminal',
+    create: { mode: 'kernel-minted-only' },
+    wheelTarget,
+  } as unknown as CardEntry);
+}
+
 afterEach(() => {
   cleanup();
+  __resetRegistryForTest();
   document.body.replaceChildren();
 });
 
@@ -233,114 +291,131 @@ describe('resolveWheelRoute', () => {
     ).toEqual({ kind: 'sink' });
   });
 
-  it('routes file-viewer wheel over CodeMirror to the cm scroller', () => {
+  it('keeps in-card native scrollable routing before entry declarations', () => {
     const { scrollRoot, activeCard } = fixture();
-    const viewer = document.createElement('div');
-    viewer.className = 'file-viewer-card';
-    viewer.dataset.wheelFileViewerTab = 'code';
-    const cmScroller = document.createElement('div');
-    cmScroller.className = 'cm-scroller';
-    viewer.append(cmScroller);
-    activeCard.append(viewer);
+    activeCard.dataset.cardId = 'card_1';
+    const scroller = document.createElement('div');
+    scroller.style.overflowY = 'auto';
+    setScrollSize(scroller, 400, 100);
+    activeCard.append(scroller);
+    registerWheelEntry(() => ({ kind: 'sink' }));
 
     expect(
       resolveWheelRoute({
         scrollRoot,
         activeCard,
-        eventTarget: cmScroller,
+        eventTarget: scroller,
         deltaY: 120,
+        resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
       }),
-    ).toEqual({ kind: 'native-scroll', target: cmScroller });
+    ).toEqual({ kind: 'native-scroll', target: scroller });
   });
 
-  it('routes file-viewer wheel over the file tree to the tree list', () => {
+  it('routes entry-declared xterm wheelTarget to scrollback or passthrough', () => {
     const { scrollRoot, activeCard } = fixture();
-    const viewer = document.createElement('div');
-    viewer.className = 'file-viewer-card';
-    viewer.dataset.wheelFileViewerTab = 'code';
-    const treeList = document.createElement('div');
-    treeList.className = 'file-viewer-tree-list';
-    const treeEntry = document.createElement('button');
-    treeList.append(treeEntry);
-    viewer.append(treeList);
-    activeCard.append(viewer);
+    activeCard.dataset.cardId = 'card_1';
+    let mode: 'scrollback' | 'passthrough' = 'scrollback';
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => mode,
+      scrollback: () => true,
+    };
+    const handle = { getWheelTarget: () => xtermTarget };
+    registerWheelEntry(() => ({ kind: 'xterm', ref: { current: handle } }));
+    const args = {
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: 120,
+      resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
+    };
 
-    expect(
-      resolveWheelRoute({
-        scrollRoot,
-        activeCard,
-        eventTarget: treeEntry,
-        deltaY: 120,
-      }),
-    ).toEqual({ kind: 'native-scroll', target: treeList });
+    expect(resolveWheelRoute(args)).toEqual({
+      kind: 'xterm-scrollback',
+      target: xtermTarget,
+    });
+
+    mode = 'passthrough';
+    expect(resolveWheelRoute(args)).toEqual({
+      kind: 'xterm-passthrough',
+      target: xtermTarget,
+    });
   });
 
-  it('falls back to the CodeMirror scroller for file-viewer code tab chrome', () => {
+  it('routes entry-declared native-scroll wheelTarget or page when ref is null', () => {
     const { scrollRoot, activeCard } = fixture();
-    const viewer = document.createElement('div');
-    viewer.className = 'file-viewer-card';
-    viewer.dataset.wheelFileViewerTab = 'code';
-    const toolbar = document.createElement('div');
-    toolbar.className = 'file-viewer-toolbar';
-    const cmScroller = document.createElement('div');
-    cmScroller.className = 'cm-scroller';
-    viewer.append(toolbar, cmScroller);
-    activeCard.append(viewer);
+    activeCard.dataset.cardId = 'card_1';
+    const scroller = document.createElement('div');
+    const ref: { current: HTMLElement | null } = { current: scroller };
+    registerWheelEntry(() => ({ kind: 'native-scroll', ref }));
+    const args = {
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: 120,
+      resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
+    };
 
-    expect(
-      resolveWheelRoute({
-        scrollRoot,
-        activeCard,
-        eventTarget: toolbar,
-        deltaY: 120,
-      }),
-    ).toEqual({ kind: 'native-scroll', target: cmScroller });
+    expect(resolveWheelRoute(args)).toEqual({
+      kind: 'native-scroll',
+      target: scroller,
+    });
+
+    ref.current = null;
+    expect(resolveWheelRoute(args)).toEqual({ kind: 'page' });
   });
 
-  it('falls back to the merge pane for file-viewer diff tab chrome', () => {
+  it('routes entry-declared sink wheelTarget to sink', () => {
     const { scrollRoot, activeCard } = fixture();
-    const viewer = document.createElement('div');
-    viewer.className = 'file-viewer-card';
-    viewer.dataset.wheelFileViewerTab = 'diff';
-    const toolbar = document.createElement('div');
-    toolbar.className = 'file-viewer-toolbar';
-    const changes = document.createElement('div');
-    changes.className = 'file-viewer-changes';
-    const merge = document.createElement('div');
-    merge.className = 'file-viewer-merge';
-    viewer.append(toolbar, changes, merge);
-    activeCard.append(viewer);
+    activeCard.dataset.cardId = 'card_1';
+    registerWheelEntry(() => ({ kind: 'sink' }));
 
     expect(
       resolveWheelRoute({
         scrollRoot,
         activeCard,
-        eventTarget: toolbar,
+        eventTarget: scrollRoot,
         deltaY: 120,
+        resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
       }),
-    ).toEqual({ kind: 'native-scroll', target: merge });
+    ).toEqual({ kind: 'sink' });
   });
 
-  it('falls back to changed files when diff tab has no merge pane', () => {
+  it('falls back to WeakMap xterm routing when shell has no data-card-id', () => {
     const { scrollRoot, activeCard } = fixture();
-    const viewer = document.createElement('div');
-    viewer.className = 'file-viewer-card';
-    viewer.dataset.wheelFileViewerTab = 'diff';
-    const toolbar = document.createElement('div');
-    toolbar.className = 'file-viewer-toolbar';
-    const changes = document.createElement('div');
-    changes.className = 'file-viewer-changes';
-    viewer.append(toolbar, changes);
-    activeCard.append(viewer);
+    const resolveCardById = vi.fn(() => ({
+      card: fakeCard(),
+      instance: fakeInstance(),
+    }));
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      scrollback: () => true,
+    };
+    registerXtermShell(activeCard, xtermTarget);
 
-    expect(
-      resolveWheelRoute({
-        scrollRoot,
-        activeCard,
-        eventTarget: toolbar,
-        deltaY: 120,
-      }),
-    ).toEqual({ kind: 'native-scroll', target: changes });
+    try {
+      expect(
+        resolveWheelRoute({
+          scrollRoot,
+          activeCard,
+          eventTarget: scrollRoot,
+          deltaY: 120,
+          resolveCardById,
+        }),
+      ).toEqual({ kind: 'xterm-scrollback', target: xtermTarget });
+      expect(resolveCardById).not.toHaveBeenCalled();
+    } finally {
+      unregisterXtermShell(activeCard);
+    }
+  });
+
+  it('does not carry legacy file-viewer selector literals in the router', () => {
+    const source = readFileSync('src/input/wheelRouter.ts', 'utf8');
+
+    expect(source).not.toMatch(
+      /\.cm-scroller|\.file-viewer-tree-list|\.file-viewer-changes|\.file-viewer-merge|data-wheel-file-viewer-tab/,
+    );
   });
 });
 

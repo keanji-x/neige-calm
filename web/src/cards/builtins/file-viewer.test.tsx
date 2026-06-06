@@ -5,8 +5,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import type { KernelCard, KernelOverlay, NewOverlayBody } from '../../api/wire';
+import {
+  CardInstanceProvider,
+  useCardInstanceCtx,
+} from '../registry';
 
 vi.mock('../../app/theme', () => ({
   useTheme: () => ({ resolved: 'light' }),
@@ -14,7 +18,7 @@ vi.mock('../../app/theme', () => ({
 
 vi.mock('./file-viewer-codemirror', () => ({
   CodePane: ({ path, text }: { path: string; text: string }) => (
-    <pre data-testid="code-pane" data-path={path}>
+    <pre className="cm-scroller" data-testid="code-pane" data-path={path}>
       {text}
     </pre>
   ),
@@ -27,7 +31,11 @@ vi.mock('./file-viewer-codemirror', () => ({
     headText: string | null;
     workingText: string | null;
   }) => (
-    <pre data-testid="diff-pane" data-path={path}>
+    <pre
+      className="file-viewer-merge"
+      data-testid="diff-pane"
+      data-path={path}
+    >
       {headText ?? ''}
       {' -> '}
       {workingText ?? ''}
@@ -77,7 +85,36 @@ function makeClient(): QueryClient {
 }
 
 function renderWithClient(ui: ReactNode, client = makeClient()) {
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  const providerCard = {
+    type: 'file-viewer' as const,
+    id: 'file_1',
+    path: '/repo/src/main.ts',
+  };
+  return render(
+    <QueryClientProvider client={client}>
+      <CardInstanceProvider
+        cardId={providerCard.id}
+        deletable
+        card={providerCard}
+      >
+        {ui}
+      </CardInstanceProvider>
+    </QueryClientProvider>,
+  );
+}
+
+function PaneSlotProbe({
+  onSlot,
+}: {
+  onSlot: (slot: { current: HTMLElement | null }) => void;
+}) {
+  const [slot] = useCardInstanceCtx().useInstance<{
+    current: HTMLElement | null;
+  }>('fvPaneRef', { current: null });
+  useEffect(() => {
+    onSlot(slot);
+  }, [onSlot, slot]);
+  return null;
 }
 
 describe('FileViewerEntry.fromKernel', () => {
@@ -339,6 +376,37 @@ describe('FileViewerCard rendering', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Expand file tree' }));
     expect(screen.getByLabelText('Files')).toBeTruthy();
     expect(screen.getByText('main.ts')).toBeTruthy();
+  });
+
+  it('updates the declared wheel pane ref when switching active tabs', async () => {
+    const Component = FileViewerEntry.Component;
+    let paneSlot: { current: HTMLElement | null } | null = null;
+    renderWithClient(
+      <>
+        <Component
+          card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+        />
+        <PaneSlotProbe
+          onSlot={(slot) => {
+            paneSlot = slot;
+          }}
+        />
+      </>,
+    );
+
+    await waitFor(() =>
+      expect(paneSlot?.current).toHaveClass('cm-scroller'),
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
+    await waitFor(() =>
+      expect(paneSlot?.current).toHaveClass('file-viewer-merge'),
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Code' }));
+    await waitFor(() =>
+      expect(paneSlot?.current).toHaveClass('cm-scroller'),
+    );
   });
 
   it('restores navigation overlay state after unmounting and remounting the same card', async () => {

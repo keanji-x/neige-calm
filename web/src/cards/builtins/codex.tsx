@@ -16,7 +16,14 @@
 //     local FSM here, so wave-union (the kernel computes it server-side)
 //     and per-card dot agree by construction.
 
-import { lazy, Suspense, useEffect, useRef, type CSSProperties } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { FsmState } from '../../types';
@@ -37,11 +44,11 @@ import { IconButton } from '../../pages/_shared';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { CardHead } from '../CardHead';
 import {
+  useCardInstanceCtx,
   useOptionalCardInstanceCtx,
   type CardEntry,
   type CardInstanceCtx,
 } from '../registry';
-import { useXtermWheelTargetRef } from '../../input/useXtermWheelTarget';
 import {
   CLAUDE_PAYLOAD_SCHEMA_VERSION,
   CODEX_PAYLOAD_SCHEMA_VERSION,
@@ -169,7 +176,6 @@ function UnsupportedCodexCard({
 function CodexCard({
   card,
   onClose,
-  deletable,
 }: {
   card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
@@ -191,7 +197,6 @@ function CodexCard({
     <CodexCardImpl
       card={card}
       onClose={onClose}
-      deletable={deletable}
     />
   );
 }
@@ -199,11 +204,9 @@ function CodexCard({
 function CodexCardImpl({
   card,
   onClose,
-  deletable,
 }: {
   card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
-  deletable?: boolean;
 }) {
   const cardId = card.id;
   const provider = card.type;
@@ -223,7 +226,17 @@ function CodexCardImpl({
   // "observing" pill in the head status slot. Cleared on disconnect — the
   // XtermView callback re-emits on every state transition.
   const [role, setRole] = useState<Role | null>(null);
-  const [xtermRef, setXtermRef] = useXtermWheelTargetRef<XtermViewHandle>();
+  const ctx = useCardInstanceCtx();
+  const [xtermRefSlot] = ctx.useInstance<{ current: XtermViewHandle | null }>(
+    'xtermRef',
+    { current: null },
+  );
+  const setXtermRef = useCallback(
+    (handle: XtermViewHandle | null) => {
+      xtermRefSlot.current = handle;
+    },
+    [xtermRefSlot],
+  );
   const instanceCtx = useOptionalCardInstanceCtx();
   // `card.id` is typed `string | undefined` in the kernel wire model, but a
   // mounted card always has one — gate the Reset button on its presence so
@@ -239,7 +252,6 @@ function CodexCardImpl({
   const resetOpenRef = useRef(resetOpen);
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
-  const showSpecSessionActions = canShowSpecSessionActions(card, deletable);
   useEffect(() => {
     resetOpenRef.current = resetOpen;
     if (resetOpen) {
@@ -337,7 +349,7 @@ function CodexCardImpl({
     setResetError(null);
     try {
       await resetSpecCard(cardId);
-      xtermRef.current?.refresh();
+      ctx.emit({ type: 'refresh' });
       setResetOpen(false);
     } catch (err) {
       if (resetOpenRef.current) {
@@ -366,15 +378,6 @@ function CodexCardImpl({
         // which is the kind of churn that confuses some AT.
         status={
           <>
-            {showSpecSessionActions && (
-              <IconButton
-                glyph={<Icon n="refresh" s={14} />}
-                label="Refresh terminal"
-                title="Refresh terminal (reconnect)"
-                tone="neutral"
-                onClick={() => xtermRef.current?.refresh()}
-              />
-            )}
             {role === 'Observer' && (
               <span className="card-head-observing-pill">observing</span>
             )}
@@ -496,6 +499,14 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+function xtermRefSlotFor(
+  instance: Pick<CardInstanceCtx, 'cardId' | 'useInstance'>,
+) {
+  return instance.useInstance<{ current: XtermViewHandle | null }>('xtermRef', {
+    current: null,
+  })[0];
+}
+
 function specSessionActions(
   card: CodexCardData | ClaudeCardData,
   ctx: CardInstanceCtx,
@@ -503,6 +514,22 @@ function specSessionActions(
   if (!canShowSpecSessionActions(card, ctx.deletable)) return [];
   const [, setResetOpen] = ctx.useInstance<boolean>('resetOpen', false);
   return [
+    {
+      kind: 'imperative' as const,
+      id: 'refresh-terminal',
+      placement: 'head' as const,
+      render() {
+        return (
+          <IconButton
+            glyph={<Icon n="refresh" s={14} />}
+            label="Refresh terminal"
+            title="Refresh terminal (reconnect)"
+            tone="neutral"
+            onClick={() => ctx.emit({ type: 'refresh' })}
+          />
+        );
+      },
+    },
     {
       kind: 'imperative' as const,
       id: 'reset-spec-session',
@@ -526,6 +553,18 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
   type: 'codex',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
+  refreshBacking: 'controller',
+  createController(ctx) {
+    const xtermRefSlot = xtermRefSlotFor(ctx.instance);
+    return {
+      onRefresh() {
+        xtermRefSlot.current?.refresh();
+      },
+    };
+  },
+  wheelTarget(_card, instance) {
+    return { kind: 'xterm', ref: xtermRefSlotFor(instance) };
+  },
   claim: { mode: 'exact', kind: 'codex' },
   title: () => 'Codex',
   accessibleName: () => 'Codex',
@@ -593,6 +632,10 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
   type: 'claude',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
+  refreshBacking: 'none',
+  wheelTarget(_card, instance) {
+    return { kind: 'xterm', ref: xtermRefSlotFor(instance) };
+  },
   claim: { mode: 'exact', kind: 'claude' },
   title: () => 'Claude',
   accessibleName: () => 'Claude',
