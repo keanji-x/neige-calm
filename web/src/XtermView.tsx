@@ -94,7 +94,7 @@ interface XtermViewProps {
 
 export interface XtermViewHandle {
   refresh(): void;
-  getWheelTarget(): XtermWheelTarget;
+  getWheelTarget(): XtermWheelTarget | null;
 }
 
 /** Last close info, surfaced in the gray "disconnected" overlay so the user
@@ -262,7 +262,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       refresh: () => setReconnectKey((k) => k + 1),
       getWheelTarget: () => {
         if (!rootRef.current) {
-          throw new Error('XtermView root is not mounted');
+          return null;
         }
         return createXtermWheelTarget({
           root: rootRef.current,
