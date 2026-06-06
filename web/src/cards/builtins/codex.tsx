@@ -107,7 +107,7 @@ const claudePayloadSchema = z.object({
 
 type AgentProvider = 'codex' | 'claude';
 
-type CodexCreateInput = { cwd?: string };
+type CodexCreateInput = { cwd?: string; prompt?: string };
 type ClaudeCreateInput = { cwd?: string; prompt?: string };
 
 type AgentCardLogoStyle = CSSProperties & {
@@ -534,7 +534,7 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
     async submit(waveId, input, ctx) {
       const card = await createCodexCard(waveId, {
         cwd: input.cwd || undefined,
-        prompt: undefined,
+        prompt: input.prompt || undefined,
         theme: ctx.themeRgb,
       });
       return { cardId: card.id, raw: card };
