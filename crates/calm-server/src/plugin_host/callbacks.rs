@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
@@ -28,7 +29,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::validation::{validate_card_payload, validate_overlay_payload};
+use crate::validation::validate_overlay_payload;
 use crate::wave_cove_cache::WaveCoveCache;
 
 use super::events::SubscriptionFilter;
@@ -425,9 +426,8 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     };
     // D4: kernel-owned card kinds (currently `terminal`) must match shape;
     // plugin-prefixed and ui:// kinds remain opaque.
-    if let Err(e) = validate_card_payload(&p.kind, &payload) {
-        return Err(RpcError::invalid_params(e.to_string()));
-    }
+    validate_card_kind_global(&p.kind, &payload)
+        .map_err(|e| RpcError::invalid_params(e.to_string()))?;
     let wave_id_for_scope = p.wave_id.clone();
     let new = NewCard {
         wave_id: p.wave_id.into(),
@@ -520,9 +520,8 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     // kind (the new kind if retargeting, otherwise the existing card's kind).
     if let Some(payload) = p.payload.as_ref() {
         let kind = p.kind.as_deref().unwrap_or(card.kind.as_str());
-        if let Err(e) = validate_card_payload(kind, payload) {
-            return Err(RpcError::invalid_params(e.to_string()));
-        }
+        validate_card_kind_global(kind, payload)
+            .map_err(|e| RpcError::invalid_params(e.to_string()))?;
     }
     let patch = CardPatch {
         kind: p.kind,

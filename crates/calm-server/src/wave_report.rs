@@ -86,8 +86,8 @@ pub struct WaveReportPayload {
 impl WaveReportPayload {
     /// Current schema version. Bumping this is a Tier A breaking
     /// change — the same PR must also extend
-    /// [`crate::validation::validate_card_payload`]'s wave-report arm
-    /// and the matching frontend zod schema in
+    /// [`crate::card_kind::WaveReportCardHandler`] and the matching
+    /// frontend zod schema in
     /// `web/src/api/schemas.ts`.
     pub const SCHEMA_VERSION: u32 = 1;
 
@@ -118,7 +118,7 @@ impl WaveReportPayload {
 ///   * `CalmError::NotFound` — the wave row doesn't exist.
 ///   * `CalmError::Internal` — wave exists but has no report card
 ///     (invariant violation), OR the persisted payload won't
-///     deserialize (someone wrote past `validate_card_payload`).
+///     deserialize (someone wrote past card kind validation).
 ///
 /// Used by `routes::waves::update_wave_report` (REST) to gather the
 /// pieces `persist_report` needs without duplicating the row-lookup

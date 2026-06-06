@@ -228,88 +228,6 @@ fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> Result<()
     }
 }
 
-/// Validate a `Card.payload` for a given `kind`.
-///
-/// Returns `Ok(())` for every kind the kernel does not own (including all
-/// `ui://*` plugin-defined kinds). Returns `Err(CalmError::BadRequest)` when
-/// the payload doesn't match the kernel's expected shape.
-pub fn validate_card_payload(kind: &str, payload: &Value) -> Result<()> {
-    match kind {
-        "terminal" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            struct TerminalPayload {
-                #[serde(default)]
-                terminal_id: Option<String>,
-            }
-            // Empty object / null payloads are accepted (terminal_id defaults
-            // to None — fresh terminal cards may not yet be bound to a PTY).
-            if payload.is_null() {
-                return Ok(());
-            }
-            check_schema_version(kind, payload, TERMINAL_PAYLOAD_SCHEMA_VERSION)?;
-            serde_json::from_value::<TerminalPayload>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| CalmError::BadRequest(format!("invalid terminal payload: {e}")))
-        }
-        "codex" => {
-            // Codex cards carry an opaque blob with the original spawn
-            // params (initial_prompt, model, cwd) for diagnostics/replay.
-            // We don't pin a strict shape — the route reads the body
-            // separately, the payload is purely for the UI.
-            if payload.is_null() {
-                return Ok(());
-            }
-            if !payload.is_object() {
-                return Err(CalmError::BadRequest(
-                    "codex payload must be an object or null".into(),
-                ));
-            }
-            check_schema_version(kind, payload, CODEX_PAYLOAD_SCHEMA_VERSION)
-        }
-        "claude" => {
-            // Claude worker cards mirror codex's UI payload contract:
-            // terminal_id + cwd/settings diagnostics live in an opaque
-            // object, with schemaVersion guarding future incompatible
-            // changes.
-            if payload.is_null() {
-                return Ok(());
-            }
-            if !payload.is_object() {
-                return Err(CalmError::BadRequest(
-                    "claude payload must be an object or null".into(),
-                ));
-            }
-            check_schema_version(kind, payload, CLAUDE_PAYLOAD_SCHEMA_VERSION)
-        }
-        // Issue #229 PR B — wave-report cards carry a structured payload
-        // (schemaVersion + summary + body). Unlike codex's opaque blob,
-        // we pin the shape because three different callers all write it
-        // (HTTP `create_wave`, migration 0014 backfill, and the
-        // `calm.report.*` MCP tools). Forward-compat: extra fields are
-        // tolerated (serde ignores by default — we don't put
-        // `deny_unknown_fields`); future v2 additions just need a new
-        // optional field with a serde default + a constant bump.
-        "wave-report" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            #[serde(rename_all = "camelCase")]
-            struct WaveReportShape {
-                #[serde(default)]
-                schema_version: Option<u32>,
-                summary: String,
-                body: String,
-            }
-            check_schema_version(kind, payload, WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)?;
-            serde_json::from_value::<WaveReportShape>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| CalmError::BadRequest(format!("invalid wave-report payload: {e}")))
-        }
-        // Plugin-defined kinds are opaque per architectural invariant.
-        _ => Ok(()),
-    }
-}
-
 /// Validate an `Overlay.payload` for a given `kind`.
 ///
 /// Returns `Ok(())` for unknown / plugin-specific kinds. Returns
@@ -511,40 +429,47 @@ fn validate_layout_payload(payload: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_kind::CardKindRegistry;
     use serde_json::json;
+
+    fn validate_builtin_card(kind: &str, payload: &Value) -> Result<()> {
+        CardKindRegistry::builtins()
+            .validate_payload(kind, payload)
+            .map_err(CalmError::from)
+    }
 
     // ---------------- Card: terminal ----------------
 
     #[test]
     fn terminal_happy_with_id() {
-        validate_card_payload("terminal", &json!({ "terminal_id": "t1" })).unwrap();
+        validate_builtin_card("terminal", &json!({ "terminal_id": "t1" })).unwrap();
     }
 
     #[test]
     fn terminal_happy_without_id() {
-        validate_card_payload("terminal", &json!({})).unwrap();
+        validate_builtin_card("terminal", &json!({})).unwrap();
     }
 
     #[test]
     fn terminal_happy_null() {
-        validate_card_payload("terminal", &Value::Null).unwrap();
+        validate_builtin_card("terminal", &Value::Null).unwrap();
     }
 
     #[test]
     fn terminal_extra_fields_tolerated() {
         // Unknown fields stay in the JSON — serde ignores them by default.
-        validate_card_payload("terminal", &json!({ "terminal_id": "t1", "extra": "ok" })).unwrap();
+        validate_builtin_card("terminal", &json!({ "terminal_id": "t1", "extra": "ok" })).unwrap();
     }
 
     #[test]
     fn terminal_rejects_wrong_type() {
-        let err = validate_card_payload("terminal", &json!({ "terminal_id": 42 })).unwrap_err();
+        let err = validate_builtin_card("terminal", &json!({ "terminal_id": 42 })).unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
     }
 
     #[test]
     fn terminal_rejects_array_root() {
-        let err = validate_card_payload("terminal", &json!([1, 2, 3])).unwrap_err();
+        let err = validate_builtin_card("terminal", &json!([1, 2, 3])).unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
     }
 
@@ -553,14 +478,14 @@ mod tests {
     #[test]
     fn ui_prefixed_card_accepts_anything() {
         // Acceptance criterion: a junk payload under a ui://* kind must NOT 400.
-        validate_card_payload("ui://example/view", &json!({ "junk": "ok" })).unwrap();
-        validate_card_payload("ui://example/view", &json!([1, 2, 3])).unwrap();
-        validate_card_payload("ui://example/view", &Value::Null).unwrap();
+        validate_builtin_card("ui://example/view", &json!({ "junk": "ok" })).unwrap();
+        validate_builtin_card("ui://example/view", &json!([1, 2, 3])).unwrap();
+        validate_builtin_card("ui://example/view", &Value::Null).unwrap();
     }
 
     #[test]
     fn plugin_prefixed_card_accepts_anything() {
-        validate_card_payload("plugin:foo:bar", &json!({ "whatever": true })).unwrap();
+        validate_builtin_card("plugin:foo:bar", &json!({ "whatever": true })).unwrap();
     }
 
     // ---------------- Overlay: status ----------------
@@ -940,12 +865,12 @@ mod tests {
 
     #[test]
     fn terminal_accepts_missing_schema_version() {
-        validate_card_payload("terminal", &json!({ "terminal_id": "t1" })).unwrap();
+        validate_builtin_card("terminal", &json!({ "terminal_id": "t1" })).unwrap();
     }
 
     #[test]
     fn terminal_accepts_matching_schema_version() {
-        validate_card_payload(
+        validate_builtin_card(
             "terminal",
             &json!({ "schemaVersion": 1, "terminal_id": "t1" }),
         )
@@ -954,7 +879,7 @@ mod tests {
 
     #[test]
     fn terminal_rejects_unknown_schema_version() {
-        let err = validate_card_payload(
+        let err = validate_builtin_card(
             "terminal",
             &json!({ "schemaVersion": 2, "terminal_id": "t1" }),
         )
@@ -969,17 +894,17 @@ mod tests {
 
     #[test]
     fn codex_accepts_missing_schema_version() {
-        validate_card_payload("codex", &json!({ "any": "thing" })).unwrap();
+        validate_builtin_card("codex", &json!({ "any": "thing" })).unwrap();
     }
 
     #[test]
     fn codex_accepts_matching_schema_version() {
-        validate_card_payload("codex", &json!({ "schemaVersion": 1, "any": "thing" })).unwrap();
+        validate_builtin_card("codex", &json!({ "schemaVersion": 1, "any": "thing" })).unwrap();
     }
 
     #[test]
     fn codex_rejects_unknown_schema_version() {
-        let err = validate_card_payload("codex", &json!({ "schemaVersion": 99, "any": "thing" }))
+        let err = validate_builtin_card("codex", &json!({ "schemaVersion": 99, "any": "thing" }))
             .unwrap_err();
         let CalmError::BadRequest(msg) = err else {
             panic!("expected BadRequest");
@@ -991,7 +916,7 @@ mod tests {
 
     #[test]
     fn wave_report_happy() {
-        validate_card_payload(
+        validate_builtin_card(
             "wave-report",
             &json!({ "schemaVersion": 1, "summary": "", "body": "# Goal\n" }),
         )
@@ -1002,7 +927,7 @@ mod tests {
     fn wave_report_accepts_missing_schema_version() {
         // Missing schemaVersion is treated as v1 (every kernel-owned
         // kind today is v1, so absent-as-1 stays unambiguous).
-        validate_card_payload(
+        validate_builtin_card(
             "wave-report",
             &json!({ "summary": "hi", "body": "# Done\n" }),
         )
@@ -1011,7 +936,7 @@ mod tests {
 
     #[test]
     fn wave_report_rejects_missing_summary() {
-        let err = validate_card_payload(
+        let err = validate_builtin_card(
             "wave-report",
             &json!({ "schemaVersion": 1, "body": "# Goal" }),
         )
@@ -1024,7 +949,7 @@ mod tests {
 
     #[test]
     fn wave_report_rejects_missing_body() {
-        let err = validate_card_payload(
+        let err = validate_builtin_card(
             "wave-report",
             &json!({ "schemaVersion": 1, "summary": "x" }),
         )
@@ -1037,7 +962,7 @@ mod tests {
 
     #[test]
     fn wave_report_rejects_wrong_field_type() {
-        let err = validate_card_payload(
+        let err = validate_builtin_card(
             "wave-report",
             &json!({ "schemaVersion": 1, "summary": 42, "body": "x" }),
         )
@@ -1047,7 +972,7 @@ mod tests {
 
     #[test]
     fn wave_report_rejects_unknown_schema_version() {
-        let err = validate_card_payload(
+        let err = validate_builtin_card(
             "wave-report",
             &json!({ "schemaVersion": 2, "summary": "", "body": "" }),
         )
@@ -1064,7 +989,7 @@ mod tests {
         // Forward-compat: extra fields are passed through (serde
         // ignores by default). A v2 that adds e.g. `lastWriter` lands
         // without an old-binary error.
-        validate_card_payload(
+        validate_builtin_card(
             "wave-report",
             &json!({
                 "schemaVersion": 1,

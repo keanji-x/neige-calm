@@ -4,6 +4,7 @@
 //! reference-counted internally.
 
 use crate::aspect::{AspectRegistry, WatermarkSinkInstalledAspect};
+use crate::card_kind::CardKindRegistry;
 use crate::card_role_cache::CardRoleCache;
 use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
@@ -70,6 +71,10 @@ pub struct AppState {
     /// table in [`AppState::new`]; tests use the empty default via
     /// [`AppState::from_parts`] or pre-populate it manually.
     pub wave_cove_cache: WaveCoveCache,
+    /// #477 PR5 — registry of kernel-owned card kind handlers. Unknown card
+    /// kinds stay opaque; built-ins expose validation + metadata for future
+    /// OpenAPI / metrics readers.
+    pub card_kind_registry: Arc<CardKindRegistry>,
     /// PR5 (#136) — dispatcher worker handle. Subscribes via
     /// [`EventBus::subscribe_filtered`] to `*.job_requested` envelopes
     /// and mints worker-roled cards (+ optionally spawns the codex /
@@ -195,6 +200,7 @@ impl AppState {
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
         let wave_cove_cache = wave_cove_cache.unwrap_or_default();
+        let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
@@ -241,6 +247,7 @@ impl AppState {
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
             wave_cove_cache,
+            card_kind_registry,
             dispatcher,
             // `from_parts` is the test / replay-lib hatch — no live MCP
             // server. Production goes through `new` below.
@@ -272,6 +279,10 @@ impl AppState {
     pub fn with_pending_codex_threads(mut self, pending: Arc<PendingThreadStartRegistry>) -> Self {
         self.pending_codex_threads = pending;
         self
+    }
+
+    pub fn card_kind_registry(&self) -> &CardKindRegistry {
+        &self.card_kind_registry
     }
 
     /// Real boot-time constructor. Loads the plugin manifest registry from
@@ -333,6 +344,7 @@ impl AppState {
         // a write.
         let wave_cove_cache = WaveCoveCache::new();
         repo.seed_wave_cove_cache(&wave_cove_cache).await?;
+        let card_kind_registry = Arc::new(CardKindRegistry::builtins());
 
         // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
         // and projects `codex.hook` events onto a 6-state FSM, writing
@@ -481,6 +493,7 @@ impl AppState {
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
             wave_cove_cache,
+            card_kind_registry,
             dispatcher,
             mcp_server: Some(mcp_server),
             // #293 — push registry, filled by `create_wave` (push is the only
