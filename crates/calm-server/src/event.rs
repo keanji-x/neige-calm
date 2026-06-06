@@ -586,6 +586,28 @@ pub enum Event {
     },
 }
 
+/// Central event-classifier result for the kernel's event surfaces.
+///
+/// This is the single place that combines the dotted event name
+/// (`kind_tag`) with the three plugin-subscription classifier decisions
+/// (`plugin_id`, `entity_kind`, `entity_id`). Keep the producing match in
+/// [`Event::metadata`] exhaustive: PR5 of #136 hazard H1 deliberately avoids
+/// `_ =>` catch-alls so adding an event variant forces an explicit classifier
+/// decision instead of silently inheriting `None`.
+///
+/// `plugin_id` is set only for `Event::OverlaySet`,
+/// `Event::OverlayDeleted`, and `Event::PluginState`; every other variant
+/// has no plugin attribution. `entity_kind` / `entity_id` are set only for
+/// events with a filterable entity surface. The PR4 dispatcher/task-lifecycle
+/// variants (`Event::CodexJobRequested`, `Event::TerminalJobRequested`,
+/// `Event::TaskCompleted`, `Event::TaskFailed`) carry no plugin id, entity
+/// kind, or entity id; plugins that want those signals must filter via the
+/// events glob clause and omit the classifier clauses.
+///
+/// Issue #247 PR2 treats `Event::WaveReportEdited` as card-scoped for plugin
+/// filters: `entity_kind = "card"` and `entity_id = card_id`. #318 INV-1 (b)
+/// treats `Event::SpecPushAbandoned` as wave-scoped:
+/// `entity_kind = "wave"` and `entity_id = wave_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventMetadata {
     pub kind_tag: &'static str,
@@ -598,64 +620,69 @@ impl Event {
     /// Centralized event classifier surface used by persistence and plugin
     /// subscription filters. Keep this exhaustive so adding a variant forces a
     /// deliberate kind/plugin/entity decision in one place.
+    ///
+    /// `kind_tag` is captured from [`Event::kind_tag`] so the string literals
+    /// live in one zero-allocation hot-path match. Calling `kind_tag()` per
+    /// broadcast must not construct this metadata or clone classifier strings.
     pub fn metadata(&self) -> EventMetadata {
+        let kind_tag = self.kind_tag();
         match self {
             Event::CoveUpdated(c) => EventMetadata {
-                kind_tag: "cove.updated",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: Some(c.id.to_string()),
             },
             Event::CoveDeleted { id } => EventMetadata {
-                kind_tag: "cove.deleted",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: Some(id.to_string()),
             },
             Event::WaveUpdated(w) => EventMetadata {
-                kind_tag: "wave.updated",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("wave".into()),
                 entity_id: Some(w.id.to_string()),
             },
             Event::WaveDeleted { id, .. } => EventMetadata {
-                kind_tag: "wave.deleted",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("wave".into()),
                 entity_id: Some(id.to_string()),
             },
             Event::WaveLifecycleChanged { id, .. } => EventMetadata {
-                kind_tag: "wave.lifecycle_changed",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("wave".into()),
                 entity_id: Some(id.to_string()),
             },
             Event::CardAdded(c) => EventMetadata {
-                kind_tag: "card.added",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
                 entity_id: Some(c.id.to_string()),
             },
             Event::CardUpdated(c) => EventMetadata {
-                kind_tag: "card.updated",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
                 entity_id: Some(c.id.to_string()),
             },
             Event::CardDeleted { id, .. } => EventMetadata {
-                kind_tag: "card.deleted",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
                 entity_id: Some(id.to_string()),
             },
             Event::WaveReportEdited { card_id, .. } => EventMetadata {
-                kind_tag: "wave.report_edited",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
             Event::OverlaySet(o) => EventMetadata {
-                kind_tag: "overlay.set",
+                kind_tag,
                 plugin_id: Some(o.plugin_id.clone()),
                 entity_kind: Some(o.entity_kind.clone()),
                 entity_id: Some(o.entity_id.clone()),
@@ -666,61 +693,61 @@ impl Event {
                 entity_id,
                 ..
             } => EventMetadata {
-                kind_tag: "overlay.deleted",
+                kind_tag,
                 plugin_id: Some(plugin_id.clone()),
                 entity_kind: Some(entity_kind.clone()),
                 entity_id: Some(entity_id.clone()),
             },
             Event::TerminalDeleted { id, .. } => EventMetadata {
-                kind_tag: "terminal.deleted",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: Some(id.clone()),
             },
             Event::PluginState { id, .. } => EventMetadata {
-                kind_tag: "plugin.state",
+                kind_tag,
                 plugin_id: Some(id.clone()),
                 entity_kind: None,
                 entity_id: Some(id.clone()),
             },
             Event::CodexHook { card_id, .. } => EventMetadata {
-                kind_tag: "codex.hook",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
             Event::ClaudeHook { card_id, .. } => EventMetadata {
-                kind_tag: "claude.hook",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
             Event::CodexJobRequested { .. } => EventMetadata {
-                kind_tag: "codex.job_requested",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: None,
             },
             Event::TerminalJobRequested { .. } => EventMetadata {
-                kind_tag: "terminal.job_requested",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: None,
             },
             Event::TaskCompleted { .. } => EventMetadata {
-                kind_tag: "task.completed",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: None,
             },
             Event::TaskFailed { .. } => EventMetadata {
-                kind_tag: "task.failed",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: None,
             },
             Event::SpecPushAbandoned { wave_id, .. } => EventMetadata {
-                kind_tag: "spec_push.abandoned",
+                kind_tag,
                 plugin_id: None,
                 entity_kind: Some("wave".into()),
                 entity_id: Some(wave_id.to_string()),
@@ -733,7 +760,28 @@ impl Event {
     /// `Repo::write_with_event` insert and the `events.kind` index agree
     /// on spelling without re-parsing the serialized envelope.
     pub fn kind_tag(&self) -> &'static str {
-        self.metadata().kind_tag
+        match self {
+            Event::CoveUpdated(_) => "cove.updated",
+            Event::CoveDeleted { .. } => "cove.deleted",
+            Event::WaveUpdated(_) => "wave.updated",
+            Event::WaveDeleted { .. } => "wave.deleted",
+            Event::WaveLifecycleChanged { .. } => "wave.lifecycle_changed",
+            Event::CardAdded(_) => "card.added",
+            Event::CardUpdated(_) => "card.updated",
+            Event::CardDeleted { .. } => "card.deleted",
+            Event::WaveReportEdited { .. } => "wave.report_edited",
+            Event::OverlaySet(_) => "overlay.set",
+            Event::OverlayDeleted { .. } => "overlay.deleted",
+            Event::TerminalDeleted { .. } => "terminal.deleted",
+            Event::PluginState { .. } => "plugin.state",
+            Event::CodexHook { .. } => "codex.hook",
+            Event::ClaudeHook { .. } => "claude.hook",
+            Event::CodexJobRequested { .. } => "codex.job_requested",
+            Event::TerminalJobRequested { .. } => "terminal.job_requested",
+            Event::TaskCompleted { .. } => "task.completed",
+            Event::TaskFailed { .. } => "task.failed",
+            Event::SpecPushAbandoned { .. } => "spec_push.abandoned",
+        }
     }
 
     /// Extract just the `data` payload (the inner content the
@@ -1384,6 +1432,15 @@ mod scope_tests {
                 "metadata kind_tag mismatch for {ev:?}",
             );
         }
+    }
+
+    #[test]
+    fn kind_tag_does_not_allocate_for_string_payload_variants() {
+        // Called per broadcast; pin the API to a static string so variants
+        // with String payloads do not need metadata construction or cloning.
+        let ev = Event::OverlaySet(overlay_sample("p1", "card", "c1", "status"));
+        let s: &'static str = ev.kind_tag();
+        assert_eq!(s, "overlay.set");
     }
 
     #[test]
