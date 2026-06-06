@@ -16,7 +16,9 @@ use crate::error::{ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::model::{NewOverlay, Overlay};
 use crate::state::AppState;
-use crate::validation::{should_skip_overlay, validate_overlay_payload};
+use crate::validation::{
+    OVERLAY_ENTITY_SCOPE_REGISTRY, should_skip_overlay, validate_overlay_payload,
+};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -27,55 +29,17 @@ use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
 /// Build an `EventScope` for an overlay write keyed by `(entity_kind, entity_id)`.
-/// PR2 of #136 — overlays are polymorphic, so we pattern-match on the
-/// declared `entity_kind`:
-///
-///   * `"card"` — resolve `card → wave → cove` and emit `EventScope::Card`.
-///   * `"wave"` — resolve `wave → cove` and emit `EventScope::Wave`.
-///   * anything else — fall back to `EventScope::System` (a plugin
-///     emitting on a kind the kernel doesn't model can't be routed by
-///     ancestor scope; the firehose still sees it).
-///
 /// Missing card / wave rows surface as `EventScope::System` rather than
-/// `NotFound` — overlay writes against a deleted entity are legal (the
-/// row just becomes a tombstone). We don't want to refuse the write for
-/// a stale row when the same write against a live row would succeed.
+/// `NotFound` — overlay writes against a deleted entity are legal (the row
+/// just becomes a tombstone).
 pub(crate) async fn overlay_scope(
     repo: &dyn RepoRead,
     entity_kind: &str,
     entity_id: &str,
 ) -> Result<EventScope> {
-    match entity_kind {
-        "card" => {
-            let card = match repo.card_get(entity_id).await? {
-                Some(c) => c,
-                None => return Ok(EventScope::System),
-            };
-            let wave = match repo.wave_get(card.wave_id.as_str()).await? {
-                Some(w) => w,
-                None => return Ok(EventScope::System),
-            };
-            Ok(EventScope::Card {
-                card: card.id,
-                wave: wave.id,
-                cove: wave.cove_id,
-            })
-        }
-        "wave" => {
-            let wave = match repo.wave_get(entity_id).await? {
-                Some(w) => w,
-                None => return Ok(EventScope::System),
-            };
-            Ok(EventScope::Wave {
-                wave: wave.id,
-                cove: wave.cove_id,
-            })
-        }
-        // `view` and any other plugin-defined entity_kind: the kernel
-        // doesn't track an ancestor chain we can populate, so go System
-        // and let PR5's per-entity subscriber filter on the payload.
-        _ => Ok(EventScope::System),
-    }
+    OVERLAY_ENTITY_SCOPE_REGISTRY
+        .route_scope(repo, entity_kind, entity_id)
+        .await
 }
 
 pub fn router() -> Router<AppState> {
