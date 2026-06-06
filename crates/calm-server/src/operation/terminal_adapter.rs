@@ -249,9 +249,19 @@ impl ProviderAdapter for TerminalAdapter {
             .await
         {
             Ok(handle) => {
-                ctx.repo
+                if let Err(e) = ctx
+                    .repo
                     .runtime_set_status_for_card(&card_id, RunStatus::Running)
-                    .await?;
+                    .await
+                {
+                    tracing::warn!(
+                        target: "operation::terminal_adapter::runtime_running_mark_failed",
+                        card_id = %card_id,
+                        terminal_id = %terminal_id,
+                        error = %e,
+                        "failed to mark terminal runtime running after spawn; continuing operation"
+                    );
+                }
                 Ok(handle)
             }
             Err(e) => {

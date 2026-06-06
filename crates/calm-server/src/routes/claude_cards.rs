@@ -242,9 +242,19 @@ pub(crate) async fn create_claude_card(
 
     match spawn_terminal_for_route(&s, &w, &term, &command_line, &cwd, &env).await {
         Ok(_) => {
-            w.repo
+            if let Err(e) = w
+                .repo
                 .runtime_set_status_for_card(card.id.as_ref(), RunStatus::Running)
-                .await?;
+                .await
+            {
+                tracing::warn!(
+                    target: "routes::claude_runtime_running_mark_failed",
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    error = %e,
+                    "failed to mark claude runtime running after spawn; returning created response",
+                );
+            }
         }
         Err(e) => {
             if let Err(mark_err) = w

@@ -180,7 +180,8 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('card-codex-threadless', 'wave-1', 'codex', 6.0, '{"terminal_id":"term-codex-threadless"}', 1700, 1700, 'plain', 1),
               ('card-legacy-spec', 'wave-3', 'codex', 7.0, '{"terminal_id":"term-legacy-spec","codex_source":"legacy"}', 1800, 1800, 'spec', 0),
               ('card-codex-shared-worker', 'wave-2', 'codex', 8.0, '{"codex_source":"shared","appserver_sock":"/tmp/codex.sock"}', 1900, 1900, 'worker', 1),
-              ('card-codex-shared-plain', 'wave-2', 'codex', 9.0, '{"codex_source":"shared"}', 2000, 2000, 'plain', 1)"#,
+              ('card-codex-shared-plain', 'wave-2', 'codex', 9.0, '{"codex_source":"shared"}', 2000, 2000, 'plain', 1),
+              ('card-claude-sessionless', 'wave-2', 'claude', 10.0, '{"terminal_id":"term-claude-sessionless"}', 2100, 2100, 'worker', 1)"#,
     )
     .execute(pool)
     .await
@@ -196,7 +197,8 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('term-codex-threadless', 'card-codex-threadless', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1700, NULL, 0),
               ('term-legacy-spec', 'card-legacy-spec', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1800, NULL, 0),
               ('term-codex-shared-worker', 'card-codex-shared-worker', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1900, NULL, 0),
-              ('term-codex-shared-plain', 'card-codex-shared-plain', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2000, NULL, 0)"#,
+              ('term-codex-shared-plain', 'card-codex-shared-plain', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2000, NULL, 0),
+              ('term-claude-sessionless', 'card-claude-sessionless', 'claude', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2100, NULL, 0)"#,
     )
     .execute(pool)
     .await
@@ -251,7 +253,7 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
 
     let terminal = by_card.get("card-terminal").expect("terminal runtime");
     assert_eq!(terminal.try_get::<String, _>("kind").unwrap(), "terminal");
-    assert_eq!(terminal.try_get::<String, _>("status").unwrap(), "starting");
+    assert_eq!(terminal.try_get::<String, _>("status").unwrap(), "running");
     assert_eq!(
         terminal
             .try_get::<Option<String>, _>("terminal_run_id")
@@ -354,13 +356,38 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
 
     let claude = by_card.get("card-claude").expect("claude runtime");
     assert_eq!(claude.try_get::<String, _>("kind").unwrap(), "claude");
-    assert_eq!(claude.try_get::<String, _>("status").unwrap(), "starting");
+    assert_eq!(claude.try_get::<String, _>("status").unwrap(), "running");
     assert_eq!(
         claude
             .try_get::<Option<String>, _>("session_id")
             .unwrap()
             .as_deref(),
         Some("session-claude")
+    );
+
+    let claude_sessionless = by_card
+        .get("card-claude-sessionless")
+        .expect("sessionless claude runtime");
+    assert_eq!(
+        claude_sessionless.try_get::<String, _>("kind").unwrap(),
+        "claude"
+    );
+    assert_eq!(
+        claude_sessionless.try_get::<String, _>("status").unwrap(),
+        "running"
+    );
+    assert_eq!(
+        claude_sessionless
+            .try_get::<Option<String>, _>("terminal_run_id")
+            .unwrap()
+            .as_deref(),
+        Some("term-claude-sessionless")
+    );
+    assert!(
+        claude_sessionless
+            .try_get::<Option<String>, _>("session_id")
+            .unwrap()
+            .is_none()
     );
 
     let shared_thread = by_card
@@ -413,12 +440,12 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
         preexisting.try_get::<String, _>("status").unwrap(),
         "starting"
     );
-    assert_eq!(by_card.len(), 9);
+    assert_eq!(by_card.len(), 10);
 
     apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 9);
+    assert_eq!(count, 10);
 }

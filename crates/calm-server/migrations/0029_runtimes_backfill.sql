@@ -13,7 +13,7 @@ SELECT
   c.id,
   'terminal',
   NULL,
-  'starting',
+  'running',
   t.id,
   NULL,
   NULL,
@@ -77,7 +77,7 @@ SELECT
   c.id,
   'claude',
   'claude',
-  'starting',
+  'running',
   t.id,
   NULL,
   json_extract(c.payload, '$.claude_session_id'),
@@ -91,8 +91,6 @@ SELECT
 FROM cards c
 JOIN terminals t ON t.card_id = c.id
 WHERE c.kind = 'claude'
-  AND json_extract(c.payload, '$.claude_session_id') IS NOT NULL
-  AND trim(json_extract(c.payload, '$.claude_session_id')) != ''
   AND t.exit_code IS NULL
   AND COALESCE(t.signal_killed, 0) = 0
   AND NOT EXISTS (

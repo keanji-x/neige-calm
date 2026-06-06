@@ -2062,9 +2062,21 @@ impl Inner {
         }
 
         if !spawn_preserved_failure {
-            self.repo
+            match self
+                .repo
                 .runtime_set_status_for_card(card_id.as_ref(), RunStatus::Running)
-                .await?;
+                .await
+            {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target: "dispatcher::runtime_running_mark_failed",
+                        card_id = %card_id,
+                        error = %e,
+                        "failed to mark runtime running after worker spawn; CardAdded still broadcasting",
+                    );
+                }
+            }
         }
 
         // Issue #310 — broadcast `CardAdded` post-spawn-success so the
