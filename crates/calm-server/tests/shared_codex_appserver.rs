@@ -718,8 +718,13 @@ async fn concurrent_mark_during_respawn_is_preserved() {
     let mut observed_respawn_in_progress = false;
     for _ in 0..100 {
         let snapshot = daemon.status_snapshot();
-        if snapshot.state == SharedDaemonState::Restarting
-            && !daemon.needs_respawn_on_next_thread_start_for_test()
+        // #480 PR5b: respawn now transitions Restarting → Starting → Running
+        // per §C.3, so "respawn in progress" is either Restarting (reap) or
+        // Starting (spawn callback inside start_new_process_typestate).
+        if matches!(
+            snapshot.state,
+            SharedDaemonState::Restarting | SharedDaemonState::Starting
+        ) && !daemon.needs_respawn_on_next_thread_start_for_test()
         {
             observed_respawn_in_progress = true;
             break;
