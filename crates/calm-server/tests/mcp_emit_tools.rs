@@ -142,8 +142,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        card_role_cache,
-        wave_cove_cache,
+        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -468,8 +467,7 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
     let _dispatcher = calm_server::dispatcher::Dispatcher::spawn(
         b.repo.clone(),
         b.events.clone(),
-        cache.clone(),
-        wcc,
+        calm_server::state::WriteContext::new(cache.clone(), wcc),
         codex.clone(),
         Arc::new(calm_server::state::DaemonClient {
             data_dir: PathBuf::from("/tmp/neige-mcp-e2e-noop"),

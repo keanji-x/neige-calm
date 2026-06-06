@@ -33,7 +33,6 @@
 //! (`null` vs missing) for no information gain. `WaveReportPayload::initial()`
 //! seeds the canonical "agent hasn't run yet" defaults.
 
-use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx};
 use crate::db::write_with_events_typed;
@@ -41,7 +40,7 @@ use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Card, CardPatch, Wave};
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::state::WriteContext;
 use crate::wave_report_doc::ReportDoc;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -219,8 +218,7 @@ pub async fn resolve_report_for_wave(
 pub async fn persist_report(
     repo: &dyn RouteRepo,
     events: &EventBus,
-    card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    write: &WriteContext,
     actor: ActorId,
     author: EditAuthor,
     wave: Wave,
@@ -243,8 +241,8 @@ pub async fn persist_report(
         actor,
         None,
         events,
-        card_role_cache,
-        wave_cove_cache,
+        write.role_cache(),
+        write.cove_cache(),
         move |tx| {
             let id = report_card_id_inner.as_str().to_string();
             let report_card_id = report_card_id_inner.clone();

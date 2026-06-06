@@ -122,8 +122,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
             std::env::temp_dir().join("calm-plugins-data-perm-req-overlay"),
             Vec::new(),
             events.clone(),
-            cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache.clone()),
@@ -134,7 +133,11 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     // subscribed by the time the bus broadcasts `Event::CodexHook`.
     // (The existing `codex_ingest.rs` integration test stops at the bus
     // assertion; we want the full overlay-aggregation path.)
-    calm_server::card_fsm::spawn(repo.clone(), events.clone(), cache.clone(), wave_cove_cache);
+    calm_server::card_fsm::spawn(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache),
+    );
     // Give the spawn a tick to subscribe — matches the unit-test pattern
     // in `card_fsm::tests`.
     tokio::task::yield_now().await;

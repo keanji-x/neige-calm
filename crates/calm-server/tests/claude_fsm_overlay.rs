@@ -84,8 +84,7 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
             std::env::temp_dir().join("calm-plugins-data-claude-fsm-overlay"),
             Vec::new(),
             events.clone(),
-            cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache.clone()),
@@ -95,8 +94,7 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
     calm_server::card_fsm::spawn(
         repo_dyn.clone(),
         events.clone(),
-        cache.clone(),
-        wave_cove_cache,
+        calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache),
     );
     tokio::task::yield_now().await;
 

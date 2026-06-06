@@ -115,8 +115,10 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
-            calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         None,

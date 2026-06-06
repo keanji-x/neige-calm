@@ -76,8 +76,10 @@ async fn boot_happy() -> Boot {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
-            role_cache.clone(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                role_cache.clone(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(codex),
         Some(role_cache.clone()),

@@ -57,8 +57,10 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
             std::env::temp_dir().join("calm-plugins-data-replay-legacy"),
             Vec::new(),
             events.clone(),
-            CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None,

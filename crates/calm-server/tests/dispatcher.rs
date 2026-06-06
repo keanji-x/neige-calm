@@ -145,8 +145,7 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
     let dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex,
         stub_daemon(),
         None,
@@ -223,8 +222,7 @@ async fn dispatcher_initial_prompt_ready_sink_failure_does_not_broadcast_or_muta
     let dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex,
         stub_daemon(),
         None,
@@ -420,8 +418,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -564,8 +561,7 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
     let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex.clone(),
         daemon,
         terminal_renderer.clone(),
@@ -692,8 +688,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     let dispatcher_fail = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex.clone(),
         stub_daemon(),
         None,
@@ -778,8 +773,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     let _dispatcher_ok = Dispatcher::spawn(
         repo.clone(),
         events_retry.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex.clone(),
         daemon_ok,
         None,
@@ -871,8 +865,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
     let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex.clone(),
         daemon,
         terminal_renderer.clone(),
@@ -996,8 +989,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
-        cache.clone(),
-        wcc.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         codex.clone(),
         daemon,
         None,

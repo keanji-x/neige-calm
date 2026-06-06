@@ -132,8 +132,7 @@ async fn boot() -> Boot {
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        card_role_cache,
-        wave_cove_cache,
+        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
         registry,
@@ -516,8 +515,7 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
     let result = McpServer::spawn(
         repo,
         events,
-        card_role_cache,
-        wave_cove_cache,
+        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

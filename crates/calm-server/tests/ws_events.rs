@@ -45,8 +45,10 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None,

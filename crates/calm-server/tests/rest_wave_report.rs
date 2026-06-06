@@ -114,8 +114,10 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-rest-report"),
             Vec::new(),
             EventBus::new(),
-            calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
         )),
         Arc::new(CodexClient::new_stub()),
         None,

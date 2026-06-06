@@ -78,8 +78,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-wave-theme-test"),
             Vec::new(),
             EventBus::new(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         )),
         // #293 cutover — `POST /api/waves` now boots a kernel-owned codex
         // app-server before returning 201. Point `codex_bin` at the

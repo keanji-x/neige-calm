@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::card_kind::validate_card_kind_global;
+#[cfg(test)]
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
@@ -28,8 +29,10 @@ use crate::db::{RepoRead, RouteRepo, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
+use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};
+#[cfg(test)]
 use crate::wave_cove_cache::WaveCoveCache;
 
 use super::events::SubscriptionFilter;
@@ -69,14 +72,8 @@ pub struct CallbackCtx<'a> {
     /// Threaded into every `write_with_event_typed` / `log_pure_event`
     /// call site as `correlation = Some("user_tool_call:<id>")`.
     pub call_id: Option<&'a str>,
-    /// PR3 (#136) — role gate cache. Threaded into every audited write
-    /// path so the gate sees the same map as the REST surface. Cloned
-    /// off `AppState::card_role_cache` when the plugin host wires
-    /// each `CallbackCtx`.
-    pub card_role_cache: CardRoleCache,
-    /// #234 — parallel wave→cove cache the role gate consults alongside
-    /// `card_role_cache`.
-    pub wave_cove_cache: WaveCoveCache,
+    /// #480 PR2 — write-surface caches shared with REST/worker paths.
+    pub write: WriteContext,
 }
 
 impl<'a> CallbackCtx<'a> {
@@ -298,8 +295,8 @@ async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        &ctx.card_role_cache,
-        &ctx.wave_cove_cache,
+        ctx.write.role_cache(),
+        ctx.write.cove_cache(),
         move |tx| {
             Box::pin(async move {
                 let stored = overlay_upsert_tx(tx, new_overlay).await?;
@@ -352,8 +349,8 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        &ctx.card_role_cache,
-        &ctx.wave_cove_cache,
+        ctx.write.role_cache(),
+        ctx.write.cove_cache(),
         move |tx| {
             Box::pin(async move {
                 overlay_delete_tx(tx, &plugin_id_owned, &entity_kind, &entity_id, &kind).await?;
@@ -427,15 +424,15 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let scope =
         card_scope_for_callback(ctx.repo.as_ref(), card_id.clone(), &wave_id_for_scope).await;
     let card_id_for_tx = card_id.0.clone();
-    let cache_for_tx = ctx.card_role_cache.clone();
+    let cache_for_tx = ctx.write.role_cache().clone();
     let (stored, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         actor,
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        &ctx.card_role_cache,
-        &ctx.wave_cove_cache,
+        ctx.write.role_cache(),
+        ctx.write.cove_cache(),
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plugin-driven creates are
@@ -527,8 +524,8 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        &ctx.card_role_cache,
-        &ctx.wave_cove_cache,
+        ctx.write.role_cache(),
+        ctx.write.cove_cache(),
         move |tx| {
             Box::pin(async move {
                 let updated = card_update_tx(tx, &card_id, patch).await?;
@@ -581,7 +578,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let actor = ctx.actor();
     let correlation = ctx.correlation();
     let scope = card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), wave_id.as_str()).await;
-    let cache_for_tx = ctx.card_role_cache.clone();
+    let cache_for_tx = ctx.write.role_cache().clone();
 
     // Issue #197 — eager teardown. Mirrors `routes::cards::delete_card`:
     // the `terminals.card_id` FK is `ON DELETE RESTRICT` (migration
@@ -607,8 +604,8 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        &ctx.card_role_cache,
-        &ctx.wave_cove_cache,
+        ctx.write.role_cache(),
+        ctx.write.cove_cache(),
         move |tx| {
             Box::pin(async move {
                 if let Some(tid) = terminal_id.as_deref() {
@@ -896,8 +893,7 @@ mod tests {
         registry: Arc<PluginRegistry>,
         mcp: Arc<McpClient>,
         subs: Arc<Mutex<Vec<SubscriptionRecord>>>,
-        card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        write: WriteContext,
     }
 
     fn manifest_with_full_perms(id: &str) -> Manifest {
@@ -1055,8 +1051,7 @@ mod tests {
                     registry,
                     mcp,
                     subs,
-                    card_role_cache,
-                    wave_cove_cache,
+                    write: WriteContext::new(card_role_cache, wave_cove_cache),
                 }),
                 wave_id: wave.id.to_string(),
             }
@@ -1078,8 +1073,7 @@ mod tests {
                 mcp: Arc::clone(&self.ctx_storage.mcp),
                 subscriptions: Arc::clone(&self.ctx_storage.subs),
                 call_id: None,
-                card_role_cache: self.ctx_storage.card_role_cache.clone(),
-                wave_cove_cache: self.ctx_storage.wave_cove_cache.clone(),
+                write: self.ctx_storage.write.clone(),
             }
         }
     }
@@ -1378,7 +1372,7 @@ mod tests {
     #[tokio::test]
     async fn card_delete_refused_for_undeletable_card() {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
-        let cache = h.ctx_storage.card_role_cache.clone();
+        let cache = h.ctx_storage.write.role_cache().clone();
         let mut tx = h.ctx_storage.sqlx_repo.pool().begin().await.unwrap();
         let undeletable = crate::db::sqlite::card_create_with_id_tx(
             &mut tx,

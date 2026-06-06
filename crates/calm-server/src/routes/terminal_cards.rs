@@ -144,15 +144,15 @@ pub(crate) async fn create_terminal_card(
     .await?;
     let card_id_for_tx = card_id.clone();
     let wave_id_for_tx = wave_id;
-    let cache_for_tx = s.card_role_cache.clone();
+    let cache_for_tx = s.write().role_cache().clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 let (card, _term) = card_with_terminal_create_tx(

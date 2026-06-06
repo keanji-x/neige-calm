@@ -425,8 +425,8 @@ pub(crate) async fn create_wave(
     //    No `EventScope::Cove`-fallback dance: by the time the closure
     //    runs, we know wave_id, so each event gets its tightest scope.
     let actor_id = actor.to_actor_id();
-    let cache_for_tx = s.card_role_cache.clone();
-    let wcc_for_tx = s.wave_cove_cache.clone();
+    let cache_for_tx = s.write().role_cache().clone();
+    let wcc_for_tx = s.write().cove_cache().clone();
     let env_for_tx = env.clone();
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
@@ -444,8 +444,8 @@ pub(crate) async fn create_wave(
         actor_id,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 // 3.0. Issue #250 PR 2 — optional folder attach.
@@ -1066,8 +1066,8 @@ async fn persist_shared_spec_runtime_fields(
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -1136,8 +1136,8 @@ async fn clear_shared_spec_runtime_fields(
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -1307,8 +1307,8 @@ pub(crate) async fn update_wave(
         actor_id,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
@@ -1406,15 +1406,15 @@ pub(crate) async fn delete_wave(
         wave: wave_id.clone(),
         cove: cove_id.clone(),
     };
-    let wcc_for_tx = s.wave_cove_cache.clone();
+    let wcc_for_tx = s.write().cove_cache().clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write().role_cache(),
+        s.write().cove_cache(),
         move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first so the RESTRICT FK lets the
@@ -1591,8 +1591,7 @@ pub(crate) async fn update_wave_report(
     let updated = persist_report(
         s.repo.as_ref(),
         &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
+        s.write(),
         ActorId::User,
         EditAuthor::User,
         wave,

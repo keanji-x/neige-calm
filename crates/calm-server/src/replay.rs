@@ -182,6 +182,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
     // without a cache lookup). An empty cache is fine.
     let card_role_cache = crate::card_role_cache::CardRoleCache::new();
     let wave_cove_cache = crate::wave_cove_cache::WaveCoveCache::new();
+    let write = crate::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -189,8 +190,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         std::env::temp_dir().join("calm-plugins-data"),
         Vec::new(),
         events.clone(),
-        card_role_cache.clone(),
-        wave_cove_cache.clone(),
+        write,
     ));
     let state = AppState::from_parts(
         repo.clone(),

@@ -401,7 +401,7 @@ async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProj
         .await
         .map_err(|e| RpcError::internal(format!("wave_file: events_for_wave: {e}")))?;
 
-    let runs = project_runs(&ctx.card_role_cache, cards, events);
+    let runs = project_runs(ctx.write.role_cache(), cards, events);
     for run in &runs {
         if RESERVED_RUN_KEYS.contains(&run.idempotency_key.as_str()) {
             tracing::error!(
@@ -691,7 +691,7 @@ fn run_by_key<'a>(runs: &'a [RunProjection], key: &str) -> Result<&'a RunProject
 }
 
 fn card_meta(ctx: &Arc<AppContext>, card: &Card) -> Value {
-    let role = ctx.card_role_cache.get(&card.id).unwrap_or_default();
+    let role = ctx.write.role_cache().get(&card.id).unwrap_or_default();
     json!({
         "id": card.id,
         "kind": card.kind,

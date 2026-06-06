@@ -31,7 +31,6 @@
 //! hundred lines of `tokio::net::UnixListener` + `BufReader::lines()`;
 //! adding an HTTP framework would only obscure the framing.
 
-use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::mcp_server::framing::{
     Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
@@ -40,7 +39,7 @@ use crate::mcp_server::handshake::handle_initialize;
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
 };
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::state::WriteContext;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -111,8 +110,7 @@ impl McpServer {
     pub async fn spawn(
         repo: Arc<dyn RouteRepo>,
         events: crate::event::EventBus,
-        card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        write: WriteContext,
         socket_path: PathBuf,
         shim_bin: PathBuf,
         registry: Arc<ToolRegistry>,
@@ -164,8 +162,7 @@ impl McpServer {
         let ctx = Arc::new(AppContext {
             repo,
             events,
-            card_role_cache,
-            wave_cove_cache,
+            write,
             daemon_token_hash,
         });
 

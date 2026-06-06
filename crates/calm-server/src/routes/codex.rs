@@ -173,8 +173,8 @@ pub(crate) async fn ingest_provider_hook(
             scope,
             None,
             &s.events,
-            &s.card_role_cache,
-            &s.wave_cove_cache,
+            s.write().role_cache(),
+            s.write().cove_cache(),
             provider.event(card_id_typed, kind, payload),
         )
         .await?;

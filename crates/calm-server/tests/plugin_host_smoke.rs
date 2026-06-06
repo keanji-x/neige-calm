@@ -97,8 +97,10 @@ async fn boot_host_with_min_kernel(
         plugins_data_dir,
         Vec::new(),
         events.clone(),
-        calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
     ));
     (host, tmp, events)
 }
