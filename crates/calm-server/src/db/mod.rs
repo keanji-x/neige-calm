@@ -44,7 +44,7 @@
 //!
 //! ## Trait capability split (Scope α)
 //!
-//! `Repo` is split into four sub-traits along the *capability* axis. The
+//! `Repo` is split into sub-traits along the *capability* axis. The
 //! goal is to make "no route handler can reach a raw sync-domain write"
 //! a compile-time invariant, not a grep-time one:
 //!
@@ -70,11 +70,13 @@
 //!     they are server-private state that no other peer needs to
 //!     replicate. Routes see them — they are part of the normal REST
 //!     surface for plugin install, settings PUT, etc.
+//!   * [`RuntimeRepo`] — runtime table ownership for provider/card runtime
+//!     bookkeeping. It stays on the full internal repo surface, outside
+//!     route-facing sync-domain writes.
 //!
-//! [`Repo`] is the marker that requires all four — implemented blanket
-//! for any `T: RepoEventWrite + RepoSyncDomainRaw + RepoOutOfDomain`,
-//! so `SqlxRepo` picks it up automatically once it implements the four
-//! sub-traits.
+//! [`Repo`] is the full internal marker that requires all of those
+//! capabilities. `SqlxRepo` implements it directly so infrastructure can
+//! also expose the sqlite pool escape hatch without widening `RouteRepo`.
 //!
 //! [`RouteRepo`] is the *narrow* trait object `AppState::repo` exposes
 //! to handlers: `RepoEventWrite + RepoOutOfDomain` (which transitively
@@ -96,7 +98,7 @@ use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 pub mod sqlite;
 
@@ -702,6 +704,11 @@ pub trait RepoOutOfDomain: RepoRead {
         exit_code: Option<i32>,
         signal_killed: bool,
     ) -> Result<()>;
+    /// Clear stale PID and exit markers immediately before spawning or
+    /// reattaching a terminal child. Fresh terminal rows are already clean;
+    /// recovered rows may carry a previous PID plus boot reconciliation exit
+    /// markers.
+    async fn terminal_clear_exit_for_spawn(&self, id: &str) -> Result<()>;
     /// Remove a terminal row by id. Surfaced on the trait so the sweeper
     /// can call it from inside its `write_with_event` closure via the
     /// `_tx`-suffixed helper.
@@ -910,14 +917,20 @@ impl<T> RouteRepo for T where T: RepoEventWrite + RepoOutOfDomain + ?Sized {}
 /// Full repo capability. Declared as a supertrait of [`RouteRepo`] +
 /// [`RepoSyncDomainRaw`] so `Arc<dyn Repo>` upcasts to `Arc<dyn RouteRepo>`
 /// via stable trait-object upcasting (Rust 1.86+). The blanket impl picks
-/// up `SqlxRepo` automatically once it implements all four sub-traits.
+/// up `SqlxRepo` automatically once it implements the required sub-traits.
 ///
 /// `&dyn Repo` is the internal-access escape hatch used by db-internal
 /// helpers, the replay lib, terminal_sweeper, and tests. Production route
 /// handlers see the narrower [`RouteRepo`] trait object instead — see
 /// `AppState::repo`.
-pub trait Repo: RouteRepo + RepoSyncDomainRaw + RuntimeRepo {}
-impl<T> Repo for T where T: RouteRepo + RepoSyncDomainRaw + RuntimeRepo + ?Sized {}
+pub trait Repo: RouteRepo + RepoSyncDomainRaw + RuntimeRepo {
+    /// Internal sqlite escape hatch for infrastructure that owns tables
+    /// outside the route-facing sync-domain traits. Kept off `RouteRepo` so
+    /// ordinary handlers cannot bypass the existing write gates.
+    fn sqlite_pool(&self) -> Option<SqlitePool> {
+        None
+    }
+}
 
 // ---------------------------------------------------------------------------
 // `write_with_event_typed` — ergonomic generic wrapper around the

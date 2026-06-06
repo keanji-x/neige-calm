@@ -3893,7 +3893,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Daemon spawn failed (rows are persisted; sweeper reaps within ~60s) */
+            /** @description Daemon spawn failed; the saga rolled back the committed transaction (no leaked rows). */
             500: {
                 headers: {
                     [name: string]: unknown;

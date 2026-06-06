@@ -13,14 +13,14 @@
 //! spawn — there is no separate `SpawnDaemonOpts` carry between
 //! transaction commit and terminal startup anymore.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
 /// `calm_session::TerminalTheme` value type one-for-one — duplicated
 /// here so the route can keep its own `ToSchema` derive (the
 /// `calm_session` crate is utoipa-free).
-#[derive(Deserialize, Debug, Clone, Copy, ToSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequestTheme {
     pub fg: (u8, u8, u8),
