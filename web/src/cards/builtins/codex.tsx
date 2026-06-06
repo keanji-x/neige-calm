@@ -199,6 +199,7 @@ function CodexCard({
 function CodexCardImpl({
   card,
   onClose,
+  deletable,
 }: {
   card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
@@ -224,31 +225,23 @@ function CodexCardImpl({
   const [role, setRole] = useState<Role | null>(null);
   const [xtermRef, setXtermRef] = useXtermWheelTargetRef<XtermViewHandle>();
   const instanceCtx = useOptionalCardInstanceCtx();
-  const [localRefreshEpoch] = useState(0);
-  const [refreshEpoch] = instanceCtx?.useInstance<number>('refreshEpoch', 0) ?? [
-    localRefreshEpoch,
-  ];
-  const didMountRefreshEffect = useRef(false);
-  useEffect(() => {
-    if (!didMountRefreshEffect.current) {
-      didMountRefreshEffect.current = true;
-      return;
-    }
-    xtermRef.current?.refresh();
-  }, [refreshEpoch, xtermRef]);
   // `card.id` is typed `string | undefined` in the kernel wire model, but a
   // mounted card always has one — gate the Reset button on its presence so
   // TS knows the API call site is safe, matching the `if (!cardId) return`
   // pattern the rest of this component already uses (see line ~200).
+  // Fallback for tests that mount CodexCard outside CardInstanceProvider; production always has a provider.
   const [localResetOpen, setLocalResetOpen] = useState(false);
   const [resetOpen, setResetOpen] =
     instanceCtx?.useInstance<boolean>('resetOpen', false) ?? [
       localResetOpen,
       setLocalResetOpen,
     ];
+  const resetOpenRef = useRef(resetOpen);
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const showSpecSessionActions = canShowSpecSessionActions(card, deletable);
   useEffect(() => {
+    resetOpenRef.current = resetOpen;
     if (resetOpen) {
       setResetError(null);
     } else {
@@ -347,11 +340,7 @@ function CodexCardImpl({
       xtermRef.current?.refresh();
       setResetOpen(false);
     } catch (err) {
-      const [isResetOpen] = instanceCtx?.useInstance<boolean>(
-        'resetOpen',
-        false,
-      ) ?? [resetOpen];
-      if (isResetOpen) {
+      if (resetOpenRef.current) {
         setResetError(err instanceof Error ? err.message : 'Reset failed');
       }
     } finally {
@@ -377,6 +366,15 @@ function CodexCardImpl({
         // which is the kind of churn that confuses some AT.
         status={
           <>
+            {showSpecSessionActions && (
+              <IconButton
+                glyph={<Icon n="refresh" s={14} />}
+                label="Refresh terminal"
+                title="Refresh terminal (reconnect)"
+                tone="neutral"
+                onClick={() => xtermRef.current?.refresh()}
+              />
+            )}
             {role === 'Observer' && (
               <span className="card-head-observing-pill">observing</span>
             )}
@@ -503,25 +501,8 @@ function specSessionActions(
   ctx: CardInstanceCtx,
 ) {
   if (!canShowSpecSessionActions(card, ctx.deletable)) return [];
-  const [, setRefreshEpoch] = ctx.useInstance<number>('refreshEpoch', 0);
   const [, setResetOpen] = ctx.useInstance<boolean>('resetOpen', false);
   return [
-    {
-      kind: 'imperative' as const,
-      id: 'refresh-terminal',
-      placement: 'head' as const,
-      render() {
-        return (
-          <IconButton
-            glyph={<Icon n="refresh" s={14} />}
-            label="Refresh terminal"
-            title="Refresh terminal (reconnect)"
-            tone="neutral"
-            onClick={() => setRefreshEpoch((epoch) => epoch + 1)}
-          />
-        );
-      },
-    },
     {
       kind: 'imperative' as const,
       id: 'reset-spec-session',

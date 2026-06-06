@@ -101,7 +101,7 @@ describe('Codex spec-card refresh control', () => {
     expect(button).toHaveAttribute('title', 'Refresh terminal (reconnect)');
   });
 
-  it('renders Reset spec session to the right of Refresh terminal for a kernel-owned spec card', async () => {
+  it('renders Reset spec session for a kernel-owned spec card', async () => {
     const Codex = CodexEntry.Component;
     render(
       <Wrap>
@@ -109,9 +109,6 @@ describe('Codex spec-card refresh control', () => {
       </Wrap>,
     );
 
-    const refresh = await screen.findByRole('button', {
-      name: 'Refresh terminal',
-    });
     const reset = await screen.findByRole('button', {
       name: 'Reset spec session',
     });
@@ -119,9 +116,6 @@ describe('Codex spec-card refresh control', () => {
       'title',
       'Reset spec session (kill daemon, new thread)',
     );
-    expect(
-      refresh.compareDocumentPosition(reset) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
   });
 
   it('does not render Refresh terminal for a regular user-created codex card', () => {

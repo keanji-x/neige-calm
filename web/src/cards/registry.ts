@@ -90,6 +90,7 @@ export type CardKindClaim =
   | { mode: 'prefix'; prefix: string };
 
 export interface CardCreateContext {
+  // Tuple form (NOT strings) — wire/Theme expects [r,g,b] integer arrays.
   themeRgb: {
     fg: [number, number, number];
     bg: [number, number, number];
