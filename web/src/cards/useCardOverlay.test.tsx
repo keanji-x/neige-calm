@@ -26,7 +26,8 @@ vi.mock('../api/events', () => ({
   sharedEventStream: vi.fn(() => streamMock),
 }));
 
-import { useCardOverlay, useCardStatusOverlay } from './useCardOverlay';
+import { useCardStatusOverlay } from './overlayRegistry';
+import { useCardOverlay } from './useCardOverlay';
 
 describe('useCardOverlay', () => {
   beforeEach(() => {

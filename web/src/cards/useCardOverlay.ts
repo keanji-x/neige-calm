@@ -46,13 +46,3 @@ export function useCardOverlay<T>(
 
   return payload;
 }
-
-export interface CardStatusPayload {
-  state: string;
-}
-
-export function useCardStatusOverlay(
-  cardId: string | undefined,
-): CardStatusPayload | null {
-  return useCardOverlay<CardStatusPayload>(cardId, 'status');
-}
