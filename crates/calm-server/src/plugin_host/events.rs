@@ -64,18 +64,24 @@ impl SubscriptionFilter {
         if !self.events.is_empty() && !self.events.iter().any(|g| glob_matches(g, name)) {
             return false;
         }
+        // Optional filters require metadata; skip derivation for the common
+        // events-only subscriber path.
+        if self.plugin_id.is_none() && self.entity_kind.is_none() && self.entity_id.is_none() {
+            return true;
+        }
+        let meta = ev.metadata();
         if let Some(pid) = &self.plugin_id
-            && event_plugin_id(ev).as_deref() != Some(pid.as_str())
+            && meta.plugin_id.as_deref() != Some(pid.as_str())
         {
             return false;
         }
         if let Some(ek) = &self.entity_kind
-            && event_entity_kind(ev).as_deref() != Some(ek.as_str())
+            && meta.entity_kind.as_deref() != Some(ek.as_str())
         {
             return false;
         }
         if let Some(eid) = &self.entity_id
-            && event_entity_id(ev).as_deref() != Some(eid.as_str())
+            && meta.entity_id.as_deref() != Some(eid.as_str())
         {
             return false;
         }
@@ -89,132 +95,6 @@ impl SubscriptionFilter {
 /// site (the enum match in `event.rs`) — see PR4 of #136.
 fn event_name(ev: &Event) -> &'static str {
     ev.kind_tag()
-}
-
-/// Plugin id carried by the event, if any. Only overlay events and plugin.state
-/// carry one in the current vocabulary.
-///
-/// PR5 of #136 hazard H1: every variant of `Event` is enumerated explicitly
-/// (no `_ =>` catch-all) so the compiler nags when a new variant lands and
-/// forces the author of that variant to make a deliberate
-/// has-a-plugin-id-or-not decision rather than silently inheriting `None`.
-/// The 4 PR4 dispatcher/task-lifecycle variants (`codex.job_requested`,
-/// `terminal.job_requested`, `task.completed`, `task.failed`) explicitly
-/// return `None` — they're kernel-internal signals with no plugin attribution.
-fn event_plugin_id(ev: &Event) -> Option<String> {
-    match ev {
-        Event::OverlaySet(o) => Some(o.plugin_id.clone()),
-        Event::OverlayDeleted { plugin_id, .. } => Some(plugin_id.clone()),
-        Event::PluginState { id, .. } => Some(id.clone()),
-
-        // Events without a plugin attribution — explicit-arm so the
-        // compiler flags any new variant for a deliberate decision.
-        Event::CoveUpdated(_)
-        | Event::CoveDeleted { .. }
-        | Event::WaveUpdated(_)
-        | Event::WaveDeleted { .. }
-        | Event::WaveLifecycleChanged { .. }
-        | Event::CardAdded(_)
-        | Event::CardUpdated(_)
-        | Event::CardDeleted { .. }
-        | Event::WaveReportEdited { .. }
-        | Event::TerminalDeleted { .. }
-        | Event::CodexHook { .. }
-        | Event::ClaudeHook { .. }
-        | Event::CodexJobRequested { .. }
-        | Event::TerminalJobRequested { .. }
-        | Event::TaskCompleted { .. }
-        | Event::TaskFailed { .. }
-        // #318 INV-1 (b) — boot-takeover abandonment is a kernel-internal
-        // signal, no plugin attribution.
-        | Event::SpecPushAbandoned { .. } => None,
-    }
-}
-
-/// Entity kind ("wave" | "card") the event touches, if any. We map the
-/// concrete event variants onto the two kinds the kernel knows about; events
-/// that don't fit (e.g. cove.*, plugin.state) return None and therefore fail
-/// an `entity_kind` clause when one is present.
-///
-/// PR5 of #136 hazard H1: explicit-arm every variant (no `_ =>` catch-all)
-/// so the compiler flags when a new variant lands. The 4 PR4 variants are
-/// dispatcher/task-lifecycle signals with no `wave`/`card` entity surface
-/// — plugins that want to filter on those subscribe via the `events` glob
-/// clause and omit `entity_kind` / `entity_id`. Matches the parallel
-/// explicit-arm in [`event_entity_id`].
-fn event_entity_kind(ev: &Event) -> Option<String> {
-    match ev {
-        Event::WaveUpdated(_) | Event::WaveDeleted { .. } | Event::WaveLifecycleChanged { .. } => {
-            Some("wave".into())
-        }
-        // #318 INV-1 (b) — wave-scoped abandonment signal; routes through
-        // plugin filters that select on `entity_kind="wave"`.
-        Event::SpecPushAbandoned { .. } => Some("wave".into()),
-        Event::CardAdded(_) | Event::CardUpdated(_) | Event::CardDeleted { .. } => {
-            Some("card".into())
-        }
-        // Issue #247 PR2 — wave-report edit log is scoped to the report
-        // card; surface "card" so plugin filters with
-        // `entity_kind="card"` see structured edits alongside the
-        // generic `card.updated` companion event.
-        Event::WaveReportEdited { .. } => Some("card".into()),
-        Event::OverlaySet(o) => Some(o.entity_kind.clone()),
-        Event::OverlayDeleted { entity_kind, .. } => Some(entity_kind.clone()),
-        Event::CodexHook { .. } | Event::ClaudeHook { .. } => Some("card".into()),
-
-        // No entity-kind surface — explicit-arm so future variants force a
-        // deliberate decision (cove updates don't surface "cove" because
-        // plugin entity_kind today is exactly {"wave","card"}; the PR4
-        // dispatcher variants don't have an entity at all).
-        Event::CoveUpdated(_)
-        | Event::CoveDeleted { .. }
-        | Event::TerminalDeleted { .. }
-        | Event::PluginState { .. }
-        | Event::CodexJobRequested { .. }
-        | Event::TerminalJobRequested { .. }
-        | Event::TaskCompleted { .. }
-        | Event::TaskFailed { .. } => None,
-    }
-}
-
-/// Entity id the event touches. Same coverage logic as `event_entity_kind`.
-fn event_entity_id(ev: &Event) -> Option<String> {
-    match ev {
-        Event::CoveUpdated(c) => Some(c.id.to_string()),
-        Event::CoveDeleted { id } => Some(id.to_string()),
-        Event::WaveUpdated(w) => Some(w.id.to_string()),
-        Event::WaveDeleted { id, .. } => Some(id.to_string()),
-        Event::WaveLifecycleChanged { id, .. } => Some(id.to_string()),
-        // #318 INV-1 (b) — entity id is the abandoned wave's id, matching
-        // the entity_kind="wave" arm above.
-        Event::SpecPushAbandoned { wave_id, .. } => Some(wave_id.to_string()),
-        Event::CardAdded(c) | Event::CardUpdated(c) => Some(c.id.to_string()),
-        Event::CardDeleted { id, .. } => Some(id.to_string()),
-        // Issue #247 PR2 — entity id is the report card's id, matching
-        // the entity_kind="card" decision above.
-        Event::WaveReportEdited { card_id, .. } => Some(card_id.to_string()),
-        Event::OverlaySet(o) => Some(o.entity_id.clone()),
-        Event::OverlayDeleted { entity_id, .. } => Some(entity_id.clone()),
-        Event::PluginState { id, .. } => Some(id.clone()),
-        // Codex hooks are scoped to a card_id, mirroring card.* events.
-        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {
-            Some(card_id.to_string())
-        }
-        // Terminal-deleted: id IS the terminal id; we don't expose a
-        // "terminal" entity_kind on the filter API, so this only matches
-        // filters that omit `entity_kind` / `entity_id` or set them via
-        // the `events` clause.
-        Event::TerminalDeleted { id, .. } => Some(id.clone()),
-        // PR4 of #136 — kernel-internal dispatcher / task-lifecycle
-        // signals carry no entity id on the payload (the
-        // BroadcastEnvelope holds the scope instead). Plugins that want
-        // to subscribe to these must omit `entity_id` / `entity_kind`
-        // and filter via the `events` glob clause.
-        Event::CodexJobRequested { .. }
-        | Event::TerminalJobRequested { .. }
-        | Event::TaskCompleted { .. }
-        | Event::TaskFailed { .. } => None,
-    }
 }
 
 // ===========================================================================
