@@ -128,6 +128,7 @@ pub(crate) async fn ingest_hook(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[allow(deprecated)]
 pub(crate) async fn ingest_provider_hook(
     s: &AppState,
     card_id_str: String,

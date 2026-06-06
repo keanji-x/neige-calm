@@ -377,8 +377,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
         ActorId::User,
         None,
         &events,
-        &cache,
-        &wcc,
+        &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(
@@ -472,8 +471,7 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
         ActorId::User,
         None,
         &events,
-        &cache,
-        &wcc,
+        &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         |tx| {
             Box::pin(async move {
                 let _cove = cove_create_tx(
@@ -538,8 +536,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
         ActorId::AiCodex(worker_id),
         None,
         &events,
-        &cache,
-        &wcc,
+        &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(

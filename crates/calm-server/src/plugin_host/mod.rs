@@ -180,6 +180,7 @@ pub struct PluginHost {
     processes: Mutex<HashMap<String, RunningPlugin>>,
 }
 
+#[allow(deprecated)]
 impl PluginHost {
     /// Real boot-time constructor. Mirrors Slice A's `new`, but takes the
     /// resolved-paths + event bus + config disable list so we can supervise.

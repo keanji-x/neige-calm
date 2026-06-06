@@ -10,7 +10,9 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
+use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
+use crate::model::CardRole;
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -40,10 +42,28 @@ impl WriteContext {
         }
     }
 
+    /// #480 PR3a — cluster check: card role lookup. None if card unknown.
+    pub fn verify_role(&self, card_id: &CardId) -> Option<CardRole> {
+        self.role_cache.get(card_id)
+    }
+
+    /// #480 PR3a — cluster check: wave's home cove. None if wave unknown.
+    pub fn verify_cove(&self, wave_id: &WaveId) -> Option<CoveId> {
+        self.cove_cache.cove_of(wave_id)
+    }
+
+    #[deprecated(
+        since = "0.1.0",
+        note = "use WriteContext::verify_role / verify_cove (or pass the WriteContext to write_with_event_typed) — raw getters survive only for legacy db chain glue"
+    )]
     pub fn role_cache(&self) -> &CardRoleCache {
         &self.role_cache
     }
 
+    #[deprecated(
+        since = "0.1.0",
+        note = "use WriteContext::verify_role / verify_cove (or pass the WriteContext to write_with_event_typed) — raw getters survive only for legacy db chain glue"
+    )]
     pub fn cove_cache(&self) -> &WaveCoveCache {
         &self.cove_cache
     }

@@ -101,8 +101,10 @@ async fn seed_legacy_overlay(repo: &SqlxRepo, bus: &EventBus) -> i64 {
         EventScope::System,
         None,
         bus,
-        &CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, legacy).await?;
@@ -192,8 +194,10 @@ async fn replay_mixes_legacy_pass_through_with_future_drop() {
         EventScope::System,
         None,
         &bus,
-        &CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, future).await?;

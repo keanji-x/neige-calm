@@ -5,7 +5,6 @@
 //! always derived from [`ToolCallIdentity`]; callers never provide a
 //! `wave_id`.
 
-use crate::card_role_cache::CardRoleCache;
 use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -14,6 +13,7 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::wave_report;
 use crate::model::{Card, CardRole, Wave};
+use crate::state::WriteContext;
 use crate::{db::WaveEvent, event::Event, event::EventScope};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -401,7 +401,7 @@ async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProj
         .await
         .map_err(|e| RpcError::internal(format!("wave_file: events_for_wave: {e}")))?;
 
-    let runs = project_runs(ctx.write.role_cache(), cards, events);
+    let runs = project_runs(&ctx.write, cards, events);
     for run in &runs {
         if RESERVED_RUN_KEYS.contains(&run.idempotency_key.as_str()) {
             tracing::error!(
@@ -421,14 +421,14 @@ async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProj
 }
 
 fn project_runs(
-    card_role_cache: &CardRoleCache,
+    write: &WriteContext,
     cards: Vec<Card>,
     events: Vec<WaveEvent>,
 ) -> Vec<RunProjection> {
     let mut keys = BTreeSet::new();
     let mut worker_cards = BTreeMap::new();
     for card in cards {
-        if card_role_cache.get(&card.id) != Some(CardRole::Worker) {
+        if write.verify_role(&card.id) != Some(CardRole::Worker) {
             continue;
         }
         if let Some(key) = idempotency_key_from_payload(&card.payload) {
@@ -691,7 +691,7 @@ fn run_by_key<'a>(runs: &'a [RunProjection], key: &str) -> Result<&'a RunProject
 }
 
 fn card_meta(ctx: &Arc<AppContext>, card: &Card) -> Value {
-    let role = ctx.write.role_cache().get(&card.id).unwrap_or_default();
+    let role = ctx.write.verify_role(&card.id).unwrap_or_default();
     json!({
         "id": card.id,
         "kind": card.kind,

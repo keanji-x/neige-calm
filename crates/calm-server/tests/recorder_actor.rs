@@ -69,8 +69,7 @@ async fn create_cove_as(
         EventScope::System,
         None,
         bus,
-        cache,
-        wcc,
+        &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
                 let c = cove_create_tx(tx, p).await?;

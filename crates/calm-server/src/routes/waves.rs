@@ -240,6 +240,7 @@ pub(crate) async fn get_wave_detail(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
+#[allow(deprecated)]
 pub(crate) async fn create_wave(
     State(s): State<AppState>,
     actor: Actor,
@@ -425,8 +426,7 @@ pub(crate) async fn create_wave(
     //    No `EventScope::Cove`-fallback dance: by the time the closure
     //    runs, we know wave_id, so each event gets its tightest scope.
     let actor_id = actor.to_actor_id();
-    let cache_for_tx = s.write().role_cache().clone();
-    let wcc_for_tx = s.write().cove_cache().clone();
+    let write_for_tx = s.write().clone();
     let env_for_tx = env.clone();
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
@@ -444,8 +444,7 @@ pub(crate) async fn create_wave(
         actor_id,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 // 3.0. Issue #250 PR 2 — optional folder attach.
@@ -466,7 +465,7 @@ pub(crate) async fn create_wave(
                 }
 
                 // 3a. Wave row.
-                let wave = wave_create_tx(tx, p, &wcc_for_tx).await?;
+                let wave = wave_create_tx(tx, p, write_for_tx.cove_cache()).await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
 
@@ -519,7 +518,7 @@ pub(crate) async fn create_wave(
                     // and `neige.card.delete` refuse to drop them.
                     // Wave delete still cascades via the FK chain.
                     false,
-                    &cache_for_tx,
+                    write_for_tx.role_cache(),
                     // #177 — host browser's theme RGB taken from the
                     // wave-create request body (required on `NewWave`).
                     // Persisted onto the spec card's terminal row so
@@ -566,7 +565,7 @@ pub(crate) async fn create_wave(
                     // delete (the parent wave's delete still cascades
                     // via FK).
                     false,
-                    &cache_for_tx,
+                    write_for_tx.role_cache(),
                 )
                 .await?;
 
@@ -1066,8 +1065,7 @@ async fn persist_shared_spec_runtime_fields(
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -1136,8 +1134,7 @@ async fn clear_shared_spec_runtime_fields(
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -1307,8 +1304,7 @@ pub(crate) async fn update_wave(
         actor_id,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
@@ -1345,6 +1341,7 @@ pub(crate) async fn update_wave(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
+#[allow(deprecated)]
 pub(crate) async fn delete_wave(
     State(s): State<AppState>,
     actor: Actor,
@@ -1406,15 +1403,14 @@ pub(crate) async fn delete_wave(
         wave: wave_id.clone(),
         cove: cove_id.clone(),
     };
-    let wcc_for_tx = s.write().cove_cache().clone();
+    let write_for_tx = s.write().clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first so the RESTRICT FK lets the
@@ -1431,7 +1427,7 @@ pub(crate) async fn delete_wave(
                 overlay_delete_card_overlays_by_wave_tx(tx, wave_id.as_str()).await?;
                 overlay_delete_by_entity_tx(tx, "wave", wave_id.as_str()).await?;
                 overlay_delete_by_entity_tx(tx, "view", wave_id.as_str()).await?;
-                wave_delete_tx(tx, wave_id.as_ref(), &wcc_for_tx).await?;
+                wave_delete_tx(tx, wave_id.as_ref(), write_for_tx.cove_cache()).await?;
                 Ok((
                     (),
                     Event::WaveDeleted {
