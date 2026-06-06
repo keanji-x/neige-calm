@@ -348,6 +348,19 @@ describe('XtermView v4 handshake', () => {
     expect(ref.current?.refresh).toEqual(expect.any(Function));
   });
 
+  it('getWheelTarget returns null when component is not mounted', () => {
+    type WheelTargetReturn = ReturnType<XtermViewHandle['getWheelTarget']>;
+    const nullTarget: WheelTargetReturn = null;
+    const ref = createRef<XtermViewHandle>();
+    const { unmount } = render(<XtermView ref={ref} terminalId="term_test" />);
+    const handle = ref.current;
+    if (!handle) throw new Error('missing XtermView handle');
+
+    unmount();
+
+    expect(handle.getWheelTarget()).toBe(nullTarget);
+  });
+
   it('refresh() rebuilds the WebSocket against the same terminal endpoint', async () => {
     const ref = createRef<XtermViewHandle>();
     render(<XtermView ref={ref} terminalId="term_test" />);

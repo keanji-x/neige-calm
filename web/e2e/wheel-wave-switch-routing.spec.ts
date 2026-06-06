@@ -2,6 +2,24 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 test.setTimeout(90_000);
 
+const createdCoveIds: string[] = [];
+
+test.beforeEach(() => {
+  createdCoveIds.length = 0;
+});
+
+test.afterEach(async ({ request }) => {
+  for (const id of createdCoveIds) {
+    const res = await request.delete(`/api/coves/${id}`);
+    if (!res.ok() && res.status() !== 404) {
+      throw new Error(
+        `cleanup: DELETE /api/coves/${id} -> ${res.status()} ${res.statusText()}`,
+      );
+    }
+  }
+  createdCoveIds.length = 0;
+});
+
 async function blockFonts(page: Page): Promise<void> {
   await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
   await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
@@ -87,6 +105,7 @@ test('terminal wheel routes to restored xterm scrollback after wave switch', asy
 
   const runId = Date.now();
   const coveId = await createCove(page);
+  createdCoveIds.push(coveId);
   const waveA = await createWave(page, coveId, `A ${runId}`);
   const waveB = await createWave(page, coveId, `B ${runId}`);
   console.log('ok routing created waves');
@@ -131,8 +150,25 @@ test('terminal wheel routes to restored xterm scrollback after wave switch', asy
   await expect
     .poll(() => screen.innerText(), { timeout: 15_000 })
     .toContain('wheel-routing-199');
-  await page.waitForTimeout(500);
   await restored.scrollIntoViewIfNeeded();
+  let lastScreenBox = '';
+  await expect
+    .poll(async () => {
+      const nextBox = await screen.boundingBox();
+      if (!nextBox) return '';
+      const key = [
+        Math.round(nextBox.x),
+        Math.round(nextBox.y),
+        Math.round(nextBox.width),
+        Math.round(nextBox.height),
+      ].join(':');
+      if (key !== lastScreenBox) {
+        lastScreenBox = key;
+        return '';
+      }
+      return key;
+    }, { timeout: 15_000 })
+    .not.toBe('');
 
   const box = await screen.boundingBox();
   if (!box) throw new Error('restored xterm screen has no bounding box');
@@ -143,9 +179,10 @@ test('terminal wheel routes to restored xterm scrollback after wave switch', asy
   const beforeOuter = await outerScrollTop(page);
   const beforeText = await screen.innerText();
   await wheelOver(page, screen, -300);
-  await page.waitForTimeout(250);
 
+  await expect
+    .poll(() => screen.innerText(), { timeout: 15_000 })
+    .not.toBe(beforeText);
   expect(await outerScrollTop(page)).toBe(beforeOuter);
-  expect(await screen.innerText()).not.toBe(beforeText);
   console.log('ok routing wheel asserted');
 });
