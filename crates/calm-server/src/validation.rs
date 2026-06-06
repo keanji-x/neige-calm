@@ -50,6 +50,7 @@
 //! `schemaVersion` — they pass through opaquely (no version policy from us).
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::{CalmError, Result};
@@ -89,6 +90,187 @@ pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// — the wave-scoped boolean aggregate written by `card_fsm` (issue #254).
 pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Clone, Copy)]
+pub struct OverlayKindEntry {
+    pub kind: &'static str,
+    pub validate: fn(&Value) -> Result<()>,
+    pub max_schema_version: u32,
+}
+
+pub struct OverlayKindRegistry {
+    entries: &'static [OverlayKindEntry],
+}
+
+impl OverlayKindRegistry {
+    pub const fn new(entries: &'static [OverlayKindEntry]) -> Self {
+        Self { entries }
+    }
+
+    pub fn lookup(&self, kind: &str) -> Option<&'static OverlayKindEntry> {
+        self.entries.iter().find(|entry| entry.kind == kind)
+    }
+
+    pub fn validate(&self, kind: &str, payload: &Value) -> Result<()> {
+        let Some(entry) = self.lookup(kind) else {
+            return Ok(());
+        };
+        (entry.validate)(payload)
+    }
+
+    pub fn max_supported_schema_version(&self, kind: &str) -> Option<u32> {
+        self.lookup(kind).map(|entry| entry.max_schema_version)
+    }
+}
+
+fn validate_as<T>(kind: &str, label: &str, max_version: u32, payload: &Value) -> Result<()>
+where
+    T: DeserializeOwned,
+{
+    check_schema_version(kind, payload, max_version)?;
+    serde_json::from_value::<T>(payload.clone())
+        .map(|_| ())
+        .map_err(|e| CalmError::BadRequest(format!("invalid {label} payload: {e}")))
+}
+
+macro_rules! simple_overlay {
+    ($fn_name:ident, $shape_name:ident, $kind:literal, $label:literal, $version:expr, {
+        $field:ident: $field_ty:ty
+    }) => {
+        fn $fn_name(payload: &Value) -> Result<()> {
+            #[derive(Deserialize)]
+            #[allow(dead_code)]
+            struct $shape_name {
+                $field: $field_ty,
+            }
+            validate_as::<$shape_name>($kind, $label, $version, payload)
+        }
+    };
+}
+
+simple_overlay!(
+    validate_status_overlay_payload,
+    StatusPayload,
+    "status",
+    "status",
+    OVERLAY_STATUS_SCHEMA_VERSION,
+    { state: String }
+);
+simple_overlay!(
+    validate_progress_overlay_payload,
+    ProgressPayload,
+    "progress",
+    "progress",
+    OVERLAY_PROGRESS_SCHEMA_VERSION,
+    { value: f64 }
+);
+simple_overlay!(
+    validate_eta_overlay_payload,
+    EtaPayload,
+    "eta",
+    "eta",
+    OVERLAY_ETA_SCHEMA_VERSION,
+    { text: String }
+);
+simple_overlay!(
+    validate_now_overlay_payload,
+    NowPayload,
+    "now",
+    "now",
+    OVERLAY_NOW_SCHEMA_VERSION,
+    { text: String }
+);
+
+fn validate_layout_overlay_payload(payload: &Value) -> Result<()> {
+    check_schema_version("layout", payload, OVERLAY_LAYOUT_SCHEMA_VERSION)?;
+    validate_layout_payload(payload)
+}
+
+fn validate_file_viewer_nav_overlay_payload(payload: &Value) -> Result<()> {
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "lowercase")]
+    enum FileViewerTab {
+        Code,
+        Diff,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FileViewerNavPayload {
+        #[serde(default)]
+        schema_version: Option<u32>,
+        tab: FileViewerTab,
+        folder_path: String,
+        selected_path: Option<String>,
+        diff_selected: Option<String>,
+    }
+
+    validate_as::<FileViewerNavPayload>(
+        "file-viewer-nav",
+        "file-viewer-nav",
+        OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION,
+        payload,
+    )
+}
+
+fn validate_any_card_needs_input_overlay_payload(payload: &Value) -> Result<()> {
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(deny_unknown_fields)]
+    struct AnyCardNeedsInputPayload {
+        #[serde(default)]
+        #[serde(rename = "schemaVersion")]
+        schema_version: Option<u32>,
+        value: bool,
+    }
+
+    validate_as::<AnyCardNeedsInputPayload>(
+        "any_card_needs_input",
+        "any_card_needs_input",
+        OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
+        payload,
+    )
+}
+
+pub static OVERLAY_KIND_REGISTRY: OverlayKindRegistry = OverlayKindRegistry::new(&[
+    OverlayKindEntry {
+        kind: "status",
+        validate: validate_status_overlay_payload,
+        max_schema_version: OVERLAY_STATUS_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "progress",
+        validate: validate_progress_overlay_payload,
+        max_schema_version: OVERLAY_PROGRESS_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "eta",
+        validate: validate_eta_overlay_payload,
+        max_schema_version: OVERLAY_ETA_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "now",
+        validate: validate_now_overlay_payload,
+        max_schema_version: OVERLAY_NOW_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "layout",
+        validate: validate_layout_overlay_payload,
+        max_schema_version: OVERLAY_LAYOUT_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "file-viewer-nav",
+        validate: validate_file_viewer_nav_overlay_payload,
+        max_schema_version: OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "any_card_needs_input",
+        validate: validate_any_card_needs_input_overlay_payload,
+        max_schema_version: OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
+    },
+]);
+
 /// Return the maximum `schemaVersion` this kernel knows how to interpret for
 /// an overlay `kind`. `Some(N)` for kernel-owned kinds; `None` for
 /// plugin-defined kinds (which we keep fully opaque — no version policy).
@@ -104,16 +286,7 @@ pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
 /// this returns, so the read guard tracks the write guard without a separate
 /// update.
 pub fn max_supported_overlay_schema_version(kind: &str) -> Option<u32> {
-    match kind {
-        "status" => Some(OVERLAY_STATUS_SCHEMA_VERSION),
-        "progress" => Some(OVERLAY_PROGRESS_SCHEMA_VERSION),
-        "eta" => Some(OVERLAY_ETA_SCHEMA_VERSION),
-        "now" => Some(OVERLAY_NOW_SCHEMA_VERSION),
-        "layout" => Some(OVERLAY_LAYOUT_SCHEMA_VERSION),
-        "file-viewer-nav" => Some(OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION),
-        "any_card_needs_input" => Some(OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION),
-        _ => None,
-    }
+    OVERLAY_KIND_REGISTRY.max_supported_schema_version(kind)
 }
 
 /// Read the `schemaVersion` field from a payload, defaulting to `1` when
@@ -233,106 +406,7 @@ fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> Result<()
 /// Returns `Ok(())` for unknown / plugin-specific kinds. Returns
 /// `Err(CalmError::BadRequest)` when a kernel-owned kind has the wrong shape.
 pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
-    match kind {
-        "status" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            struct StatusPayload {
-                state: String,
-            }
-            check_schema_version(kind, payload, OVERLAY_STATUS_SCHEMA_VERSION)?;
-            serde_json::from_value::<StatusPayload>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| CalmError::BadRequest(format!("invalid status payload: {e}")))
-        }
-        "progress" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            struct ProgressPayload {
-                value: f64,
-            }
-            check_schema_version(kind, payload, OVERLAY_PROGRESS_SCHEMA_VERSION)?;
-            serde_json::from_value::<ProgressPayload>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| CalmError::BadRequest(format!("invalid progress payload: {e}")))
-        }
-        "eta" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            struct EtaPayload {
-                text: String,
-            }
-            check_schema_version(kind, payload, OVERLAY_ETA_SCHEMA_VERSION)?;
-            serde_json::from_value::<EtaPayload>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| CalmError::BadRequest(format!("invalid eta payload: {e}")))
-        }
-        "now" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            struct NowPayload {
-                text: String,
-            }
-            check_schema_version(kind, payload, OVERLAY_NOW_SCHEMA_VERSION)?;
-            serde_json::from_value::<NowPayload>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| CalmError::BadRequest(format!("invalid now payload: {e}")))
-        }
-        "layout" => {
-            check_schema_version(kind, payload, OVERLAY_LAYOUT_SCHEMA_VERSION)?;
-            validate_layout_payload(payload)
-        }
-        "file-viewer-nav" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            #[serde(rename_all = "lowercase")]
-            enum FileViewerTab {
-                Code,
-                Diff,
-            }
-
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct FileViewerNavPayload {
-                #[serde(default)]
-                schema_version: Option<u32>,
-                tab: FileViewerTab,
-                folder_path: String,
-                selected_path: Option<String>,
-                diff_selected: Option<String>,
-            }
-
-            check_schema_version(kind, payload, OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION)?;
-            serde_json::from_value::<FileViewerNavPayload>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| CalmError::BadRequest(format!("invalid file-viewer-nav payload: {e}")))
-        }
-        // Issue #254 — wave-scoped aggregate written by `card_fsm`:
-        // `{value: bool}`. Strict shape: missing or wrong-type `value`
-        // rejects so a future contributor can't write a malformed bool
-        // (e.g. {"value": "true"} as a string) that would then need
-        // defensive parsing in every UI consumer.
-        "any_card_needs_input" => {
-            #[derive(Deserialize)]
-            #[allow(dead_code)]
-            #[serde(deny_unknown_fields)]
-            struct AnyCardNeedsInputPayload {
-                #[serde(default)]
-                #[serde(rename = "schemaVersion")]
-                schema_version: Option<u32>,
-                value: bool,
-            }
-            check_schema_version(kind, payload, OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION)?;
-            serde_json::from_value::<AnyCardNeedsInputPayload>(payload.clone())
-                .map(|_| ())
-                .map_err(|e| {
-                    CalmError::BadRequest(format!("invalid any_card_needs_input payload: {e}"))
-                })
-        }
-        // Plugin-defined overlay kinds stay opaque.
-        _ => Ok(()),
-    }
+    OVERLAY_KIND_REGISTRY.validate(kind, payload)
 }
 
 /// Grid column count — mirrors `web/src/WaveGrid.tsx::COLS`. Any layout
@@ -486,6 +560,103 @@ mod tests {
     #[test]
     fn plugin_prefixed_card_accepts_anything() {
         validate_builtin_card("plugin:foo:bar", &json!({ "whatever": true })).unwrap();
+    }
+
+    // ---------------- OverlayKindRegistry ----------------
+
+    #[test]
+    fn overlay_kind_registry_lookup_known_kinds() {
+        let expected = [
+            ("status", OVERLAY_STATUS_SCHEMA_VERSION),
+            ("progress", OVERLAY_PROGRESS_SCHEMA_VERSION),
+            ("eta", OVERLAY_ETA_SCHEMA_VERSION),
+            ("now", OVERLAY_NOW_SCHEMA_VERSION),
+            ("layout", OVERLAY_LAYOUT_SCHEMA_VERSION),
+            ("file-viewer-nav", OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION),
+            (
+                "any_card_needs_input",
+                OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
+            ),
+        ];
+
+        for (kind, max_schema_version) in expected {
+            let entry = OVERLAY_KIND_REGISTRY
+                .lookup(kind)
+                .unwrap_or_else(|| panic!("missing registry entry for {kind}"));
+            assert_eq!(entry.kind, kind);
+            assert_eq!(entry.max_schema_version, max_schema_version);
+            assert_eq!(
+                OVERLAY_KIND_REGISTRY.max_supported_schema_version(kind),
+                Some(max_schema_version)
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_kind_registry_lookup_unknown_kind() {
+        assert!(OVERLAY_KIND_REGISTRY.lookup("plugin:foo").is_none());
+        assert!(OVERLAY_KIND_REGISTRY.lookup("").is_none());
+    }
+
+    #[test]
+    fn overlay_kind_registry_validate_plugin_kind_opaque() {
+        OVERLAY_KIND_REGISTRY
+            .validate("plugin:foo", &json!({ "junk": true }))
+            .unwrap();
+        OVERLAY_KIND_REGISTRY
+            .validate("plugin:foo", &json!({ "schemaVersion": 999 }))
+            .unwrap();
+    }
+
+    #[test]
+    fn overlay_kind_registry_validate_known_kinds_accept_and_reject() {
+        let cases = [
+            (
+                "status",
+                json!({ "state": "running" }),
+                json!({ "state": 42 }),
+            ),
+            (
+                "progress",
+                json!({ "value": 0.5 }),
+                json!({ "value": "fast" }),
+            ),
+            ("eta", json!({ "text": "5m" }), json!({ "text": null })),
+            ("now", json!({ "text": "writing" }), json!({ "text": 7 })),
+            (
+                "layout",
+                json!({ "positions": { "c": { "x": 0, "y": 0, "w": 4, "h": 3 } } }),
+                json!({ "positions": { "c": { "x": 10, "y": 0, "w": 4, "h": 3 } } }),
+            ),
+            (
+                "file-viewer-nav",
+                json!({
+                    "tab": "code",
+                    "folderPath": "/repo/src",
+                    "selectedPath": null,
+                    "diffSelected": null
+                }),
+                json!({
+                    "tab": "history",
+                    "folderPath": "/repo/src",
+                    "selectedPath": null,
+                    "diffSelected": null
+                }),
+            ),
+            (
+                "any_card_needs_input",
+                json!({ "value": true }),
+                json!({ "value": "yes" }),
+            ),
+        ];
+
+        for (kind, valid, invalid) in cases {
+            OVERLAY_KIND_REGISTRY.validate(kind, &valid).unwrap();
+            assert!(matches!(
+                OVERLAY_KIND_REGISTRY.validate(kind, &invalid),
+                Err(CalmError::BadRequest(_))
+            ));
+        }
     }
 
     // ---------------- Overlay: status ----------------
