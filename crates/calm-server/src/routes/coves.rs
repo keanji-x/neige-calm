@@ -28,8 +28,8 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Cove, CoveKind, CovePatch, NewCove};
-use crate::state::AppState;
-use crate::terminal_sweeper::reap_terminal_artifacts;
+use crate::state::{AppState, RouteState, WorkerState};
+use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -78,7 +78,7 @@ pub struct ListCovesQuery {
     ),
 )]
 pub(crate) async fn list_coves(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Query(q): Query<ListCovesQuery>,
 ) -> Result<Json<Vec<Cove>>> {
     // Issue #175 — default to the user-visible subset so the sidebar
@@ -104,7 +104,7 @@ pub(crate) async fn list_coves(
     ),
 )]
 pub(crate) async fn create_cove(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     actor: Actor,
     Json(p): Json<NewCove>,
 ) -> Result<(StatusCode, Json<Cove>)> {
@@ -126,7 +126,7 @@ pub(crate) async fn create_cove(
         EventScope::System,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(tx, p).await?;
@@ -167,7 +167,7 @@ pub(crate) async fn create_cove(
 /// "+ New cove" affordance consumes and which would otherwise need a
 /// reserved-name policy).
 pub(crate) async fn get_or_create_system_cove(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     // Note: `Actor` is extracted to keep this handler consistent with the
     // rest of the cove surface (it forces the middleware to validate the
     // `X-Calm-Actor` header), but the value is intentionally **not**
@@ -197,7 +197,7 @@ pub(crate) async fn get_or_create_system_cove(
         EventScope::System,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let cove = cove_create_system_tx(tx).await?;
@@ -246,7 +246,7 @@ pub(crate) async fn get_or_create_system_cove(
     ),
 )]
 pub(crate) async fn update_cove(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
     Json(p): Json<CovePatch>,
@@ -260,7 +260,7 @@ pub(crate) async fn update_cove(
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let cove = cove_update_tx(tx, &id, p).await?;
@@ -285,7 +285,8 @@ pub(crate) async fn update_cove(
     ),
 )]
 pub(crate) async fn delete_cove(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
@@ -322,7 +323,8 @@ pub(crate) async fn delete_cove(
         let cards = s.repo.cards_by_wave(wave.id.as_str()).await?;
         for card in &cards {
             if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
-                reap_terminal_artifacts(&s, &t).await;
+                reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t)
+                    .await;
                 terminal_ids.push(t.id);
             }
         }
@@ -337,7 +339,7 @@ pub(crate) async fn delete_cove(
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first; tolerate NotFound on each

@@ -28,8 +28,8 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, new_id};
 use crate::routes::cards::card_scope;
-use crate::routes::terminal::spawn_terminal_for;
-use crate::state::AppState;
+use crate::routes::terminal::spawn_terminal_for_route;
+use crate::state::{AppState, RouteState, WorkerState};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -90,7 +90,8 @@ pub struct NewTerminalCardBody {
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_terminal_card(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
     actor: Actor,
     Path(wave_id): Path<String>,
     Json(p): Json<NewTerminalCardBody>,
@@ -145,14 +146,14 @@ pub(crate) async fn create_terminal_card(
     .await?;
     let card_id_for_tx = card_id.clone();
     let wave_id_for_tx = wave_id;
-    let write_for_tx = s.write().clone();
+    let write_for_tx = s.write.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let (card, _term) = card_with_terminal_create_tx(
@@ -202,7 +203,7 @@ pub(crate) async fn create_terminal_card(
     //    its grace window. This matches the prior `routes/terminal.rs`
     //    semantics: a 500 here tells the client the spawn failed, but the
     //    card/terminal pair is still in the DB until the sweeper runs.
-    spawn_terminal_for(&s, &term, &program, &cwd, &env).await?;
+    spawn_terminal_for_route(&s, &w, &term, &program, &cwd, &env).await?;
 
     Ok((StatusCode::CREATED, Json(card)))
 }

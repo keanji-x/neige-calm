@@ -24,8 +24,8 @@
 
 use crate::error::{CalmError, Result};
 use crate::routes::codex_cards::shell_single_quote;
-use crate::routes::terminal::spawn_terminal_for;
-use crate::state::{AppState, CodexClient};
+use crate::routes::terminal::spawn_terminal_for_route;
+use crate::state::{CodexClient, RouteState, WorkerState};
 
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
 /// that documents the role; PR7a/PR7b will expand this with explicit
@@ -473,7 +473,8 @@ fn developer_instructions_config_override(value: &str) -> String {
 // (see `dispatcher.rs`, `db/sqlite.rs`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn seed_and_spawn_spec_daemon(
-    state: AppState,
+    route: RouteState,
+    worker: WorkerState,
     spec_card_id: String,
     wave_id: String,
     cwd: String,
@@ -490,7 +491,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 ) -> Result<()> {
     // 1. Look up the terminal row. Guaranteed to exist post-commit
     //    (the row was written inside the same tx as the spec card).
-    let term = match state.repo.terminal_get_by_card(&spec_card_id).await {
+    let term = match route.repo.terminal_get_by_card(&spec_card_id).await {
         Ok(Some(t)) => t,
         Ok(None) => {
             tracing::warn!(
@@ -530,7 +531,8 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    response hot path. Since #236, that synchronous wait is intentional:
     //    it is the acceptable cost vs. the correctness bug it closes.
     let command_line = push.command_line();
-    if let Err(e) = spawn_terminal_for(&state, &term, &command_line, &cwd, &env).await {
+    if let Err(e) = spawn_terminal_for_route(&route, &worker, &term, &command_line, &cwd, &env).await
+    {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,

@@ -15,8 +15,8 @@ use crate::model::{Card, CardRole, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_terminal_for;
-use crate::state::AppState;
+use crate::routes::terminal::spawn_terminal_for_route;
+use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -74,7 +74,9 @@ pub struct NewClaudeCardBody {
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_claude_card(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     actor: Actor,
     Path(wave_id): Path<String>,
     Json(p): Json<NewClaudeCardBody>,
@@ -116,7 +118,7 @@ pub(crate) async fn create_claude_card(
     );
     env_map.insert(
         "NEIGE_CALM_BASE_URL".to_string(),
-        serde_json::Value::String(s.codex.ingest_url.clone()),
+        serde_json::Value::String(cs.codex.ingest_url.clone()),
     );
     env_map.insert(
         "NEIGE_HOOK_PROVIDER".to_string(),
@@ -144,12 +146,12 @@ pub(crate) async fn create_claude_card(
     }
     let env = serde_json::Value::Object(env_map);
 
-    let settings_dir = s.codex.claude_settings_dir.join(&card_id);
+    let settings_dir = cs.codex.claude_settings_dir.join(&card_id);
     let settings_path = settings_dir.join("settings.json");
     let settings_path_string = settings_path.to_string_lossy().to_string();
     let mut command_line = format!(
         "{} --settings {} --session-id {}",
-        shell_single_quote(&s.codex.claude_bin),
+        shell_single_quote(&cs.codex.claude_bin),
         shell_single_quote(&settings_path_string),
         shell_single_quote(&claude_session_id),
     );
@@ -176,14 +178,14 @@ pub(crate) async fn create_claude_card(
     )
     .await?;
     let wave_id_for_tx = wave_id;
-    let write_for_tx = s.write().clone();
+    let write_for_tx = s.write.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write(),
+        &s.write,
         move |tx| {
             Box::pin(async move {
                 let (card, _term) = card_with_claude_create_tx(
@@ -218,9 +220,9 @@ pub(crate) async fn create_claude_card(
         ))
     })?;
     let hook_command = claude_hook_command(
-        &s.codex.bridge_bin.to_string_lossy(),
+        &cs.codex.bridge_bin.to_string_lossy(),
         &card_id,
-        &s.codex.ingest_url,
+        &cs.codex.ingest_url,
     );
     let settings_json = build_claude_settings_json(&hook_command);
     std::fs::write(&settings_path, settings_json)
@@ -237,7 +239,7 @@ pub(crate) async fn create_claude_card(
             ))
         })?;
 
-    spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await?;
+    spawn_terminal_for_route(&s, &w, &term, &command_line, &cwd, &env).await?;
 
     tracing::info!(
         card_id = %card.id,

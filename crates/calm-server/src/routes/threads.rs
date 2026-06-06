@@ -2,7 +2,7 @@
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::CardRole;
-use crate::state::AppState;
+use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -34,7 +34,7 @@ pub fn router() -> Router<AppState> {
     ),
 )]
 pub async fn resolve_card_for_thread(
-    State(s): State<AppState>,
+    State(s): State<RouteState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadCardResolution>> {
     let row = s

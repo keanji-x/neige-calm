@@ -25,7 +25,7 @@
 //! the server, this is one of the first endpoints to lock down.
 
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::state::AppState;
+use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -142,7 +142,7 @@ pub struct GitDiffResponse {
     ),
 )]
 pub(crate) async fn listdir(
-    State(_s): State<AppState>,
+    State(_s): State<RouteState>,
     Query(q): Query<ListdirQuery>,
 ) -> Result<Json<ListdirResponse>> {
     let raw = q
@@ -249,7 +249,7 @@ pub(crate) async fn listdir(
     ),
 )]
 pub(crate) async fn readfile(
-    State(_s): State<AppState>,
+    State(_s): State<RouteState>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<ReadFileResponse>> {
     let raw = PathBuf::from(q.path.trim());
@@ -269,7 +269,7 @@ pub(crate) async fn readfile(
     ),
 )]
 pub(crate) async fn readfile_raw(
-    State(_s): State<AppState>,
+    State(_s): State<RouteState>,
     Query(q): Query<PathQuery>,
 ) -> Result<Response> {
     let raw = PathBuf::from(q.path.trim());
@@ -289,7 +289,7 @@ pub(crate) async fn readfile_raw(
     ),
 )]
 pub(crate) async fn gitstatus(
-    State(_s): State<AppState>,
+    State(_s): State<RouteState>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<GitStatusResponse>> {
     let raw = PathBuf::from(q.path.trim());
@@ -312,7 +312,7 @@ pub(crate) async fn gitstatus(
     ),
 )]
 pub(crate) async fn gitdiff(
-    State(_s): State<AppState>,
+    State(_s): State<RouteState>,
     Query(q): Query<GitDiffQuery>,
 ) -> Result<Json<GitDiffResponse>> {
     let raw = PathBuf::from(q.path.trim());
