@@ -10,7 +10,7 @@ import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { CardExitBadge } from '../../shared/components/CardExitBadge';
 import type { Role } from '../../api/generated-terminal';
 import type { ExitChange, XtermViewHandle } from '../../XtermView';
-import { getTerminalForCard } from '../../api/calm';
+import { createTerminalCard, getTerminalForCard } from '../../api/calm';
 import { useXtermWheelTargetRef } from '../../input/useXtermWheelTarget';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
@@ -201,13 +201,21 @@ function TerminalCard({
   );
 }
 
-export const TerminalEntry: CardEntry<TerminalCardData> = {
+export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> = {
   type: 'terminal',
   Component: TerminalCard,
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
   claim: { mode: 'exact', kind: 'terminal' },
   title: (card) => card.title || 'terminal',
   accessibleName: (card) => (card.title ? `Terminal: ${card.title}` : 'Terminal'),
+  create: {
+    mode: 'atomic',
+    async submit(waveId, _input, ctx) {
+      const rgb = ctx.themeRgb;
+      const card = await createTerminalCard(waveId, { theme: rgb });
+      return { cardId: card.id, raw: card };
+    },
+  },
   fromKernel: (k) => {
     if (k.kind !== 'terminal') return null;
     dlog('TerminalEntry.fromKernel', { id: k.id, payload: k.payload });

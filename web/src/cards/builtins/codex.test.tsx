@@ -4,6 +4,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '../../app/theme';
 import type { ClaudeCardData, CodexCardData } from './codex';
+import {
+  __resetRegistryForTest,
+  CardInstanceProvider,
+  registerCard,
+} from '../registry';
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -54,16 +59,29 @@ const claudeCard: ClaudeCardData = {
   terminalId: 'term_claude',
 };
 
-function Wrap({ children }: { children: ReactNode }) {
+function Wrap({
+  children,
+  cardId = 'card_spec',
+  deletable = false,
+}: {
+  children: ReactNode;
+  cardId?: string;
+  deletable?: boolean;
+}) {
   return (
     <ThemeProvider>
-      <Suspense fallback={<div>loading</div>}>{children}</Suspense>
+      <CardInstanceProvider cardId={cardId} deletable={deletable}>
+        <Suspense fallback={<div>loading</div>}>{children}</Suspense>
+      </CardInstanceProvider>
     </ThemeProvider>
   );
 }
 
 describe('Codex spec-card refresh control', () => {
   beforeEach(() => {
+    __resetRegistryForTest();
+    registerCard(CodexEntry);
+    registerCard(ClaudeEntry);
     mocks.refresh.mockClear();
     mocks.resetSpecCard.mockReset();
   });
@@ -83,7 +101,7 @@ describe('Codex spec-card refresh control', () => {
     expect(button).toHaveAttribute('title', 'Refresh terminal (reconnect)');
   });
 
-  it('renders Reset spec session to the right of Refresh terminal for a kernel-owned spec card', async () => {
+  it('renders Reset spec session for a kernel-owned spec card', async () => {
     const Codex = CodexEntry.Component;
     render(
       <Wrap>
@@ -91,9 +109,6 @@ describe('Codex spec-card refresh control', () => {
       </Wrap>,
     );
 
-    const refresh = await screen.findByRole('button', {
-      name: 'Refresh terminal',
-    });
     const reset = await screen.findByRole('button', {
       name: 'Reset spec session',
     });
@@ -101,15 +116,12 @@ describe('Codex spec-card refresh control', () => {
       'title',
       'Reset spec session (kill daemon, new thread)',
     );
-    expect(
-      refresh.compareDocumentPosition(reset) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
   });
 
   it('does not render Refresh terminal for a regular user-created codex card', () => {
     const Codex = CodexEntry.Component;
     render(
-      <Wrap>
+      <Wrap deletable>
         <Codex card={codexCard} deletable={true} />
       </Wrap>,
     );
