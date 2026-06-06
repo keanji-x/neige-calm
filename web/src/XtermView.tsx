@@ -649,7 +649,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           // the visible viewport.
           term.write('\r\n'.repeat(term.rows));
         }
-        term.write(Uint8Array.from(sh.snapshot.data));
+        term.write(Uint8Array.from(sh.snapshot.data), () => {
+          term.scrollToBottom();
+        });
         renderRev = sh.snapshot.render_rev;
         ptySeq = sh.snapshot.pty_seq;
         return;
@@ -674,8 +676,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           lastCols = s.cols;
           lastRows = s.rows;
         }
-        term.clear();
         if (s.scrollback) {
+          term.clear();
           // xterm clear() keeps the current cursor column; ServerHello uses a
           // fresh Terminal, but lag-recovery snapshots replay into an existing
           // session and need to start restored history at column 0.
@@ -686,7 +688,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           // history still sitting in the viewport.
           term.write('\r\n'.repeat(term.rows));
         }
-        term.write(Uint8Array.from(s.data));
+        term.write(Uint8Array.from(s.data), () => {
+          term.scrollToBottom();
+        });
         renderRev = s.render_rev;
         ptySeq = s.pty_seq;
         return;
