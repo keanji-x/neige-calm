@@ -26,7 +26,7 @@ vi.mock('../api/events', () => ({
   sharedEventStream: vi.fn(() => streamMock),
 }));
 
-import { useCardOverlay } from './useCardOverlay';
+import { useCardOverlay, useCardStatusOverlay } from './useCardOverlay';
 
 describe('useCardOverlay', () => {
   beforeEach(() => {
@@ -88,5 +88,84 @@ describe('useCardOverlay', () => {
     expect(result.current).toBeNull();
     expect(streamMock.addTopic).not.toHaveBeenCalled();
     expect(streamMock.on).not.toHaveBeenCalled();
+  });
+
+  it('clears payload when cardId changes before a new event arrives', () => {
+    const { result, rerender } = renderHook(
+      ({ cardId }) => useCardOverlay<{ state: string }>(cardId, 'status'),
+      { initialProps: { cardId: 'A' } },
+    );
+
+    act(() => {
+      streamMock.emit({
+        ev: 'overlay.set',
+        data: {
+          entity_kind: 'card',
+          entity_id: 'A',
+          kind: 'status',
+          payload: { state: 'A payload' },
+        },
+      });
+    });
+    expect(result.current).toEqual({ state: 'A payload' });
+
+    rerender({ cardId: 'B' });
+
+    expect(result.current).toBeNull();
+  });
+
+  it('clears payload when overlayKind changes before a new event arrives', () => {
+    const { result, rerender } = renderHook(
+      ({ overlayKind }) =>
+        useCardOverlay<{ state: string }>('card_1', overlayKind),
+      { initialProps: { overlayKind: 'status' } },
+    );
+
+    act(() => {
+      streamMock.emit({
+        ev: 'overlay.set',
+        data: {
+          entity_kind: 'card',
+          entity_id: 'card_1',
+          kind: 'status',
+          payload: { state: 'Status payload' },
+        },
+      });
+    });
+    expect(result.current).toEqual({ state: 'Status payload' });
+
+    rerender({ overlayKind: 'badge' });
+
+    expect(result.current).toBeNull();
+  });
+
+  it('filters status overlays through useCardStatusOverlay', () => {
+    const { result } = renderHook(() => useCardStatusOverlay('card_1'));
+
+    act(() => {
+      streamMock.emit({
+        ev: 'overlay.set',
+        data: {
+          entity_kind: 'card',
+          entity_id: 'card_1',
+          kind: 'badge',
+          payload: { state: 'Ignored' },
+        },
+      });
+    });
+    expect(result.current).toBeNull();
+
+    act(() => {
+      streamMock.emit({
+        ev: 'overlay.set',
+        data: {
+          entity_kind: 'card',
+          entity_id: 'card_1',
+          kind: 'status',
+          payload: { state: 'Ready' },
+        },
+      });
+    });
+    expect(result.current).toEqual({ state: 'Ready' });
   });
 });

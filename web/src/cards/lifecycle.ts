@@ -1,6 +1,6 @@
 import type { RefObject } from 'react';
 import type { WaveCardData } from '../types';
-import type { CardEntry, CardInstanceCtx } from './registry';
+import type { CardInstanceCtx } from './registry';
 
 export interface CardGeometry {
   width: number;
@@ -63,7 +63,7 @@ function freezeSnapshot(snapshot: CardLifecycleSnapshot): CardLifecycleSnapshot 
   });
 }
 
-function sameGeometry(a: CardGeometry, b: CardGeometry): boolean {
+export function sameGeometry(a: CardGeometry, b: CardGeometry): boolean {
   return a.width === b.width && a.height === b.height && a.ready === b.ready;
 }
 
@@ -131,5 +131,3 @@ declare module './registry' {
     emit(cmd: CardRuntimeCommand): void;
   }
 }
-
-export type _CardLifecycleEntryTypeAnchor = CardEntry;

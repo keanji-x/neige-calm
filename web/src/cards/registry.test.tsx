@@ -49,6 +49,8 @@ declare module '../types' {
     'test-controller-conflict': TestControllerConflictCardData;
     'test-controller-epoch': TestControllerEpochCardData;
     'test-controller-refresh': TestControllerRefreshCardData;
+    'test-controller-dispose': TestControllerDisposeCardData;
+    'test-controller-rebuild': TestControllerRebuildCardData;
   }
 }
 
@@ -98,6 +100,14 @@ interface TestControllerEpochCardData {
 }
 interface TestControllerRefreshCardData {
   type: 'test-controller-refresh';
+  id: string;
+}
+interface TestControllerDisposeCardData {
+  type: 'test-controller-dispose';
+  id: string;
+}
+interface TestControllerRebuildCardData {
+  type: 'test-controller-rebuild';
   id: string;
 }
 
@@ -465,12 +475,98 @@ describe('card controller lifecycle contract', () => {
     );
 
     expect(lifecycleEpoch).toBe(0);
+    expect(onRefresh).not.toHaveBeenCalled();
+
     act(() => {
       fireEvent.click(screen.getByRole('button', { name: 'refresh' }));
     });
-
     expect(lifecycleEpoch).toBe(1);
     expect(onRefresh).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'refresh' }));
+    });
+    expect(lifecycleEpoch).toBe(2);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('disposes controllers on unmount exactly once', () => {
+    const dispose = vi.fn();
+
+    registerCard(
+      entry<TestControllerDisposeCardData>({
+        type: 'test-controller-dispose',
+        createController: () => ({ dispose }),
+      }),
+    );
+
+    const { unmount } = render(
+      <>
+        {renderCard({
+          type: 'test-controller-dispose',
+          id: 'card_dispose',
+        })}
+      </>,
+    );
+
+    expect(dispose).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds controllers when cardId changes', () => {
+    const firstDispose = vi.fn();
+    const secondDispose = vi.fn();
+    const createController = vi
+      .fn()
+      .mockReturnValueOnce({ dispose: firstDispose })
+      .mockReturnValueOnce({ dispose: secondDispose });
+
+    registerCard(
+      entry<TestControllerRebuildCardData>({
+        type: 'test-controller-rebuild',
+        createController,
+      }),
+    );
+
+    const { rerender } = render(
+      <>
+        {renderCard({
+          type: 'test-controller-rebuild',
+          id: 'card_before',
+        })}
+      </>,
+    );
+
+    expect(createController).toHaveBeenCalledTimes(1);
+    expect(createController).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        card: expect.objectContaining({ id: 'card_before' }),
+        instance: expect.objectContaining({ cardId: 'card_before' }),
+      }),
+    );
+    expect(firstDispose).not.toHaveBeenCalled();
+
+    rerender(
+      <>
+        {renderCard({
+          type: 'test-controller-rebuild',
+          id: 'card_after',
+        })}
+      </>,
+    );
+
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+    expect(createController).toHaveBeenCalledTimes(2);
+    expect(createController).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        card: expect.objectContaining({ id: 'card_after' }),
+        instance: expect.objectContaining({ cardId: 'card_after' }),
+      }),
+    );
+    expect(secondDispose).not.toHaveBeenCalled();
   });
 
   it('throws when useCardLifecycle is used outside CardInstanceProvider', () => {

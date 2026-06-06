@@ -13,6 +13,7 @@ export function useCardOverlay<T>(
       setPayload(null);
       return;
     }
+    setPayload(null);
     const stream = sharedEventStream();
     stream.addTopic(`card:${cardId}`);
     const off = stream.on((ev) => {

@@ -34,8 +34,8 @@ import type { KernelCard } from '../api/wire';
 import { useState } from '../shared/state';
 import {
   createCardLifecycleStore,
+  sameGeometry,
   type CardController,
-  type CardGeometry,
   type CardLifecycleSnapshot,
   type CardLifecycleStore,
   type CardRuntimeCommand,
@@ -428,6 +428,7 @@ export function CardInstanceProvider({
   );
 
   useEffect(() => {
+    // PR4 will add IntersectionObserver-driven visibility tests.
     const current = controllerInputRef.current;
     if (!current.card || !current.entry?.createController) return;
     const controller = current.entry.createController({
@@ -484,10 +485,6 @@ export function CardInstanceProvider({
     { value: ctx },
     createElement(CardLifecycleReactCtx.Provider, { value: lifecycleStore }, children),
   );
-}
-
-function sameGeometry(a: CardGeometry, b: CardGeometry): boolean {
-  return a.width === b.width && a.height === b.height && a.ready === b.ready;
 }
 
 export function useCardInstanceCtx(): CardInstanceCtx {
