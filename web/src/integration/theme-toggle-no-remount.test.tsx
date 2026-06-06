@@ -37,6 +37,7 @@ import { act, render, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider, useTheme } from '../app/theme';
 import { CodexEntry, type CodexCardData } from '../cards/builtins/codex';
+import { CardInstanceProvider } from '../cards/registry';
 
 // ---- xterm mock --------------------------------------------------------
 //
@@ -181,6 +182,15 @@ const codexCard: CodexCardData = {
   terminalId: 'term_test',
 };
 
+function CodexUnderProvider() {
+  const Codex = CodexEntry.Component;
+  return (
+    <CardInstanceProvider cardId={codexCard.id!} deletable card={codexCard}>
+      <Codex card={codexCard} />
+    </CardInstanceProvider>
+  );
+}
+
 beforeEach(() => {
   termCtorCount = 0;
   wsInstances = [];
@@ -222,11 +232,10 @@ afterEach(() => {
 
 describe('#177 — theme toggle does not remount XtermView', () => {
   it('Terminal constructor stays at 1 across light → dark → light toggle', async () => {
-    const Codex = CodexEntry.Component;
     render(
       <Wrap>
         <ThemeCapture />
-        <Codex card={codexCard} />
+        <CodexUnderProvider />
       </Wrap>,
     );
     // XtermView is lazy-loaded; wait for the Terminal ctor to fire.
@@ -247,11 +256,10 @@ describe('#177 — theme toggle does not remount XtermView', () => {
   });
 
   it('TerminalThemeUpdate is dispatched on every toggle (live WS)', async () => {
-    const Codex = CodexEntry.Component;
     render(
       <Wrap>
         <ThemeCapture />
-        <Codex card={codexCard} />
+        <CodexUnderProvider />
       </Wrap>,
     );
     await waitFor(() => expect(wsInstances.length).toBe(1));

@@ -40,6 +40,7 @@ import {
   type CardLifecycleStore,
   type CardRuntimeCommand,
 } from './lifecycle';
+import { registerCardEntryResolver } from './resolver';
 
 export interface CardSize {
   w: number;
@@ -426,6 +427,17 @@ export function CardInstanceProvider({
   const prevLifecycleRef = useRef<CardLifecycleSnapshot>(
     lifecycleWriter.getSnapshot(),
   );
+
+  useEffect(() => {
+    if (!card) return;
+    return registerCardEntryResolver(cardId, {
+      card,
+      instance: {
+        cardId,
+        useInstance: ctx.useInstance,
+      },
+    });
+  }, [card, cardId, ctx.useInstance]);
 
   useEffect(() => {
     // PR4 will add IntersectionObserver-driven visibility tests.

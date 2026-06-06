@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { Suspense, type ReactNode, type Ref } from 'react';
+import { Suspense, type ComponentType, type ReactNode, type Ref } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '../../app/theme';
@@ -41,6 +41,12 @@ vi.mock('../../api/events', () => ({
 }));
 
 import { ClaudeEntry, CodexEntry } from './codex';
+import {
+  __resetRegistryForTest,
+  CardInstanceProvider,
+  registerCard,
+  useCardInstanceCtx,
+} from '../registry';
 
 const codexCard: CodexCardData = {
   type: 'codex',
@@ -62,19 +68,52 @@ function Wrap({ children }: { children: ReactNode }) {
   );
 }
 
+type AgentCardData = CodexCardData | ClaudeCardData;
+
+function renderAgentCard(
+  card: AgentCardData,
+  opts: { deletable?: boolean; extra?: ReactNode } = {},
+) {
+  const Component = (
+    card.type === 'claude' ? ClaudeEntry.Component : CodexEntry.Component
+  ) as ComponentType<{
+    card: AgentCardData;
+    deletable?: boolean;
+  }>;
+  return render(
+    <Wrap>
+      <CardInstanceProvider
+        cardId={card.id ?? card.type}
+        deletable={opts.deletable !== false}
+        card={card}
+      >
+        <Component card={card} deletable={opts.deletable} />
+        {opts.extra}
+      </CardInstanceProvider>
+    </Wrap>,
+  );
+}
+
+function EmitRefreshButton() {
+  const ctx = useCardInstanceCtx();
+  return (
+    <button type="button" onClick={() => ctx.emit({ type: 'refresh' })}>
+      emit refresh
+    </button>
+  );
+}
+
 describe('Codex spec-card refresh control', () => {
   beforeEach(() => {
+    __resetRegistryForTest();
+    registerCard(CodexEntry);
+    registerCard(ClaudeEntry);
     mocks.refresh.mockClear();
     mocks.resetSpecCard.mockReset();
   });
 
   it('renders Refresh terminal for a kernel-owned spec card', async () => {
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     const button = await screen.findByRole('button', {
       name: 'Refresh terminal',
@@ -84,12 +123,7 @@ describe('Codex spec-card refresh control', () => {
   });
 
   it('renders Reset spec session to the right of Refresh terminal for a kernel-owned spec card', async () => {
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     const refresh = await screen.findByRole('button', {
       name: 'Refresh terminal',
@@ -107,12 +141,7 @@ describe('Codex spec-card refresh control', () => {
   });
 
   it('does not render Refresh terminal for a regular user-created codex card', () => {
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={true} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: true });
 
     expect(
       screen.queryByRole('button', { name: 'Refresh terminal' }),
@@ -123,12 +152,7 @@ describe('Codex spec-card refresh control', () => {
   });
 
   it('does not render Refresh terminal for a Claude card even when kernel-owned', () => {
-    const Claude = ClaudeEntry.Component;
-    render(
-      <Wrap>
-        <Claude card={claudeCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(claudeCard, { deletable: false });
 
     expect(
       screen.queryByRole('button', { name: 'Refresh terminal' }),
@@ -145,10 +169,19 @@ describe('Codex spec-card refresh control', () => {
     root.addEventListener('mousedown', onMouseDown);
     root.append(container);
     document.body.append(root);
-    const Codex = CodexEntry.Component;
+    const Component = CodexEntry.Component as ComponentType<{
+      card: CodexCardData;
+      deletable?: boolean;
+    }>;
     render(
       <Wrap>
-        <Codex card={codexCard} deletable={false} />
+        <CardInstanceProvider
+          cardId={codexCard.id ?? codexCard.type}
+          deletable={false}
+          card={codexCard}
+        >
+          <Component card={codexCard} deletable={false} />
+        </CardInstanceProvider>
       </Wrap>,
       { container },
     );
@@ -161,12 +194,7 @@ describe('Codex spec-card refresh control', () => {
   });
 
   it("clicking Refresh terminal invokes XtermView's refresh handle", async () => {
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     await screen.findByTestId('xterm-view-stub');
     fireEvent.click(
@@ -175,14 +203,21 @@ describe('Codex spec-card refresh control', () => {
     expect(mocks.refresh).toHaveBeenCalledTimes(1);
   });
 
+  it('lifecycle refresh emits through the controller and refreshes XtermView', async () => {
+    renderAgentCard(codexCard, {
+      deletable: false,
+      extra: <EmitRefreshButton />,
+    });
+
+    await screen.findByTestId('xterm-view-stub');
+    fireEvent.click(await screen.findByRole('button', { name: 'emit refresh' }));
+
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
   it('opens Reset confirmation with Cancel focused', async () => {
     const user = userEvent.setup();
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     await user.click(
       await screen.findByRole('button', { name: 'Reset spec session' }),
@@ -200,12 +235,7 @@ describe('Codex spec-card refresh control', () => {
 
   it('cancels Reset without calling the API', async () => {
     const user = userEvent.setup();
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     await user.click(
       await screen.findByRole('button', { name: 'Reset spec session' }),
@@ -225,12 +255,7 @@ describe('Codex spec-card refresh control', () => {
       terminal_id: 'term_spec',
       new_thread_id: 'thread_new',
     });
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     await screen.findByTestId('xterm-view-stub');
     await user.click(
@@ -255,12 +280,7 @@ describe('Codex spec-card refresh control', () => {
         resolveReset = resolve;
       }),
     );
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     await user.click(
       await screen.findByRole('button', { name: 'Reset spec session' }),
@@ -286,12 +306,7 @@ describe('Codex spec-card refresh control', () => {
   it('keeps Reset dialog open and surfaces API failures', async () => {
     const user = userEvent.setup();
     mocks.resetSpecCard.mockRejectedValueOnce(new Error('daemon unavailable'));
-    const Codex = CodexEntry.Component;
-    render(
-      <Wrap>
-        <Codex card={codexCard} deletable={false} />
-      </Wrap>,
-    );
+    renderAgentCard(codexCard, { deletable: false });
 
     await user.click(
       await screen.findByRole('button', { name: 'Reset spec session' }),

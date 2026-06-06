@@ -107,4 +107,27 @@ describe('TerminalEntry.fromKernel', () => {
     expect(String(warnSpy.mock.calls[0]![0])).toContain('schemaVersion=99');
     expect(String(warnSpy.mock.calls[0]![0])).toContain('please refresh');
   });
+
+  it('declares an xterm wheel target with no refresh backing', () => {
+    const handle = { current: { marker: 'xterm' } };
+    const instance = {
+      cardId: 'card_1',
+      useInstance<S>(): [S, (next: S | ((prev: S) => S)) => void] {
+        return [handle as S, () => {}];
+      },
+    };
+
+    expect(TerminalEntry.refreshBacking).toBe('none');
+    expect(
+      TerminalEntry.wheelTarget!(
+        {
+          type: 'terminal',
+          id: 'card_1',
+          title: 'terminal',
+          lines: [],
+        },
+        instance,
+      ),
+    ).toEqual({ kind: 'xterm', ref: handle });
+  });
 });

@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { CardHead } from '../CardHead';
-import type { CardEntry } from '../registry';
+import { useCardInstanceCtx, type CardEntry } from '../registry';
 import type {
   GitChangedFile,
   GitDiffResponse,
@@ -104,6 +104,19 @@ function writePersistedSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
+function activeFileViewerPane(root: HTMLElement, tab: Tab): HTMLElement | null {
+  if (tab === 'code') {
+    return (
+      root.querySelector<HTMLElement>('.cm-scroller') ??
+      root.querySelector<HTMLElement>('.file-viewer-tree-list')
+    );
+  }
+  return (
+    root.querySelector<HTMLElement>('.file-viewer-merge') ??
+    root.querySelector<HTMLElement>('.file-viewer-changes')
+  );
+}
+
 function FileViewerCard({
   card,
   onClose,
@@ -113,6 +126,10 @@ function FileViewerCard({
 }) {
   const { resolved: theme } = useTheme();
   const queryClient = useQueryClient();
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [paneRefSlot] = useCardInstanceCtx().useInstance<{
+    current: HTMLElement | null;
+  }>('fvPaneRef', { current: null });
   const defaultNav = useMemo(() => seedNav(card.path), [card.path]);
   const navOverlayQueryKey = overlayStateQueryKey(
     'kernel',
@@ -209,6 +226,26 @@ function FileViewerCard({
     (listingLoading || !listing || listing.path === selectedPath)
       ? null
       : selectedPath;
+
+  useEffect(() => {
+    const root = cardRef.current;
+    if (!root) {
+      paneRefSlot.current = null;
+      return;
+    }
+    const updatePaneRef = () => {
+      paneRefSlot.current = activeFileViewerPane(root, tab);
+    };
+    updatePaneRef();
+    const observer = new MutationObserver(updatePaneRef);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (paneRefSlot.current && root.contains(paneRefSlot.current)) {
+        paneRefSlot.current = null;
+      }
+    };
+  }, [diffSelected, paneRefSlot, selectedCodePath, sidebarCollapsed, tab]);
 
   useEffect(() => {
     if (tab !== 'code' || !selectedCodePath) return;
@@ -310,7 +347,7 @@ function FileViewerCard({
   const codeSelectionLabel = selectedCodePath ?? 'Select a file';
 
   return (
-    <div className="file-viewer-card" data-wheel-file-viewer-tab={tab}>
+    <div ref={cardRef} className="file-viewer-card">
       <CardHead
         card={card}
         className="card-drag-handle"
@@ -609,6 +646,14 @@ export const FileViewerEntry: CardEntry<FileViewerCardData> = {
   type: 'file-viewer',
   Component: FileViewerCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 6 },
+  refreshBacking: 'none',
+  wheelTarget(_card, instance) {
+    const [paneRefSlot] = instance.useInstance<{ current: HTMLElement | null }>(
+      'fvPaneRef',
+      { current: null },
+    );
+    return { kind: 'native-scroll', ref: paneRefSlot };
+  },
   claim: { mode: 'exact', kind: 'file-viewer' },
   title: () => 'file',
   accessibleName: (card) => `File: ${card.path}`,

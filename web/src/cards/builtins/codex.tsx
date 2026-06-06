@@ -16,7 +16,14 @@
 //     local FSM here, so wave-union (the kernel computes it server-side)
 //     and per-card dot agree by construction.
 
-import { lazy, Suspense, useEffect, useRef, type CSSProperties } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { FsmState } from '../../types';
@@ -31,8 +38,7 @@ import { Icon } from '../../Icon';
 import { IconButton } from '../../pages/_shared';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { CardHead } from '../CardHead';
-import type { CardEntry } from '../registry';
-import { useXtermWheelTargetRef } from '../../input/useXtermWheelTarget';
+import { useCardInstanceCtx, type CardEntry } from '../registry';
 import {
   CLAUDE_PAYLOAD_SCHEMA_VERSION,
   CODEX_PAYLOAD_SCHEMA_VERSION,
@@ -211,7 +217,17 @@ function CodexCardImpl({
   // "observing" pill in the head status slot. Cleared on disconnect — the
   // XtermView callback re-emits on every state transition.
   const [role, setRole] = useState<Role | null>(null);
-  const [xtermRef, setXtermRef] = useXtermWheelTargetRef<XtermViewHandle>();
+  const ctx = useCardInstanceCtx();
+  const [xtermRefSlot] = ctx.useInstance<{ current: XtermViewHandle | null }>(
+    'xtermRef',
+    { current: null },
+  );
+  const setXtermRef = useCallback(
+    (handle: XtermViewHandle | null) => {
+      xtermRefSlot.current = handle;
+    },
+    [xtermRefSlot],
+  );
   // `card.id` is typed `string | undefined` in the kernel wire model, but a
   // mounted card always has one — gate the Reset button on its presence so
   // TS knows the API call site is safe, matching the `if (!cardId) return`
@@ -317,7 +333,7 @@ function CodexCardImpl({
     setResetError(null);
     try {
       await resetSpecCard(cardId);
-      xtermRef.current?.refresh();
+      ctx.emit({ type: 'refresh' });
       setResetOpen(false);
     } catch (err) {
       if (resetOpenRef.current) {
@@ -353,7 +369,7 @@ function CodexCardImpl({
                   label="Refresh terminal"
                   title="Refresh terminal (reconnect)"
                   tone="neutral"
-                  onClick={() => xtermRef.current?.refresh()}
+                  onClick={() => ctx.emit({ type: 'refresh' })}
                 />
                 <IconButton
                   glyph={<Icon n="reset" s={14} />}
@@ -481,10 +497,30 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+function xtermRefSlotFor(
+  instance: Parameters<NonNullable<CardEntry<CodexCardData>['wheelTarget']>>[1],
+) {
+  return instance.useInstance<{ current: XtermViewHandle | null }>('xtermRef', {
+    current: null,
+  })[0];
+}
+
 export const CodexEntry: CardEntry<CodexCardData> = {
   type: 'codex',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
+  refreshBacking: 'controller',
+  createController(ctx) {
+    const xtermRefSlot = xtermRefSlotFor(ctx.instance);
+    return {
+      onRefresh() {
+        xtermRefSlot.current?.refresh();
+      },
+    };
+  },
+  wheelTarget(_card, instance) {
+    return { kind: 'xterm', ref: xtermRefSlotFor(instance) };
+  },
   claim: { mode: 'exact', kind: 'codex' },
   title: () => 'Codex',
   accessibleName: () => 'Codex',
@@ -540,6 +576,10 @@ export const ClaudeEntry: CardEntry<ClaudeCardData> = {
   type: 'claude',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
+  refreshBacking: 'none',
+  wheelTarget(_card, instance) {
+    return { kind: 'xterm', ref: xtermRefSlotFor(instance) };
+  },
   claim: { mode: 'exact', kind: 'claude' },
   title: () => 'Claude',
   accessibleName: () => 'Claude',

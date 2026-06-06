@@ -271,6 +271,7 @@ export function WaveGrid({
                 key={slotKey(slot, i)}
                 className="wave-card"
                 data-wheel-card
+                data-card-id={slot.kind === 'card' ? slot.card?.id : undefined}
               >
                 {slot.kind === 'card' ? (
                   <WaveCard

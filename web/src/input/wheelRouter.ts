@@ -1,5 +1,8 @@
 import type { XtermWheelTarget } from './xtermAdapter';
 import { getXtermForShell } from './wheelTargets';
+import type { CardWheelTargetDecl } from '../cards/lifecycle';
+import { getEntry } from '../cards/registry';
+import type { ResolveCardById } from '../cards/resolver';
 
 export type WheelRoute =
   | { kind: 'page' }
@@ -11,9 +14,6 @@ export type WheelRoute =
 const MODAL_SELECTOR = '.modal-overlay, .modal-panel';
 const WHEEL_CARD_SELECTOR = '[data-wheel-card]';
 const XTERM_ROOT_SELECTOR = '.xterm-view';
-const FILE_VIEWER_CARD_SELECTOR = '.file-viewer-card';
-const FILE_VIEWER_PANE_SELECTOR =
-  '.cm-scroller, .file-viewer-tree-list, .file-viewer-changes, .file-viewer-merge';
 const LINE_HEIGHT_PX = 16;
 
 function asElement(target: EventTarget | null): Element | null {
@@ -61,31 +61,6 @@ export function pixelDelta(event: WheelEvent): { x: number; y: number } {
   return { x: event.deltaX, y: event.deltaY };
 }
 
-function fileViewerPaneFor(
-  activeCard: HTMLElement,
-  target: Element | null,
-): HTMLElement | null {
-  const fileViewer = activeCard.querySelector<HTMLElement>(
-    FILE_VIEWER_CARD_SELECTOR,
-  );
-  if (!fileViewer) return null;
-
-  const closestPane = target?.closest<HTMLElement>(FILE_VIEWER_PANE_SELECTOR);
-  if (closestPane && activeCard.contains(closestPane)) return closestPane;
-
-  const tab = fileViewer.dataset.wheelFileViewerTab;
-  if (tab === 'code') {
-    return activeCard.querySelector<HTMLElement>('.cm-scroller');
-  }
-  if (tab === 'diff') {
-    return (
-      activeCard.querySelector<HTMLElement>('.file-viewer-merge') ??
-      activeCard.querySelector<HTMLElement>('.file-viewer-changes')
-    );
-  }
-  return null;
-}
-
 export function getActiveCardShell(
   scrollRoot: HTMLElement,
   ownerDocument: Document,
@@ -99,13 +74,52 @@ export function getActiveCardShell(
   return scrollRoot.contains(shell) ? shell : null;
 }
 
+function isXtermViewHandle(value: unknown): value is {
+  getWheelTarget(): XtermWheelTarget | null;
+} {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'getWheelTarget' in value &&
+    typeof value.getWheelTarget === 'function'
+  );
+}
+
+function routeForXtermTarget(target: XtermWheelTarget): WheelRoute {
+  return {
+    kind:
+      target.mode() === 'passthrough'
+        ? 'xterm-passthrough'
+        : 'xterm-scrollback',
+    target,
+  };
+}
+
+function resolveDeclaredWheelRoute(
+  decl: CardWheelTargetDecl | null,
+): WheelRoute | null {
+  if (!decl) return null;
+  if (decl.kind === 'sink') return { kind: 'sink' };
+  if (decl.kind === 'native-scroll') {
+    const target = decl.ref.current;
+    return target instanceof HTMLElement
+      ? { kind: 'native-scroll', target }
+      : { kind: 'page' };
+  }
+  const handle = decl.ref.current;
+  if (!isXtermViewHandle(handle)) return { kind: 'page' };
+  const target = handle.getWheelTarget();
+  return target ? routeForXtermTarget(target) : { kind: 'page' };
+}
+
 export function resolveWheelRoute(args: {
   scrollRoot: HTMLElement;
   activeCard: HTMLElement | null;
   eventTarget: EventTarget | null;
   deltaY: number;
+  resolveCardById?: ResolveCardById;
 }): WheelRoute {
-  const { scrollRoot, activeCard, eventTarget } = args;
+  const { scrollRoot, activeCard, eventTarget, resolveCardById } = args;
   const target = asElement(eventTarget);
 
   if (target?.closest(MODAL_SELECTOR)) return { kind: 'page' };
@@ -118,23 +132,22 @@ export function resolveWheelRoute(args: {
     if (scrollable) return { kind: 'native-scroll', target: scrollable };
   }
 
-  const xtermTarget = getXtermForShell(activeCard);
-  if (xtermTarget) {
-    return {
-      kind:
-        xtermTarget.mode() === 'passthrough'
-          ? 'xterm-passthrough'
-          : 'xterm-scrollback',
-      target: xtermTarget,
-    };
-  }
-  if (activeCard.querySelector<HTMLElement>(XTERM_ROOT_SELECTOR)) {
-    return { kind: 'sink' };
+  const cardId = activeCard.dataset.cardId;
+  if (cardId && resolveCardById) {
+    const resolved = resolveCardById(cardId);
+    const entry = resolved ? getEntry(resolved.card.type) : undefined;
+    if (entry?.wheelTarget && resolved) {
+      const route = resolveDeclaredWheelRoute(
+        entry.wheelTarget(resolved.card, resolved.instance),
+      );
+      if (route) return route;
+    }
   }
 
-  const fileViewerPane = fileViewerPaneFor(activeCard, target);
-  if (fileViewerPane) {
-    return { kind: 'native-scroll', target: fileViewerPane };
+  const xtermTarget = getXtermForShell(activeCard);
+  if (xtermTarget) return routeForXtermTarget(xtermTarget);
+  if (activeCard.querySelector<HTMLElement>(XTERM_ROOT_SELECTOR)) {
+    return { kind: 'sink' };
   }
 
   return { kind: 'sink' };

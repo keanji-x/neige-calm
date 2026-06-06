@@ -85,6 +85,11 @@ describe('IframeEntry.fromKernel', () => {
     expect(IframeEntry.fromKernel!(invalid)).toBeNull();
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('registers epoch refresh backing without a controller', () => {
+    __resetRegistryForTest();
+    expect(() => registerCard(IframeEntry)).not.toThrow();
+  });
 });
 
 describe('IframeCard rendering', () => {

@@ -4,8 +4,11 @@ import {
   pixelDelta,
   resolveWheelRoute,
 } from './wheelRouter';
+import { useCardEntryResolverRegistry } from '../cards/resolver';
 
 export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
+  const resolveCardById = useCardEntryResolverRegistry();
+
   useEffect(() => {
     const scrollRoot = scrollRef.current;
     if (!scrollRoot) return;
@@ -22,6 +25,7 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
         activeCard,
         eventTarget: event.target,
         deltaY: event.deltaY,
+        resolveCardById,
       });
 
       if (route.kind === 'page' || route.kind === 'xterm-passthrough') return;
@@ -53,5 +57,5 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
     return () => {
       scrollRoot.removeEventListener('wheel', handleWheel, { capture: true });
     };
-  }, [scrollRef]);
+  }, [resolveCardById, scrollRef]);
 }

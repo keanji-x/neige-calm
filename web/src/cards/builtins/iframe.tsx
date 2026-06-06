@@ -118,6 +118,7 @@ export const IframeEntry: CardEntry<IframeCardData> = {
   type: 'iframe',
   Component: IframeCard,
   defaultSize: { w: 6, h: 10, minW: 3, minH: 4 },
+  refreshBacking: 'epoch',
   claim: { mode: 'exact', kind: 'iframe' },
   title: (card) => card.url,
   accessibleName: (card) => `Web page: ${card.url}`,

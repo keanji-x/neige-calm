@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useEffect } from 'react';
 import { z } from 'zod';
 import type { TermLine } from '../../types';
 import type { CardEntry } from '../registry';
@@ -11,7 +11,7 @@ import { CardExitBadge } from '../../shared/components/CardExitBadge';
 import type { Role } from '../../api/generated-terminal';
 import type { ExitChange, XtermViewHandle } from '../../XtermView';
 import { getTerminalForCard } from '../../api/calm';
-import { useXtermWheelTargetRef } from '../../input/useXtermWheelTarget';
+import { useCardInstanceCtx } from '../registry';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -64,7 +64,15 @@ function TerminalCard({
 }) {
   const { id: cardId, title, lines, terminalId, unsupportedVersion } = card;
   const { resolved: theme } = useTheme();
-  const [, setXtermRef] = useXtermWheelTargetRef<XtermViewHandle>();
+  const [xtermRefSlot] = useCardInstanceCtx().useInstance<{
+    current: XtermViewHandle | null;
+  }>('xtermRef', { current: null });
+  const setXtermRef = useCallback(
+    (handle: XtermViewHandle | null) => {
+      xtermRefSlot.current = handle;
+    },
+    [xtermRefSlot],
+  );
   // Daemon-assigned role lifted out of `<XtermView>` so the head can render
   // an "observing" pill in its status slot when this client doesn't hold
   // write. `null` until handshake completes, and reset to `null` on
@@ -205,6 +213,13 @@ export const TerminalEntry: CardEntry<TerminalCardData> = {
   type: 'terminal',
   Component: TerminalCard,
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
+  refreshBacking: 'none',
+  wheelTarget(_card, instance) {
+    const [xtermRefSlot] = instance.useInstance<{
+      current: XtermViewHandle | null;
+    }>('xtermRef', { current: null });
+    return { kind: 'xterm', ref: xtermRefSlot };
+  },
   claim: { mode: 'exact', kind: 'terminal' },
   title: (card) => card.title || 'terminal',
   accessibleName: (card) => (card.title ? `Terminal: ${card.title}` : 'Terminal'),
