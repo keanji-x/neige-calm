@@ -48,6 +48,7 @@ import { CloseIcon } from './shared/components/CloseIcon';
 import { WaveCard } from './shared/components/WaveCard';
 import { UnknownCard } from './cards/UnknownCard';
 import { getEntry } from './cards/registry';
+import { useCardVisibilityFocus } from './cards/useCardVisibilityFocus';
 import { dlog } from './util/debug';
 import { useUpdateCardMutation } from './api/queries';
 import type { WaveCardSlot } from './types';
@@ -97,6 +98,8 @@ export function WaveList({
   onRemoveCard: (idx: number) => void;
 }) {
   dlog('WaveList', 'render', { waveId, cardsCount: cards.length });
+  const scrollRootRef = useRef<HTMLDivElement | null>(null);
+  useCardVisibilityFocus(scrollRootRef);
 
   const updateCard = useUpdateCardMutation();
 
@@ -185,7 +188,7 @@ export function WaveList({
   );
 
   return (
-    <div className="wave-list-wrap">
+    <div ref={scrollRootRef} className="wave-list-wrap">
       <ul
         className="wave-list"
         aria-label="Wave cards (list view)"

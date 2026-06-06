@@ -8,12 +8,26 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, type ReactNode } from 'react';
 import type { KernelCard, KernelOverlay, NewOverlayBody } from '../../api/wire';
 import {
+  __resetRegistryForTest,
   CardInstanceProvider,
+  registerCard,
   useCardInstanceCtx,
 } from '../registry';
+import {
+  __resetCardEntryResolverRegistryForTest,
+  resolveCardById,
+} from '../resolver';
+
+const mocks = vi.hoisted(() => ({
+  dlog: vi.fn(),
+}));
 
 vi.mock('../../app/theme', () => ({
   useTheme: () => ({ resolved: 'light' }),
+}));
+
+vi.mock('../../util/debug', () => ({
+  dlog: mocks.dlog,
 }));
 
 vi.mock('./file-viewer-codemirror', () => ({
@@ -155,6 +169,10 @@ describe('FileViewerCard rendering', () => {
   const overlayStore = new Map<string, KernelOverlay>();
 
   beforeEach(() => {
+    __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
+    registerCard(FileViewerEntry);
+    mocks.dlog.mockClear();
     overlayStore.clear();
     try {
       window.localStorage.clear();
@@ -216,6 +234,30 @@ describe('FileViewerCard rendering', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
+  });
+
+  it('logs visibility hints through the lifecycle writer', async () => {
+    render(
+      <CardInstanceProvider
+        cardId="file_1"
+        deletable
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(resolveCardById('file_1')?.writer).toBeDefined(),
+    );
+    act(() => {
+      resolveCardById('file_1')!.writer.setVisible(false);
+    });
+
+    expect(mocks.dlog).toHaveBeenCalledWith('FileViewerCard', 'visibility', {
+      cardId: 'file_1',
+      visible: false,
+    });
   });
 
   it('loads the parent directory for an initial file path and renders read-only code', async () => {

@@ -20,6 +20,7 @@ import { dlog } from './util/debug';
 import type { WaveCardSlot } from './types';
 import { useOverlayState } from './hooks/useOverlayState';
 import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
+import { useCardVisibilityFocus } from './cards/useCardVisibilityFocus';
 
 const COLS = 12;
 const ROW_HEIGHT = 40;
@@ -133,6 +134,15 @@ export function WaveGrid({
   onRemoveCard: (idx: number) => void;
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
+  const scrollRootRef = useRef<HTMLDivElement | null>(null);
+  const setScrollRootRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef.current = node;
+      scrollRootRef.current = node;
+    },
+    [containerRef],
+  );
+  useCardVisibilityFocus(scrollRootRef);
   dlog('WaveGrid', 'render', { waveId, width, mounted, cardsCount: cards.length });
 
   // Scope E: layout now lives in an Overlay row. The hook handles
@@ -227,7 +237,7 @@ export function WaveGrid({
   }, []);
 
   return (
-    <div ref={containerRef} className="wave-grid-wrap">
+    <div ref={setScrollRootRef} className="wave-grid-wrap">
       {mounted && (
         <GridLayout
           className="wave-grid"

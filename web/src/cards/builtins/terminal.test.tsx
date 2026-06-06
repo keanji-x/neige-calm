@@ -5,8 +5,13 @@
 // kernel→UI adapter contract (the discriminator + payload parse), not the
 // xterm wiring. Render tests for live PTYs belong in playwright e2e.
 
+import { act, render, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { KernelCard } from '../../api/wire';
+
+const mocks = vi.hoisted(() => ({
+  dlog: vi.fn(),
+}));
 
 // Stub `XtermView` (and its xterm/css imports) so importing this card module
 // doesn't pull a real terminal into jsdom.
@@ -14,7 +19,20 @@ vi.mock('../../XtermView', () => ({
   XtermView: () => null,
 }));
 
+vi.mock('../../util/debug', () => ({
+  dlog: mocks.dlog,
+}));
+
 import { TerminalEntry } from './terminal';
+import {
+  __resetRegistryForTest,
+  CardInstanceProvider,
+  registerCard,
+} from '../registry';
+import {
+  __resetCardEntryResolverRegistryForTest,
+  resolveCardById,
+} from '../resolver';
 
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
   return {
@@ -129,5 +147,42 @@ describe('TerminalEntry.fromKernel', () => {
         instance,
       ),
     ).toEqual({ kind: 'xterm', ref: handle });
+  });
+});
+
+describe('TerminalEntry lifecycle controller', () => {
+  beforeEach(() => {
+    __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
+    registerCard(TerminalEntry);
+    mocks.dlog.mockClear();
+  });
+
+  afterEach(() => {
+    __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
+  });
+
+  it('logs visibility hints without declaring refresh handling', async () => {
+    const card = {
+      type: 'terminal' as const,
+      id: 'card_1',
+      title: 'terminal',
+      lines: [],
+    };
+    render(<CardInstanceProvider cardId="card_1" deletable card={card} />);
+
+    await waitFor(() =>
+      expect(resolveCardById('card_1')?.writer).toBeDefined(),
+    );
+    act(() => {
+      resolveCardById('card_1')!.writer.setVisible(false);
+    });
+
+    expect(TerminalEntry.refreshBacking).toBe('none');
+    expect(mocks.dlog).toHaveBeenCalledWith('TerminalCard', 'visibility', {
+      cardId: 'card_1',
+      visible: false,
+    });
   });
 });

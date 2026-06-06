@@ -434,8 +434,9 @@ export function CardInstanceProvider({
         cardId,
         useInstance: ctx.useInstance,
       },
+      writer: lifecycleWriter,
     });
-  }, [card, cardId, ctx.useInstance]);
+  }, [card, cardId, ctx.useInstance, lifecycleWriter]);
 
   useEffect(() => {
     // PR4 will add IntersectionObserver-driven visibility tests.

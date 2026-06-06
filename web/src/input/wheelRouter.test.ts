@@ -3,6 +3,10 @@ import { cleanup, render } from '@testing-library/react';
 import { createElement, useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CardWheelTargetDecl } from '../cards/lifecycle';
+import type {
+  CardEntryResolverValue,
+  CardLifecycleWriter,
+} from '../cards/resolver';
 import {
   __resetRegistryForTest,
   registerCard,
@@ -105,6 +109,30 @@ function fakeCard(): WaveCardData {
     title: 'terminal',
     lines: [],
   } as unknown as WaveCardData;
+}
+
+function fakeLifecycleWriter(): CardLifecycleWriter {
+  return {
+    getSnapshot: () => ({
+      visible: true,
+      focused: false,
+      geometry: { width: 0, height: 0, ready: false },
+      refreshEpoch: 0,
+    }),
+    subscribe: () => () => {},
+    setVisible: () => {},
+    setFocused: () => {},
+    setGeometry: () => {},
+    bumpRefresh: () => {},
+  };
+}
+
+function fakeResolvedCard(): CardEntryResolverValue {
+  return {
+    card: fakeCard(),
+    instance: fakeInstance(),
+    writer: fakeLifecycleWriter(),
+  };
 }
 
 function registerWheelEntry(
@@ -306,7 +334,7 @@ describe('resolveWheelRoute', () => {
         activeCard,
         eventTarget: scroller,
         deltaY: 120,
-        resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
+        resolveCardById: fakeResolvedCard,
       }),
     ).toEqual({ kind: 'native-scroll', target: scroller });
   });
@@ -327,7 +355,7 @@ describe('resolveWheelRoute', () => {
       activeCard,
       eventTarget: scrollRoot,
       deltaY: 120,
-      resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
+      resolveCardById: fakeResolvedCard,
     };
 
     expect(resolveWheelRoute(args)).toEqual({
@@ -353,7 +381,7 @@ describe('resolveWheelRoute', () => {
       activeCard,
       eventTarget: scrollRoot,
       deltaY: 120,
-      resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
+      resolveCardById: fakeResolvedCard,
     };
 
     expect(resolveWheelRoute(args)).toEqual({
@@ -376,17 +404,14 @@ describe('resolveWheelRoute', () => {
         activeCard,
         eventTarget: scrollRoot,
         deltaY: 120,
-        resolveCardById: () => ({ card: fakeCard(), instance: fakeInstance() }),
+        resolveCardById: fakeResolvedCard,
       }),
     ).toEqual({ kind: 'sink' });
   });
 
   it('falls back to WeakMap xterm routing when shell has no data-card-id', () => {
     const { scrollRoot, activeCard } = fixture();
-    const resolveCardById = vi.fn(() => ({
-      card: fakeCard(),
-      instance: fakeInstance(),
-    }));
+    const resolveCardById = vi.fn(fakeResolvedCard);
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'scrollback',
