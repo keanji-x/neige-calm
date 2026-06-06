@@ -64,18 +64,24 @@ impl SubscriptionFilter {
         if !self.events.is_empty() && !self.events.iter().any(|g| glob_matches(g, name)) {
             return false;
         }
+        // Optional filters require metadata; skip derivation for the common
+        // events-only subscriber path.
+        if self.plugin_id.is_none() && self.entity_kind.is_none() && self.entity_id.is_none() {
+            return true;
+        }
+        let meta = ev.metadata();
         if let Some(pid) = &self.plugin_id
-            && event_plugin_id(ev).as_deref() != Some(pid.as_str())
+            && meta.plugin_id.as_deref() != Some(pid.as_str())
         {
             return false;
         }
         if let Some(ek) = &self.entity_kind
-            && event_entity_kind(ev).as_deref() != Some(ek.as_str())
+            && meta.entity_kind.as_deref() != Some(ek.as_str())
         {
             return false;
         }
         if let Some(eid) = &self.entity_id
-            && event_entity_id(ev).as_deref() != Some(eid.as_str())
+            && meta.entity_id.as_deref() != Some(eid.as_str())
         {
             return false;
         }
@@ -89,21 +95,6 @@ impl SubscriptionFilter {
 /// site (the enum match in `event.rs`) — see PR4 of #136.
 fn event_name(ev: &Event) -> &'static str {
     ev.kind_tag()
-}
-
-/// Plugin id carried by the event, if any.
-fn event_plugin_id(ev: &Event) -> Option<String> {
-    ev.metadata().plugin_id
-}
-
-/// Entity kind ("wave" | "card") the event touches, if any.
-fn event_entity_kind(ev: &Event) -> Option<String> {
-    ev.metadata().entity_kind
-}
-
-/// Entity id the event touches. Same coverage logic as `event_entity_kind`.
-fn event_entity_id(ev: &Event) -> Option<String> {
-    ev.metadata().entity_id
 }
 
 // ===========================================================================
