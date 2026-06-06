@@ -7,8 +7,7 @@ import type { ResolveCardById } from '../cards/resolver';
 export type WheelRoute =
   | { kind: 'page' }
   | { kind: 'native-scroll'; target: HTMLElement }
-  | { kind: 'xterm-scrollback'; target: XtermWheelTarget }
-  | { kind: 'xterm-passthrough'; target: XtermWheelTarget }
+  | { kind: 'xterm'; target: XtermWheelTarget }
   | { kind: 'sink' };
 
 const MODAL_SELECTOR = '.modal-overlay, .modal-panel';
@@ -86,13 +85,7 @@ function isXtermViewHandle(value: unknown): value is {
 }
 
 function routeForXtermTarget(target: XtermWheelTarget): WheelRoute {
-  return {
-    kind:
-      target.mode() === 'passthrough'
-        ? 'xterm-passthrough'
-        : 'xterm-scrollback',
-    target,
-  };
+  return { kind: 'xterm', target };
 }
 
 function resolveDeclaredWheelRoute(
@@ -116,7 +109,6 @@ export function resolveWheelRoute(args: {
   scrollRoot: HTMLElement;
   activeCard: HTMLElement | null;
   eventTarget: EventTarget | null;
-  deltaY: number;
   resolveCardById?: ResolveCardById;
 }): WheelRoute {
   const { scrollRoot, activeCard, eventTarget, resolveCardById } = args;

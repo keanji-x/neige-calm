@@ -24,11 +24,10 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
         scrollRoot,
         activeCard,
         eventTarget: event.target,
-        deltaY: event.deltaY,
         resolveCardById,
       });
 
-      if (route.kind === 'page' || route.kind === 'xterm-passthrough') return;
+      if (route.kind === 'page') return;
 
       if (route.kind === 'native-scroll') {
         event.preventDefault();
@@ -37,10 +36,11 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
         route.target.scrollTop += y;
         return;
       }
-      if (route.kind === 'xterm-scrollback') {
-        if (route.target.scrollback(event.deltaY, event.deltaMode)) {
-          event.preventDefault();
-        }
+      if (route.kind === 'xterm') {
+        const decision = route.target.decide(event.deltaY, event.deltaMode);
+        if (decision.kind === 'pass') return;
+        event.preventDefault();
+        route.target.apply(event.deltaY, event.deltaMode);
         return;
       }
       if (route.kind === 'sink') {

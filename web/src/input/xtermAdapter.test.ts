@@ -65,7 +65,86 @@ describe('createXtermWheelTarget', () => {
     };
   }
 
-  it('reports passthrough mode when mouse reporting is enabled', () => {
+  it("decides pass with reason 'no-terminal' when terminal handle is absent", () => {
+    const scrollLines = vi.fn();
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: { current: null },
+    });
+
+    expect(target.decide(120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'pass',
+      reason: 'no-terminal',
+    });
+    expect(() => target.apply(120, WheelEvent.DOM_DELTA_PIXEL)).not.toThrow();
+    expect(scrollLines).not.toHaveBeenCalled();
+  });
+
+  it("decides pass with reason 'edge' at top for wheel up", () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 0, baseY: 8 } },
+        }),
+      },
+    });
+
+    expect(target.decide(-120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'pass',
+      reason: 'edge',
+    });
+  });
+
+  it("decides pass with reason 'edge' at bottom for wheel down", () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 8, baseY: 8 } },
+        }),
+      },
+    });
+
+    expect(target.decide(120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'pass',
+      reason: 'edge',
+    });
+  });
+
+  it("decides pass with reason 'edge' for zero delta", () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 3, baseY: 8 } },
+        }),
+      },
+    });
+
+    expect(target.decide(0, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'pass',
+      reason: 'edge',
+    });
+  });
+
+  it("decides pass with reason 'edge' for wheel down on empty buffer (viewportY===baseY===0)", () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 0, baseY: 0 } },
+        }),
+      },
+    });
+
+    expect(target.decide(120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'pass',
+      reason: 'edge',
+    });
+  });
+
+  it("decides pass with reason 'passthrough' when mouse reporting is enabled", () => {
     const target = createXtermWheelTarget({
       root: document.createElement('div'),
       terminalRef: {
@@ -73,76 +152,58 @@ describe('createXtermWheelTarget', () => {
       },
     });
 
-    expect(target.mode()).toBe('passthrough');
+    expect(target.decide(120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'pass',
+      reason: 'passthrough',
+    });
   });
 
-  it('reports passthrough mode when the alternate buffer is active', () => {
+  it("decides pass with reason 'passthrough' when alternate buffer is active", () => {
     const target = createXtermWheelTarget({
       root: document.createElement('div'),
       terminalRef: {
-        current: terminal({ buffer: { active: { type: 'alternate' } } }),
+        current: terminal({
+          buffer: { active: { type: 'alternate', viewportY: 3, baseY: 8 } },
+        }),
       },
     });
 
-    expect(target.mode()).toBe('passthrough');
+    expect(target.decide(120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'pass',
+      reason: 'passthrough',
+    });
   });
 
-  it('reports scrollback mode otherwise', () => {
+  it('decides consume in normal buffer mid-state', () => {
     const target = createXtermWheelTarget({
       root: document.createElement('div'),
       terminalRef: {
         current: terminal({
           modes: { mouseTrackingMode: 'none' },
-          buffer: { active: { type: 'normal' } },
+          buffer: { active: { type: 'normal', viewportY: 3, baseY: 8 } },
         }),
       },
     });
 
-    expect(target.mode()).toBe('scrollback');
-  });
-
-  it('returns false when scrollLines does not move the viewport', () => {
-    const target = createXtermWheelTarget({
-      root: document.createElement('div'),
-      terminalRef: {
-        current: terminal({
-          buffer: { active: { type: 'normal', viewportY: 3 } },
-        }),
-      },
+    expect(target.decide(120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
+      kind: 'consume',
     });
-
-    expect(target.scrollback(120, WheelEvent.DOM_DELTA_PIXEL)).toBe(false);
   });
 
-  it('returns true when scrollLines moves the viewport', () => {
-    let term: XtermScrollTerminal;
-    term = terminal(
-      { buffer: { active: { type: 'normal', viewportY: 3 } } },
-      (amount) => {
-        term.buffer!.active!.viewportY! += amount;
-      },
-    );
-    const target = createXtermWheelTarget({
-      root: document.createElement('div'),
-      terminalRef: { current: term },
-    });
-
-    expect(target.scrollback(120, WheelEvent.DOM_DELTA_PIXEL)).toBe(true);
-  });
-
-  it('returns false without calling scrollLines for zero delta', () => {
+  it('apply scrolls converted lines', () => {
     const scrollLines = vi.fn();
     const target = createXtermWheelTarget({
       root: document.createElement('div'),
       terminalRef: {
         current: terminal(
-          { buffer: { active: { type: 'normal', viewportY: 3 } } },
+          { buffer: { active: { type: 'normal', viewportY: 3, baseY: 8 } } },
           scrollLines,
         ),
       },
     });
 
-    expect(target.scrollback(0, WheelEvent.DOM_DELTA_PIXEL)).toBe(false);
-    expect(scrollLines).not.toHaveBeenCalled();
+    target.apply(120, WheelEvent.DOM_DELTA_PIXEL);
+
+    expect(scrollLines).toHaveBeenCalledWith(8);
   });
 });
