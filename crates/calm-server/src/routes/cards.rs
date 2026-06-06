@@ -626,8 +626,14 @@ async fn reset_spec_card_shared(
                 .await;
             s.repo.terminal_set_pid(&terminal.id, None).await?;
             s.repo.terminal_set_exit(&terminal.id, None, false).await?;
-            persist_shared_reset_runtime_fields(&s, &cs, card_id.as_str(), &wave, &started.thread_id)
-                .await?;
+            persist_shared_reset_runtime_fields(
+                &s,
+                &cs,
+                card_id.as_str(),
+                &wave,
+                &started.thread_id,
+            )
+            .await?;
 
             let handle = spec_push::park_shared_handle(
                 cs.shared_codex_appserver.clone(),
