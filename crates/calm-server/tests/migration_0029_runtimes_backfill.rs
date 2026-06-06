@@ -3,6 +3,7 @@
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 const MIGRATIONS_UP_TO_0027: &[(&str, &str)] = &[
     ("0001_init", include_str!("../migrations/0001_init.sql")),
@@ -111,6 +112,8 @@ const MIGRATIONS_UP_TO_0027: &[(&str, &str)] = &[
 
 const MIGRATION_0028_SQL: &str = include_str!("../migrations/0028_runtimes.sql");
 const MIGRATION_0029_SQL: &str = include_str!("../migrations/0029_runtimes_backfill.sql");
+const SQLITE_NOW_MS_SELECT: &str =
+    "SELECT CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
 
 async fn apply_sql(pool: &SqlitePool, name: &str, sql: &str) {
     let stripped = sql
@@ -130,6 +133,29 @@ async fn apply_sql(pool: &SqlitePool, name: &str, sql: &str) {
             .execute(pool)
             .await
             .unwrap_or_else(|e| panic!("migration {name} failed on stmt:\n{trimmed}\nerror: {e}"));
+    }
+}
+
+async fn sqlite_now_ms(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar(SQLITE_NOW_MS_SELECT)
+        .fetch_one(pool)
+        .await
+        .expect("read sqlite now ms")
+}
+
+async fn sqlite_now_ms_away_from_second_boundary(pool: &SqlitePool) -> i64 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let now_ms = sqlite_now_ms(pool).await;
+        let subsecond_ms = now_ms.rem_euclid(1000);
+        if (100..=400).contains(&subsecond_ms) {
+            return now_ms;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for a stable sub-second timestamp window"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -259,7 +285,8 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
     apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
 
     let rows = sqlx::query(
-        r#"SELECT card_id, kind, agent_provider, status, terminal_run_id, thread_id, session_id, completed_at_ms
+        r#"SELECT card_id, kind, agent_provider, status, terminal_run_id, thread_id, session_id,
+                  created_at_ms, updated_at_ms, completed_at_ms
            FROM runtimes
            ORDER BY card_id ASC"#,
     )
@@ -468,12 +495,22 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
         stale_clean.try_get::<String, _>("status").unwrap(),
         "exited"
     );
+    let stale_clean_created_at_ms = stale_clean.try_get::<i64, _>("created_at_ms").unwrap();
+    let stale_clean_updated_at_ms = stale_clean.try_get::<i64, _>("updated_at_ms").unwrap();
     let stale_clean_completed_at_ms = stale_clean
         .try_get::<Option<i64>, _>("completed_at_ms")
         .unwrap();
     assert!(
         stale_clean_completed_at_ms.is_some(),
         "clean-exit stale runtime should be completed"
+    );
+    assert!(
+        stale_clean_updated_at_ms >= stale_clean_created_at_ms,
+        "clean-exit stale runtime update timestamp must not move backwards"
+    );
+    assert!(
+        stale_clean_completed_at_ms.unwrap() >= stale_clean_created_at_ms,
+        "clean-exit stale runtime completion timestamp must satisfy runtimes CHECK"
     );
 
     let stale_signal = by_card
@@ -483,12 +520,22 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
         stale_signal.try_get::<String, _>("status").unwrap(),
         "failed"
     );
+    let stale_signal_created_at_ms = stale_signal.try_get::<i64, _>("created_at_ms").unwrap();
+    let stale_signal_updated_at_ms = stale_signal.try_get::<i64, _>("updated_at_ms").unwrap();
     let stale_signal_completed_at_ms = stale_signal
         .try_get::<Option<i64>, _>("completed_at_ms")
         .unwrap();
     assert!(
         stale_signal_completed_at_ms.is_some(),
         "signal-killed stale runtime should be completed"
+    );
+    assert!(
+        stale_signal_updated_at_ms >= stale_signal_created_at_ms,
+        "signal-killed stale runtime update timestamp must not move backwards"
+    );
+    assert!(
+        stale_signal_completed_at_ms.unwrap() >= stale_signal_created_at_ms,
+        "signal-killed stale runtime completion timestamp must satisfy runtimes CHECK"
     );
     assert_eq!(by_card.len(), 12);
 
@@ -505,5 +552,63 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
     assert_eq!(
         runtime_status_and_completed(&pool, "card-stale-signal").await,
         ("failed".to_string(), stale_signal_completed_at_ms)
+    );
+}
+
+#[tokio::test]
+async fn migration_0029_completes_stale_runtimes_created_with_subsecond_precision() {
+    let pool = pool_staged_at_0027().await;
+    seed_legacy_live_cards(&pool).await;
+
+    apply_sql(&pool, "0028_runtimes", MIGRATION_0028_SQL).await;
+    let created_at_ms = sqlite_now_ms_away_from_second_boundary(&pool).await;
+    assert!(
+        (created_at_ms / 1000) * 1000 < created_at_ms,
+        "regression seed must include a sub-second component"
+    );
+
+    sqlx::query(
+        r#"INSERT INTO runtimes
+              (id, card_id, kind, agent_provider, status, terminal_run_id,
+               thread_id, session_id, active_turn_id, handle_state_json,
+               lease_owner, lease_until_ms, created_at_ms, updated_at_ms, completed_at_ms)
+           VALUES
+              ('runtime-subsecond-stale-clean-exit', 'card-stale-clean-exit', 'terminal', NULL, 'starting',
+               'term-stale-clean-exit', NULL, NULL, NULL, NULL, NULL, NULL, ?1, ?2, NULL)"#,
+    )
+    .bind(created_at_ms)
+    .bind(created_at_ms)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
+
+    let row = sqlx::query(
+        r#"SELECT status, created_at_ms, updated_at_ms, completed_at_ms
+           FROM runtimes
+           WHERE card_id = ?1"#,
+    )
+    .bind("card-stale-clean-exit")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.try_get::<String, _>("status").unwrap(), "exited");
+    assert_eq!(
+        row.try_get::<i64, _>("created_at_ms").unwrap(),
+        created_at_ms
+    );
+    assert!(
+        row.try_get::<i64, _>("updated_at_ms").unwrap() >= created_at_ms,
+        "stale runtime update timestamp must preserve runtimes CHECK"
+    );
+    assert!(
+        row.try_get::<Option<i64>, _>("completed_at_ms")
+            .unwrap()
+            .expect("completed timestamp")
+            >= created_at_ms,
+        "stale runtime completion timestamp must preserve runtimes CHECK"
     );
 }

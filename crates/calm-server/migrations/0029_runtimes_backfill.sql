@@ -14,8 +14,8 @@ SET
       THEN 'failed'
     ELSE 'exited'
   END,
-  updated_at_ms = CAST(strftime('%s','now') AS INTEGER) * 1000,
-  completed_at_ms = CAST(strftime('%s','now') AS INTEGER) * 1000
+  updated_at_ms = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+  completed_at_ms = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
 WHERE
   terminal_run_id IS NOT NULL
   AND status IN ('starting', 'running', 'idle', 'turn_pending')
@@ -44,8 +44,8 @@ SELECT
   NULL,
   NULL,
   NULL,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
   NULL
 FROM cards c
 JOIN terminals t ON t.card_id = c.id
@@ -75,8 +75,8 @@ SELECT
   NULL,
   NULL,
   NULL,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
   NULL
 FROM cards c
 LEFT JOIN card_codex_threads ct ON ct.card_id = c.id
@@ -108,8 +108,8 @@ SELECT
   NULL,
   NULL,
   NULL,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
   NULL
 FROM cards c
 JOIN terminals t ON t.card_id = c.id
@@ -139,8 +139,8 @@ SELECT
   NULL,
   NULL,
   NULL,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
-  CAST(strftime('%s','now') AS INTEGER) * 1000,
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+  CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
   NULL
 FROM cards c
 LEFT JOIN card_codex_threads ct ON ct.card_id = c.id
