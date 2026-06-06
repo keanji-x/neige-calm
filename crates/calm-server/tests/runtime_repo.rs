@@ -1,12 +1,12 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_claude_create_tx, card_with_terminal_create_tx, runtime_complete_tx,
-    runtime_get_active_for_card_tx, runtime_get_by_id_tx, runtime_set_status_tx, runtime_start_tx,
-    runtime_supersede_tx,
+    SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
+    runtime_bind_attribution_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
+    runtime_get_by_id_tx, runtime_set_status_tx, runtime_start_tx, runtime_supersede_tx,
 };
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_repo::{
-    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepoError,
+    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepoError, ThreadAttribution,
 };
 use serde_json::json;
 
@@ -109,6 +109,41 @@ async fn runtime_start_tx_terminal_persists_active_row() {
     assert_eq!(active.kind, RuntimeKind::Terminal);
     assert_eq!(active.status, RunStatus::Running);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
+}
+
+#[tokio::test]
+async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, term, _token) = card_with_codex_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "/workspace".into(),
+        json!({"CODEX_HOME": "/tmp/codex-home"}),
+        None,
+        None,
+        None,
+        CardRole::Plain,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let active = repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime");
+    assert_eq!(active.kind, RuntimeKind::CodexCard);
+    assert_eq!(active.status, RunStatus::Starting);
+    assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
+    assert!(active.thread_id.is_none());
 }
 
 #[tokio::test]
@@ -223,6 +258,48 @@ async fn runtime_set_status_superseded_rejected() {
 }
 
 #[tokio::test]
+async fn runtime_bind_attribution_transitions_pending_to_running() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::TurnPending,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_bind_attribution_tx(
+        &mut tx,
+        &runtime.id,
+        ThreadAttribution {
+            runtime_id: runtime.id.clone(),
+            provider: AgentProvider::Codex,
+            thread_id: Some("thread-pending-bind".into()),
+            session_id: None,
+            active_turn_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    runtime_set_status_tx(&mut tx, &runtime.id, RunStatus::Running)
+        .await
+        .unwrap();
+    let persisted = runtime_get_by_id_tx(&mut tx, &runtime.id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    tx.commit().await.unwrap();
+
+    assert_eq!(persisted.status, RunStatus::Running);
+    assert_eq!(persisted.thread_id.as_deref(), Some("thread-pending-bind"));
+}
+
+#[tokio::test]
 async fn runtime_start_tx_codex_empty_is_turn_pending() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
@@ -247,6 +324,35 @@ async fn runtime_start_tx_codex_empty_is_turn_pending() {
         .expect("runtime");
     assert_eq!(persisted.status, RunStatus::TurnPending);
     assert!(persisted.thread_id.is_none());
+}
+
+#[tokio::test]
+async fn runtime_pending_drop_completes_failed() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::TurnPending,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_complete_tx(&mut tx, &runtime.id, RunStatus::Failed)
+        .await
+        .unwrap();
+    let completed = runtime_get_by_id_tx(&mut tx, &runtime.id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    tx.commit().await.unwrap();
+
+    assert_eq!(completed.status, RunStatus::Failed);
+    assert!(completed.completed_at_ms.is_some());
 }
 
 #[tokio::test]
@@ -286,6 +392,31 @@ async fn runtime_start_tx_claude_records_session_when_present() {
     assert_eq!(active.status, RunStatus::Running);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert_eq!(active.session_id.as_deref(), Some(session_id.as_str()));
+}
+
+#[tokio::test]
+async fn runtime_handle_state_json_roundtrip() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let state = json!({"phase": "claimed", "queue": [1, 2, 3]});
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    init.handle_state_json = Some(state.clone());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(&mut tx, init).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let persisted = repo
+        .runtime_get_by_id(&runtime.id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(persisted.handle_state_json, Some(state));
 }
 
 #[tokio::test]

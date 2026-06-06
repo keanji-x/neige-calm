@@ -63,8 +63,8 @@ use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
     card_create_with_id_tx, card_update_tx, card_with_codex_create_tx, cove_folder_create_tx,
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
-    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx, terminal_delete_tx,
-    wave_create_tx, wave_delete_tx, wave_update_tx,
+    runtime_complete_tx, runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
+    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -764,6 +764,17 @@ pub(crate) async fn create_wave(
     let push_args = match spawn_push_via_shared_daemon(&s, &w, &cs, &spec_card_id, &wave).await {
         Ok(args) => Some(args),
         Err(e) => {
+            if let Err(rollback_err) =
+                clear_shared_spec_runtime_fields(&s, &cs, spec_card_id.as_ref(), &wave).await
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %spec_card_id,
+                    wave_id = %wave.id,
+                    rollback_error = %rollback_err,
+                    "payload/runtime clear failed during shared daemon startup rollback"
+                );
+            }
             tracing::warn!(
                 target: "shared_codex_daemon::spec_card",
                 card_id = %spec_card_id,
@@ -1201,6 +1212,9 @@ async fn clear_shared_spec_runtime_fields(
                     },
                 )
                 .await?;
+                if let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? {
+                    runtime_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
+                }
                 Ok((card.clone(), Event::CardUpdated(card)))
             })
         },

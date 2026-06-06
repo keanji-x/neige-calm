@@ -1205,9 +1205,9 @@ pub async fn card_with_terminal_rollback_tx(
     Ok(())
 }
 
-/// Atomically create a `codex`-kind card AND its associated terminal row
-/// inside a single transaction, stamping `terminal_id` (+ optional `cwd`)
-/// onto the card's payload before returning.
+/// Atomically create a `codex`-kind card, its associated terminal row, and
+/// the initial `Starting` runtime row inside a single transaction, stamping
+/// `terminal_id` (+ optional `cwd`) onto the card's payload before returning.
 ///
 /// Twin of [`card_with_terminal_create_tx`] for the codex-card flow (#117).
 /// Differs in two places from the terminal helper:
@@ -1369,6 +1369,23 @@ pub async fn card_with_codex_create_tx(
     } else {
         None
     };
+
+    let runtime_init = RuntimeInit {
+        id: new_id(),
+        card_id: card.id.to_string(),
+        kind: RuntimeKind::CodexCard,
+        agent_provider: Some(AgentProvider::Codex),
+        status: RunStatus::Starting,
+        terminal_run_id: Some(term.id.clone()),
+        thread_id: None,
+        session_id: None,
+        active_turn_id: None,
+        handle_state_json: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        now_ms: now_ms(),
+    };
+    runtime_start_tx(tx, runtime_init).await?;
 
     Ok((card, term, mcp_token))
 }
