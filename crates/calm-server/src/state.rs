@@ -500,11 +500,7 @@ impl AppState {
         // and projects `codex.hook` events onto a 6-state FSM, writing
         // `Overlay { kind: "status" }` rows for cards and wave-union rows
         // for waves. See `card_fsm` module docs for the scope rationale.
-        crate::card_fsm::spawn(
-            repo.clone(),
-            events.clone(),
-            write.clone(),
-        );
+        crate::card_fsm::spawn(repo.clone(), events.clone(), write.clone());
 
         // Share one `DaemonClient` + `CodexClient` between the
         // dispatcher and the `AppState` fields — both are
