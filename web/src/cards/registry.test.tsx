@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('../api/calm', async () => {
   const actual = await vi.importActual<typeof import('../api/calm')>(
@@ -28,7 +29,10 @@ import {
   addPanelEntries,
   getEntry,
   registerCard,
+  renderCard,
   type CardEntry,
+  useCardInstanceCtx,
+  useCardLifecycle,
 } from './registry';
 
 declare module '../types' {
@@ -41,6 +45,12 @@ declare module '../types' {
     'test-catalog': TestCatalogCardData;
     'test-kernel-only': TestKernelOnlyCardData;
     'test-missing': TestMissingCardData;
+    'test-controller-missing': TestControllerMissingCardData;
+    'test-controller-conflict': TestControllerConflictCardData;
+    'test-controller-epoch': TestControllerEpochCardData;
+    'test-controller-refresh': TestControllerRefreshCardData;
+    'test-controller-dispose': TestControllerDisposeCardData;
+    'test-controller-rebuild': TestControllerRebuildCardData;
   }
 }
 
@@ -74,6 +84,30 @@ interface TestKernelOnlyCardData {
 }
 interface TestMissingCardData {
   type: 'test-missing';
+  id: string;
+}
+interface TestControllerMissingCardData {
+  type: 'test-controller-missing';
+  id: string;
+}
+interface TestControllerConflictCardData {
+  type: 'test-controller-conflict';
+  id: string;
+}
+interface TestControllerEpochCardData {
+  type: 'test-controller-epoch';
+  id: string;
+}
+interface TestControllerRefreshCardData {
+  type: 'test-controller-refresh';
+  id: string;
+}
+interface TestControllerDisposeCardData {
+  type: 'test-controller-dispose';
+  id: string;
+}
+interface TestControllerRebuildCardData {
+  type: 'test-controller-rebuild';
   id: string;
 }
 
@@ -285,6 +319,17 @@ describe('card registry metadata and create invariants', () => {
     ).toThrow('GenericCreateRequiresExactClaim(test-prefix)');
   });
 
+  it('requires controller refresh backing to provide a controller', () => {
+    expect(() =>
+      registerCard(
+        entry<TestControllerMissingCardData>({
+          type: 'test-controller-missing',
+          refreshBacking: 'controller',
+        }),
+      ),
+    ).toThrow('RefreshBackingMissingController(test-controller-missing)');
+  });
+
   it('omits catalog and kernel-minted-only entries from AddPanel', () => {
     registerCard(
       entry<TestExactCardData>({
@@ -339,6 +384,199 @@ describe('card registry metadata and create invariants', () => {
     );
     expect(() => assertRouterCreateAllowed(kernelOnlyEntry)).toThrow(
       'KernelMintedOnlyCreateNotAllowed',
+    );
+  });
+});
+
+describe('card controller lifecycle contract', () => {
+  it('throws on epoch refresh backing with controller onRefresh', () => {
+    registerCard(
+      entry<TestControllerConflictCardData>({
+        type: 'test-controller-conflict',
+        refreshBacking: 'epoch',
+        createController: () => ({ onRefresh: () => {} }),
+      }),
+    );
+
+    expect(() =>
+      render(
+        <>
+          {renderCard({
+            type: 'test-controller-conflict',
+            id: 'card_conflict',
+          })}
+        </>,
+      ),
+    ).toThrow(
+      'RefreshBackingConflict(test-controller-conflict): refreshBacking=epoch forbids controller.onRefresh; use refreshBacking=controller or remove onRefresh.',
+    );
+  });
+
+  it('mounts epoch refresh backing controllers without onRefresh', () => {
+    registerCard(
+      entry<TestControllerEpochCardData>({
+        type: 'test-controller-epoch',
+        refreshBacking: 'epoch',
+        createController: () => ({ onVisibleChange: () => {} }),
+      }),
+    );
+
+    expect(() =>
+      render(
+        <>
+          {renderCard({
+            type: 'test-controller-epoch',
+            id: 'card_epoch',
+          })}
+        </>,
+      ),
+    ).not.toThrow();
+  });
+
+  it('routes emitted refresh commands through the lifecycle epoch', () => {
+    const onRefresh = vi.fn();
+    let lifecycleEpoch = -1;
+
+    function RefreshProbe() {
+      const ctx = useCardInstanceCtx();
+      const lifecycle = useCardLifecycle();
+      lifecycleEpoch = lifecycle.getSnapshot().refreshEpoch;
+      return (
+        <button
+          type="button"
+          onClick={() => ctx.emit({ type: 'refresh' })}
+        >
+          refresh
+        </button>
+      );
+    }
+
+    registerCard(
+      entry<TestControllerRefreshCardData>({
+        type: 'test-controller-refresh',
+        Component: RefreshProbe,
+        refreshBacking: 'controller',
+        createController: ({ lifecycle }) => ({
+          onRefresh: () => {
+            lifecycleEpoch = lifecycle.getSnapshot().refreshEpoch;
+            onRefresh();
+          },
+        }),
+      }),
+    );
+
+    render(
+      <>
+        {renderCard({
+          type: 'test-controller-refresh',
+          id: 'card_refresh',
+        })}
+      </>,
+    );
+
+    expect(lifecycleEpoch).toBe(0);
+    expect(onRefresh).not.toHaveBeenCalled();
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'refresh' }));
+    });
+    expect(lifecycleEpoch).toBe(1);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'refresh' }));
+    });
+    expect(lifecycleEpoch).toBe(2);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('disposes controllers on unmount exactly once', () => {
+    const dispose = vi.fn();
+
+    registerCard(
+      entry<TestControllerDisposeCardData>({
+        type: 'test-controller-dispose',
+        createController: () => ({ dispose }),
+      }),
+    );
+
+    const { unmount } = render(
+      <>
+        {renderCard({
+          type: 'test-controller-dispose',
+          id: 'card_dispose',
+        })}
+      </>,
+    );
+
+    expect(dispose).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds controllers when cardId changes', () => {
+    const firstDispose = vi.fn();
+    const secondDispose = vi.fn();
+    const createController = vi
+      .fn()
+      .mockReturnValueOnce({ dispose: firstDispose })
+      .mockReturnValueOnce({ dispose: secondDispose });
+
+    registerCard(
+      entry<TestControllerRebuildCardData>({
+        type: 'test-controller-rebuild',
+        createController,
+      }),
+    );
+
+    const { rerender } = render(
+      <>
+        {renderCard({
+          type: 'test-controller-rebuild',
+          id: 'card_before',
+        })}
+      </>,
+    );
+
+    expect(createController).toHaveBeenCalledTimes(1);
+    expect(createController).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        card: expect.objectContaining({ id: 'card_before' }),
+        instance: expect.objectContaining({ cardId: 'card_before' }),
+      }),
+    );
+    expect(firstDispose).not.toHaveBeenCalled();
+
+    rerender(
+      <>
+        {renderCard({
+          type: 'test-controller-rebuild',
+          id: 'card_after',
+        })}
+      </>,
+    );
+
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+    expect(createController).toHaveBeenCalledTimes(2);
+    expect(createController).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        card: expect.objectContaining({ id: 'card_after' }),
+        instance: expect.objectContaining({ cardId: 'card_after' }),
+      }),
+    );
+    expect(secondDispose).not.toHaveBeenCalled();
+  });
+
+  it('throws when useCardLifecycle is used outside CardInstanceProvider', () => {
+    function Probe() {
+      useCardLifecycle();
+      return null;
+    }
+
+    expect(() => render(<Probe />)).toThrow(
+      'useCardLifecycle outside CardInstanceProvider',
     );
   });
 });

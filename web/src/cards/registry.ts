@@ -20,7 +20,9 @@
 import {
   createContext,
   createElement,
+  useEffect,
   useContext,
+  useMemo,
   useRef,
   type Dispatch,
   type FC,
@@ -30,6 +32,14 @@ import {
 import type { WaveCardData } from '../types';
 import type { KernelCard } from '../api/wire';
 import { useState } from '../shared/state';
+import {
+  createCardLifecycleStore,
+  sameGeometry,
+  type CardController,
+  type CardLifecycleSnapshot,
+  type CardLifecycleStore,
+  type CardRuntimeCommand,
+} from './lifecycle';
 
 export interface CardSize {
   w: number;
@@ -221,6 +231,9 @@ export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void 
       throw new Error(`DuplicatePrefixClaim(${entry.claim.prefix})`);
     }
   }
+  if (entry.refreshBacking === 'controller' && !entry.createController) {
+    throw new Error(`RefreshBackingMissingController(${entry.type})`);
+  }
   // The cast is the price of letting one Map hold heterogeneous entries.
   // Callers see the typed `CardEntry<T>`; the map stores the erased shape.
   const erased = entry as unknown as CardEntry<WaveCardData>;
@@ -258,6 +271,7 @@ export function renderCard(
     {
       cardId: card.id ?? card.type,
       deletable: opts.deletable !== false,
+      card,
     },
     createElement(entry.Component as FC<CardComponentProps>, {
       card,
@@ -340,22 +354,41 @@ export function adaptKernelCard(k: KernelCard): WaveCardData | null {
 }
 
 const CardInstanceReactCtx = createContext<CardInstanceCtx | null>(null);
+const CardLifecycleReactCtx = createContext<CardLifecycleStore | null>(null);
 
 export function CardInstanceProvider({
   cardId,
   deletable,
+  card,
   children,
 }: {
   cardId: string;
   deletable: boolean;
+  card?: WaveCardData;
   children?: ReactNode;
 }) {
   const slots = useRef(new Map<string, unknown>());
   const [, setVersion] = useState(0);
+  const lifecycleWriter = useMemo(() => createCardLifecycleStore(), []);
+  const lifecycleStore = useMemo(
+    () =>
+      Object.freeze({
+        getSnapshot: lifecycleWriter.getSnapshot,
+        subscribe: lifecycleWriter.subscribe,
+      }),
+    [lifecycleWriter],
+  );
+  const emit = useMemo(
+    () => (cmd: CardRuntimeCommand) => {
+      if (cmd.type === 'refresh') lifecycleWriter.bumpRefresh();
+    },
+    [lifecycleWriter],
+  );
 
   const ctx: CardInstanceCtx = {
     cardId,
     deletable,
+    emit,
     useInstance<S>(key: string, initial: S) {
       if (!slots.current.has(key)) slots.current.set(key, initial);
       const value = slots.current.get(key) as S;
@@ -371,14 +404,99 @@ export function CardInstanceProvider({
       return [value, setValue];
     },
   };
+  const controllerRef = useRef<CardController | null>(null);
+  const controllerInputRef = useRef({
+    card,
+    entry: card ? getEntry(card.type) : undefined,
+    cardId,
+    deletable,
+    ctx,
+    emit,
+    lifecycleStore,
+  });
+  controllerInputRef.current = {
+    card,
+    entry: card ? getEntry(card.type) : undefined,
+    cardId,
+    deletable,
+    ctx,
+    emit,
+    lifecycleStore,
+  };
+  const prevLifecycleRef = useRef<CardLifecycleSnapshot>(
+    lifecycleWriter.getSnapshot(),
+  );
 
-  return createElement(CardInstanceReactCtx.Provider, { value: ctx }, children);
+  useEffect(() => {
+    // PR4 will add IntersectionObserver-driven visibility tests.
+    const current = controllerInputRef.current;
+    if (!current.card || !current.entry?.createController) return;
+    const controller = current.entry.createController({
+      card: current.card,
+      lifecycle: current.lifecycleStore,
+      instance: {
+        cardId: current.cardId,
+        deletable: current.deletable,
+        useInstance: current.ctx.useInstance,
+      },
+      emit: current.emit,
+    });
+    if (
+      current.entry.refreshBacking === 'epoch' &&
+      controller.onRefresh != null
+    ) {
+      throw new Error(
+        'RefreshBackingConflict(' +
+          current.entry.type +
+          '): refreshBacking=epoch forbids controller.onRefresh; use refreshBacking=controller or remove onRefresh.',
+      );
+    }
+    controllerRef.current = controller;
+    return () => {
+      const c = controllerRef.current;
+      controllerRef.current = null;
+      void c?.dispose?.();
+    };
+  }, [cardId]);
+
+  useEffect(() => {
+    return lifecycleWriter.subscribe(() => {
+      const current = lifecycleWriter.getSnapshot();
+      const prev = prevLifecycleRef.current;
+      const controller = controllerRef.current;
+      if (current.visible !== prev.visible) {
+        void controller?.onVisibleChange?.(current.visible);
+      }
+      if (current.focused !== prev.focused) {
+        void controller?.onFocusChange?.(current.focused);
+      }
+      if (!sameGeometry(current.geometry, prev.geometry)) {
+        void controller?.onResize?.(current.geometry);
+      }
+      if (current.refreshEpoch > prev.refreshEpoch) {
+        void controller?.onRefresh?.();
+      }
+      prevLifecycleRef.current = current;
+    });
+  }, [lifecycleWriter]);
+
+  return createElement(
+    CardInstanceReactCtx.Provider,
+    { value: ctx },
+    createElement(CardLifecycleReactCtx.Provider, { value: lifecycleStore }, children),
+  );
 }
 
 export function useCardInstanceCtx(): CardInstanceCtx {
   const ctx = useContext(CardInstanceReactCtx);
   if (!ctx) throw new Error('useCardInstanceCtx outside CardInstanceProvider');
   return ctx;
+}
+
+export function useCardLifecycle(): CardLifecycleStore {
+  const s = useContext(CardLifecycleReactCtx);
+  if (!s) throw new Error('useCardLifecycle outside CardInstanceProvider');
+  return s;
 }
 
 export function useOptionalCardInstanceCtx(): CardInstanceCtx | null {
