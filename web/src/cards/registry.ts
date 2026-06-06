@@ -101,7 +101,11 @@ export type CardKindClaim =
   | { mode: 'prefix'; prefix: string };
 
 export interface CardCreateContext {
-  themeRgb: { fg: string; bg: string };
+  // Tuple form (NOT strings) — wire/Theme expects [r,g,b] integer arrays.
+  themeRgb: {
+    fg: [number, number, number];
+    bg: [number, number, number];
+  };
 }
 
 export interface CardCreateResult {
@@ -190,12 +194,6 @@ const REGISTRY = new Map<string, CardEntry<WaveCardData>>();
 const EXACT_CLAIMS = new Map<string, CardEntry<WaveCardData>>();
 const PREFIX_CLAIMS = new Map<string, CardEntry<WaveCardData>>();
 
-export const LEGACY_CREATE_KINDS: ReadonlySet<string> = new Set([
-  'terminal',
-  'codex',
-  'claude',
-]);
-
 /** Fallback size for unknown card types. Sane mid-range default that fits
  *  any of the built-in shapes; we'd rather render a slightly-wrong-sized
  *  placeholder than throw. */
@@ -217,7 +215,7 @@ export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void 
   if (entry.create?.mode === 'generic' && entry.claim?.mode !== 'exact') {
     throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
   }
-  if (entry.create === undefined && !LEGACY_CREATE_KINDS.has(String(entry.type))) {
+  if (entry.create === undefined) {
     throw new Error(`MissingCreateStrategy(${entry.type})`);
   }
   if (entry.claim?.mode === 'exact') {

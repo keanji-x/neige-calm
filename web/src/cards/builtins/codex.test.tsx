@@ -60,15 +60,27 @@ const claudeCard: ClaudeCardData = {
   terminalId: 'term_claude',
 };
 
-function Wrap({ children }: { children: ReactNode }) {
+type AgentCardData = CodexCardData | ClaudeCardData;
+
+function Wrap({
+  children,
+  cardId = 'card_spec',
+  deletable = false,
+  card,
+}: {
+  children: ReactNode;
+  cardId?: string;
+  deletable?: boolean;
+  card?: AgentCardData;
+}) {
   return (
     <ThemeProvider>
-      <Suspense fallback={<div>loading</div>}>{children}</Suspense>
+      <CardInstanceProvider cardId={cardId} deletable={deletable} card={card}>
+        <Suspense fallback={<div>loading</div>}>{children}</Suspense>
+      </CardInstanceProvider>
     </ThemeProvider>
   );
 }
-
-type AgentCardData = CodexCardData | ClaudeCardData;
 
 function renderAgentCard(
   card: AgentCardData,
@@ -81,15 +93,13 @@ function renderAgentCard(
     deletable?: boolean;
   }>;
   return render(
-    <Wrap>
-      <CardInstanceProvider
-        cardId={card.id ?? card.type}
-        deletable={opts.deletable !== false}
-        card={card}
-      >
-        <Component card={card} deletable={opts.deletable} />
-        {opts.extra}
-      </CardInstanceProvider>
+    <Wrap
+      cardId={card.id ?? card.type}
+      deletable={opts.deletable !== false}
+      card={card}
+    >
+      <Component card={card} deletable={opts.deletable} />
+      {opts.extra}
     </Wrap>,
   );
 }
@@ -138,6 +148,23 @@ describe('Codex spec-card refresh control', () => {
     expect(
       refresh.compareDocumentPosition(reset) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it('renders Reset spec session for a kernel-owned spec card', async () => {
+    const Codex = CodexEntry.Component;
+    render(
+      <Wrap card={codexCard}>
+        <Codex card={codexCard} deletable={false} />
+      </Wrap>,
+    );
+
+    const reset = await screen.findByRole('button', {
+      name: 'Reset spec session',
+    });
+    expect(reset).toHaveAttribute(
+      'title',
+      'Reset spec session (kill daemon, new thread)',
+    );
   });
 
   it('does not render Refresh terminal for a regular user-created codex card', () => {

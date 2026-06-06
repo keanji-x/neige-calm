@@ -119,6 +119,7 @@ function registerWheelEntry(
     defaultSize: { w: 1, h: 1, minW: 1, minH: 1 },
     title: () => 'terminal',
     accessibleName: () => 'terminal',
+    create: { mode: 'kernel-minted-only' },
     wheelTarget,
   } as unknown as CardEntry);
 }
