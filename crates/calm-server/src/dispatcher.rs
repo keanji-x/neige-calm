@@ -60,6 +60,8 @@
 //!   tags. A future glob extension would update both the filter and this
 //!   module's subscribe call together.
 
+#![allow(deprecated)]
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -105,13 +107,13 @@ const DEFAULT_PERMITS: usize = 8;
 /// short-circuit.
 const RECENT_KEYS_TTL: Duration = Duration::from_secs(60);
 
-pub(crate) fn event_warrants_spec_push(event: &Event, role_cache: &CardRoleCache) -> bool {
+pub(crate) fn event_warrants_spec_push(event: &Event, write: &WriteContext) -> bool {
     match event {
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => true,
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
-            let is_worker = role_cache.get(card_id) == Some(CardRole::Worker);
+            let is_worker = write.verify_role(card_id) == Some(CardRole::Worker);
             is_turn_end && is_worker
         }
         _ => false,
@@ -146,6 +148,7 @@ pub struct Dispatcher {
     inner: Arc<Inner>,
 }
 
+#[allow(deprecated)]
 impl Dispatcher {
     /// Resolve the permit count from `NEIGE_DISPATCHER_PERMITS` (parsed
     /// as `usize`), falling back to [`DEFAULT_PERMITS`] when unset,
@@ -285,16 +288,14 @@ impl Dispatcher {
     ) -> crate::spec_push::InitialPromptReadySink {
         let repo = Arc::clone(&self.inner.repo);
         let events = self.inner.events.clone();
-        let card_role_cache = self.inner.write.role_cache().clone();
-        let wave_cove_cache = self.inner.write.cove_cache().clone();
+        let write = self.inner.write.clone();
         Arc::new(move |thread_id: String| {
             let repo = Arc::clone(&repo);
             let spec_card_id = spec_card_id.clone();
             let wave_id = wave_id.clone();
             let cove_id = cove_id.clone();
             let events = events.clone();
-            let card_role_cache = card_role_cache.clone();
-            let wave_cove_cache = wave_cove_cache.clone();
+            let write = write.clone();
             Box::pin(async move {
                 let scope = EventScope::Card {
                     card: spec_card_id.clone(),
@@ -309,8 +310,7 @@ impl Dispatcher {
                     scope,
                     None,
                     &events,
-                    &card_role_cache,
-                    &wave_cove_cache,
+                    &write,
                     move |tx| {
                         Box::pin(async move {
                             let payload_text: Option<(String,)> =
@@ -821,7 +821,7 @@ impl Inner {
         // untouched.
         match &envelope.event {
             Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                if event_warrants_spec_push(&envelope.event, self.write.role_cache()) {
+                if event_warrants_spec_push(&envelope.event, &self.write) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.push_to_spec(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -839,7 +839,7 @@ impl Inner {
             } => {
                 // Only user edits warrant a push. The spec authored
                 // Spec/Kernel edits itself; re-notifying it would loop.
-                if event_warrants_spec_push(&envelope.event, self.write.role_cache()) {
+                if event_warrants_spec_push(&envelope.event, &self.write) {
                     self.push_to_spec(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
                 } else {
@@ -861,7 +861,7 @@ impl Inner {
                 // worker cards should notify the spec. Stop hooks carry no
                 // result/artifacts, so the pushed observation is a light
                 // wake-up that asks the spec to re-read wave state.
-                if event_warrants_spec_push(&envelope.event, self.write.role_cache()) {
+                if event_warrants_spec_push(&envelope.event, &self.write) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.push_to_spec(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -1335,7 +1335,7 @@ impl Inner {
             }
         };
         cards.into_iter().find_map(|c| {
-            if self.write.role_cache().get(&c.id) == Some(CardRole::Spec) {
+            if self.write.verify_role(&c.id) == Some(CardRole::Spec) {
                 Some(c.id)
             } else {
                 None
@@ -3251,19 +3251,20 @@ mod tests {
         let unknown = CardId::from("unknown");
         cache.insert(worker.clone(), CardRole::Worker, wave.clone());
         cache.insert(spec.clone(), CardRole::Spec, wave.clone());
+        let write = WriteContext::new(cache, crate::wave_cove_cache::WaveCoveCache::new());
 
         let completed = Event::TaskCompleted {
             idempotency_key: "done".into(),
             result: serde_json::Value::Null,
             artifacts: Vec::new(),
         };
-        assert!(event_warrants_spec_push(&completed, &cache));
+        assert!(event_warrants_spec_push(&completed, &write));
 
         let failed = Event::TaskFailed {
             idempotency_key: "fail".into(),
             reason: "boom".into(),
         };
-        assert!(event_warrants_spec_push(&failed, &cache));
+        assert!(event_warrants_spec_push(&failed, &write));
 
         let report = |author| Event::WaveReportEdited {
             wave_id: wave.clone(),
@@ -3275,11 +3276,11 @@ mod tests {
             body_before: String::new(),
             body_after: String::new(),
         };
-        assert!(event_warrants_spec_push(&report(EditAuthor::User), &cache));
-        assert!(!event_warrants_spec_push(&report(EditAuthor::Spec), &cache));
+        assert!(event_warrants_spec_push(&report(EditAuthor::User), &write));
+        assert!(!event_warrants_spec_push(&report(EditAuthor::Spec), &write));
         assert!(!event_warrants_spec_push(
             &report(EditAuthor::Kernel),
-            &cache
+            &write
         ));
 
         let codex_hook = |card_id: CardId, kind: &str| Event::CodexHook {
@@ -3294,42 +3295,42 @@ mod tests {
         };
         assert!(event_warrants_spec_push(
             &codex_hook(worker.clone(), "hook.codex.stop"),
-            &cache
+            &write
         ));
         assert!(event_warrants_spec_push(
             &claude_hook(worker.clone(), "hook.claude.stop"),
-            &cache
+            &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(spec.clone(), "hook.codex.stop"),
-            &cache
+            &write
         ));
         assert!(!event_warrants_spec_push(
             &claude_hook(spec.clone(), "hook.claude.stop"),
-            &cache
+            &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(unknown.clone(), "hook.codex.stop"),
-            &cache
+            &write
         ));
         assert!(!event_warrants_spec_push(
             &claude_hook(unknown, "hook.claude.stop"),
-            &cache
+            &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(worker.clone(), "hook.codex.permission_request"),
-            &cache
+            &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(worker, "hook.codex.post_tool_use"),
-            &cache
+            &write
         ));
         assert!(!event_warrants_spec_push(
             &Event::WaveDeleted {
                 id: wave,
                 cove_id: cove,
             },
-            &cache
+            &write
         ));
     }
 

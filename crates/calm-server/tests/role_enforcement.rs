@@ -93,8 +93,7 @@ async fn spec_card_can_update_wave() {
         scope,
         None,
         &bus,
-        &cache,
-        &wcc,
+        &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
                 let w = wave_update_tx(
@@ -186,8 +185,7 @@ async fn ai_codex_cannot_update_wave() {
         scope,
         None,
         &bus,
-        &cache,
-        &wcc,
+        &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
                 let w = wave_update_tx(

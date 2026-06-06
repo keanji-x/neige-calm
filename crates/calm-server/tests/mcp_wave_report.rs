@@ -866,6 +866,7 @@ async fn edit_refuses_worker() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn spec_from_different_wave_cannot_reach_this_wave_report() {
     let boot = boot().await;
     // Mint a second wave + a second spec card, and use that spec

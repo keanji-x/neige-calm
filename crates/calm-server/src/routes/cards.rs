@@ -173,6 +173,7 @@ pub struct ViaToolCall {
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
+#[allow(deprecated)]
 pub(crate) async fn create_card(
     State(s): State<AppState>,
     actor: Actor,
@@ -216,24 +217,29 @@ pub(crate) async fn create_card(
         payload,
     };
     let card_id_for_tx = card_id.0.clone();
-    let cache = s.write().role_cache().clone();
+    let write_for_tx = s.write().clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plain user-driven creates are
                 // user-deletable. The `false` path is reserved for
                 // kernel-owned cards minted by internal code (spec card
                 // here in PR A; report card in PR B).
-                let card =
-                    card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, true, &cache)
-                        .await?;
+                let card = card_create_with_id_tx(
+                    tx,
+                    card_id_for_tx,
+                    new,
+                    CardRole::Plain,
+                    true,
+                    write_for_tx.role_cache(),
+                )
+                .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -251,6 +257,7 @@ pub(crate) async fn create_card(
 ///   * tool returned `isError: true` → 502 with content joined as text
 ///   * tool succeeded but omitted `_meta.ui.resourceUri` → 422
 ///     `{"error":"...","code":"not_a_card_tool"}`
+#[allow(deprecated)]
 async fn create_via_tool_call(
     s: &AppState,
     wave_id: String,
@@ -357,24 +364,29 @@ async fn create_via_tool_call(
         .await
         .map_err(|e| e.into_response())?;
     let card_id_for_tx = card_id.0.clone();
-    let cache = s.write().role_cache().clone();
+    let write_for_tx = s.write().clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor,
         scope,
         Some(&correlation),
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plain user-driven creates are
                 // user-deletable. The `false` path is reserved for
                 // kernel-owned cards minted by internal code (spec card
                 // here in PR A; report card in PR B).
-                let card =
-                    card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, true, &cache)
-                        .await?;
+                let card = card_create_with_id_tx(
+                    tx,
+                    card_id_for_tx,
+                    new,
+                    CardRole::Plain,
+                    true,
+                    write_for_tx.role_cache(),
+                )
+                .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -442,8 +454,7 @@ pub(crate) async fn update_card(
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 let card = card_update_tx(tx, &id, p).await?;
@@ -486,8 +497,7 @@ pub(crate) async fn reset_spec_card(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let role = s
         .write()
-        .role_cache()
-        .get(&card.id)
+        .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if card.kind != "codex" || role != CardRole::Spec {
         return Err(CalmError::Forbidden(format!(
@@ -827,8 +837,7 @@ async fn persist_shared_reset_runtime_fields(
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
@@ -895,6 +904,7 @@ async fn s_repo_card_get(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
+#[allow(deprecated)]
 pub(crate) async fn delete_card(
     State(s): State<AppState>,
     actor: Actor,
@@ -944,15 +954,14 @@ pub(crate) async fn delete_card(
     }
     let terminal_id = term.map(|t| t.id);
 
-    let cache = s.write().role_cache().clone();
+    let write_for_tx = s.write().clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 // Drop the terminal row first so the RESTRICT FK lets the
@@ -966,7 +975,7 @@ pub(crate) async fn delete_card(
                         Err(e) => return Err(e),
                     }
                 }
-                card_delete_tx(tx, card_id.as_ref(), &cache).await?;
+                card_delete_tx(tx, card_id.as_ref(), write_for_tx.role_cache()).await?;
                 Ok((
                     (),
                     Event::CardDeleted {

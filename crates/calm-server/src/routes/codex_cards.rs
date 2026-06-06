@@ -120,6 +120,7 @@ pub struct NewCodexCardBody {
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),
 )]
+#[allow(deprecated)]
 pub(crate) async fn create_codex_card(
     State(s): State<AppState>,
     actor: Actor,
@@ -252,15 +253,14 @@ pub(crate) async fn create_codex_card(
     )
     .await?;
     let wave_id_for_tx = wave_id.clone();
-    let cache_for_tx = s.write().role_cache().clone();
+    let write_for_tx = s.write().clone();
     let (mut card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 let (card, _term, _token) = card_with_codex_create_tx(
@@ -286,7 +286,7 @@ pub(crate) async fn create_codex_card(
                     // user-deletable. Spec cards take the `false`
                     // route via routes/waves.rs.
                     true,
-                    &cache_for_tx,
+                    write_for_tx.role_cache(),
                     theme_for_tx,
                 )
                 .await?;
@@ -370,8 +370,7 @@ pub(crate) async fn create_codex_card(
             scope,
             None,
             &s.events,
-            s.write().role_cache(),
-            s.write().cove_cache(),
+            s.write(),
             move |tx| {
                 Box::pin(async move {
                     card_codex_thread_upsert_tx(
@@ -443,8 +442,7 @@ pub(crate) async fn create_codex_card(
             scope,
             None,
             &s.events,
-            s.write().role_cache(),
-            s.write().cove_cache(),
+            s.write(),
             move |tx| {
                 Box::pin(async move {
                     let card = card_update_tx(

@@ -20,6 +20,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
 use crate::model::{CardPatch, CardRole};
+use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 
 pub struct PendingThreadStartRegistry {
@@ -327,14 +328,14 @@ impl PendingThreadStartRegistry {
         let payload_for_tx = payload;
         let card_role_cache = CardRoleCache::default();
         let wave_cove_cache = WaveCoveCache::default();
+        let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
         let (_updated, _event_id) = write_with_event_typed(
             self.repo.as_ref(),
             ActorId::Kernel,
             scope,
             None,
             &self.events,
-            &card_role_cache,
-            &wave_cove_cache,
+            &write,
             move |tx| {
                 Box::pin(async move {
                     card_codex_thread_upsert_tx(
@@ -391,14 +392,14 @@ pub(crate) async fn card_payload_clear_pending_status(
     let payload_for_tx = payload;
     let card_role_cache = CardRoleCache::default();
     let wave_cove_cache = WaveCoveCache::default();
+    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
     let (_updated, _id) = write_with_event_typed(
         repo,
         ActorId::Kernel,
         scope,
         None,
         events,
-        &card_role_cache,
-        &wave_cove_cache,
+        &write,
         move |tx| {
             Box::pin(async move {
                 let card = card_update_tx(

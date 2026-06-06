@@ -295,8 +295,7 @@ async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        ctx.write.role_cache(),
-        ctx.write.cove_cache(),
+        &ctx.write,
         move |tx| {
             Box::pin(async move {
                 let stored = overlay_upsert_tx(tx, new_overlay).await?;
@@ -349,8 +348,7 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        ctx.write.role_cache(),
-        ctx.write.cove_cache(),
+        &ctx.write,
         move |tx| {
             Box::pin(async move {
                 overlay_delete_tx(tx, &plugin_id_owned, &entity_kind, &entity_id, &kind).await?;
@@ -390,6 +388,7 @@ struct CardCreateParams {
     sort: Option<f64>,
 }
 
+#[allow(deprecated)]
 async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: CardCreateParams = parse_params("neige.card.create", &params)?;
     let perms = manifest_permissions(ctx)?;
@@ -424,15 +423,14 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let scope =
         card_scope_for_callback(ctx.repo.as_ref(), card_id.clone(), &wave_id_for_scope).await;
     let card_id_for_tx = card_id.0.clone();
-    let cache_for_tx = ctx.write.role_cache().clone();
+    let write_for_tx = ctx.write.clone();
     let (stored, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         actor,
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        ctx.write.role_cache(),
-        ctx.write.cove_cache(),
+        &ctx.write,
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plugin-driven creates are
@@ -445,7 +443,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                     new,
                     CardRole::Plain,
                     true,
-                    &cache_for_tx,
+                    write_for_tx.role_cache(),
                 )
                 .await?;
                 Ok((stored.clone(), Event::CardAdded(stored)))
@@ -524,8 +522,7 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        ctx.write.role_cache(),
-        ctx.write.cove_cache(),
+        &ctx.write,
         move |tx| {
             Box::pin(async move {
                 let updated = card_update_tx(tx, &card_id, patch).await?;
@@ -546,6 +543,7 @@ struct CardDeleteParams {
     card_id: String,
 }
 
+#[allow(deprecated)]
 async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: CardDeleteParams = parse_params("neige.card.delete", &params)?;
     let card = ctx
@@ -578,7 +576,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let actor = ctx.actor();
     let correlation = ctx.correlation();
     let scope = card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), wave_id.as_str()).await;
-    let cache_for_tx = ctx.write.role_cache().clone();
+    let write_for_tx = ctx.write.clone();
 
     // Issue #197 — eager teardown. Mirrors `routes::cards::delete_card`:
     // the `terminals.card_id` FK is `ON DELETE RESTRICT` (migration
@@ -604,8 +602,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
-        ctx.write.role_cache(),
-        ctx.write.cove_cache(),
+        &ctx.write,
         move |tx| {
             Box::pin(async move {
                 if let Some(tid) = terminal_id.as_deref() {
@@ -615,7 +612,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                         Err(e) => return Err(e),
                     }
                 }
-                card_delete_tx(tx, &card_id, &cache_for_tx).await?;
+                card_delete_tx(tx, &card_id, write_for_tx.role_cache()).await?;
                 Ok((
                     (),
                     Event::CardDeleted {
@@ -1370,6 +1367,7 @@ mod tests {
     /// check would otherwise let the plugin through — proving the
     /// `deletable` guard runs first.
     #[tokio::test]
+    #[allow(deprecated)]
     async fn card_delete_refused_for_undeletable_card() {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         let cache = h.ctx_storage.write.role_cache().clone();

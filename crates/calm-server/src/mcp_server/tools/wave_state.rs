@@ -139,7 +139,7 @@ async fn get_wave_state(
     let cards_json: Vec<Value> = cards
         .iter()
         .map(|c| {
-            let role = ctx.write.role_cache().get(&c.id).unwrap_or_default();
+            let role = ctx.write.verify_role(&c.id).unwrap_or_default();
             json!({
                 "id": c.id,
                 "kind": c.kind,
@@ -271,8 +271,7 @@ async fn update_wave_state(
             actor,
             None,
             &ctx.events,
-            ctx.write.role_cache(),
-            ctx.write.cove_cache(),
+            &ctx.write,
             move |tx| {
                 let scope_inner = scope_for_tx.clone();
                 let wave_id_inner = wave_id.clone();
@@ -520,8 +519,7 @@ async fn update_task_meta(
         scope,
         None,
         &ctx.events,
-        ctx.write.role_cache(),
-        ctx.write.cove_cache(),
+        &ctx.write,
         move |_tx| {
             let event = event.clone();
             Box::pin(async move { Ok(((), event)) })

@@ -3000,6 +3000,7 @@ impl RepoOutOfDomain for SqlxRepo {
 // `events_*` cursor queries used by replay.
 // ---------------------------------------------------------------------------
 
+#[allow(deprecated)]
 #[async_trait]
 impl RepoEventWrite for SqlxRepo {
     async fn write_with_event(
@@ -3008,8 +3009,7 @@ impl RepoEventWrite for SqlxRepo {
         scope: EventScope,
         correlation: Option<&str>,
         bus: &EventBus,
-        card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        write: &crate::state::WriteContext,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
@@ -3029,9 +3029,13 @@ impl RepoEventWrite for SqlxRepo {
         // (e.g. `card_create_with_id_tx` writes through the cache)
         // before the gate checks them. Violations roll back: no
         // entity write, no event row, no broadcast.
-        if let Err(violation) =
-            crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache, wave_cove_cache)
-        {
+        if let Err(violation) = crate::role_gate::enforce_role(
+            &actor,
+            &event,
+            &scope,
+            write.role_cache(),
+            write.cove_cache(),
+        ) {
             let _ = tx.rollback().await;
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -3062,8 +3066,7 @@ impl RepoEventWrite for SqlxRepo {
         actor: ActorId,
         correlation: Option<&str>,
         bus: &EventBus,
-        card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        write: &crate::state::WriteContext,
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         let mut tx = self.pool.begin().await?;
@@ -3096,8 +3099,8 @@ impl RepoEventWrite for SqlxRepo {
                 &actor,
                 event,
                 scope,
-                card_role_cache,
-                wave_cove_cache,
+                write.role_cache(),
+                write.cove_cache(),
             ) {
                 let _ = tx.rollback().await;
                 return Err(CalmError::Forbidden(violation.to_string()));

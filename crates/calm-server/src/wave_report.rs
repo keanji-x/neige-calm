@@ -236,14 +236,8 @@ pub async fn persist_report(
     };
     let report_card_id_inner = report_card_id.clone();
     let wave_id_for_event = wave_id.clone();
-    let (updated, _ids) = write_with_events_typed::<Card, _>(
-        repo,
-        actor,
-        None,
-        events,
-        write.role_cache(),
-        write.cove_cache(),
-        move |tx| {
+    let (updated, _ids) =
+        write_with_events_typed::<Card, _>(repo, actor, None, events, write, move |tx| {
             let id = report_card_id_inner.as_str().to_string();
             let report_card_id = report_card_id_inner.clone();
             let wave_id = wave_id_for_event.clone();
@@ -313,9 +307,8 @@ pub async fn persist_report(
                 ];
                 Ok((updated, events))
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     Ok(updated)
 }
 

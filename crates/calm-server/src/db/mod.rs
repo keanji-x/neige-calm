@@ -91,6 +91,7 @@ use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::*;
+use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -453,27 +454,17 @@ pub trait RepoEventWrite: RepoRead {
     /// `correlation` is optional; populated for plugin tool-call writes
     /// per design §9 (`"user_tool_call:<call_id>"`).
     ///
-    /// `card_role_cache` is the [`CardRoleCache`] used by PR3's
-    /// `role_gate::enforce_role` to check that the actor is authorized
-    /// to emit this event under the supplied scope. The gate runs
-    /// *inside* the transaction, after the closure produces an event
-    /// and before the event row is appended. Violations roll the txn
-    /// back — entity write, event row, and broadcast all disappear.
-    ///
-    /// `wave_cove_cache` is the parallel [`WaveCoveCache`] the gate
-    /// uses to cross-check `scope.cove` against the Worker card's
-    /// home cove (#234). Same write-through invariant as the role
-    /// cache; lives on a separate field because wave-count is much
-    /// smaller than card-count and the two caches answer different
-    /// questions.
+    /// `write` is the [`WriteContext`] wrapper used by PR3's
+    /// `role_gate::enforce_role` to consult both write-through caches
+    /// inside the transaction, after the closure produces an event
+    /// and before the event row is appended.
     async fn write_with_event(
         &self,
         actor: ActorId,
         scope: EventScope,
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
-        card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        write: &WriteContext,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64>;
 
@@ -514,8 +505,7 @@ pub trait RepoEventWrite: RepoRead {
         actor: ActorId,
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
-        card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        write: &WriteContext,
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>>;
 
@@ -954,8 +944,7 @@ pub async fn write_with_event_typed<R, F>(
     scope: EventScope,
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
-    card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    write: &WriteContext,
     f: F,
 ) -> Result<(R, i64)>
 where
@@ -980,15 +969,7 @@ where
     });
 
     let event_id = repo
-        .write_with_event(
-            actor,
-            scope,
-            correlation,
-            bus,
-            card_role_cache,
-            wave_cove_cache,
-            boxed,
-        )
+        .write_with_event(actor, scope, correlation, bus, write, boxed)
         .await?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {
@@ -1026,8 +1007,7 @@ pub async fn write_with_events_typed<R, F>(
     actor: ActorId,
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
-    card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    write: &WriteContext,
     f: F,
 ) -> Result<(R, Vec<i64>)>
 where
@@ -1054,14 +1034,7 @@ where
     });
 
     let event_ids = repo
-        .write_with_events(
-            actor,
-            correlation,
-            bus,
-            card_role_cache,
-            wave_cove_cache,
-            boxed,
-        )
+        .write_with_events(actor, correlation, bus, write, boxed)
         .await?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {

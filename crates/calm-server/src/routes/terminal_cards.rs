@@ -88,6 +88,7 @@ pub struct NewTerminalCardBody {
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),
 )]
+#[allow(deprecated)]
 pub(crate) async fn create_terminal_card(
     State(s): State<AppState>,
     actor: Actor,
@@ -144,15 +145,14 @@ pub(crate) async fn create_terminal_card(
     .await?;
     let card_id_for_tx = card_id.clone();
     let wave_id_for_tx = wave_id;
-    let cache_for_tx = s.write().role_cache().clone();
+    let write_for_tx = s.write().clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
-        s.write().role_cache(),
-        s.write().cove_cache(),
+        s.write(),
         move |tx| {
             Box::pin(async move {
                 let (card, _term) = card_with_terminal_create_tx(
@@ -170,7 +170,7 @@ pub(crate) async fn create_terminal_card(
                     // Issue #229 PR A — terminal cards are
                     // user-deletable.
                     true,
-                    &cache_for_tx,
+                    write_for_tx.role_cache(),
                     theme_for_tx,
                 )
                 .await?;

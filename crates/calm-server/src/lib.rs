@@ -579,8 +579,7 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
             scope,
             None,
             &state.events,
-            state.write().role_cache(),
-            state.write().cove_cache(),
+            state.write(),
             move |tx| {
                 Box::pin(async move {
                     let updated = db::sqlite::card_update_tx(
@@ -703,8 +702,7 @@ async fn register_and_catch_up(
     debug_assert!(
         state
             .write()
-            .role_cache()
-            .get(&card_key)
+            .verify_role(&card_key)
             .is_none_or(|role| role == crate::model::CardRole::Spec),
         "register_and_catch_up: card {card_id:?} is not CardRole::Spec; \
          the boot-takeover query MUST scope to spec-role cards \
@@ -728,7 +726,7 @@ async fn register_and_catch_up(
          queued-then-flushed envelopes would silently fail to persist their watermark"
     );
     let initial_prompt_ready = if handle.thread_id.is_none() {
-        match state.write().cove_cache().cove_of(wave_id) {
+        match state.write().verify_cove(wave_id) {
             Some(cove_id) => state.dispatcher.initial_prompt_ready_sink_for(
                 card_key.clone(),
                 wave_id.clone(),
@@ -933,7 +931,7 @@ async fn replay_spec_push_catch_up_under_lock(
         if ev_wave != wave_id {
             continue;
         }
-        if !dispatcher::event_warrants_spec_push(&ev, state.write().role_cache()) {
+        if !dispatcher::event_warrants_spec_push(&ev, state.write()) {
             continue;
         }
         if rehydrated_skip.contains(&id) {

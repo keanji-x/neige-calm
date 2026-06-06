@@ -70,8 +70,10 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
         EventScope::System,
         None,
         &bus,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(tx, p).await?;
@@ -144,8 +146,10 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
         EventScope::System,
         None,
         &bus,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 // Real entity write succeeds inside the txn ...
@@ -224,8 +228,10 @@ async fn event_insert_failure_rolls_back_entity_write() {
         EventScope::System,
         None,
         &bus,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(
@@ -280,8 +286,10 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         EventScope::System,
         None,
         &bus,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(
@@ -307,8 +315,10 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         EventScope::System,
         None,
         &bus,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 let wave = wave_create_tx(
@@ -338,8 +348,10 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         EventScope::System,
         None,
         &bus,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 let card = card_create_tx(
@@ -413,8 +425,10 @@ async fn replay_then_live_dedup_under_concurrent_write() {
             EventScope::System,
             None,
             &bus,
-            &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            &calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
             move |tx| {
                 Box::pin(async move {
                     let w = wave_create_tx(
@@ -478,8 +492,10 @@ async fn replay_then_live_dedup_under_concurrent_write() {
             EventScope::System,
             None,
             &bus,
-            &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            &calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
             move |tx| {
                 Box::pin(async move {
                     let w = wave_create_tx(
@@ -580,8 +596,10 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 EventScope::System,
                 None,
                 bus,
-                &calm_server::card_role_cache::CardRoleCache::new(),
-                &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                &calm_server::state::WriteContext::new(
+                    calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                ),
                 move |tx| {
                     Box::pin(async move {
                         let c = cove_create_tx(tx, p).await?;
@@ -605,8 +623,10 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 EventScope::System,
                 None,
                 bus,
-                &calm_server::card_role_cache::CardRoleCache::new(),
-                &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                &calm_server::state::WriteContext::new(
+                    calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                ),
                 move |tx| {
                     Box::pin(async move {
                         let w = wave_create_tx(
@@ -641,8 +661,10 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 EventScope::System,
                 None,
                 bus,
-                &calm_server::card_role_cache::CardRoleCache::new(),
-                &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                &calm_server::state::WriteContext::new(
+                    calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                ),
                 move |tx| {
                     Box::pin(async move {
                         let c = card_create_tx(
@@ -684,8 +706,10 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 EventScope::System,
                 None,
                 bus,
-                &calm_server::card_role_cache::CardRoleCache::new(),
-                &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                &calm_server::state::WriteContext::new(
+                    calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                ),
                 move |tx| {
                     Box::pin(async move {
                         let o = overlay_upsert_tx(tx, new_overlay).await?;
@@ -801,8 +825,10 @@ async fn event_version_round_trips_from_write_to_replay() {
         EventScope::System,
         None,
         &bus,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
         move |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(

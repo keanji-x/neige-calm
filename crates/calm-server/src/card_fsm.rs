@@ -550,8 +550,7 @@ impl Inner {
             scope,
             None,
             &self.bus,
-            self.write.role_cache(),
-            self.write.cove_cache(),
+            &self.write,
             move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
@@ -676,8 +675,7 @@ impl Inner {
             scope,
             None,
             &self.bus,
-            self.write.role_cache(),
-            self.write.cove_cache(),
+            &self.write,
             move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;

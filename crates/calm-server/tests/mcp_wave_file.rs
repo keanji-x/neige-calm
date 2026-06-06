@@ -222,10 +222,12 @@ fn content_json(value: &Value) -> Value {
     serde_json::from_str(content).expect("content is JSON")
 }
 
+#[allow(deprecated)]
 async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) -> i64 {
     log_wave_event_as(boot, ActorId::User, wave_id, cove_id, event).await
 }
 
+#[allow(deprecated)]
 async fn log_wave_event_as(
     boot: &Boot,
     actor: ActorId,
@@ -250,6 +252,7 @@ async fn log_wave_event_as(
         .expect("log event")
 }
 
+#[allow(deprecated)]
 async fn log_worker_card_event(boot: &Boot, event: Event) -> i64 {
     boot.repo
         .log_pure_event(
@@ -269,6 +272,7 @@ async fn log_worker_card_event(boot: &Boot, event: Event) -> i64 {
         .expect("log worker card event")
 }
 
+#[allow(deprecated)]
 async fn log_card_hook_event(boot: &Boot, card_id: &CardId, event: Event) -> i64 {
     let actor = match &event {
         Event::CodexHook { .. } => ActorId::AiCodex(card_id.clone()),
@@ -383,6 +387,7 @@ async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
     .await
 }
 
+#[allow(deprecated)]
 async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
     let card = boot
         .repo
@@ -790,6 +795,7 @@ async fn ls_runs_returns_projected_runs_for_bound_wave() {
 }
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads() {
     let boot = boot().await;
     let decoy = boot
