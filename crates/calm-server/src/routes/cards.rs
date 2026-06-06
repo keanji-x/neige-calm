@@ -30,7 +30,6 @@ use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::AppState;
 use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
-use crate::validation::validate_card_payload;
 
 use axum::{
     Json, Router,
@@ -197,7 +196,9 @@ pub(crate) async fn create_card(
     let payload = body.payload.unwrap_or(Value::Null);
     // D4: reject malformed payloads for kernel-owned kinds. Plugin-defined
     // (`ui://*`) kinds remain opaque per the architectural invariant.
-    validate_card_payload(&kind, &payload).map_err(|e| e.into_response())?;
+    s.card_kind_registry()
+        .validate_payload(&kind, &payload)
+        .map_err(|e| CalmError::from(e).into_response())?;
     // Pre-mint the card id so we can stamp `EventScope::Card { card, .. }`
     // deterministically before the txn opens. The kernel's `new_id()` is
     // a UUID — collision risk is negligible. Using
@@ -334,7 +335,9 @@ async fn create_via_tool_call(
     // are opaque so this is a no-op for plugin-defined views — but if a
     // tool ever names a kernel kind (e.g. `"terminal"`) via resourceUri,
     // we reject a malformed payload here rather than after the DB write.
-    validate_card_payload(&creation.resource_uri, &payload).map_err(|e| e.into_response())?;
+    s.card_kind_registry()
+        .validate_payload(&creation.resource_uri, &payload)
+        .map_err(|e| CalmError::from(e).into_response())?;
     let new = NewCard {
         wave_id: wave_id.into(),
         kind: creation.resource_uri,
@@ -430,7 +433,7 @@ pub(crate) async fn update_card(
     // patch retargets) or the existing card's kind.
     if let Some(payload) = p.payload.as_ref() {
         let kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
-        validate_card_payload(kind, payload)?;
+        s.card_kind_registry().validate_payload(kind, payload)?;
     }
     let scope = card_scope(s.repo.as_ref(), existing.id.clone(), existing.wave_id).await?;
     let (card, _id) = write_with_event_typed(

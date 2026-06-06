@@ -35,6 +35,7 @@ use super::{
     SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithEventFn,
     WriteWithEventsFn,
 };
+use crate::card_kind::CardKindRegistry;
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
@@ -42,9 +43,14 @@ use crate::ids::{ActorId, WaveId};
 use crate::model::*;
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
-    validate_card_payload,
 };
 use crate::wave_cove_cache::WaveCoveCache;
+
+fn validate_card_kind(kind: &str, payload: &serde_json::Value) -> Result<()> {
+    CardKindRegistry::builtins()
+        .validate_payload(kind, payload)
+        .map_err(CalmError::from)
+}
 
 pub struct SqlxRepo {
     pool: SqlitePool,
@@ -1114,7 +1120,7 @@ pub async fn card_with_terminal_create_tx(
     //    `routes/cards.rs:141` already enforces this for direct create, but
     //    composing inside the kernel means we run our own check rather than
     //    trusting a payload we built ourselves.
-    validate_card_payload("terminal", &payload)?;
+    validate_card_kind("terminal", &payload)?;
 
     // 5. Re-stamp the card with the real payload.
     let card = card_update_tx(
@@ -1309,7 +1315,7 @@ pub async fn card_with_codex_create_tx(
     //    `routes/cards.rs` enforces this for direct create; composing
     //    inside the kernel means we re-run the check on the payload we
     //    just built.
-    validate_card_payload("codex", &payload)?;
+    validate_card_kind("codex", &payload)?;
 
     // 5. Re-stamp the card with the real payload.
     let card = card_update_tx(
@@ -1428,7 +1434,7 @@ pub async fn card_with_claude_create_tx(
         payload.insert("icon_fg".into(), serde_json::Value::String(c.to_string()));
     }
     let payload = serde_json::Value::Object(payload);
-    validate_card_payload("claude", &payload)?;
+    validate_card_kind("claude", &payload)?;
 
     let card = card_update_tx(
         tx,

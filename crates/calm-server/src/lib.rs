@@ -31,6 +31,7 @@ pub mod actor;
 /// the module-list head so reviewers see the framework boundary up top.
 pub mod aspect;
 pub mod auth;
+pub mod card_kind;
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
