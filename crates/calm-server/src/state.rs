@@ -18,10 +18,150 @@ use crate::shared_codex_home::SharedCodexHome;
 use crate::spec_push::SpecPushRegistry;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
+use axum::extract::FromRef;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+/// #480 PR1 write-surface slice shared by route and worker substates.
+/// Clone-cheap: both caches alias their underlying `Arc<DashMap<...>>`.
+#[derive(Clone)]
+pub struct WriteContext {
+    role_cache: CardRoleCache,
+    cove_cache: WaveCoveCache,
+}
+
+impl WriteContext {
+    pub fn new(role_cache: CardRoleCache, cove_cache: WaveCoveCache) -> Self {
+        Self {
+            role_cache,
+            cove_cache,
+        }
+    }
+
+    pub fn role_cache(&self) -> &CardRoleCache {
+        &self.role_cache
+    }
+
+    pub fn cove_cache(&self) -> &WaveCoveCache {
+        &self.cove_cache
+    }
+}
+
+/// #480 PR1 route-facing state slice for future handler extraction.
+/// Mirrors existing `AppState` handles without changing caller behavior.
+#[derive(Clone)]
+pub struct RouteState {
+    pub repo: Arc<dyn RouteRepo>,
+    pub events: EventBus,
+    pub db_instance_id: Arc<String>,
+    pub write: WriteContext,
+    pub aspects: Arc<AspectRegistry>,
+}
+
+/// #480 PR1 worker-facing state slice for dispatcher/background flows.
+/// Mirrors existing `AppState` handles without changing caller behavior.
+#[derive(Clone)]
+pub struct WorkerState {
+    pub repo: Arc<dyn Repo>,
+    pub daemon: Arc<DaemonClient>,
+    pub dispatcher: Arc<Dispatcher>,
+    pub mcp_server: Option<Arc<McpServer>>,
+    pub spec_push: SpecPushRegistry,
+    pub terminal_renderer: Arc<TerminalRendererRegistry>,
+    pub write: WriteContext,
+}
+
+/// #480 PR1 codex-shell state slice for shared app-server flows.
+/// Mirrors existing `AppState` handles without changing caller behavior.
+#[derive(Clone)]
+pub struct CodexShellState {
+    pub codex: Arc<CodexClient>,
+    pub shared_codex_appserver: Arc<SharedCodexAppServer>,
+    pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
+    pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
+    pub plugin: Arc<PluginHost>,
+}
+
+/// #480 PR1 boot aggregate that materializes compat fields plus slices.
+/// Constructors build this only after resolving all boot handles.
+pub struct BootState {
+    pub repo: Arc<dyn Repo>,
+    pub events: EventBus,
+    pub daemon: Arc<DaemonClient>,
+    pub terminal_renderer: Arc<TerminalRendererRegistry>,
+    pub plugin: Arc<PluginHost>,
+    pub codex: Arc<CodexClient>,
+    pub db_instance_id: Arc<String>,
+    pub card_role_cache: CardRoleCache,
+    pub wave_cove_cache: WaveCoveCache,
+    /// #477 PR5 — kernel card-kind handler registry. Substate placement is
+    /// left to PR2/PR3 once call sites migrate; for PR1 it stays on `AppState`
+    /// alongside the other 17 compat fields and rides through `BootState`.
+    pub card_kind_registry: Arc<CardKindRegistry>,
+    pub dispatcher: Arc<Dispatcher>,
+    pub mcp_server: Option<Arc<McpServer>>,
+    pub spec_push: SpecPushRegistry,
+    pub shared_codex_appserver: Arc<SharedCodexAppServer>,
+    pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
+    pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
+    pub aspects: Arc<AspectRegistry>,
+}
+
+impl BootState {
+    pub fn into_app_state(self) -> AppState {
+        let route_repo: Arc<dyn RouteRepo> = self.repo.clone();
+        let write = WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
+        let route = RouteState {
+            repo: route_repo.clone(),
+            events: self.events.clone(),
+            db_instance_id: self.db_instance_id.clone(),
+            write: write.clone(),
+            aspects: self.aspects.clone(),
+        };
+        let worker = WorkerState {
+            repo: self.repo.clone(),
+            daemon: self.daemon.clone(),
+            dispatcher: self.dispatcher.clone(),
+            mcp_server: self.mcp_server.clone(),
+            spec_push: self.spec_push.clone(),
+            terminal_renderer: self.terminal_renderer.clone(),
+            write,
+        };
+        let codex_shell = CodexShellState {
+            codex: self.codex.clone(),
+            shared_codex_appserver: self.shared_codex_appserver.clone(),
+            pending_codex_threads: self.pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial.clone(),
+            plugin: self.plugin.clone(),
+        };
+
+        AppState {
+            repo: route_repo,
+            events: self.events,
+            daemon: self.daemon,
+            terminal_renderer: self.terminal_renderer,
+            plugin: self.plugin,
+            codex: self.codex,
+            db_instance_id: self.db_instance_id,
+            card_role_cache: self.card_role_cache,
+            wave_cove_cache: self.wave_cove_cache,
+            card_kind_registry: self.card_kind_registry,
+            dispatcher: self.dispatcher,
+            mcp_server: self.mcp_server,
+            spec_push: self.spec_push,
+            shared_codex_appserver: self.shared_codex_appserver,
+            pending_codex_threads: self.pending_codex_threads,
+            pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial,
+            aspects: self.aspects,
+            raw: self.repo,
+            route,
+            worker,
+            codex_shell,
+        }
+    }
+}
 
 /// Route-facing handle: the trait object `AppState::repo` exposes. Excludes
 /// `RepoSyncDomainRaw` — see `db/mod.rs` module doc for the capability split.
@@ -137,6 +277,9 @@ pub struct AppState {
     /// out, but the production build keeps the field opaque on purpose.
     #[allow(dead_code)]
     raw: Arc<dyn Repo>,
+    route: RouteState,
+    worker: WorkerState,
+    codex_shell: CodexShellState,
 }
 
 /// #322 — boot-time aspect registration. The single source of truth for
@@ -233,8 +376,8 @@ impl AppState {
             shared_codex_appserver.clone(),
             Dispatcher::permits_from_env(8),
         ));
-        Self {
-            repo: route_repo,
+        BootState {
+            repo,
             events,
             daemon,
             terminal_renderer,
@@ -265,19 +408,21 @@ impl AppState {
             // `SpecPushRegistry::park`) trips the same aspects production
             // would.
             aspects: build_aspect_registry(),
-            raw: repo,
         }
+        .into_app_state()
     }
 
     #[cfg(feature = "fixtures")]
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
-        self.shared_codex_appserver = shared;
+        self.shared_codex_appserver = shared.clone();
+        self.codex_shell.shared_codex_appserver = shared;
         self
     }
 
     #[cfg(feature = "fixtures")]
     pub fn with_pending_codex_threads(mut self, pending: Arc<PendingThreadStartRegistry>) -> Self {
-        self.pending_codex_threads = pending;
+        self.pending_codex_threads = pending.clone();
+        self.codex_shell.pending_codex_threads = pending;
         self
     }
 
@@ -479,8 +624,8 @@ impl AppState {
         // the rest of the boot path.
         plugin.autospawn_enabled().await;
 
-        let state = Self {
-            repo: route_repo,
+        let state = BootState {
+            repo,
             events,
             daemon,
             terminal_renderer,
@@ -506,8 +651,8 @@ impl AppState {
             // #322 — aspect registry, boot-installed once and shared via
             // `Arc` to every handler / actor that needs it.
             aspects: build_aspect_registry(),
-            raw: repo,
         };
+        let state = state.into_app_state();
 
         // Orphan-terminal sweeper (Scope C). Ticks every 30s, reaps
         // terminal rows that no card references via `payload.terminal_id`
@@ -518,6 +663,30 @@ impl AppState {
         crate::terminal_sweeper::spawn(state.clone());
 
         Ok(state)
+    }
+}
+
+impl FromRef<AppState> for RouteState {
+    fn from_ref(s: &AppState) -> Self {
+        s.route.clone()
+    }
+}
+
+impl FromRef<AppState> for WorkerState {
+    fn from_ref(s: &AppState) -> Self {
+        s.worker.clone()
+    }
+}
+
+impl FromRef<AppState> for CodexShellState {
+    fn from_ref(s: &AppState) -> Self {
+        s.codex_shell.clone()
+    }
+}
+
+impl FromRef<AppState> for WriteContext {
+    fn from_ref(s: &AppState) -> Self {
+        s.route.write.clone()
     }
 }
 
