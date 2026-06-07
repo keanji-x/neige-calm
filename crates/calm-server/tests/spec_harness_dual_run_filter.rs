@@ -269,3 +269,166 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     }
     harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn dispatcher_harness_full_queue_does_not_advance_cursor_until_retry() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "harness-full".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "harness-full".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let role_cache = CardRoleCache::new();
+    let wave_cove_cache = WaveCoveCache::new();
+    wave_cove_cache.insert(wave.id.clone(), cove.id.clone());
+    let mut tx = repo.pool().begin().await.unwrap();
+    let card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        },
+        CardRole::Spec,
+        false,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let thread_id = "thread-harness-full".to_string();
+    let runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let events = EventBus::new();
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let registry = HarnessRegistry::new();
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
+    let (harness, mut observations) = SpecHarness::run_unstarted_for_test(
+        SpecHarnessParams {
+            runtime_id: runtime_id.clone(),
+            wave_id: wave.id.clone(),
+            card_id: card.id.clone(),
+            thread_id: Some(thread_id),
+            repo: repo_dyn.clone(),
+            daemon: daemon.clone(),
+            config: HarnessConfig::default(),
+            snapshot,
+        },
+        1,
+    );
+    harness
+        .observe(Observation::WaveGoal {
+            text: "queue filler".into(),
+        })
+        .unwrap();
+    registry.insert(runtime_id, harness.clone());
+    let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
+        repo_dyn.clone(),
+        events,
+        WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+        Arc::new(CodexClient::new_stub()),
+        Arc::new(DaemonClient {
+            data_dir: std::env::temp_dir().join("neige-harness-full-dispatcher"),
+            proc_supervisor_sock: None,
+        }),
+        TerminalRendererRegistry::new_with_repo(route_repo),
+        None,
+        SpecPushRegistry::new(),
+        registry,
+        daemon,
+        4,
+    );
+
+    let event = Event::WaveReportEdited {
+        wave_id: wave.id.clone(),
+        card_id: card.id.clone(),
+        author: EditAuthor::User,
+        edit_id: "edit-harness-full".into(),
+        summary_before: String::new(),
+        summary_after: "summary".into(),
+        body_before: String::new(),
+        body_after: "body after".into(),
+    };
+    let cold_bus = EventBus::new();
+    let envelope_id = repo
+        .log_pure_event(
+            ActorId::User,
+            EventScope::Wave {
+                wave: wave.id.clone(),
+                cove: cove.id,
+            },
+            None,
+            &cold_bus,
+            &role_cache,
+            &wave_cove_cache,
+            event.clone(),
+        )
+        .await
+        .unwrap();
+
+    dispatcher
+        .catch_up_push(wave.id.clone(), event.clone(), envelope_id)
+        .await;
+    assert_eq!(
+        dispatcher.push_cursor_for_test(&card.id),
+        0,
+        "full harness queue must not advance the push cursor"
+    );
+    assert!(matches!(
+        observations.recv().await.unwrap(),
+        Observation::WaveGoal { .. }
+    ));
+
+    dispatcher
+        .catch_up_push(wave.id.clone(), event, envelope_id)
+        .await;
+    assert_eq!(dispatcher.push_cursor_for_test(&card.id), envelope_id);
+    assert!(matches!(
+        observations.recv().await.unwrap(),
+        Observation::ReportEdited { body, .. } if body == "body after"
+    ));
+    harness.shutdown().await.unwrap();
+}

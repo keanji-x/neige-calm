@@ -9,7 +9,7 @@ use tokio::task::AbortHandle;
 
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::{Repo, write_in_tx_typed};
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
@@ -71,28 +71,7 @@ impl SpecHarness {
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let notifications = params.daemon.subscribe_notifications();
-        let debounce = debounce_from_initial_queue(&params.snapshot.pending_queue);
-        let state = state_from_snapshot(&params.snapshot);
-        let inner = Arc::new(Inner {
-            runtime_id: params.runtime_id,
-            _wave_id: params.wave_id,
-            card_id: params.card_id,
-            thread_id: RwLock::new(params.thread_id.or(params.snapshot.last_thread_id.clone())),
-            repo: params.repo,
-            daemon: params.daemon,
-            observations: obs_tx,
-            state: Mutex::new(state),
-            pending_queue: Mutex::new(params.snapshot.pending_queue.into_iter().collect()),
-            push_watermark: Mutex::new(params.snapshot.push_watermark),
-            last_turn_id: Mutex::new(params.snapshot.last_turn_id),
-            last_report_body_sha256: Mutex::new(params.snapshot.last_report_body_sha256),
-            debounce: Mutex::new(debounce),
-            interrupt_deadline: Mutex::new(None),
-            shutdown: shutdown_tx,
-            shutting_down: Arc::new(AtomicBool::new(false)),
-            abort_handle: StdMutex::new(None),
-            config: params.config,
-        });
+        let inner = inner_from_params(params, obs_tx, shutdown_tx);
         let handle = Self {
             inner: Arc::clone(&inner),
         };
@@ -109,10 +88,27 @@ impl SpecHarness {
         handle
     }
 
-    pub fn observe(&self, obs: Observation) {
-        if let Err(e) = self.inner.observations.try_send(obs) {
-            tracing::warn!(error = %e, "spec harness observation queue full or closed");
-        }
+    #[cfg(feature = "fixtures")]
+    pub fn run_unstarted_for_test(
+        params: SpecHarnessParams,
+        observation_buffer: usize,
+    ) -> (Self, mpsc::Receiver<Observation>) {
+        params.snapshot.assert_known_schema();
+        let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
+        let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
+        let inner = inner_from_params(params, obs_tx, shutdown_tx);
+        (Self { inner }, obs_rx)
+    }
+
+    pub fn observe(&self, obs: Observation) -> Result<()> {
+        self.inner.observations.try_send(obs).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => {
+                CalmError::Internal("spec harness observation queue full".into())
+            }
+            mpsc::error::TrySendError::Closed(_) => {
+                CalmError::Internal("spec harness observation queue closed".into())
+            }
+        })
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
@@ -163,6 +159,35 @@ impl SpecHarness {
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
     }
+}
+
+fn inner_from_params(
+    params: SpecHarnessParams,
+    observations: mpsc::Sender<Observation>,
+    shutdown: broadcast::Sender<()>,
+) -> Arc<Inner> {
+    let debounce = debounce_from_initial_queue(&params.snapshot.pending_queue);
+    let state = state_from_snapshot(&params.snapshot);
+    Arc::new(Inner {
+        runtime_id: params.runtime_id,
+        _wave_id: params.wave_id,
+        card_id: params.card_id,
+        thread_id: RwLock::new(params.thread_id.or(params.snapshot.last_thread_id.clone())),
+        repo: params.repo,
+        daemon: params.daemon,
+        observations,
+        state: Mutex::new(state),
+        pending_queue: Mutex::new(params.snapshot.pending_queue.into_iter().collect()),
+        push_watermark: Mutex::new(params.snapshot.push_watermark),
+        last_turn_id: Mutex::new(params.snapshot.last_turn_id),
+        last_report_body_sha256: Mutex::new(params.snapshot.last_report_body_sha256),
+        debounce: Mutex::new(debounce),
+        interrupt_deadline: Mutex::new(None),
+        shutdown,
+        shutting_down: Arc::new(AtomicBool::new(false)),
+        abort_handle: StdMutex::new(None),
+        config: params.config,
+    })
 }
 
 fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
@@ -328,9 +353,53 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             };
             *inner.interrupt_deadline.lock().await = None;
         }
+        Notification::Other { method, params } if method == "turn/aborted" => {
+            let Some(aborted_turn_id) = other_turn_id(&params).map(ToOwned::to_owned) else {
+                tracing::debug!("spec harness ignoring turn/aborted without a turn id");
+                return persist_snapshot(inner).await;
+            };
+            let interrupt_target = {
+                let state = inner.state.lock().await;
+                match &*state {
+                    HarnessState::Issuing {
+                        kind: IssuingKind::Interrupt { target_turn_id, .. },
+                        ..
+                    } => Some(target_turn_id.clone()),
+                    _ => None,
+                }
+            };
+            let Some(target_turn_id) = interrupt_target else {
+                tracing::debug!(
+                    turn_id = %aborted_turn_id,
+                    "spec harness ignoring turn/aborted outside interrupt issuance"
+                );
+                return persist_snapshot(inner).await;
+            };
+            if aborted_turn_id != target_turn_id {
+                tracing::debug!(
+                    observed_turn_id = %aborted_turn_id,
+                    target_turn_id = %target_turn_id,
+                    "spec harness ignoring non-target aborted turn while interrupt is pending"
+                );
+                return persist_snapshot(inner).await;
+            }
+            *inner.last_turn_id.lock().await = Some(target_turn_id.clone());
+            *inner.state.lock().await = HarnessState::TurnCompleted {
+                last_turn_id: target_turn_id,
+            };
+            *inner.interrupt_deadline.lock().await = None;
+        }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }
     persist_snapshot(inner).await
+}
+
+fn other_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| params.get("turnId").and_then(Value::as_str))
 }
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {

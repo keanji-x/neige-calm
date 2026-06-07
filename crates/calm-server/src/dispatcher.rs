@@ -1302,7 +1302,18 @@ impl Inner {
                 kind = event.kind_tag(),
                 "dispatcher push: delivering observation to spec harness"
             );
-            harness.observe(observation);
+            if let Err(e) = harness.observe(observation) {
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    spec_card_id = %spec_card_id,
+                    runtime_id = %runtime_id,
+                    envelope_id,
+                    kind = event.kind_tag(),
+                    error = %e,
+                    "dispatcher push: SpecHarness observation enqueue failed; cursor NOT bumped"
+                );
+                return;
+            }
             self.push_cursor.bump(spec_card_id, envelope_id);
             return;
         }
