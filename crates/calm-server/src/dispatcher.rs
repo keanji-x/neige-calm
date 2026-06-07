@@ -2002,6 +2002,7 @@ impl Inner {
                 ))
             })?;
 
+        let mut spawn_preserved_failure = false;
         if let Err(e) = spawn_terminal_with_parts(
             self.daemon.as_ref(),
             self.terminal_renderer.as_ref(),
@@ -2046,6 +2047,7 @@ impl Inner {
                     return Err(e);
                 }
                 RollbackOutcome::Preserved => {
+                    spawn_preserved_failure = true;
                     tracing::info!(
                         card_id = %card_id,
                         wave_id = %wave_id,
@@ -2055,6 +2057,24 @@ impl Inner {
                     );
                     // Fall through to the CardAdded broadcast below
                     // so subscribers learn about the preserved card.
+                }
+            }
+        }
+
+        if !spawn_preserved_failure {
+            match self
+                .repo
+                .runtime_set_status_for_card(card_id.as_ref(), RunStatus::Running)
+                .await
+            {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target: "dispatcher::runtime_running_mark_failed",
+                        card_id = %card_id,
+                        error = %e,
+                        "failed to mark runtime running after worker spawn; CardAdded still broadcasting",
+                    );
                 }
             }
         }

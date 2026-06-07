@@ -1670,14 +1670,23 @@ fn runtime_status_transition_allowed(from: &RunStatus, to: &RunStatus) -> bool {
     match from {
         RunStatus::Starting => matches!(
             to,
-            RunStatus::Running | RunStatus::Idle | RunStatus::TurnPending | RunStatus::Failed
+            RunStatus::Running
+                | RunStatus::Idle
+                | RunStatus::TurnPending
+                | RunStatus::Failed
+                | RunStatus::Exited
         ),
         RunStatus::Running => matches!(to, RunStatus::Idle | RunStatus::Failed | RunStatus::Exited),
         RunStatus::Idle => matches!(
             to,
             RunStatus::Running | RunStatus::Failed | RunStatus::Exited
         ),
-        RunStatus::TurnPending => matches!(to, RunStatus::Running | RunStatus::Failed),
+        RunStatus::TurnPending => {
+            matches!(
+                to,
+                RunStatus::Running | RunStatus::Failed | RunStatus::Exited
+            )
+        }
         RunStatus::Failed | RunStatus::Exited | RunStatus::Superseded => false,
     }
 }
@@ -1925,6 +1934,17 @@ pub async fn runtime_set_status_tx(
     Ok(())
 }
 
+pub async fn runtime_set_status_for_card_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+    status: RunStatus,
+) -> RuntimeResult<()> {
+    let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
+        return Ok(());
+    };
+    runtime_set_status_tx(tx, &runtime.id, status).await
+}
+
 pub async fn runtime_bind_attribution_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
@@ -2040,6 +2060,49 @@ pub async fn runtime_complete_tx(
         return Err(runtime_message(format!("runtime {id} not found")));
     }
     Ok(())
+}
+
+pub async fn runtime_complete_for_card_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+    terminal_status: RunStatus,
+) -> RuntimeResult<()> {
+    let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
+        return Ok(());
+    };
+    runtime_complete_tx(tx, &runtime.id, terminal_status).await
+}
+
+pub async fn runtime_get_active_for_terminal_tx(
+    tx: &mut RuntimeTx<'_>,
+    terminal_id: &str,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE terminal_run_id = ?1
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+    )
+    .bind(terminal_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+pub async fn runtime_complete_for_terminal_tx(
+    tx: &mut RuntimeTx<'_>,
+    terminal_id: &str,
+    terminal_status: RunStatus,
+) -> RuntimeResult<()> {
+    let Some(runtime) = runtime_get_active_for_terminal_tx(tx, terminal_id).await? else {
+        return Ok(());
+    };
+    runtime_complete_tx(tx, &runtime.id, terminal_status).await
 }
 
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
@@ -2861,6 +2924,26 @@ impl RuntimeRepo for SqlxRepo {
         runtime_set_status_tx(tx, id, status).await
     }
 
+    async fn runtime_set_status_for_card(
+        &self,
+        card_id: &str,
+        status: RunStatus,
+    ) -> RuntimeResult<()> {
+        let mut tx = self.pool.begin().await?;
+        runtime_set_status_for_card_tx(&mut tx, card_id, status).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn runtime_set_status_for_card_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        card_id: &str,
+        status: RunStatus,
+    ) -> RuntimeResult<()> {
+        runtime_set_status_for_card_tx(tx, card_id, status).await
+    }
+
     async fn runtime_bind_attribution_tx(
         &self,
         tx: &mut RuntimeTx<'_>,
@@ -2895,6 +2978,46 @@ impl RuntimeRepo for SqlxRepo {
         terminal_status: RunStatus,
     ) -> RuntimeResult<()> {
         runtime_complete_tx(tx, id, terminal_status).await
+    }
+
+    async fn runtime_complete_for_card(
+        &self,
+        card_id: &str,
+        terminal_status: RunStatus,
+    ) -> RuntimeResult<()> {
+        let mut tx = self.pool.begin().await?;
+        runtime_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn runtime_complete_for_card_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        card_id: &str,
+        terminal_status: RunStatus,
+    ) -> RuntimeResult<()> {
+        runtime_complete_for_card_tx(tx, card_id, terminal_status).await
+    }
+
+    async fn runtime_complete_for_terminal(
+        &self,
+        terminal_id: &str,
+        terminal_status: RunStatus,
+    ) -> RuntimeResult<()> {
+        let mut tx = self.pool.begin().await?;
+        runtime_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn runtime_complete_for_terminal_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        terminal_id: &str,
+        terminal_status: RunStatus,
+    ) -> RuntimeResult<()> {
+        runtime_complete_for_terminal_tx(tx, terminal_id, terminal_status).await
     }
 
     async fn runtimes_recover_orphans_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {

@@ -147,6 +147,21 @@ pub trait RuntimeRepo {
         status: RunStatus,
     ) -> Result<()>;
 
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
+    async fn runtime_set_status_for_card(&self, card_id: &str, status: RunStatus) -> Result<()>;
+
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
+    async fn runtime_set_status_for_card_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        card_id: &str,
+        status: RunStatus,
+    ) -> Result<()>;
+
     async fn runtime_bind_attribution_tx(
         &self,
         tx: &mut Tx<'_>,
@@ -172,6 +187,38 @@ pub trait RuntimeRepo {
         &self,
         tx: &mut Tx<'_>,
         id: &RuntimeId,
+        terminal_status: RunStatus,
+    ) -> Result<()>;
+
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
+    async fn runtime_complete_for_card(
+        &self,
+        card_id: &str,
+        terminal_status: RunStatus,
+    ) -> Result<()>;
+
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
+    async fn runtime_complete_for_card_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        card_id: &str,
+        terminal_status: RunStatus,
+    ) -> Result<()>;
+
+    async fn runtime_complete_for_terminal(
+        &self,
+        terminal_id: &str,
+        terminal_status: RunStatus,
+    ) -> Result<()>;
+
+    async fn runtime_complete_for_terminal_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        terminal_id: &str,
         terminal_status: RunStatus,
     ) -> Result<()>;
 

@@ -909,10 +909,11 @@ pub mod prelude {
 /// the `RepoRead` supertrait, and the only writes reachable here are
 /// the event-sourced ones plus the out-of-domain operational writes.
 ///
-/// Implemented blanket for any type that combines the two supertraits,
-/// so `SqlxRepo` (and any future repo impl) picks it up automatically.
-pub trait RouteRepo: RepoEventWrite + RepoOutOfDomain {}
-impl<T> RouteRepo for T where T: RepoEventWrite + RepoOutOfDomain + ?Sized {}
+/// Implemented blanket for any type that combines the route-facing
+/// supertraits, so `SqlxRepo` (and any future repo impl) picks it up
+/// automatically.
+pub trait RouteRepo: RepoEventWrite + RepoOutOfDomain + RuntimeRepo {}
+impl<T> RouteRepo for T where T: RepoEventWrite + RepoOutOfDomain + RuntimeRepo + ?Sized {}
 
 /// Full repo capability. Declared as a supertrait of [`RouteRepo`] +
 /// [`RepoSyncDomainRaw`] so `Arc<dyn Repo>` upcasts to `Arc<dyn RouteRepo>`

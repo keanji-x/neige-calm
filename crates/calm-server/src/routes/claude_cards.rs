@@ -16,6 +16,7 @@ use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_for_route;
+use crate::runtime_repo::RunStatus;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use axum::{
     Json, Router,
@@ -239,7 +240,38 @@ pub(crate) async fn create_claude_card(
             ))
         })?;
 
-    spawn_terminal_for_route(&s, &w, &term, &command_line, &cwd, &env).await?;
+    match spawn_terminal_for_route(&s, &w, &term, &command_line, &cwd, &env).await {
+        Ok(_) => {
+            if let Err(e) = w
+                .repo
+                .runtime_set_status_for_card(card.id.as_ref(), RunStatus::Running)
+                .await
+            {
+                tracing::warn!(
+                    target: "routes::claude_runtime_running_mark_failed",
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    error = %e,
+                    "failed to mark claude runtime running after spawn; returning created response",
+                );
+            }
+        }
+        Err(e) => {
+            if let Err(mark_err) = w
+                .repo
+                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    error = %mark_err,
+                    "failed to mark claude runtime failed after spawn error"
+                );
+            }
+            return Err(e);
+        }
+    }
 
     tracing::info!(
         card_id = %card.id,
