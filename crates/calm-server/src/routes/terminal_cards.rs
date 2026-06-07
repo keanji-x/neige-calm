@@ -102,12 +102,17 @@ pub(crate) async fn create_terminal_card(
     });
     let idempotency_key = parse_idempotency_key_header(&headers)?;
     let operation_key = new_id();
+    let runtime_id = new_id();
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
     }))?;
     let actor = actor.to_actor_id();
-    let payload = serde_json::to_value(TerminalCreateOperationPayload { actor, request })?;
+    let payload = serde_json::to_value(TerminalCreateOperationPayload {
+        actor,
+        runtime_id,
+        request,
+    })?;
     let op_id = s
         .operation_runtime
         .submit(

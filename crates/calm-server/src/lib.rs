@@ -101,6 +101,37 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
     reconcile_supervisor_on_boot(state).await;
 }
 
+pub async fn runtimes_recover_orphans_on_boot(state: &state::AppState) {
+    let orphans = match state.repo.runtimes_recover_orphans_on_boot().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                target: "runtime_orphans::recover_on_boot",
+                error = %e,
+                "runtime orphan scan failed; skipping",
+            );
+            return;
+        }
+    };
+    if !orphans.is_empty() {
+        tracing::warn!(
+            target: "runtime_orphans::recover_on_boot",
+            count = orphans.len(),
+            "runtime orphans detected on boot; no automatic action - see followup",
+        );
+        for runtime in &orphans {
+            tracing::warn!(
+                target: "runtime_orphans::recover_on_boot",
+                runtime_id = %runtime.id,
+                card_id = %runtime.card_id,
+                kind = ?runtime.kind,
+                status = ?runtime.status,
+                "orphan runtime",
+            );
+        }
+    }
+}
+
 pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error::Result<()> {
     let plan = state.operation_runtime.recover_on_boot().await?;
     for item in &plan.items {
@@ -1142,18 +1173,38 @@ pub mod ws;
 #[cfg(test)]
 mod boot_order_tests {
     #[test]
-    fn main_boot_order_keeps_operation_recovery_after_supervisor_reconcile() {
+    fn main_boot_order_supervisor_runtimes_operations_takeover() {
         let main_rs = include_str!("main.rs");
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
             .expect("main boot calls reconcile_supervisor_on_boot");
+        let runtimes = main_rs
+            .find("runtimes_recover_orphans_on_boot(&state).await")
+            .expect("main boot calls runtimes_recover_orphans_on_boot");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
         let takeover = main_rs
             .find("takeover_shared_spec_cards_on_boot(&state).await")
             .expect("main boot calls takeover_shared_spec_cards_on_boot");
-        assert!(reconcile < recover);
+        assert!(reconcile < runtimes);
+        assert!(runtimes < recover);
         assert!(recover < takeover);
+    }
+
+    #[test]
+    fn boot_order_calls_runtime_orphan_recovery_between_supervisor_and_operations() {
+        let main_rs = include_str!("main.rs");
+        let reconcile = main_rs
+            .find("reconcile_supervisor_on_boot(&state).await")
+            .expect("main boot calls reconcile_supervisor_on_boot");
+        let runtimes = main_rs
+            .find("runtimes_recover_orphans_on_boot(&state).await")
+            .expect("main boot calls runtimes_recover_orphans_on_boot");
+        let recover = main_rs
+            .find("recover_operations_on_boot(&state).await")
+            .expect("main boot calls recover_operations_on_boot");
+        assert!(reconcile < runtimes);
+        assert!(runtimes < recover);
     }
 }

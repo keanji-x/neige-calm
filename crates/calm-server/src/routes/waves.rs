@@ -511,6 +511,7 @@ pub(crate) async fn create_wave(
                 let (spec_card, _term, mcp_token) = card_with_codex_create_tx(
                     tx,
                     spec_card_id_for_tx.clone(),
+                    &new_id(),
                     wave_id.clone(),
                     None,               // sort: append to end
                     cwd_for_tx,         // codex's cwd

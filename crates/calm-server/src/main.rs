@@ -67,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
     // supervisor PTY registry. No daemon binary respawn happens here.
     calm_server::reconcile_supervisor_on_boot(&state).await;
 
+    calm_server::runtimes_recover_orphans_on_boot(&state).await;
+
     calm_server::recover_operations_on_boot(&state).await?;
 
     // #313/#410 - boot-time **takeover** of in-flight shared spec waves.

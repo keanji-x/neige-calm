@@ -94,6 +94,7 @@ pub(crate) async fn create_claude_card(
     if let Some(map) = hash_env.as_object_mut() {
         map.remove("NEIGE_CARD_ID");
     }
+    let runtime_id = new_id();
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
@@ -102,6 +103,7 @@ pub(crate) async fn create_claude_card(
     let actor = actor.to_actor_id();
     let payload = serde_json::to_value(ClaudeCreateOperationPayload {
         actor,
+        runtime_id,
         request: prepared,
     })?;
     let op_id = s

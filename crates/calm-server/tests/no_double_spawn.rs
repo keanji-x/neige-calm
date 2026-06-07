@@ -1118,13 +1118,16 @@ async fn terminal_create_same_idempotency_key_different_normalized_env_conflicts
 async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
     let boot = boot_with_counted_spawn().await;
     let card_id = new_id();
+    let runtime_id = new_id();
     let wave_id = boot.wave_id.clone();
     let cache = boot.state.card_role_cache.clone();
+    let runtime_id_for_tx = runtime_id.clone();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_terminal_create_tx(
                 tx,
                 card_id,
+                &runtime_id_for_tx,
                 wave_id.into(),
                 None,
                 "/bin/sh".into(),
@@ -1141,12 +1144,13 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
     .await
     .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "terminal_id": term.id,
         "program": "/bin/sh",
         "cwd": "/tmp",
@@ -1168,14 +1172,17 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&op_id)
     .bind("recovery-op")
     .bind("recovery-key")
     .bind("recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&terminal_payload(&boot.wave_id)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
@@ -1224,6 +1231,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
 async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
+    let runtime_id = new_id();
     let wave_id = boot.wave_id.clone();
     let cache = boot.state.card_role_cache.clone();
     let env = json!({
@@ -1232,11 +1240,13 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
         "NEIGE_CALM_BASE_URL": boot.state.codex.ingest_url,
     });
     let env_for_output = env.clone();
+    let runtime_id_for_tx = runtime_id.clone();
     let (card, term, _token) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_codex_create_tx(
                 tx,
                 card_id,
+                &runtime_id_for_tx,
                 wave_id.into(),
                 None,
                 "/workspace".into(),
@@ -1255,12 +1265,13 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     .await
     .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": term.id,
         "cwd": "/workspace",
@@ -1275,14 +1286,17 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&op_id)
     .bind("codex-recovery-op")
     .bind("codex-recovery-key")
     .bind("codex-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&codex_payload(&boot.wave_id, None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
@@ -1322,6 +1336,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
 async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_writes_settings() {
     let boot = boot_claude_with_counted_spawn().await;
     let card_id = new_id();
+    let runtime_id = new_id();
     let wave_id = boot.wave_id.clone();
     let cache = boot.state.card_role_cache.clone();
     let claude_session_id = uuid::Uuid::new_v4().to_string();
@@ -1346,11 +1361,13 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
     let settings_path_for_tx = settings_path.clone();
     let claude_session_id_for_tx = claude_session_id.clone();
     let command_line_for_tx = command_line.clone();
+    let runtime_id_for_tx = runtime_id.clone();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_claude_create_tx(
                 tx,
                 card_id,
+                &runtime_id_for_tx,
                 wave_id.into(),
                 None,
                 command_line_for_tx,
@@ -1376,12 +1393,13 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
         "seeded TxCommitted row should not pre-create settings.json"
     );
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": term.id,
         "settings_path": settings_path,
@@ -1398,14 +1416,17 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'claude-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'claude-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&op_id)
     .bind("claude-recovery-op")
     .bind("claude-recovery-key")
     .bind("claude-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&claude_payload(&boot, &boot.wave_id, None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
@@ -1461,15 +1482,16 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
 async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
-    let (card, terminal_id, env_for_output) =
+    let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
@@ -1484,14 +1506,17 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&op_id)
     .bind("codex-prompt-tx-committed-recovery-op")
     .bind("codex-prompt-tx-committed-recovery-key")
     .bind("codex-prompt-tx-committed-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
@@ -1539,7 +1564,7 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
 async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_mapping() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
-    let (card, terminal_id, env_for_output) =
+    let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
     boot.repo
         .card_codex_thread_upsert(
@@ -1551,12 +1576,13 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
         .await
         .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
@@ -1572,15 +1598,18 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
                created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8,
+           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
     )
     .bind(&op_id)
     .bind("codex-app-interact-recovery-op")
     .bind("codex-app-interact-recovery-key")
     .bind("codex-app-interact-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
@@ -1642,7 +1671,7 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
 async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_without_replay() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
-    let (card, terminal_id, env_for_output) =
+    let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
     boot.repo
         .card_codex_thread_upsert(card.id.as_str(), "t1", CardRole::Plain, Some(&boot.wave_id))
@@ -1675,12 +1704,13 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
     .await
     .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
@@ -1698,15 +1728,18 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
                created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8,
+           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
     )
     .bind(&op_id)
     .bind("codex-turn-started-marker-recovery-op")
     .bind("codex-turn-started-marker-recovery-key")
     .bind("codex-turn-started-marker-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
@@ -1764,7 +1797,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
 async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
-    let (card, terminal_id, env_for_output) =
+    let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
     boot.repo
         .card_codex_thread_upsert(card.id.as_str(), "t1", CardRole::Plain, Some(&boot.wave_id))
@@ -1797,12 +1830,13 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
     .await
     .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
@@ -1819,15 +1853,18 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
                created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8,
+           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
     )
     .bind(&op_id)
     .bind("codex-turn-start-replay-recovery-op")
     .bind("codex-turn-start-replay-recovery-key")
     .bind("codex-turn-start-replay-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
@@ -1892,7 +1929,7 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
 async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecycle() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
-    let (card, terminal_id, env_for_output) =
+    let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
     boot.repo
         .card_codex_thread_upsert(card.id.as_str(), "t1", CardRole::Plain, Some(&boot.wave_id))
@@ -1925,12 +1962,13 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
     .await
     .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
@@ -1948,15 +1986,18 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
                created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8,
+           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
     )
     .bind(&op_id)
     .bind("codex-turn-started-marker-timeout-recovery-op")
     .bind("codex-turn-started-marker-timeout-recovery-key")
     .bind("codex-turn-started-marker-timeout-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&codex_payload(&boot.wave_id, Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind(
@@ -2005,7 +2046,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
 async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
     let boot = boot_codex_with_counted_spawn().await;
     let card_id = new_id();
-    let (card, terminal_id, env_for_output) =
+    let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, None).await;
     let mut pending_payload = card.payload.clone();
     pending_payload["codex_thread_status"] = json!("pending_thread_start");
@@ -2023,12 +2064,13 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
         .await
         .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "wave_id": boot.wave_id.clone(),
         "terminal_id": terminal_id,
         "cwd": "/workspace",
@@ -2044,14 +2086,17 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'spawn_started', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'spawn_started', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&op_id)
     .bind("codex-empty-spawn-started-recovery-op")
     .bind("codex-empty-spawn-started-recovery-key")
     .bind("codex-empty-spawn-started-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&codex_payload(&boot.wave_id, None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
@@ -2101,13 +2146,16 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
 async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensation() {
     let mut boot = boot_with_counted_spawn().await;
     let card_id = new_id();
+    let runtime_id = new_id();
     let wave_id = boot.wave_id.clone();
     let cache = boot.state.card_role_cache.clone();
+    let runtime_id_for_tx = runtime_id.clone();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_terminal_create_tx(
                 tx,
                 card_id,
+                &runtime_id_for_tx,
                 wave_id.into(),
                 None,
                 "/bin/sh".into(),
@@ -2124,12 +2172,13 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
     .await
     .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "terminal_id": term.id,
         "program": "/bin/sh",
         "cwd": "/tmp",
@@ -2207,14 +2256,17 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&op_id)
     .bind("recovery-fail-op")
     .bind("recovery-fail-key")
     .bind("recovery-fail-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&terminal_payload(&boot.wave_id)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
@@ -2290,13 +2342,16 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     .unwrap();
 
     let card_id = new_id();
+    let runtime_id = new_id();
     let wave_id = boot.wave_id.clone();
     let cache = boot.state.card_role_cache.clone();
+    let runtime_id_for_tx = runtime_id.clone();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_terminal_create_tx(
                 tx,
                 card_id,
+                &runtime_id_for_tx,
                 wave_id.into(),
                 None,
                 "/bin/sh".into(),
@@ -2313,12 +2368,13 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     .await
     .unwrap();
     let mut output = TxOutput::new(
-        "card",
-        Some(card.id.to_string()),
+        "runtime",
+        Some(runtime_id.clone()),
         serde_json::to_value(&card).unwrap(),
     );
     output.data = json!({
         "card_id": card.id,
+        "runtime_id": runtime_id,
         "terminal_id": term.id,
         "program": "/bin/sh",
         "cwd": "/tmp",
@@ -2330,14 +2386,17 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+           VALUES (?1, ?2, 'terminal-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&valid_op_id)
     .bind("valid-recovery-op")
     .bind("valid-recovery-key")
     .bind("valid-recovery-hash")
-    .bind(&boot.wave_id)
-    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(output.target_id.as_deref())
+    .bind(
+        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
+            .unwrap(),
+    )
     .bind(serde_json::to_string(&terminal_payload(&boot.wave_id)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
@@ -2433,6 +2492,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
 fn terminal_payload(wave_id: &str) -> Value {
     serde_json::to_value(TerminalCreateOperationPayload {
         actor: ActorId::User,
+        runtime_id: new_id(),
         request: TerminalCreateRequestPayload {
             wave_id: wave_id.to_string(),
             sort: Some(1.0),
@@ -2448,6 +2508,7 @@ fn terminal_payload(wave_id: &str) -> Value {
 fn codex_payload(wave_id: &str, prompt: Option<&str>) -> Value {
     serde_json::to_value(CodexCreateOperationPayload {
         actor: ActorId::User,
+        runtime_id: new_id(),
         request: NormalizedCodexCreateRequest {
             wave_id: wave_id.to_string(),
             sort: Some(1.0),
@@ -2482,6 +2543,7 @@ fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
     }
     serde_json::to_value(ClaudeCreateOperationPayload {
         actor: ActorId::User,
+        runtime_id: new_id(),
         request: PreparedClaudeCreateRequest {
             wave_id: wave_id.to_string(),
             sort: Some(1.0),
@@ -2556,8 +2618,9 @@ async fn seed_codex_card_for_operation(
     boot: &Boot,
     card_id: String,
     prompt: Option<&str>,
-) -> (Card, String, Value) {
+) -> (Card, String, Value, String) {
     let wave_id = boot.wave_id.clone();
+    let runtime_id = new_id();
     let cache = boot.state.card_role_cache.clone();
     let env = json!({
         "CODEX_HOME": boot.state.codex.codex_home_dir().to_string_lossy().to_string(),
@@ -2566,11 +2629,13 @@ async fn seed_codex_card_for_operation(
     });
     let env_for_output = env.clone();
     let prompt_for_tx = prompt.map(ToOwned::to_owned);
+    let runtime_id_for_tx = runtime_id.clone();
     let (card, term, _token) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_codex_create_tx(
                 tx,
                 card_id,
+                &runtime_id_for_tx,
                 wave_id.into(),
                 None,
                 "/workspace".into(),
@@ -2588,7 +2653,7 @@ async fn seed_codex_card_for_operation(
     })
     .await
     .unwrap();
-    (card, term.id.to_string(), env_for_output)
+    (card, term.id.to_string(), env_for_output, runtime_id)
 }
 
 fn terminal_route_body() -> Value {

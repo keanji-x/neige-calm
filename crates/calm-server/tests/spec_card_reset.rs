@@ -286,6 +286,7 @@ async fn seed_spec_card(
     let (card, terminal, _token) = card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
+        &new_id(),
         WaveId::from(boot.wave_id.clone()),
         None,
         "/tmp/spec-card-reset".into(),

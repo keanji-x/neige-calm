@@ -94,6 +94,7 @@ async fn runtime_start_tx_terminal_persists_active_row() {
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -133,6 +134,7 @@ async fn runtime_complete_for_terminal_exited_path() {
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -181,6 +183,7 @@ async fn runtime_complete_for_terminal_failed_path() {
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -235,6 +238,7 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -283,6 +287,7 @@ async fn runtime_complete_for_card_noop_when_no_active() {
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -331,6 +336,7 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -384,6 +390,7 @@ async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
     let (card, term, _token) = card_with_codex_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "/workspace".into(),
@@ -675,6 +682,7 @@ async fn runtime_start_tx_claude_records_session_when_present() {
     let (card, term) = card_with_claude_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "claude --session-id".into(),

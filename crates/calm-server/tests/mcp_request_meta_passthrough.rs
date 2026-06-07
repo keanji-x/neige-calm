@@ -85,6 +85,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, seed_legacy_car
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
+        &calm_server::model::new_id(),
         wave.id.clone(),
         None,
         "/workspace".into(),

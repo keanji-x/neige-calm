@@ -1067,6 +1067,7 @@ pub async fn terminal_create_tx(
 pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
+    runtime_id: &str,
     wave_id: WaveId,
     sort: Option<f64>,
     program: String,
@@ -1155,7 +1156,7 @@ pub async fn card_with_terminal_create_tx(
     .await?;
 
     let runtime_init = RuntimeInit {
-        id: new_id(),
+        id: runtime_id.to_string(),
         card_id: card.id.to_string(),
         kind: RuntimeKind::Terminal,
         agent_provider: None,
@@ -1258,6 +1259,7 @@ pub async fn card_with_terminal_rollback_tx(
 pub async fn card_with_codex_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
+    runtime_id: &str,
     wave_id: WaveId,
     sort: Option<f64>,
     cwd: String,
@@ -1386,7 +1388,7 @@ pub async fn card_with_codex_create_tx(
     };
 
     let runtime_init = RuntimeInit {
-        id: new_id(),
+        id: runtime_id.to_string(),
         card_id: card.id.to_string(),
         kind: RuntimeKind::CodexCard,
         agent_provider: Some(AgentProvider::Codex),
@@ -1413,6 +1415,7 @@ pub async fn card_with_codex_create_tx(
 pub async fn card_with_claude_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
+    runtime_id: &str,
     wave_id: WaveId,
     sort: Option<f64>,
     program: String,
@@ -1492,7 +1495,7 @@ pub async fn card_with_claude_create_tx(
     .await?;
 
     let runtime_init = RuntimeInit {
-        id: new_id(),
+        id: runtime_id.to_string(),
         card_id: card.id.to_string(),
         kind: RuntimeKind::ClaudeCard,
         agent_provider: Some(AgentProvider::Claude),
@@ -3221,8 +3224,24 @@ impl RuntimeRepo for SqlxRepo {
     }
 
     async fn runtimes_recover_orphans_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
-        // PR1: scaffolding; real recovery wired in a later PR.
-        Ok(vec![])
+        let now = now_ms();
+        let stale_before = now - 60_000;
+        let rows = sqlx::query(
+            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                      thread_id, session_id, active_turn_id, handle_state_json,
+                      lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                      completed_at_ms
+               FROM runtimes
+               WHERE status IN ('starting', 'running', 'idle', 'turn_pending')
+                 AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
+                 AND updated_at_ms < ?2
+               ORDER BY updated_at_ms ASC, created_at_ms ASC, id ASC"#,
+        )
+        .bind(now)
+        .bind(stale_before)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(card_runtime_from_row).collect()
     }
 }
 

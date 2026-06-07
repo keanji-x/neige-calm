@@ -103,6 +103,7 @@ impl TerminalAdapter {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalCreateOperationPayload {
     pub actor: ActorId,
+    pub runtime_id: String,
     #[serde(flatten)]
     pub request: TerminalCreateRequestPayload,
 }
@@ -167,6 +168,7 @@ impl ProviderAdapter for TerminalAdapter {
         let cwd = payload.request.cwd.clone();
         let env = payload.request.env.clone();
         let card_id = new_id();
+        let runtime_id = payload.runtime_id.clone();
         let wave_id = payload.request.wave_id.clone();
         let scope = card_scope(
             self.repo.as_ref(),
@@ -177,6 +179,7 @@ impl ProviderAdapter for TerminalAdapter {
         let (card, term) = card_with_terminal_create_tx(
             tx,
             card_id,
+            &runtime_id,
             WaveId::from(wave_id),
             payload.request.sort,
             program.clone(),
@@ -203,12 +206,13 @@ impl ProviderAdapter for TerminalAdapter {
 
         let projected_card = project_terminal_id_for_response(&card, &term.id);
         let mut output = TxOutput::new(
-            "card",
-            Some(card.id.to_string()),
+            "runtime",
+            Some(runtime_id.clone()),
             serde_json::to_value(&projected_card)?,
         );
         output.data = json!({
             "card_id": card.id,
+            "runtime_id": runtime_id,
             "terminal_id": term.id,
             "program": program,
             "cwd": cwd,
@@ -396,17 +400,18 @@ fn output_wave_id(output: &TxOutput) -> Result<&str> {
 }
 
 fn output_card_id(output: &TxOutput) -> Result<String> {
-    output
-        .target_id
-        .clone()
-        .or_else(|| {
-            output
-                .data
-                .get("card_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| CalmError::Internal("terminal tx_output missing card_id".into()))
+    if let Some(card_id) = output.data.get("card_id").and_then(Value::as_str) {
+        return Ok(card_id.to_string());
+    }
+    if output.target_type == "card" {
+        return output
+            .target_id
+            .clone()
+            .ok_or_else(|| CalmError::Internal("terminal tx_output missing card_id".into()));
+    }
+    Err(CalmError::Internal(
+        "terminal tx_output missing card_id".into(),
+    ))
 }
 
 fn output_string(output: &TxOutput, key: &str) -> Result<String> {

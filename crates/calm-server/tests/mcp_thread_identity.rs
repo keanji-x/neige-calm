@@ -84,6 +84,7 @@ async fn boot_with_registry_and_daemon_hash(
     let (_spec_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
         spec_card_id.clone(),
+        &calm_server::model::new_id(),
         wave.id.clone(),
         None,
         "/workspace".into(),

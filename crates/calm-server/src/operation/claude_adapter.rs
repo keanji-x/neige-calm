@@ -90,6 +90,7 @@ impl ClaudeAdapter {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClaudeCreateOperationPayload {
     pub actor: ActorId,
+    pub runtime_id: String,
     pub request: PreparedClaudeCreateRequest,
 }
 
@@ -290,6 +291,7 @@ impl ProviderAdapter for ClaudeAdapter {
         _op: &Operation,
     ) -> Result<TxOutput> {
         let payload: ClaudeCreateOperationPayload = serde_json::from_value(input.clone())?;
+        let runtime_id = payload.runtime_id.clone();
         let request = payload.request;
         let card_id = request.card_id.clone();
         let wave_id = request.wave_id.clone();
@@ -302,6 +304,7 @@ impl ProviderAdapter for ClaudeAdapter {
         let (card, term) = card_with_claude_create_tx(
             tx,
             card_id,
+            &runtime_id,
             WaveId::from(wave_id),
             request.sort,
             request.command_line.clone(),
@@ -337,12 +340,13 @@ impl ProviderAdapter for ClaudeAdapter {
             event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
 
         let mut output = TxOutput::new(
-            "card",
-            Some(card.id.to_string()),
+            "runtime",
+            Some(runtime_id.clone()),
             serde_json::to_value(&projected_card)?,
         );
         output.data = json!({
             "card_id": card.id,
+            "runtime_id": runtime_id,
             "wave_id": card.wave_id,
             "terminal_id": term.id,
             "settings_path": request.settings_path,

@@ -1806,6 +1806,13 @@ fn optional_json_text(value: Option<&Value>) -> Result<Option<String>> {
 }
 
 fn target_from_payload(payload: &Value) -> (String, Option<String>, Value) {
+    if let Some(runtime_id) = payload.get("runtime_id").and_then(Value::as_str) {
+        return (
+            "runtime".to_string(),
+            Some(runtime_id.to_string()),
+            json!({ "type": "runtime", "id": runtime_id }),
+        );
+    }
     let wave_id = payload.get("wave_id").and_then(Value::as_str).or_else(|| {
         payload
             .get("request")
