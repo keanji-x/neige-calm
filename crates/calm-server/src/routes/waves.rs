@@ -69,7 +69,7 @@ use crate::db::sqlite::{
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
-use crate::ids::ActorId;
+use crate::ids::{ActorId, CardId};
 use crate::model::{
     CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
     NewWave, Wave, WaveDetail, WavePatch, new_id, now_ms,
@@ -89,6 +89,7 @@ use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::{
     reap_spec_push_from_registry, reap_terminal_artifacts_with_renderer,
 };
+use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::wave_lifecycle::validate_transition;
 use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
 use axum::{
@@ -890,6 +891,7 @@ async fn create_wave_with_spec_harness(
     let actor_for_hash = actor.as_str().to_string();
     let actor_id = actor.to_actor_id();
     let write_for_tx = s.write.clone();
+    let spec_card_id_for_tx = spec_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
     let cove_id_for_attach = body_cove_id;
     let normalized_cwd_for_tx = normalized_cwd;
@@ -908,6 +910,21 @@ async fn create_wave_with_spec_harness(
                 let wave = wave_create_tx(tx, p, write_for_tx.cove_cache()).await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
+                let goal = wave.title.trim().to_string();
+                let spec_card = card_create_with_id_tx(
+                    tx,
+                    spec_card_id_for_tx.clone(),
+                    NewCard {
+                        wave_id: wave_id.clone(),
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: spec_harness_card_payload((!goal.is_empty()).then_some(goal)),
+                    },
+                    CardRole::Spec,
+                    false,
+                    write_for_tx.role_cache(),
+                )
+                .await?;
 
                 let report_payload =
                     serde_json::to_value(WaveReportPayload::initial()).map_err(|e| {
@@ -934,14 +951,35 @@ async fn create_wave_with_spec_harness(
                     wave: wave_id.clone(),
                     cove: cove_id.clone(),
                 };
+                let spec_card_scope = EventScope::Card {
+                    card: spec_card.id.clone(),
+                    wave: wave_id.clone(),
+                    cove: cove_id.clone(),
+                };
                 let report_card_scope = EventScope::Card {
                     card: report_card.id.clone(),
-                    wave: wave_id,
-                    cove: cove_id,
+                    wave: wave_id.clone(),
+                    cove: cove_id.clone(),
                 };
+                let layout_overlay = overlay_upsert_tx(
+                    tx,
+                    NewOverlay {
+                        plugin_id: "kernel".into(),
+                        entity_kind: "view".into(),
+                        entity_id: wave_id.as_str().to_string(),
+                        kind: "layout".into(),
+                        payload: spec_harness_layout_payload(
+                            spec_card.id.as_str(),
+                            report_card.id.as_str(),
+                        ),
+                    },
+                )
+                .await?;
                 let events = vec![
-                    (wave_scope, Event::WaveUpdated(wave.clone())),
+                    (wave_scope.clone(), Event::WaveUpdated(wave.clone())),
+                    (spec_card_scope, Event::CardAdded(spec_card)),
                     (report_card_scope, Event::CardAdded(report_card)),
+                    (wave_scope, Event::OverlaySet(layout_overlay)),
                 ];
                 Ok(((wave,), events))
             })
@@ -953,7 +991,7 @@ async fn create_wave_with_spec_harness(
     let request = SpecHarnessStartOperationPayload {
         actor: actor_id,
         wave_id: wave.id.to_string(),
-        card_id: Some(spec_card_id.clone()),
+        spec_card_id: CardId::from(spec_card_id.clone()),
         report_card_id: Some(report_card_id),
         sort: None,
         cwd: wave.cwd.clone(),
@@ -1020,6 +1058,38 @@ async fn create_wave_with_spec_harness(
     }
 
     Ok((StatusCode::CREATED, Json(wave)).into_response())
+}
+
+fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
+    let mut card_payload = serde_json::Map::new();
+    card_payload.insert(
+        "schemaVersion".into(),
+        serde_json::Value::from(CODEX_PAYLOAD_SCHEMA_VERSION),
+    );
+    card_payload.insert(
+        "codex_source".into(),
+        serde_json::Value::String("shared".into()),
+    );
+    card_payload.insert("spec_harness".into(), serde_json::Value::Bool(true));
+    card_payload.insert("push_watermark".into(), serde_json::Value::from(0));
+    if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
+    }
+    serde_json::Value::Object(card_payload)
+}
+
+fn spec_harness_layout_payload(spec_card_id: &str, report_card_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": 1,
+        "positions": {
+            spec_card_id: {
+                "x": 0, "y": 0, "w": 6, "h": 12
+            },
+            report_card_id: {
+                "x": 6, "y": 0, "w": 6, "h": 12
+            }
+        }
+    })
 }
 
 fn spec_harness_enabled() -> bool {

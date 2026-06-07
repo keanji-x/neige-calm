@@ -44,7 +44,7 @@ struct Inner {
     thread_id: RwLock<Option<String>>,
     repo: Arc<dyn Repo>,
     daemon: Arc<SharedCodexAppServer>,
-    observations: mpsc::Sender<Observation>,
+    observations: mpsc::Sender<HarnessObservationDelivery>,
     state: Mutex<HarnessState>,
     pending_queue: Mutex<VecDeque<Observation>>,
     push_watermark: Mutex<i64>,
@@ -56,6 +56,13 @@ struct Inner {
     shutting_down: Arc<AtomicBool>,
     abort_handle: StdMutex<Option<AbortHandle>>,
     config: HarnessConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct HarnessObservationDelivery {
+    pub observation: Observation,
+    pub durable_queue_id: Option<i64>,
+    pub envelope_id: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -92,7 +99,7 @@ impl SpecHarness {
     pub fn run_unstarted_for_test(
         params: SpecHarnessParams,
         observation_buffer: usize,
-    ) -> (Self, mpsc::Receiver<Observation>) {
+    ) -> (Self, mpsc::Receiver<HarnessObservationDelivery>) {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
@@ -101,14 +108,38 @@ impl SpecHarness {
     }
 
     pub fn observe(&self, obs: Observation) -> Result<()> {
-        self.inner.observations.try_send(obs).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => {
-                CalmError::Internal("spec harness observation queue full".into())
-            }
-            mpsc::error::TrySendError::Closed(_) => {
-                CalmError::Internal("spec harness observation queue closed".into())
-            }
+        self.observe_delivery(HarnessObservationDelivery {
+            observation: obs,
+            durable_queue_id: None,
+            envelope_id: None,
         })
+    }
+
+    pub fn observe_durable(
+        &self,
+        obs: Observation,
+        durable_queue_id: i64,
+        envelope_id: i64,
+    ) -> Result<()> {
+        self.observe_delivery(HarnessObservationDelivery {
+            observation: obs,
+            durable_queue_id: Some(durable_queue_id),
+            envelope_id: Some(envelope_id),
+        })
+    }
+
+    fn observe_delivery(&self, delivery: HarnessObservationDelivery) -> Result<()> {
+        self.inner
+            .observations
+            .try_send(delivery)
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    CalmError::Internal("spec harness observation queue full".into())
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    CalmError::Internal("spec harness observation queue closed".into())
+                }
+            })
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
@@ -163,7 +194,7 @@ impl SpecHarness {
 
 fn inner_from_params(
     params: SpecHarnessParams,
-    observations: mpsc::Sender<Observation>,
+    observations: mpsc::Sender<HarnessObservationDelivery>,
     shutdown: broadcast::Sender<()>,
 ) -> Arc<Inner> {
     let debounce = debounce_from_initial_queue(&params.snapshot.pending_queue);
@@ -204,18 +235,32 @@ fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
 
 async fn run_loop(
     inner: Arc<Inner>,
-    mut observations: mpsc::Receiver<Observation>,
+    mut observations: mpsc::Receiver<HarnessObservationDelivery>,
     mut shutdown: broadcast::Receiver<()>,
     mut notifications: broadcast::Receiver<Notification>,
 ) {
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     loop {
         tokio::select! {
-            obs = observations.recv() => {
-                let Some(obs) = obs else { break };
-                on_observation(&inner, obs).await;
-                if let Err(e) = persist_snapshot(&inner).await {
-                    tracing::warn!(error = %e, "spec harness snapshot persist failed after observation");
+            delivery = observations.recv() => {
+                let Some(delivery) = delivery else { break };
+                let durable_queue_id = delivery.durable_queue_id;
+                on_observation(&inner, delivery.observation, delivery.envelope_id).await;
+                match persist_snapshot(&inner).await {
+                    Ok(()) => {
+                        if let Some(id) = durable_queue_id
+                            && let Err(e) = inner.repo.spec_card_dequeue_observations(&[id]).await
+                        {
+                            tracing::warn!(
+                                spec_push_queue_id = id,
+                                error = %e,
+                                "spec harness durable inbox dequeue failed after snapshot persist"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "spec harness snapshot persist failed after observation");
+                    }
                 }
             }
             notif = notifications.recv() => {
@@ -246,9 +291,13 @@ async fn run_loop(
     }
 }
 
-async fn on_observation(inner: &Arc<Inner>, obs: Observation) {
+async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Option<i64>) {
     if let Some(hash) = obs.report_sha256() {
         *inner.last_report_body_sha256.lock().await = Some(hash.to_string());
+    }
+    if let Some(envelope_id) = envelope_id {
+        let mut watermark = inner.push_watermark.lock().await;
+        *watermark = (*watermark).max(envelope_id);
     }
     let hard_fire = obs.is_hard_fire();
     inner.pending_queue.lock().await.push_back(obs);

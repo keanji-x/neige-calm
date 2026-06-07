@@ -238,7 +238,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         &wave_cove_cache,
         Event::WaveReportEdited {
             wave_id: wave.id.clone(),
-            card_id: card.id,
+            card_id: card.id.clone(),
             author: EditAuthor::User,
             edit_id: "edit-harness-route".into(),
             summary_before: String::new(),
@@ -267,11 +267,19 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    let queued = repo
+        .spec_card_queued_observations(card.id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        queued.is_empty(),
+        "durable harness inbox row should be deleted after snapshot persist: {queued:?}"
+    );
     harness.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn dispatcher_harness_full_queue_does_not_advance_cursor_until_retry() {
+async fn dispatcher_harness_full_queue_persists_inbox_and_advances_cursor() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let cove = repo
         .cove_create(NewCove {
@@ -414,11 +422,17 @@ async fn dispatcher_harness_full_queue_does_not_advance_cursor_until_retry() {
         .await;
     assert_eq!(
         dispatcher.push_cursor_for_test(&card.id),
-        0,
-        "full harness queue must not advance the push cursor"
+        envelope_id,
+        "durable harness inbox acceptance advances the push cursor even if live wake fails"
     );
+    let queued = repo
+        .spec_card_queued_observations(card.id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].1, envelope_id);
     assert!(matches!(
-        observations.recv().await.unwrap(),
+        observations.recv().await.unwrap().observation,
         Observation::WaveGoal { .. }
     ));
 
@@ -426,9 +440,10 @@ async fn dispatcher_harness_full_queue_does_not_advance_cursor_until_retry() {
         .catch_up_push(wave.id.clone(), event, envelope_id)
         .await;
     assert_eq!(dispatcher.push_cursor_for_test(&card.id), envelope_id);
-    assert!(matches!(
-        observations.recv().await.unwrap(),
-        Observation::ReportEdited { body, .. } if body == "body after"
-    ));
+    let queued_after_retry = repo
+        .spec_card_queued_observations(card.id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(queued_after_retry, queued);
     harness.shutdown().await.unwrap();
 }

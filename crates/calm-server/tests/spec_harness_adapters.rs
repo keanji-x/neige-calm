@@ -4,10 +4,11 @@ use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::HarnessState;
-use calm_server::model::{NewCove, NewWave, new_id};
+use calm_server::ids::CardId;
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use calm_server::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
@@ -17,10 +18,13 @@ use calm_server::runtime_repo::RunStatus;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::wave_cove_cache::WaveCoveCache;
+use serde_json::json;
 
-async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>) {
+async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>, CardRoleCache) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = WaveCoveCache::new();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -32,14 +36,18 @@ async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
-        None,
-        None,
+        Some(card_role_cache.clone()),
+        Some(wave_cove_cache),
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    (state.with_shared_codex_appserver(shared), repo)
+    (
+        state.with_shared_codex_appserver(shared),
+        repo,
+        card_role_cache,
+    )
 }
 
 async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
@@ -63,6 +71,31 @@ async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
     .unwrap()
 }
 
+async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, wave: &Wave, card_id: &str) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.to_string(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "codex_source": "shared",
+                "spec_harness": true,
+                "push_watermark": 0
+            }),
+        },
+        CardRole::Spec,
+        false,
+        role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 fn key() -> OperationKey {
     OperationKey {
         operation_key: new_id(),
@@ -77,13 +110,14 @@ async fn wait_op(state: &AppState, op_id: &String) -> OperationOutcome {
 
 #[tokio::test]
 async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
-    let (state, repo) = state_with_fake_daemon().await;
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
     let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
         wave_id: wave.id.to_string(),
-        card_id: Some(card_id.clone()),
+        spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
         cwd: wave.cwd.clone(),
@@ -169,13 +203,14 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
 
 #[tokio::test]
 async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
-    let (state, repo) = state_with_fake_daemon().await;
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
     let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
     let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
         wave_id: wave.id.to_string(),
-        card_id: Some(card_id.clone()),
+        spec_card_id: CardId::from(card_id.clone()),
         report_card_id: None,
         sort: None,
         cwd: wave.cwd.clone(),
