@@ -113,6 +113,37 @@ function wrap(client: QueryClient) {
   };
 }
 
+function seedWaveDetailWithCard(client: QueryClient, waveId: string, cardId: string) {
+  client.setQueryData(['wave', waveId], {
+    wave: {
+      id: waveId,
+      cove_id: 'cove_1',
+      title: 'Wave',
+      sort: 0,
+      archived_at: null,
+      pinned_at: null,
+      lifecycle: 'draft',
+      cwd: '',
+      terminal_at: null,
+      created_at: 1,
+      updated_at: 2,
+    },
+    cards: [
+      {
+        id: cardId,
+        wave_id: waveId,
+        kind: 'terminal',
+        sort: 0,
+        payload: {},
+        deletable: true,
+        created_at: 1,
+        updated_at: 2,
+      },
+    ],
+    overlays: [],
+  });
+}
+
 beforeEach(() => {
   fakeStream.reset();
 });
@@ -350,6 +381,78 @@ describe('EventBridge', () => {
     });
     // The invalidate was synchronous — assert directly, no timer advance.
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_42'] });
+    cleanup();
+  });
+
+  it('runtime.started invalidates owning wave detail and card overlays', () => {
+    const client = makeClient();
+    seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    fakeStream.emit({
+      ev: 'runtime.started',
+      data: {
+        runtime_id: 'runtime_1',
+        card_id: 'card_runtime',
+        kind: 'terminal',
+        agent_provider: null,
+        status: 'starting',
+      },
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
+    cleanup();
+  });
+
+  it('runtime.status_changed invalidates owning wave detail and card overlays', () => {
+    const client = makeClient();
+    seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    fakeStream.emit({
+      ev: 'runtime.status_changed',
+      data: {
+        runtime_id: 'runtime_1',
+        card_id: 'card_runtime',
+        old_status: 'starting',
+        new_status: 'running',
+      },
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
+    cleanup();
+  });
+
+  it('runtime.superseded invalidates owning wave detail and card overlays', () => {
+    const client = makeClient();
+    seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    fakeStream.emit({
+      ev: 'runtime.superseded',
+      data: {
+        old_runtime_id: 'runtime_1',
+        new_runtime_id: 'runtime_2',
+        card_id: 'card_runtime',
+      },
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
     cleanup();
   });
 

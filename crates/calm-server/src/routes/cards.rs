@@ -17,7 +17,7 @@ use crate::db::sqlite::{
     terminal_delete_tx,
 };
 use crate::db::{RepoRead, RouteRepo};
-use crate::db::{write_in_tx_typed, write_with_event_typed};
+use crate::db::{write_in_tx_typed, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
@@ -838,10 +838,9 @@ async fn persist_shared_reset_runtime_fields(
     let thread_id_for_tx = thread_id.to_string();
     let wave_id_for_tx = wave.id.to_string();
     let remote_uri = cs.shared_codex_appserver.remote_uri();
-    let (_card, _id) = write_with_event_typed(
+    let (_card, _ids) = write_with_events_typed(
         s.repo.as_ref(),
         ActorId::Kernel,
-        scope,
         None,
         &s.events,
         &s.write,
@@ -875,6 +874,10 @@ async fn persist_shared_reset_runtime_fields(
                     lease_until_ms: None,
                     now_ms: now_ms(),
                 };
+                let new_runtime_id = runtime_init.id.clone();
+                let new_runtime_kind = runtime_init.kind.clone();
+                let new_agent_provider = runtime_init.agent_provider.clone();
+                let new_status = runtime_init.status.clone();
                 // Issue #524 closed the reset rollback gap: legacy card/thread
                 // mapping and runtime supersede stay atomic, while payload
                 // identity stamps remain read-time projections.
@@ -886,12 +889,26 @@ async fn persist_shared_reset_runtime_fields(
                     Some(wave_id_for_tx.as_str()),
                 )
                 .await?;
-                if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
-                {
-                    runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
-                } else {
-                    runtime_start_tx(tx, runtime_init).await?;
-                }
+                let runtime_event =
+                    if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
+                    {
+                        let old_runtime_id = existing.id.clone();
+                        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                        Event::RuntimeSuperseded {
+                            old_runtime_id,
+                            new_runtime_id,
+                            card_id: card_id_for_tx.clone(),
+                        }
+                    } else {
+                        runtime_start_tx(tx, runtime_init).await?;
+                        Event::RuntimeStarted {
+                            runtime_id: new_runtime_id,
+                            card_id: card_id_for_tx.clone(),
+                            kind: new_runtime_kind,
+                            agent_provider: new_agent_provider,
+                            status: new_status,
+                        }
+                    };
                 let card = card_update_tx(
                     tx,
                     &card_id_for_tx,
@@ -903,7 +920,13 @@ async fn persist_shared_reset_runtime_fields(
                     },
                 )
                 .await?;
-                Ok((card.clone(), Event::CardUpdated(card)))
+                Ok((
+                    card.clone(),
+                    vec![
+                        (scope.clone(), Event::CardUpdated(card)),
+                        (scope, runtime_event),
+                    ],
+                ))
             })
         },
     )

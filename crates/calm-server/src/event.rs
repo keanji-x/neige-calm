@@ -349,6 +349,28 @@ pub enum Event {
     #[serde(rename = "card.deleted")]
     CardDeleted { id: CardId, wave_id: WaveId },
 
+    #[serde(rename = "runtime.started")]
+    RuntimeStarted {
+        runtime_id: String,
+        card_id: String,
+        kind: crate::runtime_repo::RuntimeKind,
+        agent_provider: Option<crate::runtime_repo::AgentProvider>,
+        status: crate::runtime_repo::RunStatus,
+    },
+    #[serde(rename = "runtime.status_changed")]
+    RuntimeStatusChanged {
+        runtime_id: String,
+        card_id: String,
+        old_status: crate::runtime_repo::RunStatus,
+        new_status: crate::runtime_repo::RunStatus,
+    },
+    #[serde(rename = "runtime.superseded")]
+    RuntimeSuperseded {
+        old_runtime_id: String,
+        new_runtime_id: String,
+        card_id: String,
+    },
+
     /// Issue #247 PR2 — structured wave-report edit-log entry. Emitted
     /// alongside `Event::CardUpdated` from every
     /// `mcp_server::tools::wave_report::persist_report` call so PR4's UI
@@ -675,6 +697,14 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(id.to_string()),
             },
+            Event::RuntimeStarted { card_id, .. }
+            | Event::RuntimeStatusChanged { card_id, .. }
+            | Event::RuntimeSuperseded { card_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("card".into()),
+                entity_id: Some(card_id.to_string()),
+            },
             Event::WaveReportEdited { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -769,6 +799,9 @@ impl Event {
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
+            Event::RuntimeStarted { .. } => "runtime.started",
+            Event::RuntimeStatusChanged { .. } => "runtime.status_changed",
+            Event::RuntimeSuperseded { .. } => "runtime.superseded",
             Event::WaveReportEdited { .. } => "wave.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
@@ -859,6 +892,11 @@ pub fn topics(ev: &Event) -> Vec<String> {
             format!("wave:{}", wave_id),
             "*".into(),
         ],
+        Event::RuntimeStarted { card_id, .. }
+        | Event::RuntimeStatusChanged { card_id, .. }
+        | Event::RuntimeSuperseded { card_id, .. } => {
+            vec![format!("card:{}", card_id), "*".into()]
+        }
 
         // Issue #247 PR2 — wave-report edit log. Card-scoped on the
         // events row; topic mapping mirrors `Card*` so a subscriber
@@ -1420,6 +1458,30 @@ mod scope_tests {
             payload: serde_json::Value::Null,
         };
         assert_eq!(claude_hook.kind_tag(), "claude.hook");
+
+        let runtime_started = Event::RuntimeStarted {
+            runtime_id: "runtime-1".into(),
+            card_id: "card-1".into(),
+            kind: crate::runtime_repo::RuntimeKind::CodexCard,
+            agent_provider: Some(crate::runtime_repo::AgentProvider::Codex),
+            status: crate::runtime_repo::RunStatus::Starting,
+        };
+        assert_eq!(runtime_started.kind_tag(), "runtime.started");
+
+        let runtime_status_changed = Event::RuntimeStatusChanged {
+            runtime_id: "runtime-1".into(),
+            card_id: "card-1".into(),
+            old_status: crate::runtime_repo::RunStatus::Starting,
+            new_status: crate::runtime_repo::RunStatus::Running,
+        };
+        assert_eq!(runtime_status_changed.kind_tag(), "runtime.status_changed");
+
+        let runtime_superseded = Event::RuntimeSuperseded {
+            old_runtime_id: "runtime-1".into(),
+            new_runtime_id: "runtime-2".into(),
+            card_id: "card-1".into(),
+        };
+        assert_eq!(runtime_superseded.kind_tag(), "runtime.superseded");
     }
 
     #[test]
@@ -1465,6 +1527,108 @@ mod scope_tests {
         assert_eq!(metadata.plugin_id, None);
         assert_eq!(metadata.entity_kind.as_deref(), Some("wave"));
         assert_eq!(metadata.entity_id.as_deref(), Some("w-1"));
+    }
+
+    #[test]
+    fn runtime_started_serde_round_trip() {
+        let ev = Event::RuntimeStarted {
+            runtime_id: "runtime-1".into(),
+            card_id: "card-1".into(),
+            kind: crate::runtime_repo::RuntimeKind::CodexCard,
+            agent_provider: Some(crate::runtime_repo::AgentProvider::Codex),
+            status: crate::runtime_repo::RunStatus::Starting,
+        };
+
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "runtime.started");
+        assert_eq!(json["data"]["runtime_id"], "runtime-1");
+        assert_eq!(json["data"]["card_id"], "card-1");
+        assert_eq!(json["data"]["kind"], "codex");
+        assert_eq!(json["data"]["agent_provider"], "codex");
+        assert_eq!(json["data"]["status"], "starting");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        match back {
+            Event::RuntimeStarted {
+                runtime_id,
+                card_id,
+                kind,
+                agent_provider,
+                status,
+            } => {
+                assert_eq!(runtime_id, "runtime-1");
+                assert_eq!(card_id, "card-1");
+                assert_eq!(kind, crate::runtime_repo::RuntimeKind::CodexCard);
+                assert_eq!(
+                    agent_provider,
+                    Some(crate::runtime_repo::AgentProvider::Codex)
+                );
+                assert_eq!(status, crate::runtime_repo::RunStatus::Starting);
+            }
+            other => panic!("expected RuntimeStarted after round-trip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_status_changed_serde_round_trip() {
+        let ev = Event::RuntimeStatusChanged {
+            runtime_id: "runtime-1".into(),
+            card_id: "card-1".into(),
+            old_status: crate::runtime_repo::RunStatus::Starting,
+            new_status: crate::runtime_repo::RunStatus::Running,
+        };
+
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "runtime.status_changed");
+        assert_eq!(json["data"]["runtime_id"], "runtime-1");
+        assert_eq!(json["data"]["card_id"], "card-1");
+        assert_eq!(json["data"]["old_status"], "starting");
+        assert_eq!(json["data"]["new_status"], "running");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        match back {
+            Event::RuntimeStatusChanged {
+                runtime_id,
+                card_id,
+                old_status,
+                new_status,
+            } => {
+                assert_eq!(runtime_id, "runtime-1");
+                assert_eq!(card_id, "card-1");
+                assert_eq!(old_status, crate::runtime_repo::RunStatus::Starting);
+                assert_eq!(new_status, crate::runtime_repo::RunStatus::Running);
+            }
+            other => panic!("expected RuntimeStatusChanged after round-trip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_superseded_serde_round_trip() {
+        let ev = Event::RuntimeSuperseded {
+            old_runtime_id: "runtime-1".into(),
+            new_runtime_id: "runtime-2".into(),
+            card_id: "card-1".into(),
+        };
+
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "runtime.superseded");
+        assert_eq!(json["data"]["old_runtime_id"], "runtime-1");
+        assert_eq!(json["data"]["new_runtime_id"], "runtime-2");
+        assert_eq!(json["data"]["card_id"], "card-1");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        match back {
+            Event::RuntimeSuperseded {
+                old_runtime_id,
+                new_runtime_id,
+                card_id,
+            } => {
+                assert_eq!(old_runtime_id, "runtime-1");
+                assert_eq!(new_runtime_id, "runtime-2");
+                assert_eq!(card_id, "card-1");
+            }
+            other => panic!("expected RuntimeSuperseded after round-trip, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1779,6 +1943,24 @@ mod scope_tests {
                 id: CardId::from("card-deleted"),
                 wave_id: WaveId::from("wave-1"),
             },
+            Event::RuntimeStarted {
+                runtime_id: "runtime-started".into(),
+                card_id: "card-runtime".into(),
+                kind: crate::runtime_repo::RuntimeKind::CodexCard,
+                agent_provider: Some(crate::runtime_repo::AgentProvider::Codex),
+                status: crate::runtime_repo::RunStatus::Starting,
+            },
+            Event::RuntimeStatusChanged {
+                runtime_id: "runtime-status".into(),
+                card_id: "card-runtime".into(),
+                old_status: crate::runtime_repo::RunStatus::Starting,
+                new_status: crate::runtime_repo::RunStatus::Running,
+            },
+            Event::RuntimeSuperseded {
+                old_runtime_id: "runtime-old".into(),
+                new_runtime_id: "runtime-new".into(),
+                card_id: "card-runtime".into(),
+            },
             wave_report_edited_sample(),
             Event::OverlaySet(overlay_sample("plugin-1", "card", "card-1", "status")),
             Event::OverlayDeleted {
@@ -2008,6 +2190,33 @@ mod scope_tests {
             (
                 "task.failed",
                 serde_json::json!({ "idempotency_key": "k", "reason": "r" }),
+            ),
+            (
+                "runtime.started",
+                serde_json::json!({
+                    "runtime_id": "runtime-1",
+                    "card_id": "card-1",
+                    "kind": "codex",
+                    "agent_provider": "codex",
+                    "status": "starting",
+                }),
+            ),
+            (
+                "runtime.status_changed",
+                serde_json::json!({
+                    "runtime_id": "runtime-1",
+                    "card_id": "card-1",
+                    "old_status": "starting",
+                    "new_status": "running",
+                }),
+            ),
+            (
+                "runtime.superseded",
+                serde_json::json!({
+                    "old_runtime_id": "runtime-1",
+                    "new_runtime_id": "runtime-2",
+                    "card_id": "card-1",
+                }),
             ),
         ] {
             let ev = Event::from_kind_and_payload(kind, payload)

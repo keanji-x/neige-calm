@@ -11,6 +11,8 @@
  */
 export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId };
 
+export type AgentProvider = "codex" | "claude";
+
 /**
  * Opaque identifier for a worker-produced artifact (file write, structured
  * output blob, etc.). PR4 of #136 introduces this as a **placeholder**:
@@ -98,6 +100,12 @@ export type CardId = string;
  * frontend can adopt the enum once any UI lands.
  */
 export type CardRole = "plain" | "spec" | "worker" | "reportcard";
+
+export type CardRuntime = { id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, terminal_run_id: string | null, 
+/**
+ * Lazy-joined view; not a schema column.
+ */
+terminal_ref: TerminalRunRef | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, lease_owner: string | null, lease_until_ms: number | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, };
 
 export type Cove = { id: CoveId, name: string, color: string, sort: number, 
 /**
@@ -213,7 +221,7 @@ export type EditAuthor = "spec" | "user" | "kernel";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": Wave } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": Wave } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: RunStatus, new_status: RunStatus, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so
  * the UI can show it without a separate `/log` fetch. `None` for
@@ -304,6 +312,16 @@ kind: string,
  * explicit `unknown` override.
  */
 payload: unknown, updated_at: number, };
+
+export type RunStatus = "starting" | "running" | "idle" | "turn_pending" | "failed" | "exited" | "superseded";
+
+export type RuntimeKind = "terminal" | "codex" | "claude" | "shared-spec";
+
+/**
+ * Returned by `runtime_get_active_for_card` when caller requests joined view;
+ * schema only stores `terminal_run_id`.
+ */
+export type TerminalRunRef = { terminal_id: string, program: string, cwd: string | null, pid: number | null, };
 
 export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
 /**
