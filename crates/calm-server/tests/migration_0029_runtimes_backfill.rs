@@ -1,4 +1,4 @@
-//! PR2a (#488) — migration 0029 runtime backfill.
+//! PR2a (#488) — runtime backfill migration.
 
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use std::collections::HashMap;
@@ -111,7 +111,7 @@ const MIGRATIONS_UP_TO_0027: &[(&str, &str)] = &[
 ];
 
 const MIGRATION_0028_SQL: &str = include_str!("../migrations/0028_runtimes.sql");
-const MIGRATION_0029_SQL: &str = include_str!("../migrations/0029_runtimes_backfill.sql");
+const MIGRATION_0030_SQL: &str = include_str!("../migrations/0030_runtimes_backfill.sql");
 const SQLITE_NOW_MS_SELECT: &str =
     "SELECT CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
 
@@ -260,7 +260,7 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
 }
 
 #[tokio::test]
-async fn migration_0029_backfills_runtimes_and_is_idempotent() {
+async fn migration_0030_backfills_runtimes_and_is_idempotent() {
     let pool = pool_staged_at_0027().await;
     seed_legacy_live_cards(&pool).await;
 
@@ -282,7 +282,7 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
     .await
     .unwrap();
 
-    apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
+    apply_sql(&pool, "0030_runtimes_backfill", MIGRATION_0030_SQL).await;
 
     let rows = sqlx::query(
         r#"SELECT card_id, kind, agent_provider, status, terminal_run_id, thread_id, session_id,
@@ -539,7 +539,7 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
     );
     assert_eq!(by_card.len(), 12);
 
-    apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
+    apply_sql(&pool, "0030_runtimes_backfill", MIGRATION_0030_SQL).await;
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes")
         .fetch_one(&pool)
         .await
@@ -556,7 +556,7 @@ async fn migration_0029_backfills_runtimes_and_is_idempotent() {
 }
 
 #[tokio::test]
-async fn migration_0029_completes_stale_runtimes_created_with_subsecond_precision() {
+async fn migration_0030_completes_stale_runtimes_created_with_subsecond_precision() {
     let pool = pool_staged_at_0027().await;
     seed_legacy_live_cards(&pool).await;
 
@@ -583,7 +583,7 @@ async fn migration_0029_completes_stale_runtimes_created_with_subsecond_precisio
     .unwrap();
 
     tokio::time::sleep(Duration::from_millis(5)).await;
-    apply_sql(&pool, "0029_runtimes_backfill", MIGRATION_0029_SQL).await;
+    apply_sql(&pool, "0030_runtimes_backfill", MIGRATION_0030_SQL).await;
 
     let row = sqlx::query(
         r#"SELECT status, created_at_ms, updated_at_ms, completed_at_ms

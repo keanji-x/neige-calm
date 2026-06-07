@@ -398,7 +398,13 @@ fn output_card_id(output: &TxOutput) -> Result<String> {
     output
         .target_id
         .clone()
-        .or_else(|| output.data.get("card_id").and_then(Value::as_str).map(str::to_owned))
+        .or_else(|| {
+            output
+                .data
+                .get("card_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
         .ok_or_else(|| CalmError::Internal("terminal tx_output missing card_id".into()))
 }
 
