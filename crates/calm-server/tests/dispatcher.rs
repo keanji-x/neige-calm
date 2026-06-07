@@ -31,13 +31,14 @@ use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{
     ArtifactRef, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -141,6 +142,35 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
         })
         .await
         .expect("create spec card");
+    calm_server::db::write_in_tx_typed(repo.as_ref(), {
+        let card_id = spec_card.id.to_string();
+        move |tx| {
+            Box::pin(async move {
+                let runtime = runtime_start_tx(
+                    tx,
+                    RuntimeInit {
+                        id: new_id(),
+                        card_id,
+                        kind: RuntimeKind::SharedSpec,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: RunStatus::TurnPending,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        lease_owner: None,
+                        lease_until_ms: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await?;
+                Ok(runtime)
+            })
+        }
+    })
+    .await
+    .expect("seed shared-spec runtime");
     let codex = stub_codex();
     let dispatcher = Dispatcher::spawn(
         repo.clone(),
@@ -167,13 +197,13 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
         .await
         .expect("card_get")
         .expect("spec card still exists");
-    assert_eq!(
-        updated
-            .payload
-            .get("codex_thread_id")
-            .and_then(serde_json::Value::as_str),
-        Some("thread-tui-created")
-    );
+    assert!(updated.payload.get("codex_thread_id").is_none());
+    let runtime = repo
+        .runtime_get_active_for_card(&spec_card.id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime");
+    assert_eq!(runtime.thread_id.as_deref(), Some("thread-tui-created"));
     assert!(
         updated
             .payload
@@ -195,12 +225,7 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
     match envelope.event {
         Event::CardUpdated(card) => {
             assert_eq!(card.id, spec_card.id);
-            assert_eq!(
-                card.payload
-                    .get("codex_thread_id")
-                    .and_then(serde_json::Value::as_str),
-                Some("thread-tui-created")
-            );
+            assert!(card.payload.get("codex_thread_id").is_none());
         }
         other => panic!("expected CardUpdated, got {other:?}"),
     }
@@ -609,19 +634,12 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
     let card = worker_card
         .expect("dispatcher must broadcast CardAdded for the terminal worker card within 5s");
 
-    // Same canonical payload shape as the codex path —
-    // `card_with_terminal_create_tx` stamps `terminal_id` before the
-    // dispatcher merges its bookkeeping in.
-    let terminal_id = card
-        .payload
-        .get("terminal_id")
-        .and_then(|v| v.as_str())
-        .expect("worker card payload.terminal_id must be set");
     let term = repo
-        .terminal_get(terminal_id)
+        .terminal_get_by_card(card.id.as_str())
         .await
         .unwrap()
         .expect("terminal row for the worker card must exist post-CardAdded");
+    let terminal_id = term.id.as_str();
     assert!(
         terminal_renderer.get(terminal_id).is_some(),
         "issue #310 regression (terminal path): renderer entry MUST be registered by the time CardAdded reaches subscribers",
@@ -1076,14 +1094,15 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
 
     // Terminal row survives and the renderer attach reader persisted
     // exit_code = 0 / signal_killed = false.
-    let terminal_id = card_row
-        .payload
-        .get("terminal_id")
-        .and_then(|v| v.as_str())
-        .expect("preserved card payload carries terminal_id");
+    let terminal_id = repo
+        .terminal_get_by_card(card_row.id.as_str())
+        .await
+        .unwrap()
+        .expect("preserved card terminal row")
+        .id;
     let term_row = wait_for(Duration::from_secs(5), || {
         let repo = repo.clone();
-        let terminal_id = terminal_id.to_string();
+        let terminal_id = terminal_id.clone();
         async move {
             let row = repo.terminal_get(&terminal_id).await.unwrap()?;
             row.exit_code.is_some().then_some(row)

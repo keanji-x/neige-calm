@@ -19,6 +19,7 @@ use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
+use crate::runtime_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
     Json, Router,
@@ -119,7 +120,8 @@ pub(crate) async fn create_claude_card(
     match result.outcome {
         OperationOutcome::Succeeded { result }
         | OperationOutcome::SucceededViaCollision { result, .. } => {
-            let card: Card = serde_json::from_value(result)?;
+            let mut card: Card = serde_json::from_value(result)?;
+            project_runtime_into_card_payload(s.repo.as_ref(), &mut card).await?;
             Ok((StatusCode::CREATED, Json(card)))
         }
         OperationOutcome::Failed {

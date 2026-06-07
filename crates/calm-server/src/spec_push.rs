@@ -2489,23 +2489,25 @@ mod tests {
     use super::*;
 
     use crate::db::prelude::*;
-    use crate::db::sqlite::SqlxRepo;
+    use crate::db::sqlite::{SqlxRepo, runtime_start_tx};
     use crate::event::EventBus;
-    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::model::{NewCard, NewCove, NewWave, new_id, now_ms};
     use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
+    use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
     use serde_json::json;
 
-    async fn seed_pending_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String {
+    async fn seed_pending_card(
+        repo: &SqlxRepo,
+        wave_id: &str,
+        terminal_id: &str,
+        kind: RuntimeKind,
+    ) -> String {
         let card = repo
             .card_create(NewCard {
                 wave_id: wave_id.into(),
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({
-                    "schemaVersion": 1,
-                    "terminal_id": terminal_id,
-                    "codex_thread_status": "pending_thread_start"
-                }),
+                payload: json!({"schemaVersion": 1}),
             })
             .await
             .unwrap();
@@ -2525,6 +2527,28 @@ mod tests {
         .execute(repo.pool())
         .await
         .unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
+        runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: new_id(),
+                card_id: card.id.to_string(),
+                kind,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::TurnPending,
+                terminal_run_id: Some(terminal_id.to_string()),
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
         card.id.to_string()
     }
 
@@ -2551,8 +2575,15 @@ mod tests {
             .await
             .unwrap();
         let registry = PendingThreadStartRegistry::new(repo.clone(), EventBus::new());
-        let user_card = seed_pending_card(&repo, wave.id.as_str(), "term-user").await;
-        let spec_card = seed_pending_card(&repo, wave.id.as_str(), "term-spec").await;
+        let user_card =
+            seed_pending_card(&repo, wave.id.as_str(), "term-user", RuntimeKind::CodexCard).await;
+        let spec_card = seed_pending_card(
+            &repo,
+            wave.id.as_str(),
+            "term-spec",
+            RuntimeKind::SharedSpec,
+        )
+        .await;
         registry
             .register(PendingEntry::new(
                 user_card.clone(),

@@ -17,6 +17,7 @@
 //! closure so the entity write and the `INSERT INTO events ...` run in
 //! the same transaction. See `db::mod`'s sync-engine comment.
 
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -42,8 +43,9 @@ use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VE
 use crate::ids::{ActorId, WaveId};
 use crate::model::*;
 use crate::runtime_repo::{
-    AgentProvider, CardRuntime, Result as RuntimeResult, RunStatus, RuntimeId, RuntimeInit,
-    RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution, Tx as RuntimeTx,
+    AgentProvider, CardId as RuntimeCardId, CardRuntime, Result as RuntimeResult, RunStatus,
+    RuntimeId, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution,
+    Tx as RuntimeTx,
 };
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
@@ -1051,8 +1053,8 @@ pub async fn terminal_create_tx(
 }
 
 /// Atomically create a `terminal`-kind card AND its associated terminal row
-/// inside a single transaction, stamping the terminal id onto the card's
-/// payload before returning.
+/// inside a single transaction. Runtime identity is written to `runtimes`;
+/// API/WS responses project the legacy payload fields at read time.
 ///
 /// This is the kernel side of #13's plan to collapse today's 3-step
 /// terminal-card recipe (card-add → terminal-create → card-update) into one
@@ -1060,7 +1062,7 @@ pub async fn terminal_create_tx(
 /// `POST /api/waves/:id/terminal-cards` endpoint and delete the old recipe.
 ///
 /// On any failure the surrounding transaction rolls back, so partial state
-/// (card without terminal, or terminal without payload link) is impossible.
+/// (card without terminal, or terminal without runtime row) is impossible.
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -1085,8 +1087,8 @@ pub async fn card_with_terminal_create_tx(
     // revive race observed in PR #193).
     theme: crate::routes::theme::RequestTheme,
 ) -> Result<(Card, Terminal)> {
-    // 1. Card row with placeholder payload — the terminal_id and schemaVersion
-    //    are stamped in step 5 once we have the terminal row.
+    // 1. Card row with placeholder payload — schemaVersion is stamped in
+    //    step 5 once we have the terminal row.
     //
     // PR2 of #136: card id is now pre-minted by the caller (same pattern
     // the codex helper has had since #117) so the surrounding
@@ -1129,7 +1131,6 @@ pub async fn card_with_terminal_create_tx(
     // 3. Build the canonical terminal-card payload.
     let payload = serde_json::json!({
         "schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION,
-        "terminal_id": term.id,
     });
 
     // 4. Defense-in-depth: payload validation. The boundary call in
@@ -1185,8 +1186,8 @@ pub async fn card_with_terminal_create_tx(
 /// **Use site** is the dispatcher's post-commit failure cleanup: when
 /// `per-card CODEX_HOME seeding` or `spawn_daemon_with_parts` returns
 /// Err *after* the row-creation tx has already committed, the worker
-/// card + terminal row are orphans — the card payload references a
-/// terminal whose daemon never came up, and a retry with the same
+/// card + terminal row are orphans — the runtime references a terminal
+/// whose daemon never came up, and a retry with the same
 /// `idempotency_key` would short-circuit on the abandoned row instead
 /// of trying again. Rolling both rows back here lets the retry succeed.
 ///
@@ -1224,8 +1225,9 @@ pub async fn card_with_terminal_rollback_tx(
 }
 
 /// Atomically create a `codex`-kind card, its associated terminal row, and
-/// the initial `Starting` runtime row inside a single transaction, stamping
-/// `terminal_id` (+ optional `cwd`) onto the card's payload before returning.
+/// the initial `Starting` runtime row inside a single transaction. Runtime
+/// identity is written to `runtimes`; API/WS responses project the legacy
+/// payload fields at read time.
 ///
 /// Twin of [`card_with_terminal_create_tx`] for the codex-card flow (#117).
 /// Differs in two places from the terminal helper:
@@ -1246,7 +1248,7 @@ pub async fn card_with_terminal_rollback_tx(
 /// see.
 ///
 /// On any failure the surrounding transaction rolls back; a partial state
-/// (card without terminal, or terminal without payload link) is impossible.
+/// (card without terminal, or terminal without runtime row) is impossible.
 /// PR7a (#136) — third return slot is `Some(raw_token)` for Spec/Worker
 /// cards, `None` for Plain. The caller is expected to thread the raw
 /// value into the codex daemon's `NEIGE_MCP_TOKEN` env var immediately
@@ -1275,9 +1277,8 @@ pub async fn card_with_codex_create_tx(
     // deterministic regardless of which spawn path lands it.
     theme: crate::routes::theme::RequestTheme,
 ) -> Result<(Card, Terminal, Option<String>)> {
-    // 1. Card row with placeholder payload — the terminal_id, cwd, and
-    //    schemaVersion fields are stamped in step 5 once we have the
-    //    terminal row.
+    // 1. Card row with placeholder payload — schemaVersion and UI hints
+    //    are stamped in step 5 once we have the terminal row.
     //
     // PR3 (#136): the user-facing `POST /api/waves/:id/codex-cards`
     // route passes `CardRole::Plain`. PR6 (#136) — the wave-create
@@ -1323,10 +1324,6 @@ pub async fn card_with_codex_create_tx(
     payload.insert(
         "schemaVersion".into(),
         serde_json::Value::from(CODEX_PAYLOAD_SCHEMA_VERSION),
-    );
-    payload.insert(
-        "terminal_id".into(),
-        serde_json::Value::String(term.id.clone()),
     );
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));
@@ -1464,16 +1461,8 @@ pub async fn card_with_claude_create_tx(
         serde_json::Value::from(CLAUDE_PAYLOAD_SCHEMA_VERSION),
     );
     payload.insert(
-        "terminal_id".into(),
-        serde_json::Value::String(term.id.clone()),
-    );
-    payload.insert(
         "settings_path".into(),
         serde_json::Value::String(settings_path),
-    );
-    payload.insert(
-        "claude_session_id".into(),
-        serde_json::Value::String(claude_session_id.clone()),
     );
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));
@@ -1556,6 +1545,11 @@ pub async fn card_mcp_token_set_tx(
     Ok(())
 }
 
+/// Deprecated legacy compatibility helper.
+///
+/// PR3 write-demotes `card_codex_threads`: normal runtime identity writes
+/// must go to `runtimes` instead. Keep this for migrations, tests, and
+/// rollback paths that intentionally preserve pre-PR3 semantics.
 pub async fn card_codex_thread_upsert_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
@@ -1791,6 +1785,113 @@ async fn runtime_get_active_for_card_from_pool(
     .fetch_optional(pool)
     .await?;
     row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+async fn runtime_get_active_for_cards_from_pool(
+    pool: &SqlitePool,
+    card_ids: &[RuntimeCardId],
+) -> RuntimeResult<HashMap<RuntimeCardId, CardRuntime>> {
+    if card_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE status IN ('starting', 'running', 'idle', 'turn_pending')
+             AND card_id IN ("#,
+    );
+    let mut separated = query.separated(", ");
+    for card_id in card_ids {
+        separated.push_bind(card_id);
+    }
+    separated.push_unseparated(
+        ") ORDER BY card_id ASC, updated_at_ms DESC, created_at_ms DESC, id DESC",
+    );
+
+    let rows = query.build().fetch_all(pool).await?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let runtime = card_runtime_from_row(&row)?;
+        let card_id = runtime.card_id.clone();
+        out.entry(card_id).or_insert(runtime);
+    }
+    Ok(out)
+}
+
+async fn runtime_get_projectable_for_card_from_pool(
+    pool: &SqlitePool,
+    card_id: &str,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE card_id = ?1
+             AND (
+                 status IN ('starting', 'running', 'idle', 'turn_pending')
+                 OR (status = 'failed' AND kind IN ('codex', 'shared-spec') AND thread_id IS NULL)
+             )
+           ORDER BY
+             CASE
+                 WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
+                 ELSE 1
+             END ASC,
+             updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+    )
+    .bind(card_id)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+async fn runtime_get_projectable_for_cards_from_pool(
+    pool: &SqlitePool,
+    card_ids: &[RuntimeCardId],
+) -> RuntimeResult<HashMap<RuntimeCardId, CardRuntime>> {
+    if card_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE (
+                 status IN ('starting', 'running', 'idle', 'turn_pending')
+                 OR (status = 'failed' AND kind IN ('codex', 'shared-spec') AND thread_id IS NULL)
+             )
+             AND card_id IN ("#,
+    );
+    let mut separated = query.separated(", ");
+    for card_id in card_ids {
+        separated.push_bind(card_id);
+    }
+    separated.push_unseparated(
+        r#") ORDER BY card_id ASC,
+             CASE
+                 WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
+                 ELSE 1
+             END ASC,
+             updated_at_ms DESC, created_at_ms DESC, id DESC"#,
+    );
+
+    let rows = query.build().fetch_all(pool).await?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let runtime = card_runtime_from_row(&row)?;
+        let card_id = runtime.card_id.clone();
+        out.entry(card_id).or_insert(runtime);
+    }
+    Ok(out)
 }
 
 async fn runtime_get_active_by_thread_from_pool(
@@ -2741,10 +2842,8 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
-        // Orphan: no active runtime owns this terminal row and no legacy
-        // card.payload.terminal_id references it, AND the row was created
-        // more than `grace_seconds` ago (absorbs the 3-step terminal-card
-        // create race in `eventBridge.tsx:60-70`).
+        // Orphan: no active runtime owns this terminal row, AND the row was
+        // created more than `grace_seconds` ago.
         //
         // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
@@ -2759,10 +2858,6 @@ impl RepoRead for SqlxRepo {
                    SELECT 1 FROM runtimes r
                    WHERE r.terminal_run_id = t.id
                      AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
-               )
-               AND NOT EXISTS (
-                   SELECT 1 FROM cards c
-                   WHERE json_extract(c.payload, '$.terminal_id') = t.id
                )
                AND t.created_at < ?1"#,
         )
@@ -2803,23 +2898,16 @@ impl RepoRead for SqlxRepo {
         let rows: Vec<(String, String, String, Option<i64>)> = sqlx::query_as(
             r#"SELECT c.id,
                       c.wave_id,
-                      json_extract(c.payload, '$.terminal_id'),
+                      r.terminal_run_id,
                       json_extract(c.payload, '$.push_watermark')
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
-               JOIN terminals t ON t.id = json_extract(c.payload, '$.terminal_id')
+               JOIN runtimes r ON r.card_id = c.id
+                   AND r.kind = 'shared-spec'
+                   AND r.thread_id IS NULL
+                   AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
+               JOIN terminals t ON t.id = r.terminal_run_id
                WHERE c.role = 'spec'
-                 AND (
-                       COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
-                       OR EXISTS (
-                           SELECT 1
-                             FROM runtimes r
-                            WHERE r.card_id = c.id
-                              AND r.kind = 'shared-spec'
-                              AND r.thread_id IS NULL
-                              AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
-                       )
-                 )
                  AND t.exit_code IS NULL
                  AND COALESCE(t.signal_killed, 0) = 0
                  AND NOT EXISTS (
@@ -2853,7 +2941,13 @@ impl RepoRead for SqlxRepo {
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
                WHERE c.role = 'spec'
-                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'legacy'
+                 AND NOT EXISTS (
+                       SELECT 1
+                         FROM runtimes r
+                        WHERE r.card_id = c.id
+                          AND r.kind = 'shared-spec'
+                          AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
+                 )
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
                ORDER BY c.created_at ASC, c.id ASC"#,
         )
@@ -2999,6 +3093,27 @@ impl RuntimeRepo for SqlxRepo {
         card_id: &crate::runtime_repo::CardId,
     ) -> RuntimeResult<Option<CardRuntime>> {
         runtime_get_active_for_card_from_pool(&self.pool, card_id).await
+    }
+
+    async fn runtime_get_active_for_cards(
+        &self,
+        card_ids: &[crate::runtime_repo::CardId],
+    ) -> RuntimeResult<HashMap<crate::runtime_repo::CardId, CardRuntime>> {
+        runtime_get_active_for_cards_from_pool(&self.pool, card_ids).await
+    }
+
+    async fn runtime_get_projectable_for_card(
+        &self,
+        card_id: &crate::runtime_repo::CardId,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        runtime_get_projectable_for_card_from_pool(&self.pool, card_id).await
+    }
+
+    async fn runtime_get_projectable_for_cards(
+        &self,
+        card_ids: &[crate::runtime_repo::CardId],
+    ) -> RuntimeResult<HashMap<crate::runtime_repo::CardId, CardRuntime>> {
+        runtime_get_projectable_for_cards_from_pool(&self.pool, card_ids).await
     }
 
     async fn runtime_active_shared_thread_attribution(
@@ -3384,7 +3499,7 @@ impl RepoOutOfDomain for SqlxRepo {
 
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()> {
         // JSON merge so we only touch `payload.push_watermark` — never clobber
-        // `codex_thread_id` / `appserver_sock` / any other field.
+        // `appserver_sock` / any other field.
         // `json_set(p, '$.k', v)` upserts the key in place.
         // A missing row is silently a no-op (the wave was deleted between
         // the dispatcher's bump and the persist; nothing to do).

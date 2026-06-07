@@ -650,7 +650,7 @@ async fn takeover_rebuilds_thread_cache_from_db() {
 }
 
 #[tokio::test]
-async fn thread_cache_rebuild_legacy_wins_on_conflict() {
+async fn thread_cache_rebuild_runtime_wins_on_conflict() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
     let card_id = seed_card(&repo, 1).await;
@@ -663,10 +663,10 @@ async fn thread_cache_rebuild_legacy_wins_on_conflict() {
     daemon.start_or_takeover().await.unwrap();
 
     assert_eq!(
-        daemon.cached_card_for_thread("thread-new"),
+        daemon.cached_card_for_thread("thread-old"),
         Some(card_id.clone())
     );
-    assert_eq!(daemon.cached_card_for_thread("thread-old"), None);
+    assert_eq!(daemon.cached_card_for_thread("thread-new"), None);
 }
 
 #[tokio::test]
@@ -757,12 +757,14 @@ async fn thread_start_for_card_respects_needs_respawn_flag() {
     let new_pid = daemon.status_snapshot().runtime.unwrap().pid;
     assert_ne!(new_pid, old_pid);
     assert_eq!(
+        daemon.cached_card_for_thread("fake-thread-0001"),
+        Some(card_id.clone())
+    );
+    assert!(
         repo.card_codex_thread_get_by_card(&card_id)
             .await
             .unwrap()
-            .unwrap()
-            .thread_id,
-        "fake-thread-0001"
+            .is_none()
     );
 }
 

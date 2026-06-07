@@ -201,10 +201,11 @@ impl ProviderAdapter for TerminalAdapter {
         let event_id =
             event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
 
+        let projected_card = project_terminal_id_for_response(&card, &term.id);
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
-            serde_json::to_value(&card)?,
+            serde_json::to_value(&projected_card)?,
         );
         output.data = json!({
             "card_id": card.id,
@@ -218,7 +219,7 @@ impl ProviderAdapter for TerminalAdapter {
             event_version: SYNC_EVENT_VERSION,
             actor: payload.actor,
             scope,
-            event,
+            event: Event::CardAdded(projected_card),
         });
         Ok(output)
     }
@@ -437,6 +438,18 @@ fn normalize_cwd(cwd: String) -> String {
 
 fn normalize_env(env: Value) -> Value {
     if env.is_null() { json!({}) } else { env }
+}
+
+fn project_terminal_id_for_response(
+    card: &crate::model::Card,
+    terminal_id: &str,
+) -> crate::model::Card {
+    let mut card = card.clone();
+    if let Some(map) = card.payload.as_object_mut() {
+        map.entry("terminal_id")
+            .or_insert_with(|| Value::String(terminal_id.to_string()));
+    }
+    card
 }
 
 fn default_program() -> String {

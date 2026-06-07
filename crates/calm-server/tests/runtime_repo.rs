@@ -6,6 +6,7 @@ use calm_server::db::sqlite::{
     runtime_set_status_tx, runtime_start_tx, runtime_supersede_tx,
 };
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{
     AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepoError, ThreadAttribution,
 };
@@ -702,6 +703,27 @@ async fn runtime_start_tx_claude_records_session_when_present() {
     assert_eq!(active.status, RunStatus::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert_eq!(active.session_id.as_deref(), Some(session_id.as_str()));
+
+    let mut stored = repo
+        .card_get(card.id.as_str())
+        .await
+        .unwrap()
+        .expect("card row");
+    assert!(
+        stored.payload.get("terminal_id").is_none(),
+        "terminal_id must not be persisted in cards.payload: {}",
+        stored.payload
+    );
+    assert!(
+        stored.payload.get("claude_session_id").is_none(),
+        "claude_session_id must not be persisted in cards.payload: {}",
+        stored.payload
+    );
+    project_runtime_into_card_payload(&repo, &mut stored)
+        .await
+        .unwrap();
+    assert_eq!(stored.payload["terminal_id"], term.id);
+    assert_eq!(stored.payload["claude_session_id"], session_id);
 }
 
 #[tokio::test]

@@ -6,9 +6,11 @@
 //! and terminal-per-card uniqueness.
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, overlay_delete_by_entity_tx};
+use calm_server::db::sqlite::{SqlxRepo, overlay_delete_by_entity_tx, runtime_start_tx};
 use calm_server::error::CalmError;
 use calm_server::model::*;
+use calm_server::runtime_lookup::project_runtime_into_card_payload;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use serde_json::json;
 
 async fn fresh_repo() -> SqlxRepo {
@@ -1029,7 +1031,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
 // the `_tx` surface without going through the pool-wrapping wrappers.
 
 #[tokio::test]
-async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_link() {
+async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() {
     let repo = fresh_repo().await;
     let c = make_cove(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
@@ -1052,15 +1054,31 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_li
     .expect("atomic create");
     tx.commit().await.unwrap();
 
-    // Card persisted with kind=terminal and the canonical payload link.
+    // Card persisted with kind=terminal and schema payload only; identity
+    // lives in runtimes and is projected at read time.
     let got_card = repo
         .card_get(card.id.as_str())
         .await
         .unwrap()
         .expect("card row");
     assert_eq!(got_card.kind, "terminal");
-    assert_eq!(got_card.payload["terminal_id"], json!(term.id));
+    assert!(
+        got_card.payload.get("terminal_id").is_none(),
+        "terminal_id must not be persisted in cards.payload: {}",
+        got_card.payload
+    );
     assert_eq!(got_card.payload["schemaVersion"], json!(1));
+    let runtime = repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("runtime row");
+    assert_eq!(runtime.terminal_run_id.as_deref(), Some(term.id.as_str()));
+    let mut projected = got_card.clone();
+    project_runtime_into_card_payload(&repo, &mut projected)
+        .await
+        .unwrap();
+    assert_eq!(projected.payload["terminal_id"], json!(term.id));
 
     // Terminal persisted and parented to the card.
     let got_term = repo
@@ -1238,7 +1256,7 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
 // public model module to keep id-collision realistic.
 
 #[tokio::test]
-async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link() {
+async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     let repo = fresh_repo().await;
     let c = make_cove(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
@@ -1278,13 +1296,28 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
         .unwrap()
         .expect("card row");
     assert_eq!(got_card.kind, "codex");
-    assert_eq!(got_card.payload["terminal_id"], json!(term.id));
+    assert!(
+        got_card.payload.get("terminal_id").is_none(),
+        "terminal_id must not be persisted in cards.payload: {}",
+        got_card.payload
+    );
     assert_eq!(got_card.payload["schemaVersion"], json!(1));
     assert_eq!(got_card.payload["icon_bg"], json!("#111111"));
     assert_eq!(got_card.payload["icon_fg"], json!("#ffffff"));
     // cwd is non-empty here — payload must carry it for the frontend's
     // status hint.
     assert_eq!(got_card.payload["cwd"], json!("/workspace"));
+    let runtime = repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("runtime row");
+    assert_eq!(runtime.terminal_run_id.as_deref(), Some(term.id.as_str()));
+    let mut projected = got_card.clone();
+    project_runtime_into_card_payload(&repo, &mut projected)
+        .await
+        .unwrap();
+    assert_eq!(projected.payload["terminal_id"], json!(term.id));
 
     let got_term = repo
         .terminal_get_by_card(card.id.as_str())
@@ -1750,7 +1783,6 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             kind: "codex".into(),
             sort: None,
             payload: json!({
-                "codex_source": "shared",
                 "appserver_sock": "unix:///tmp/shared.sock",
                 "push_watermark": 11,
             }),
@@ -1771,21 +1803,31 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     .await
     .expect("seed mapped shared thread mapping");
 
-    // Shared takeover requires a LIVE terminal row (R7 P2 #1 / CI fix):
-    // the SQL JOINs terminals and filters exit_code IS NULL AND
-    // signal_killed = 0. Mint the terminal AFTER the card commit and
-    // update the card payload to point at the real terminal id.
+    // Shared takeover now keys off an active shared-spec runtime pointing
+    // at a live terminal, not payload identity stamps.
     let term = make_terminal(&repo, pending.id.as_str()).await;
-    sqlx::query(
-        r#"UPDATE cards
-              SET payload = json_set(payload, '$.terminal_id', ?1)
-            WHERE id = ?2"#,
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: calm_server::model::new_id(),
+            card_id: pending.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some(term.id.to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: calm_server::model::now_ms(),
+        },
     )
-    .bind(term.id.as_str())
-    .bind(pending.id.as_str())
-    .execute(repo.pool())
     .await
     .unwrap();
+    tx.commit().await.unwrap();
 
     assert_eq!(
         repo.shared_spec_cards_for_initial_prompt_takeover()

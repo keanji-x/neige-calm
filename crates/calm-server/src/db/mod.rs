@@ -167,10 +167,9 @@ pub type WriteWithEventsFn<'a> = Box<
 ///     will not surface the card.
 ///   * No `CardAdded` broadcast fired — no subscriber learned about
 ///     the row at the time it was written.
-///   * The terminal-sweeper will NOT reap the orphan: its SQL excludes
-///     terminals still referenced by a card (`terminals_orphaned` only
-///     returns rows with no matching `cards.payload.terminal_id`), and
-///     the card row IS pointing at this terminal.
+///   * The terminal-sweeper will NOT reap the orphan while the runtime
+///     row is active: its SQL excludes terminals still referenced by
+///     `runtimes.terminal_run_id`.
 ///   * The `idempotency_key` short-circuits future retries — a user
 ///     who re-dispatches with the same key gets the silent-skip path
 ///     in `find_card_by_idempotency_key_tx`.
@@ -332,10 +331,9 @@ pub trait RepoRead: Send + Sync + 'static {
     // ---- terminals (read-only)
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
-    /// Return every terminal row that has no card pointing at it via
-    /// `cards.payload.terminal_id`, and whose `created_at` is older than
-    /// `grace_seconds` ago. The grace window absorbs the 3-step
-    /// terminal-card create race (see `web/src/app/eventBridge.tsx:60-70`).
+    /// Return every terminal row that has no active runtime pointing at it
+    /// via `runtimes.terminal_run_id`, and whose `created_at` is older than
+    /// `grace_seconds` ago.
     /// Used exclusively by the `terminal_sweeper` background task.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
     /// Return every terminal row whose child has not recorded an exit yet.
@@ -727,18 +725,22 @@ pub trait RepoOutOfDomain: RepoRead {
     /// sidecars (which use this same trait for the same reason) keeps the
     /// hot path narrow.
     ///
-    /// The write is a JSON merge so it never clobbers `codex_thread_id` /
-    /// `appserver_sock` / other payload fields. A
-    /// missing card row is a no-op (the wave was deleted between the bump
-    /// and the persist).
+    /// The write is a JSON merge so it never clobbers `appserver_sock` or
+    /// other payload fields. A missing card row is a no-op (the wave was
+    /// deleted between the bump and the persist).
     ///
-    // TODO(runtime-state-table): push_watermark — along with appserver_sock and
-    // codex_thread_id — is kernel-private runtime bookkeeping living on the
-    // card payload via OutOfDomain (no CardUpdated event). When the dedicated
-    // runtime-state table lands, migrate these fields out of card payload into
-    // it. Acceptable short-term per #315 review.
+    // TODO(runtime-state-table): push_watermark — along with appserver_sock —
+    // is kernel-private runtime handle state living on the card payload via
+    // OutOfDomain (no CardUpdated event). When the dedicated runtime-state
+    // table lands, migrate these fields out of card payload into it.
+    // Acceptable short-term per #315 review.
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
 
+    /// Deprecated legacy compatibility helper.
+    ///
+    /// Runtime identity is sourced from `runtimes`; normal production paths
+    /// must not upsert `card_codex_threads`. This remains for migrations,
+    /// tests, and rollback paths that intentionally preserve legacy rows.
     async fn card_codex_thread_upsert(
         &self,
         card_id: &str,
@@ -766,10 +768,10 @@ pub trait RepoOutOfDomain: RepoRead {
     // emission, no sync-domain entry) — they live on `RepoOutOfDomain`
     // alongside `spec_card_set_push_watermark` for the same reason.
     //
-    // TODO(runtime-state-table): along with `push_watermark`, `appserver_sock`,
-    // and `codex_thread_id`, this is kernel-private runtime bookkeeping. When
-    // the dedicated runtime-state table lands, `spec_push_queue` can move into
-    // the same surface (or stay separate — it's row-shaped, not card-payload
+    // TODO(runtime-state-table): along with `push_watermark` and
+    // `appserver_sock`, this is kernel-private runtime bookkeeping. When the
+    // dedicated runtime-state table lands, `spec_push_queue` can move into the
+    // same surface (or stay separate — it's row-shaped, not card-payload
     // shaped, so a separate table is already correct).
 
     /// #318 INV-3 — persist one observation onto the durable spec push

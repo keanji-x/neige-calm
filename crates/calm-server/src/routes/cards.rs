@@ -26,8 +26,11 @@ use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::waves::{
     await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
 };
-use crate::runtime_lookup::{card_is_shared_spec, resolve_active_thread_for_card};
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use crate::runtime_lookup::{
+    card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
+    resolve_active_thread_for_card,
+};
+use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -130,7 +133,8 @@ pub(crate) async fn list_cards_by_wave(
     State(s): State<RouteState>,
     Path(wave_id): Path<String>,
 ) -> Result<Json<Vec<Card>>> {
-    let cards = s.repo.cards_by_wave(&wave_id).await?;
+    let mut cards = s.repo.cards_by_wave(&wave_id).await?;
+    project_runtime_into_cards_payload(s.repo.as_ref(), &mut cards).await?;
     Ok(Json(cards))
 }
 
@@ -234,7 +238,7 @@ pub(crate) async fn create_card(
     };
     let card_id_for_tx = card_id.0.clone();
     let write_for_tx = s.write().clone();
-    let (card, _id) = write_with_event_typed(
+    let (mut card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
@@ -262,6 +266,10 @@ pub(crate) async fn create_card(
     )
     .await
     .map_err(|e| e.into_response())?;
+    project_runtime_into_card_payload(s.repo.as_ref(), &mut card)
+        .await
+        .map_err(CalmError::from)
+        .map_err(|e| e.into_response())?;
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
 
@@ -381,7 +389,7 @@ async fn create_via_tool_call(
         .map_err(|e| e.into_response())?;
     let card_id_for_tx = card_id.0.clone();
     let write_for_tx = s.write().clone();
-    let (card, _id) = write_with_event_typed(
+    let (mut card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor,
         scope,
@@ -409,6 +417,10 @@ async fn create_via_tool_call(
     )
     .await
     .map_err(|e| e.into_response())?;
+    project_runtime_into_card_payload(s.repo.as_ref(), &mut card)
+        .await
+        .map_err(CalmError::from)
+        .map_err(|e| e.into_response())?;
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
 
@@ -464,7 +476,7 @@ pub(crate) async fn update_card(
         s.card_kind_registry().validate_payload(kind, payload)?;
     }
     let scope = card_scope(s.repo.as_ref(), existing.id.clone(), existing.wave_id).await?;
-    let (card, _id) = write_with_event_typed(
+    let (mut card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
@@ -479,6 +491,7 @@ pub(crate) async fn update_card(
         },
     )
     .await?;
+    project_runtime_into_card_payload(s.repo.as_ref(), &mut card).await?;
     Ok(Json(card))
 }
 
@@ -683,10 +696,10 @@ async fn reset_spec_card_shared(
             // KEEP the handle parked — without it, the new thread's
             // notifications would have no consumer until a server restart
             // re-parked it, stranding spec output and queue catch-up.
-            // The card payload + card_codex_threads row continue to point
-            // at the new thread; the user retries the reset (or reloads
-            // the card UI to remount the xterm onto the now-orphaned
-            // backend). The 5xx response signals the partial failure.
+            // The runtime row continues to point at the new thread; the user
+            // retries the reset (or reloads the card UI to remount the xterm
+            // onto the now-orphaned backend). The 5xx response signals the
+            // partial failure.
             tracing::warn!(
                 target: "shared_codex_daemon::spec_card_reset",
                 card_id = %card_id,
@@ -840,15 +853,9 @@ async fn persist_shared_reset_runtime_fields(
                         "spec card {card_id_for_tx} payload is not a JSON object; cannot persist shared reset runtime fields"
                     )));
                 };
-                map.insert(
-                    "codex_thread_id".into(),
-                    serde_json::Value::String(thread_id_for_tx.clone()),
-                );
-                map.insert(
-                    "codex_source".into(),
-                    serde_json::Value::String("shared".into()),
-                );
                 map.insert("appserver_sock".into(), serde_json::Value::String(remote_uri));
+                map.remove("codex_source");
+                map.remove("codex_thread_id");
                 map.remove("appserver_pgid");
                 map.remove("appserver_start_time");
                 map.remove("appserver_boot_id");
@@ -868,7 +875,9 @@ async fn persist_shared_reset_runtime_fields(
                     lease_until_ms: None,
                     now_ms: now_ms(),
                 };
-                // Issue #524: keep legacy card/thread mapping and runtime supersede atomic.
+                // Issue #524 closed the reset rollback gap: legacy card/thread
+                // mapping and runtime supersede stay atomic, while payload
+                // identity stamps remain read-time projections.
                 card_codex_thread_upsert_tx(
                     tx,
                     &card_id_for_tx,

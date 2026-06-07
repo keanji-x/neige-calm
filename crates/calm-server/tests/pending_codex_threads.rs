@@ -8,6 +8,7 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
+use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use serde_json::json;
@@ -50,16 +51,21 @@ async fn boot_pending_server() -> (
 }
 
 async fn seed_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String {
+    seed_card_with_runtime_kind(repo, wave_id, terminal_id, RuntimeKind::CodexCard).await
+}
+
+async fn seed_card_with_runtime_kind(
+    repo: &SqlxRepo,
+    wave_id: &str,
+    terminal_id: &str,
+    runtime_kind: RuntimeKind,
+) -> String {
     let card = repo
         .card_create(NewCard {
             wave_id: wave_id.into(),
             kind: "codex".into(),
             sort: None,
-            payload: json!({
-                "schemaVersion": 1,
-                "terminal_id": terminal_id,
-                "codex_thread_status": "pending_thread_start"
-            }),
+            payload: json!({"schemaVersion": 1}),
         })
         .await
         .unwrap();
@@ -80,7 +86,38 @@ async fn seed_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String 
     .execute(repo.pool())
     .await
     .unwrap();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: card.id.to_string(),
+            kind: runtime_kind,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some(terminal_id.to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     card.id.to_string()
+}
+
+async fn projected_card(repo: &SqlxRepo, card_id: &str) -> calm_server::model::Card {
+    let mut card = repo.card_get(card_id).await.unwrap().expect("card row");
+    project_runtime_into_card_payload(repo, &mut card)
+        .await
+        .unwrap();
+    card
 }
 
 fn entry(card_id: &str, wave_id: &str, terminal_id: &str) -> PendingEntry {
@@ -130,21 +167,29 @@ async fn register_and_bind_in_arrival_order() {
         Some(b.clone())
     );
 
-    assert_eq!(
+    let runtime_a = repo
+        .runtime_get_active_for_card(&a)
+        .await
+        .unwrap()
+        .expect("runtime a");
+    let runtime_b = repo
+        .runtime_get_active_for_card(&b)
+        .await
+        .unwrap()
+        .expect("runtime b");
+    assert_eq!(runtime_a.thread_id.as_deref(), Some("T-1"));
+    assert_eq!(runtime_b.thread_id.as_deref(), Some("T-2"));
+    assert!(
         repo.card_codex_thread_get_by_card(&a)
             .await
             .unwrap()
-            .unwrap()
-            .thread_id,
-        "T-1"
+            .is_none()
     );
-    assert_eq!(
+    assert!(
         repo.card_codex_thread_get_by_card(&b)
             .await
             .unwrap()
-            .unwrap()
-            .thread_id,
-        "T-2"
+            .is_none()
     );
 }
 
@@ -181,7 +226,7 @@ async fn register_is_idempotent_by_card_id_without_reordering() {
 }
 
 #[tokio::test]
-async fn bind_persists_to_card_codex_threads_and_payload() {
+async fn bind_persists_to_runtime_and_projects_payload() {
     let (repo, events, wave_id) = boot().await;
     let mut rx = events.subscribe();
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
@@ -193,17 +238,27 @@ async fn bind_persists_to_card_codex_threads_and_payload() {
 
     registry.on_thread_started("T-bind").await.unwrap();
 
-    let mapping = repo
-        .card_codex_thread_get_by_card(&card_id)
-        .await
-        .unwrap()
-        .expect("mapping row");
-    assert_eq!(mapping.thread_id, "T-bind");
-    assert_eq!(mapping.wave_id.as_deref(), Some(wave_id.as_str()));
+    assert!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "pending bind must not upsert card_codex_threads"
+    );
 
     let card = repo.card_get(&card_id).await.unwrap().expect("card row");
-    assert_eq!(card.payload["codex_thread_id"], "T-bind");
-    assert_eq!(card.payload["codex_thread_status"], "started");
+    assert!(card.payload.get("codex_thread_id").is_none());
+    assert!(card.payload.get("codex_thread_status").is_none());
+    let runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime row");
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-bind"));
+    assert_eq!(runtime.status, RunStatus::Running);
+    let projected = projected_card(&repo, &card_id).await;
+    assert_eq!(projected.payload["codex_thread_id"], "T-bind");
+    assert_eq!(projected.payload["codex_thread_status"], "started");
 
     let env = rx.recv().await.unwrap();
     assert!(env.id > 0, "bind event must be persisted for cursor replay");
@@ -217,30 +272,15 @@ async fn bind_persists_to_card_codex_threads_and_payload() {
 async fn bind_entry_clears_terminal_run_id() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
-    let card_id = seed_card(&repo, &wave_id, "term-bind-clear").await;
-    let runtime_id = new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    repo.runtime_start_tx(
-        &mut tx,
-        RuntimeInit {
-            id: runtime_id.clone(),
-            card_id: card_id.clone(),
-            kind: RuntimeKind::SharedSpec,
-            agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
-            terminal_run_id: Some("term-bind-clear".into()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let card_id =
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-bind-clear", RuntimeKind::SharedSpec)
+            .await;
+    let runtime_id = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("active runtime")
+        .id;
     registry
         .register(entry(&card_id, &wave_id, "term-bind-clear"))
         .await
@@ -263,29 +303,12 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-codex-card").await;
-    let runtime_id = new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    repo.runtime_start_tx(
-        &mut tx,
-        RuntimeInit {
-            id: runtime_id.clone(),
-            card_id: card_id.clone(),
-            kind: RuntimeKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
-            terminal_run_id: Some("term-codex-card".into()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let runtime_id = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("active runtime")
+        .id;
     registry
         .register(entry(&card_id, &wave_id, "term-codex-card"))
         .await
@@ -326,7 +349,7 @@ async fn expire_drops_abandoned_entries_past_ttl() {
 
     assert_eq!(registry.expire(Duration::from_secs(10)).await, 1);
     assert_eq!(registry.pending_count().await, 1);
-    let old_card = repo.card_get(&old).await.unwrap().expect("old card row");
+    let old_card = projected_card(&repo, &old).await;
     assert_eq!(old_card.payload["codex_thread_status"], "failed_to_spawn");
     assert_eq!(
         registry.on_thread_started("T-fresh").await.unwrap(),
@@ -335,7 +358,7 @@ async fn expire_drops_abandoned_entries_past_ttl() {
 }
 
 #[tokio::test]
-async fn ttl_expire_clears_pending_status_payload() {
+async fn ttl_expire_projects_failed_status() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-ttl").await;
@@ -347,7 +370,7 @@ async fn ttl_expire_clears_pending_status_payload() {
 
     assert_eq!(registry.expire(Duration::from_secs(10)).await, 1);
 
-    let card = repo.card_get(&card_id).await.unwrap().expect("card row");
+    let card = projected_card(&repo, &card_id).await;
     assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
     assert_eq!(registry.pending_count().await, 0);
 }
@@ -369,7 +392,7 @@ async fn expire_only_drops_pending_when_terminal_dead() {
 }
 
 #[tokio::test]
-async fn expire_dead_pending_clears_payload_status() {
+async fn expire_dead_pending_projects_failed_status() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-exit").await;
@@ -385,7 +408,7 @@ async fn expire_dead_pending_clears_payload_status() {
 
     assert_eq!(dropped, 1);
     assert_eq!(registry.pending_count().await, 0);
-    let card = repo.card_get(&card_id).await.unwrap().expect("card row");
+    let card = projected_card(&repo, &card_id).await;
     assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
 }
 
@@ -433,7 +456,7 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
         bound, None,
         "thread_id must be orphaned, not cross-attributed"
     );
-    let dead = repo.card_get(&dead_card).await.unwrap().expect("dead card");
+    let dead = projected_card(&repo, &dead_card).await;
     assert_eq!(dead.payload["codex_thread_status"], "failed_to_spawn");
     assert!(
         repo.card_codex_thread_get_by_card(&dead_card)
@@ -453,13 +476,17 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
     // When the live card's OWN thread/started arrives, it binds correctly.
     let next = registry.on_thread_started("T-live-own").await.unwrap();
     assert_eq!(next.as_deref(), Some(live_card.as_str()));
-    assert_eq!(
+    let runtime = repo
+        .runtime_get_active_for_card(&live_card)
+        .await
+        .unwrap()
+        .expect("live runtime");
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-live-own"));
+    assert!(
         repo.card_codex_thread_get_by_card(&live_card)
             .await
             .unwrap()
-            .unwrap()
-            .thread_id,
-        "T-live-own"
+            .is_none()
     );
 }
 
@@ -614,13 +641,17 @@ async fn tui_fresh_start_thread_binds_to_pending_after_kernel_initiated_skipped(
     );
 
     assert_eq!(registry.pending_count().await, 0);
-    assert_eq!(
+    let runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-tui"));
+    assert!(
         repo.card_codex_thread_get_by_card(&card_id)
             .await
             .unwrap()
-            .unwrap()
-            .thread_id,
-        "T-tui"
+            .is_none()
     );
 }
 

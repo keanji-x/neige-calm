@@ -16,7 +16,8 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, ThreadAttribution};
+use calm_server::runtime_lookup::project_runtime_into_card_payload;
+use calm_server::runtime_repo::{AgentProvider, RuntimeKind, ThreadAttribution};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use clap::Parser;
@@ -163,6 +164,14 @@ async fn spec_card(repo: &SqlxRepo, wave_id: &str) -> calm_server::model::Card {
         .expect("spec card")
 }
 
+async fn projected_spec_card(repo: &SqlxRepo, wave_id: &str) -> calm_server::model::Card {
+    let mut card = spec_card(repo, wave_id).await;
+    project_runtime_into_card_payload(repo, &mut card)
+        .await
+        .unwrap();
+    card
+}
+
 async fn runtime_status_for_card(repo: &SqlxRepo, card_id: &str) -> String {
     sqlx::query_scalar(
         "SELECT status FROM runtimes WHERE card_id = ?1 ORDER BY updated_at_ms DESC LIMIT 1",
@@ -265,18 +274,25 @@ async fn non_empty_wave_routes_spec_card_to_shared_daemon() {
     }
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
 
-    let spec = spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
+    let spec = projected_spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
     assert_eq!(spec.payload["codex_source"], "shared");
     assert_eq!(spec.payload["codex_thread_id"], "fake-thread-0001");
     assert!(spec.payload.get("appserver_pgid").is_none());
-    let mapping = boot
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(spec.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let runtime = boot
         .repo
-        .card_codex_thread_get_by_card(spec.id.as_str())
+        .runtime_get_active_for_card(&spec.id.to_string())
         .await
         .unwrap()
-        .expect("mapping");
-    assert_eq!(mapping.role, CardRole::Spec);
-    assert_eq!(mapping.thread_id, "fake-thread-0001");
+        .expect("runtime");
+    assert_eq!(runtime.kind, RuntimeKind::SharedSpec);
+    assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
     assert!(
         boot.state
             .spec_push
@@ -329,7 +345,7 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let wave_id = wave["id"].as_str().unwrap().to_string();
-    let spec = spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
+    let spec = projected_spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
     assert_eq!(spec.payload["codex_source"], "shared");
     assert!(spec.payload.get("codex_thread_id").is_none());
     assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
@@ -462,7 +478,7 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let wave_id = wave["id"].as_str().unwrap().to_string();
-    let spec = spec_card(&boot.repo, &wave_id).await;
+    let spec = projected_spec_card(&boot.repo, &wave_id).await;
     // Force the terminal row "alive" — under CI's daemon spawn pipeline the
     // PTY TUI exits quickly and reconcile/sweeper races mark the terminal
     // dead before the test asserts. The takeover SQL (intentionally) skips
@@ -485,6 +501,13 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
     assert!(reloaded.spec_push.contains(&wave_id.clone().into()));
     assert_eq!(reloaded.pending_codex_threads.pending_count().await, 1);
 
+    // The pending registry drops stale front entries at bind time. Refresh the
+    // row immediately before the synthetic thread/started so this test stays
+    // scoped to boot takeover, not terminal exit timing.
+    boot.repo
+        .terminal_set_exit(terminal_id, None, false)
+        .await
+        .unwrap();
     assert_eq!(
         reloaded
             .pending_codex_threads
@@ -494,14 +517,19 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
             .as_deref(),
         Some(spec.id.as_str())
     );
-    assert_eq!(
+    let runtime = boot
+        .repo
+        .runtime_get_active_for_card(&spec.id.to_string())
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-spec-reloaded"));
+    assert!(
         boot.repo
             .card_codex_thread_get_by_card(spec.id.as_str())
             .await
             .unwrap()
-            .unwrap()
-            .thread_id,
-        "T-spec-reloaded"
+            .is_none()
     );
 }
 
@@ -516,7 +544,7 @@ async fn empty_shared_spec_tui_spawn_failure_rolls_back_pending_state() {
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let wave_id = wave["id"].as_str().unwrap().to_string();
-    let spec = spec_card(&boot.repo, &wave_id).await;
+    let spec = projected_spec_card(&boot.repo, &wave_id).await;
 
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
@@ -645,7 +673,7 @@ async fn shared_spec_takeover_reparks_handle_and_pushes_via_shared_daemon() {
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
 
     let wave_id = wave["id"].as_str().unwrap().to_string();
-    let spec = spec_card(&boot.repo, &wave_id).await;
+    let spec = projected_spec_card(&boot.repo, &wave_id).await;
     let thread_id = spec.payload["codex_thread_id"]
         .as_str()
         .expect("shared thread id")
@@ -691,7 +719,7 @@ async fn shared_spec_takeover_reparks_handle_and_pushes_via_shared_daemon() {
 }
 
 #[tokio::test]
-async fn takeover_merges_runtime_and_legacy_legacy_wins_on_conflict() {
+async fn takeover_merges_runtime_and_legacy_runtime_wins_on_conflict() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(true).await;
     let (status, wave) =
@@ -719,5 +747,5 @@ async fn takeover_merges_runtime_and_legacy_legacy_wins_on_conflict() {
         .status(&wave_id.clone().into())
         .await
         .expect("re-parked shared pusher");
-    assert_eq!(status.last_thread_id.as_deref(), Some("thread-new"));
+    assert_eq!(status.last_thread_id.as_deref(), Some("thread-old"));
 }

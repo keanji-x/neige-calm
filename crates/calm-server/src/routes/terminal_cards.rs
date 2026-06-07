@@ -1,8 +1,8 @@
 //! `POST /api/waves/:wave_id/terminal-cards` — atomic terminal-card creation.
 //!
 //! Collapses what used to be a 3-step recipe (card-add -> terminal-create ->
-//! card-update with `terminal_id` payload) into a single endpoint, then routes
-//! the work through the operation runtime:
+//! card-update with `terminal_id` payload) into a single runtime-backed
+//! endpoint, then routes the work through the operation runtime:
 //!
 //! 1. The route derives an operation key and stable payload hash, preserving
 //!    non-idempotent semantics unless the caller supplies `Idempotency-Key`.
@@ -22,6 +22,7 @@ use crate::operation::terminal_adapter::{
     TerminalCreateOperationPayload, TerminalCreateRequestPayload, normalize_terminal_create_request,
 };
 use crate::operation::{OperationKey, OperationOutcome};
+use crate::runtime_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
@@ -44,10 +45,10 @@ pub fn router() -> Router<AppState> {
 /// Body for `POST /api/waves/:wave_id/terminal-cards`.
 ///
 /// Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
-/// stamps `{schemaVersion, terminal_id}` itself). Empty `program` falls back
-/// to `$SHELL` then `/bin/sh`; empty `cwd` falls back to `$HOME` then the
-/// server's cwd. `env` is merged into the daemon's environment as additional
-/// vars on top of `TERM` / `COLORTERM` / inherited.
+/// persists schema payload and projects identity from `runtimes`). Empty
+/// `program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to
+/// `$HOME` then the server's cwd. `env` is merged into the daemon's environment
+/// as additional vars on top of `TERM` / `COLORTERM` / inherited.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewTerminalCardBody {
     /// Sort order within the wave. `None` defaults to "append to end".
@@ -123,7 +124,8 @@ pub(crate) async fn create_terminal_card(
     match result.outcome {
         OperationOutcome::Succeeded { result }
         | OperationOutcome::SucceededViaCollision { result, .. } => {
-            let card: Card = serde_json::from_value(result)?;
+            let mut card: Card = serde_json::from_value(result)?;
+            project_runtime_into_card_payload(s.repo.as_ref(), &mut card).await?;
             Ok((StatusCode::CREATED, Json(card)))
         }
         OperationOutcome::Failed {

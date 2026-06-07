@@ -4,8 +4,11 @@ use std::collections::HashMap;
 
 use crate::db::RouteRepo;
 use crate::error::Result;
+use crate::event::Event;
 use crate::model::Card;
-use crate::runtime_repo::{AgentProvider, CardRuntime, RuntimeKind};
+use crate::runtime_repo::{
+    AgentProvider, CardRuntime, Result as RuntimeResult, RunStatus, RuntimeKind, RuntimeRepo,
+};
 
 /// Resolve an active codex thread for a card. Runtime rows are the source of
 /// truth; `card_codex_threads` is a transitional fallback for pre-backfill
@@ -96,9 +99,8 @@ pub async fn resolve_claude_session_for_card(
 }
 
 /// Merge active shared codex thread attribution from runtime rows and legacy
-/// `card_codex_threads` rows. Runtime rows are inserted first; legacy rows then
-/// overwrite by card id because the daemon-touched legacy row is the most recent
-/// active-use signal during the PR2b two-write reset window.
+/// `card_codex_threads` rows. Runtime rows are the source of truth; legacy rows
+/// only fill cards that still have no active runtime attribution.
 pub async fn merge_active_shared_thread_attribution(
     repo: &dyn RouteRepo,
 ) -> Result<HashMap<String, String>> {
@@ -119,13 +121,15 @@ pub async fn merge_active_shared_thread_attribution(
                     card_id = %row.card_id,
                     runtime_thread = %runtime_thread,
                     legacy_thread = %row.thread_id,
-                    "runtime and legacy shared thread attribution disagree; using legacy"
+                    "runtime and legacy shared thread attribution disagree; using runtime"
                 );
             }
-            None => legacy_fallbacks += 1,
-            _ => {}
+            Some(_) => {}
+            None => {
+                legacy_fallbacks += 1;
+                merged.insert(row.card_id, row.thread_id);
+            }
         }
-        merged.insert(row.card_id, row.thread_id);
     }
     if legacy_fallbacks > 0 {
         tracing::warn!(
@@ -136,6 +140,114 @@ pub async fn merge_active_shared_thread_attribution(
     }
 
     Ok(merged)
+}
+
+/// Project active runtime identity onto a `Card`'s payload for API/WS compatibility.
+///
+/// Until the frontend reads directly from runtime fields, the payload must still
+/// carry `terminal_id`, `claude_session_id`, `codex_thread_id`, `codex_source`,
+/// and `codex_thread_status` for in-flight UI cases. This helper looks up the
+/// projectable runtime and patches those keys into payload before serialization.
+///
+/// Idempotent — never overwrites a key that already exists in payload (for tests
+/// or migrations that pre-seed). Safe to call repeatedly.
+pub async fn project_runtime_into_card_payload<R: RuntimeRepo + ?Sized>(
+    repo: &R,
+    card: &mut Card,
+) -> RuntimeResult<()> {
+    let Some(runtime) = repo
+        .runtime_get_projectable_for_card(&card.id.to_string())
+        .await?
+    else {
+        return Ok(());
+    };
+    project_runtime_fields(card, &runtime);
+    Ok(())
+}
+
+pub async fn project_runtime_into_cards_payload<R: RuntimeRepo + ?Sized>(
+    repo: &R,
+    cards: &mut [Card],
+) -> RuntimeResult<()> {
+    let card_ids = cards
+        .iter()
+        .map(|card| card.id.to_string())
+        .collect::<Vec<_>>();
+    let runtimes = repo.runtime_get_projectable_for_cards(&card_ids).await?;
+    for card in cards {
+        if let Some(runtime) = runtimes.get(&card.id.to_string()) {
+            project_runtime_fields(card, runtime);
+        }
+    }
+    Ok(())
+}
+
+pub async fn project_runtime_into_event_payload<R: RuntimeRepo + ?Sized>(
+    repo: &R,
+    event: &mut Event,
+) -> RuntimeResult<()> {
+    match event {
+        Event::CardAdded(card) | Event::CardUpdated(card) => {
+            project_runtime_into_card_payload(repo, card).await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
+    let Some(map) = card.payload.as_object_mut() else {
+        return;
+    };
+
+    if let Some(terminal_id) = non_empty(runtime.terminal_run_id.as_deref()) {
+        insert_missing_string(map, "terminal_id", terminal_id);
+    }
+
+    if runtime.kind == RuntimeKind::ClaudeCard
+        && let Some(session_id) = non_empty(runtime.session_id.as_deref())
+    {
+        insert_missing_string(map, "claude_session_id", session_id);
+    }
+
+    if matches!(
+        runtime.kind,
+        RuntimeKind::CodexCard | RuntimeKind::SharedSpec
+    ) && let Some(thread_id) = non_empty(runtime.thread_id.as_deref())
+    {
+        insert_missing_string(map, "codex_thread_id", thread_id);
+    }
+
+    if runtime.kind == RuntimeKind::SharedSpec {
+        insert_missing_string(map, "codex_source", "shared");
+    }
+
+    if matches!(
+        runtime.kind,
+        RuntimeKind::CodexCard | RuntimeKind::SharedSpec
+    ) {
+        match runtime.status {
+            RunStatus::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
+                insert_missing_string(map, "codex_thread_status", "pending_thread_start");
+            }
+            RunStatus::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
+                insert_missing_string(map, "codex_thread_status", "failed_to_spawn");
+            }
+            RunStatus::Running if non_empty(runtime.thread_id.as_deref()).is_some() => {
+                insert_missing_string(map, "codex_thread_status", "started");
+            }
+            _ => {}
+        }
+    }
+}
+
+fn insert_missing_string(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: &str,
+) {
+    map.entry(key.to_string())
+        .or_insert_with(|| serde_json::Value::String(value.to_string()));
 }
 
 /// Runtime-first shared-codex discriminator. When no active runtime is

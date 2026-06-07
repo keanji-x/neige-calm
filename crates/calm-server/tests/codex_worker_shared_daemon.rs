@@ -11,7 +11,9 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{CardRole, NewCove, NewWave};
+use calm_server::model::{NewCove, NewWave};
+use calm_server::runtime_lookup::project_runtime_into_cards_payload;
+use calm_server::runtime_repo::RuntimeKind;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -303,7 +305,7 @@ async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
 }
 
 #[tokio::test]
-async fn worker_via_shared_daemon_persists_thread_mapping() {
+async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     let _guard = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();
     let capture_file = capture.path().join("requests.ndjson");
@@ -314,34 +316,43 @@ async fn worker_via_shared_daemon_persists_thread_mapping() {
     let _dispatcher = spawn_dispatcher(&boot);
     dispatch(&boot, "shared-worker-1", "do shared worker thing").await;
     let card = wait_for(Duration::from_secs(5), || async {
-        let cards = boot
+        let mut cards = boot
             .repo
             .cards_by_wave(boot.wave_id.as_str())
             .await
             .unwrap();
+        project_runtime_into_cards_payload(boot.repo.as_ref(), &mut cards)
+            .await
+            .unwrap();
         cards.into_iter().find(|c| {
             c.payload.get("idempotency_key").and_then(Value::as_str) == Some("shared-worker-1")
-                && c.payload.get("codex_source").and_then(Value::as_str) == Some("shared")
         })
     })
     .await
-    .expect("shared worker card with runtime markers");
+    .expect("shared worker card");
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
 
-    assert_eq!(card.payload["codex_source"], "shared");
+    assert!(card.payload.get("codex_source").is_none());
     assert_eq!(card.payload["codex_thread_id"], "fake-thread-0001");
     assert_eq!(card.payload["appserver_sock"], boot.shared.remote_uri());
     assert!(card.payload.get("appserver_pgid").is_none());
-    let mapping = boot
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(card.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let runtime = boot
         .repo
-        .card_codex_thread_get_by_card(card.id.as_str())
+        .runtime_get_active_for_card(&card.id.to_string())
         .await
         .unwrap()
-        .expect("mapping");
-    assert_eq!(mapping.role, CardRole::Worker);
-    assert_eq!(mapping.thread_id, "fake-thread-0001");
+        .expect("runtime");
+    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
     let terminal_id = card.payload["terminal_id"].as_str().unwrap();
     let entry = wait_for(Duration::from_secs(3), || async {
         boot.renderer.get(terminal_id)
