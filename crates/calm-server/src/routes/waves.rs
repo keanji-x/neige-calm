@@ -890,7 +890,6 @@ async fn create_wave_with_spec_harness(
     let actor_for_hash = actor.as_str().to_string();
     let actor_id = actor.to_actor_id();
     let write_for_tx = s.write.clone();
-    let spec_card_id_for_tx = spec_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
     let cove_id_for_attach = body_cove_id;
     let normalized_cwd_for_tx = normalized_cwd;
@@ -931,28 +930,6 @@ async fn create_wave_with_spec_harness(
                 )
                 .await?;
 
-                let layout_overlay = overlay_upsert_tx(
-                    tx,
-                    NewOverlay {
-                        plugin_id: "kernel".into(),
-                        entity_kind: "view".into(),
-                        entity_id: wave_id.as_str().to_string(),
-                        kind: "layout".into(),
-                        payload: serde_json::json!({
-                            "schemaVersion": 1,
-                            "positions": {
-                                spec_card_id_for_tx.as_str(): {
-                                    "x": 0, "y": 0, "w": 6, "h": 12
-                                },
-                                report_card_id_for_tx.as_str(): {
-                                    "x": 6, "y": 0, "w": 6, "h": 12
-                                }
-                            }
-                        }),
-                    },
-                )
-                .await?;
-
                 let wave_scope = EventScope::Wave {
                     wave: wave_id.clone(),
                     cove: cove_id.clone(),
@@ -963,9 +940,8 @@ async fn create_wave_with_spec_harness(
                     cove: cove_id,
                 };
                 let events = vec![
-                    (wave_scope.clone(), Event::WaveUpdated(wave.clone())),
+                    (wave_scope, Event::WaveUpdated(wave.clone())),
                     (report_card_scope, Event::CardAdded(report_card)),
-                    (wave_scope, Event::OverlaySet(layout_overlay)),
                 ];
                 Ok(((wave,), events))
             })
@@ -978,6 +954,7 @@ async fn create_wave_with_spec_harness(
         actor: actor_id,
         wave_id: wave.id.to_string(),
         card_id: Some(spec_card_id.clone()),
+        report_card_id: Some(report_card_id),
         sort: None,
         cwd: wave.cwd.clone(),
         goal: (!goal.is_empty()).then_some(goal),

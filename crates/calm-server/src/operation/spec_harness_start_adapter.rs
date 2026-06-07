@@ -7,17 +7,17 @@ use serde_json::{Value, json};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, event_append_for_operation_tx,
-    runtime_bind_attribution_tx, runtime_start_tx,
+    overlay_upsert_tx, runtime_bind_attribution_tx, runtime_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
-use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
+use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
     SpecHarnessParams, initial_snapshot_with_goal,
 };
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{CardPatch, CardRole, NewCard, new_id, now_ms};
+use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id, now_ms};
 use crate::routes::cards::card_scope;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
@@ -74,6 +74,8 @@ pub struct SpecHarnessStartOperationPayload {
     #[serde(default)]
     pub card_id: Option<String>,
     #[serde(default)]
+    pub report_card_id: Option<String>,
+    #[serde(default)]
     pub sort: Option<f64>,
     pub cwd: String,
     #[serde(default)]
@@ -120,6 +122,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = payload.card_id.unwrap_or_else(new_id);
         let wave_id = payload.wave_id;
+        let report_card_id = payload.report_card_id;
         let snapshot = initial_snapshot_with_goal(payload.goal.clone());
         let mut card_payload = serde_json::Map::new();
         card_payload.insert(
@@ -191,6 +194,44 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         }
         let event_id =
             event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
+        let layout_envelope = if let Some(report_card_id) =
+            non_empty_optional_string(report_card_id.as_deref())
+        {
+            let wave_scope = wave_scope_from_card_scope(&scope)?;
+            let layout_overlay = overlay_upsert_tx(
+                tx,
+                NewOverlay {
+                    plugin_id: "kernel".into(),
+                    entity_kind: "view".into(),
+                    entity_id: wave_id.clone(),
+                    kind: "layout".into(),
+                    payload: layout_payload(card.id.as_str(), report_card_id),
+                },
+            )
+            .await?;
+            let layout_event = Event::OverlaySet(layout_overlay);
+            if let Err(violation) = crate::role_gate::enforce_role(
+                &payload.actor,
+                &layout_event,
+                &wave_scope,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+            ) {
+                return Err(CalmError::Forbidden(violation.to_string()));
+            }
+            let layout_event_id =
+                event_append_for_operation_tx(tx, &payload.actor, &wave_scope, None, &layout_event)
+                    .await?;
+            Some(BroadcastEnvelope {
+                id: layout_event_id,
+                event_version: SYNC_EVENT_VERSION,
+                actor: payload.actor.clone(),
+                scope: wave_scope,
+                event: layout_event,
+            })
+        } else {
+            None
+        };
 
         let mut output = TxOutput::new(
             "card",
@@ -203,15 +244,19 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             "runtime_id": runtime.id,
             "cwd": payload.cwd,
             "goal": payload.goal,
+            "report_card_id": report_card_id,
             "snapshot": snapshot,
         });
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
-            actor: payload.actor,
+            actor: payload.actor.clone(),
             scope,
             event,
         });
+        if let Some(envelope) = layout_envelope {
+            output.post_commit_events.push(envelope);
+        }
         Ok(output)
     }
 
@@ -226,6 +271,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = output_string(output, "wave_id")?;
         let runtime_id = output_string(output, "runtime_id")?;
         let cwd = output_string(output, "cwd")?;
+        if let Some(existing) = output_existing_thread_id(output)? {
+            return Ok(AppServerInteractOutcome::MintedAndAwaited {
+                thread_id: existing,
+            });
+        }
         let developer_instructions = crate::spec_card::render_system_prompt(
             crate::spec_card::SeededCardRole::Spec.prompt_template(),
             &wave_id,
@@ -372,6 +422,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
     ) -> Result<CompensationStateVersioned> {
         let card_id = output_string(output, "card_id")?;
         let runtime_id = output_string(output, "runtime_id")?;
+        let wave_id = output_string(output, "wave_id")?;
         let mut steps = Vec::new();
         if matches!(
             from_phase,
@@ -391,6 +442,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 json!({
                     "card_id": card_id,
                     "thread_id": output_optional_string(output, "codex_thread_id")?,
+                }),
+            ));
+        }
+        if output_optional_string(output, "report_card_id")?.is_some() {
+            steps.push(step(
+                "remove_layout_position",
+                json!({
+                    "wave_id": wave_id,
+                    "card_id": card_id,
                 }),
             ));
         }
@@ -443,6 +503,18 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         Ok(())
                     })
                 })
+                .await
+            }
+            "remove_layout_position" => {
+                let wave_id = step_arg_string(step, "wave_id")?;
+                let card_id = step_arg_string(step, "card_id")?;
+                remove_layout_position(
+                    ctx,
+                    &self.card_role_cache,
+                    &self.wave_cove_cache,
+                    &wave_id,
+                    &card_id,
+                )
                 .await
             }
             "delete_card" => {
@@ -503,11 +575,102 @@ fn output_optional_string(output: &TxOutput, key: &str) -> Result<Option<String>
     }
 }
 
+fn output_existing_thread_id(output: &TxOutput) -> Result<Option<String>> {
+    Ok(output_optional_string(output, "codex_thread_id")?.filter(|id| !id.trim().is_empty()))
+}
+
 fn set_output_data(output: &mut TxOutput, key: &str, value: Value) -> Result<()> {
     let obj = output.data.as_object_mut().ok_or_else(|| {
         CalmError::Internal("spec harness tx_output data is not an object".into())
     })?;
     obj.insert(key.to_string(), value);
+    Ok(())
+}
+
+fn non_empty_optional_string(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn wave_scope_from_card_scope(scope: &EventScope) -> Result<EventScope> {
+    match scope {
+        EventScope::Card { wave, cove, .. } => Ok(EventScope::Wave {
+            wave: wave.clone(),
+            cove: cove.clone(),
+        }),
+        other => Err(CalmError::Internal(format!(
+            "spec harness start expected card scope, got {other:?}"
+        ))),
+    }
+}
+
+fn layout_payload(spec_card_id: &str, report_card_id: &str) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "positions": {
+            spec_card_id: {
+                "x": 0, "y": 0, "w": 6, "h": 12
+            },
+            report_card_id: {
+                "x": 6, "y": 0, "w": 6, "h": 12
+            }
+        }
+    })
+}
+
+async fn remove_layout_position(
+    ctx: &SpawnCtx,
+    card_role_cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
+    wave_id: &str,
+    card_id: &str,
+) -> Result<()> {
+    let Some(wave) = ctx.repo.wave_get(wave_id).await? else {
+        return Ok(());
+    };
+    let Some(layout) = ctx
+        .repo
+        .overlays_for("view", wave_id)
+        .await?
+        .into_iter()
+        .find(|overlay| overlay.plugin_id == "kernel" && overlay.kind == "layout")
+    else {
+        return Ok(());
+    };
+    let mut payload = layout.payload;
+    let Some(positions) = payload.get_mut("positions").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    if positions.remove(card_id).is_none() {
+        return Ok(());
+    }
+
+    let scope = EventScope::Wave {
+        wave: wave.id,
+        cove: wave.cove_id,
+    };
+    let overlay = NewOverlay {
+        plugin_id: layout.plugin_id,
+        entity_kind: layout.entity_kind,
+        entity_id: layout.entity_id,
+        kind: layout.kind,
+        payload,
+    };
+    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let (_updated, _id) = write_with_event_typed(
+        ctx.repo.as_ref(),
+        ActorId::Kernel,
+        scope,
+        None,
+        &ctx.events,
+        &write,
+        move |tx| {
+            Box::pin(async move {
+                let overlay = overlay_upsert_tx(tx, overlay).await?;
+                Ok((overlay.clone(), Event::OverlaySet(overlay)))
+            })
+        },
+    )
+    .await?;
     Ok(())
 }
 

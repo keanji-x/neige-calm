@@ -165,9 +165,11 @@ async fn idle_to_turn_running_to_completed() {
         HarnessConfig::default(),
     )
     .await;
-    harness.observe(Observation::WaveGoal {
-        text: "Read the wave goal.".into(),
-    });
+    harness
+        .observe(Observation::WaveGoal {
+            text: "Read the wave goal.".into(),
+        })
+        .unwrap();
     let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
     let turn_id = match running {
         HarnessState::TurnRunning { turn_id, .. } => turn_id,
@@ -244,10 +246,12 @@ async fn turn_start_error_rolls_back_and_rebuffers() {
         HarnessConfig::default(),
     )
     .await;
-    harness.observe(Observation::TaskFailed {
-        idempotency_key: "task-1".into(),
-        error: "boom".into(),
-    });
+    harness
+        .observe(Observation::TaskFailed {
+            idempotency_key: "task-1".into(),
+            error: "boom".into(),
+        })
+        .unwrap();
     wait_for_state(&harness, |s| {
         matches!(s, HarnessState::TurnCompleted { .. })
     })
@@ -370,6 +374,50 @@ async fn interrupt_target_completed_status_clears_watchdog() {
         matches!(
             s,
             HarnessState::TurnCompleted { last_turn_id } if last_turn_id == "turn-race"
+        )
+    })
+    .await;
+    assert!(matches!(state, HarnessState::TurnCompleted { .. }));
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupt_target_aborted_notification_clears_watchdog() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let (_repo, harness, _runtime_id, thread_id) = harness_with(
+        repo,
+        daemon.clone(),
+        HarnessPhaseTag::Idle,
+        HarnessConfig::default(),
+    )
+    .await;
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id: "turn-aborted".into(),
+            started_at: Instant::now(),
+        })
+        .await;
+    harness.interrupt("manual".into()).await.unwrap();
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::Issuing {
+            kind: calm_server::harness::IssuingKind::Interrupt { .. },
+            ..
+        }
+    ));
+
+    daemon.emit_notification_for_test(Notification::Other {
+        method: "turn/aborted".into(),
+        params: json!({
+            "threadId": thread_id,
+            "turnId": "turn-aborted",
+        }),
+    });
+    let state = wait_for_state(&harness, |s| {
+        matches!(
+            s,
+            HarnessState::TurnCompleted { last_turn_id } if last_turn_id == "turn-aborted"
         )
     })
     .await;

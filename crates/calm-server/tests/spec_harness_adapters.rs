@@ -84,6 +84,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         actor: calm_server::ids::ActorId::User,
         wave_id: wave.id.to_string(),
         card_id: Some(card_id.clone()),
+        report_card_id: None,
         sort: None,
         cwd: wave.cwd.clone(),
         goal: Some("adapter goal".into()),
@@ -164,4 +165,78 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
     let stored = repo.runtime_get_by_id(&runtime.id).await.unwrap().unwrap();
     assert_eq!(stored.status, RunStatus::Superseded);
     assert!(state.harness.get(&runtime.id).is_none());
+}
+
+#[tokio::test]
+async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
+    let (state, repo) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        card_id: Some(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: Some("adapter goal".into()),
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let first_thread = repo
+        .card_codex_thread_get_by_card(&card_id)
+        .await
+        .unwrap()
+        .expect("thread row")
+        .thread_id;
+    assert_eq!(first_thread, "fake-thread-0001");
+
+    sqlx::query(
+        r#"UPDATE operations
+              SET phase = 'app_server_interact',
+                  phase_detail_json = ?1,
+                  lease_owner = NULL,
+                  lease_until_ms = NULL,
+                  completed_at_ms = NULL
+            WHERE id = ?2"#,
+    )
+    .bind(
+        serde_json::to_string(&serde_json::json!({
+            "kind": "mint_and_await",
+            "thread_id": first_thread,
+        }))
+        .unwrap(),
+    )
+    .bind(&op_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    state.operation_runtime.drive().await.unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let recovered_thread = repo
+        .card_codex_thread_get_by_card(&card_id)
+        .await
+        .unwrap()
+        .expect("thread row after recovery")
+        .thread_id;
+    assert_eq!(recovered_thread, "fake-thread-0001");
+    assert!(
+        state
+            .shared_codex_appserver
+            .cached_card_for_thread("fake-thread-0002")
+            .is_none(),
+        "recovery must not mint a second spec thread"
+    );
 }
