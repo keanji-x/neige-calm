@@ -15,6 +15,8 @@ use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::routes::theme::RequestTheme;
+use calm_server::runtime_lookup::project_runtime_into_card_payload;
+use calm_server::runtime_repo::RuntimeKind;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use clap::Parser;
@@ -603,7 +605,7 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
 }
 
 #[tokio::test]
-async fn shared_reset_swaps_thread_mapping_and_persists_new_thread_id() {
+async fn shared_reset_writes_runtime_and_projects_new_thread_id() {
     let _guard = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();
     let capture_file = capture.path().join("requests.ndjson");
@@ -632,14 +634,26 @@ async fn shared_reset_swaps_thread_mapping_and_persists_new_thread_id() {
         .card_codex_thread_get_by_card(card.id.as_str())
         .await
         .unwrap()
-        .expect("new shared mapping");
+        .expect("#524 reset path writes legacy mapping atomically with runtime");
     assert_eq!(mapping.thread_id, "fake-thread-0001");
-    assert_eq!(mapping.role, CardRole::Spec);
-    let got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(got.payload["codex_source"], json!("shared"));
-    assert_eq!(got.payload["codex_thread_id"], json!("fake-thread-0001"));
+    let runtime = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime");
+    assert_eq!(runtime.kind, RuntimeKind::SharedSpec);
+    assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
+    let mut got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
+    assert!(got.payload.get("codex_source").is_none());
+    assert!(got.payload.get("codex_thread_id").is_none());
     assert_eq!(got.payload["push_watermark"], json!(42));
     assert!(got.payload.get("appserver_pgid").is_none());
+    project_runtime_into_card_payload(boot.repo.as_ref(), &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got.payload["codex_source"], json!("shared"));
+    assert_eq!(got.payload["codex_thread_id"], json!("fake-thread-0001"));
 
     let entry = boot
         .state

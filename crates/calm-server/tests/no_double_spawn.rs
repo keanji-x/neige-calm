@@ -33,6 +33,8 @@ use calm_server::operation::{
 };
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::runtime_lookup::project_runtime_into_card_payload;
+use calm_server::runtime_repo::RuntimeKind;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use futures::future::BoxFuture;
@@ -914,22 +916,80 @@ async fn codex_empty_concurrent_creates_bind_fifo_to_spawn_order() {
 
     for card_id in [&card_a, &card_b] {
         let expected_thread_id = format!("thread-for-{card_id}");
-        let mapping = boot
-            .repo
-            .card_codex_thread_get_by_card(card_id)
-            .await
-            .unwrap()
-            .expect("mapping row");
-        assert_eq!(mapping.thread_id, expected_thread_id);
-        let card = boot
+        assert!(
+            boot.repo
+                .card_codex_thread_get_by_card(card_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "runtime-only codex-create must not persist a legacy mapping"
+        );
+        assert_active_codex_runtime_thread(&boot, card_id, &expected_thread_id).await;
+        let mut card = boot
             .repo
             .card_get(card_id)
             .await
             .unwrap()
             .expect("card row");
+        assert!(card.payload.get("codex_thread_id").is_none());
+        project_runtime_into_card_payload(boot.repo.as_ref(), &mut card)
+            .await
+            .unwrap();
         assert_eq!(card.payload["codex_thread_id"], expected_thread_id);
         assert_eq!(card.payload["codex_thread_status"], "started");
     }
+}
+
+async fn assert_active_codex_runtime_thread(boot: &Boot, card_id: &str, expected_thread_id: &str) {
+    let runtime = boot
+        .repo
+        .runtime_get_active_for_card(&card_id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime row");
+    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.thread_id.as_deref(), Some(expected_thread_id));
+}
+
+async fn assert_projected_codex_thread(
+    boot: &Boot,
+    card_id: &str,
+    expected_thread_id: &str,
+    expected_status: &str,
+) {
+    assert_active_codex_runtime_thread(boot, card_id, expected_thread_id).await;
+    let mut card = boot
+        .repo
+        .card_get(card_id)
+        .await
+        .unwrap()
+        .expect("card row");
+    project_runtime_into_card_payload(boot.repo.as_ref(), &mut card)
+        .await
+        .unwrap();
+    assert_eq!(card.payload["codex_thread_id"], expected_thread_id);
+    assert_eq!(card.payload["codex_thread_status"], expected_status);
+}
+
+async fn assert_no_legacy_codex_thread_mapping(boot: &Boot, card_id: &str) {
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(card_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "runtime-only codex-create must not persist a legacy mapping"
+    );
+}
+
+async fn assert_raw_payload_has_no_codex_thread_id(boot: &Boot, card_id: &str) {
+    let card = boot
+        .repo
+        .card_get(card_id)
+        .await
+        .unwrap()
+        .expect("card row");
+    assert!(card.payload.get("codex_thread_id").is_none());
 }
 
 #[tokio::test]
@@ -1470,13 +1530,9 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
     let phase: String = row.try_get("phase").unwrap();
     assert_eq!(phase, "succeeded");
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
-    let mapping = boot
-        .repo
-        .card_codex_thread_get_by_card(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("mapping row");
-    assert_eq!(mapping.thread_id, "fake-thread-0001");
+    assert_no_legacy_codex_thread_mapping(&boot, card.id.as_str()).await;
+    assert_raw_payload_has_no_codex_thread_id(&boot, card.id.as_str()).await;
+    assert_projected_codex_thread(&boot, card.id.as_str(), "fake-thread-0001", "started").await;
 }
 
 #[tokio::test]
@@ -1570,13 +1626,7 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
     let phase: String = row.try_get("phase").unwrap();
     assert_eq!(phase, "succeeded");
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
-    let mapping = boot
-        .repo
-        .card_codex_thread_get_by_card(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("mapping row");
-    assert_eq!(mapping.thread_id, "T-original");
+    assert_active_codex_runtime_thread(&boot, card.id.as_str(), "T-original").await;
     assert!(
         boot.repo
             .card_codex_thread_get_by_thread("fake-thread-0001")
@@ -1585,13 +1635,7 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
             .is_none(),
         "recovery must not mint a second shared thread"
     );
-    let card = boot
-        .repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card row");
-    assert_eq!(card.payload["codex_thread_id"], "T-original");
+    assert_projected_codex_thread(&boot, card.id.as_str(), "T-original", "started").await;
 }
 
 #[tokio::test]
@@ -2050,14 +2094,7 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
             .await
             .unwrap()
     );
-    let card = boot
-        .repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card row");
-    assert_eq!(card.payload["codex_thread_status"], "started");
-    assert_eq!(card.payload["codex_thread_id"], "T-empty");
+    assert_projected_codex_thread(&boot, card.id.as_str(), "T-empty", "started").await;
 }
 
 #[tokio::test]

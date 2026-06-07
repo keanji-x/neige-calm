@@ -8,12 +8,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::runtime_lookup::project_runtime_into_cards_payload;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use clap::Parser;
@@ -115,7 +117,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
     );
-    home.seed().unwrap();
+    home.seed_from(None).unwrap();
     let pending = Arc::new(PendingThreadStartRegistry::new(
         repo.clone(),
         events.clone(),
@@ -250,7 +252,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
 }
 
 #[tokio::test]
-async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
+async fn create_prompt_card_writes_runtime_and_projects_thread_id() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot().await;
     let (status, card) = post(
@@ -263,14 +265,24 @@ async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
 
     let card_id = card["id"].as_str().unwrap();
     assert_eq!(card["payload"]["codex_thread_id"], "fake-thread-0001");
-    let mapping = boot
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Use projectable (broadened to include terminal-status rows) so the
+    // assertion is robust to CI-only timing where the codex TUI fixture
+    // exits quickly → attach_reader marks runtime Exited before this read.
+    let runtime = boot
         .repo
-        .card_codex_thread_get_by_card(card_id)
+        .runtime_get_projectable_for_card(&card_id.to_string())
         .await
         .unwrap()
-        .expect("mapping row");
-    assert_eq!(mapping.thread_id, "fake-thread-0001");
-    assert_eq!(mapping.wave_id.as_deref(), Some(boot.wave_id.as_str()));
+        .expect("runtime row");
+    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
 }
 
 #[tokio::test]
@@ -446,7 +458,10 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
-    let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let mut failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    project_runtime_into_cards_payload(boot.repo.as_ref(), &mut failed_cards)
+        .await
+        .unwrap();
     assert_eq!(failed_cards.len(), 1);
     assert_eq!(
         failed_cards[0].payload["codex_thread_status"], "failed_to_spawn",
@@ -602,7 +617,10 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={failed:?}");
     let pending = &boot.state.pending_codex_threads;
     assert_eq!(pending.pending_count().await, 0);
-    let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let mut failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    project_runtime_into_cards_payload(boot.repo.as_ref(), &mut failed_cards)
+        .await
+        .unwrap();
     assert_eq!(failed_cards.len(), 1);
     assert_eq!(
         failed_cards[0].payload["codex_thread_status"], "failed_to_spawn",
@@ -631,6 +649,28 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         .await
         .unwrap();
     let card_id = card.id.to_string();
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: calm_server::model::new_id(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some(terminal.id.to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     pending
         .register(PendingEntry::new(
             card_id.clone(),
@@ -646,14 +686,19 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
             .await
             .unwrap()
     );
-    assert_eq!(
+    let runtime = boot
+        .repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-new"));
+    assert!(
         boot.repo
             .card_codex_thread_get_by_thread("T-new")
             .await
             .unwrap()
-            .expect("new mapping")
-            .card_id,
-        card_id
+            .is_none()
     );
 }
 

@@ -7,10 +7,11 @@
 //!
 //! 1. Inside one DB transaction, `card_with_codex_create_tx` writes the
 //!    `codex`-kind card, linked `terminal` row, and initial `Starting`
-//!    runtime row, stamping `{schemaVersion, terminal_id, cwd?}` onto the
-//!    card payload. The transaction also persists the `card.added` event
-//!    with the final payload, so a single broadcast carries the fully-formed
-//!    card to peers — no `card.updated` follow-up, no intermediate
+//!    runtime row. The card payload keeps schema/UI fields; API/WS reads
+//!    project legacy identity fields from `runtimes`. The transaction also
+//!    persists the `card.added` event with the final payload, so a single
+//!    broadcast carries the fully-formed card to peers — no `card.updated`
+//!    follow-up, no intermediate
 //!    `payload=null` flash for the renderer's "Codex is starting…"
 //!    placeholder to react to.
 //! 2. After commit, the handler starts the terminal renderer via the same
@@ -34,6 +35,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
+use crate::runtime_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
@@ -52,14 +54,13 @@ pub fn router() -> Router<AppState> {
 /// Body for `POST /api/waves/:wave_id/codex-cards`.
 ///
 /// Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
-/// stamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty
+/// persists schema/UI fields and projects identity from `runtimes`). Empty
 /// `cwd` falls back to `$HOME` then the server's cwd.
 ///
 /// `prompt` is the hands-free entry point: when non-empty, the kernel starts
-/// a shared thread,
-/// persists its id on both the payload and `card_codex_threads`, sends the
-/// prompt via `turn/start`, waits for `turn/started` or `turn/completed`,
-/// and starts the TUI as `codex resume <thread_id> --remote unix://...`.
+/// a shared thread, binds it to the runtime row, sends the prompt via
+/// `turn/start`, waits for `turn/started` or `turn/completed`, and starts
+/// the TUI as `codex resume <thread_id> --remote unix://...`.
 ///
 /// Empty / absent `prompt` reverts to the user-initiated flow: codex
 /// boots through the shared remote, the composer is empty, the user types
@@ -161,7 +162,8 @@ pub(crate) async fn create_codex_card(
     match result.outcome {
         OperationOutcome::Succeeded { result }
         | OperationOutcome::SucceededViaCollision { result, .. } => {
-            let card: Card = serde_json::from_value(result)?;
+            let mut card: Card = serde_json::from_value(result)?;
+            project_runtime_into_card_payload(s.repo.as_ref(), &mut card).await?;
             Ok((StatusCode::CREATED, Json(card)))
         }
         OperationOutcome::Failed {

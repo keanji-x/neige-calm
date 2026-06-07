@@ -10,7 +10,7 @@ use crate::db::sqlite::{card_with_claude_create_tx, event_append_for_operation_t
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{CardRole, new_id};
+use crate::model::{Card, CardRole, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
 use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
@@ -318,7 +318,12 @@ impl ProviderAdapter for ClaudeAdapter {
             request.theme,
         )
         .await?;
-        let event = Event::CardAdded(card.clone());
+        let projected_card = project_claude_runtime_fields_for_response(
+            card.clone(),
+            &term.id,
+            &request.claude_session_id,
+        );
+        let event = Event::CardAdded(projected_card.clone());
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
             &event,
@@ -334,7 +339,7 @@ impl ProviderAdapter for ClaudeAdapter {
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
-            serde_json::to_value(&card)?,
+            serde_json::to_value(&projected_card)?,
         );
         output.data = json!({
             "card_id": card.id,
@@ -499,6 +504,20 @@ impl ProviderAdapter for ClaudeAdapter {
             ))),
         }
     }
+}
+
+fn project_claude_runtime_fields_for_response(
+    mut card: Card,
+    terminal_id: &str,
+    claude_session_id: &str,
+) -> Card {
+    if let Some(map) = card.payload.as_object_mut() {
+        map.entry("terminal_id".to_string())
+            .or_insert_with(|| Value::String(terminal_id.to_string()));
+        map.entry("claude_session_id".to_string())
+            .or_insert_with(|| Value::String(claude_session_id.to_string()));
+    }
+    card
 }
 
 fn settings_path_parent(path: &Path) -> Result<PathBuf> {

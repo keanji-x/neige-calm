@@ -78,6 +78,7 @@ use crate::pending_codex_threads::PendingEntry;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::load_settings;
+use crate::runtime_lookup::project_runtime_into_cards_payload;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SharedStatus, SpecPushPhase, SpecPushStatus, TurnWatchdogConfig};
@@ -231,6 +232,7 @@ pub(crate) async fn get_wave_detail(
     // PR #214 guard for the wave-rendering path while still being correctly
     // filtered from `GET /api/overlays`. PR #214 review follow-up.
     detail.overlays = crate::routes::overlays::filter_unsupported_overlay_versions(detail.overlays);
+    project_runtime_into_cards_payload(s.repo.as_ref(), &mut detail.cards).await?;
     Ok(Json(detail))
 }
 
@@ -714,10 +716,10 @@ pub(crate) async fn create_wave(
     // #293/#419 cutover — push is the ONLY path. Non-empty waves drive
     // DECISION A's blocking sequence: boot the kernel-owned `codex
     // app-server`, run turn #1, await its initial lifecycle notification,
-    // persist `codex_thread_id` + `appserver_sock`, park the handle, then
+    // persist runtime identity + `appserver_sock`, park the handle, then
     // spawn the PTY daemon in resume mode. Empty-title waves boot only the
-    // app-server, persist runtime fields without `codex_thread_id`, park a
-    // pending handle, and spawn `codex --remote <sock>` so the TUI
+    // app-server, persist a pending runtime, park a pending handle, and spawn
+    // `codex --remote <sock>` so the TUI
     // fresh-starts the thread. There is no legacy bare-`codex '<title>'`
     // path anymore.
     //
@@ -731,10 +733,10 @@ pub(crate) async fn create_wave(
     // backstop firing across socket connect, WS handshake, initialize,
     // turn setup, or the initial lifecycle wait — we DO NOT return 500.
     // on the error arm we simply `warn!` that the spec agent couldn't start,
-    // SKIP the `codex_thread_id` persist + registry insert + `--remote` TUI
-    // spawn, and return **201 with the created wave**. The wave/spec-card/
-    // report/terminal rows already committed stay; the spec card simply has
-    // no `codex_thread_id` and no running daemon (inert / not-running,
+    // SKIP runtime binding + registry insert + `--remote` TUI spawn, and
+    // return **201 with the created wave**. The wave/spec-card/report/terminal
+    // rows already committed stay; the spec card simply has no projected
+    // `codex_thread_id` and no running daemon (inert / not-running,
     // recoverable by retry or delete).
     // The dispatcher's missing-handle path already warns (no crash), so an
     // inert wave is safe. Pre-cutover the PTY path tolerated codex failing
@@ -904,10 +906,10 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             }
             return Err(e);
         }
-        // Empty-goal path: thread is fresh-started by TUI; payload needs the
-        // shared marker stamped here without a thread_id before the pending
-        // FIFO mutates. If this persist fails, no stale pending entry can
-        // consume a later unrelated thread/started notification.
+        // Empty-goal path: thread is fresh-started by TUI; the shared-spec
+        // runtime row must land before the pending FIFO mutates. If this
+        // persist fails, no stale pending entry can consume a later unrelated
+        // thread/started notification.
         persist_shared_spec_runtime_fields(
             s,
             cs,
@@ -935,10 +937,8 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         );
         let thread_id = cs
             .shared_codex_appserver
-            .thread_start_for_card(
+            .thread_start_mint_for_card(
                 spec_card_id,
-                CardRole::Spec,
-                Some(wave.id.as_str()),
                 crate::shared_codex_appserver::SharedThreadStartParams {
                     cwd: wave.cwd.clone(),
                     approval_policy: "never".into(),
@@ -951,17 +951,13 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             let mut g = status.lock().await;
             g.last_thread_id = Some(thread_id.clone());
         }
-        // Stamp codex_source:"shared" + codex_thread_id on the card payload
-        // BEFORE the fallible turn_start + lifecycle wait. thread_start_for_card
-        // has already upserted card_codex_threads; if a hard crash happens
-        // between thread_start and our stamp, boot takeover would route this
-        // card through the legacy per-wave path. Stamping the marker first
-        // keeps the half-initialized card classified as shared so the table-
-        // first takeover finds it. On in-process turn_start / lifecycle
-        // failure (see match block below) we ROLL BACK both the table row
-        // and the payload stamp — the goal was never delivered to the thread,
-        // so leaving it as resumable would silently drop the user's wave
-        // title.
+        // Persist the shared-spec runtime row BEFORE the fallible turn_start
+        // + lifecycle wait. If a hard crash happens after thread_start, boot
+        // takeover classifies this card from `runtimes` rather than payload
+        // stamps or `card_codex_threads`. On in-process turn_start /
+        // lifecycle failure (see match block below) we mark the runtime failed
+        // — the goal was never delivered to the thread, so leaving it as
+        // resumable would silently drop the user's wave title.
         persist_shared_spec_runtime_fields(s, cs, spec_card_id, wave, None, Some(&thread_id))
             .await?;
         let initial_turn_result = async {
@@ -1001,15 +997,6 @@ pub(crate) async fn spawn_push_via_shared_daemon(
                     thread_id = %thread_id,
                     error = %interrupt_err,
                     "failed to interrupt active spec turn during initial turn rollback"
-                );
-            }
-            if let Err(rollback_err) = s.repo.card_codex_thread_delete_by_card(spec_card_id).await {
-                tracing::warn!(
-                    target: "shared_codex_daemon::spec_card",
-                    card_id = %spec_card_id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "card_codex_thread delete failed during turn_start rollback"
                 );
             }
             if let Err(rollback_err) =
@@ -1152,18 +1139,6 @@ async fn persist_shared_spec_runtime_fields(
                         "spec card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
                     )));
                 };
-                if let Some(thread_id) = thread_id_for_tx.as_deref() {
-                    map.insert(
-                        "codex_thread_id".into(),
-                        serde_json::Value::String(thread_id.to_string()),
-                    );
-                } else {
-                    map.remove("codex_thread_id");
-                }
-                map.insert(
-                    "codex_source".into(),
-                    serde_json::Value::String("shared".into()),
-                );
                 map.insert("appserver_sock".into(), serde_json::Value::String(remote_uri));
                 map.remove("appserver_pgid");
                 map.remove("appserver_start_time");
@@ -1247,8 +1222,6 @@ async fn clear_shared_spec_runtime_fields(
                         "spec card {card_id_for_tx} payload is not a JSON object; cannot clear shared codex runtime fields"
                     )));
                 };
-                map.remove("codex_source");
-                map.remove("codex_thread_id");
                 map.remove("appserver_sock");
                 map.remove("appserver_pgid");
                 map.remove("appserver_start_time");

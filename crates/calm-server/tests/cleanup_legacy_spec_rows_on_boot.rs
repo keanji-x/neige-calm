@@ -3,11 +3,12 @@ use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{CardPatch, CardRole, NewCard, NewCove, NewWave, WaveLifecycle};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use serde_json::{Value, json};
@@ -107,8 +108,33 @@ async fn seed_thread_mapping(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     .unwrap();
 }
 
+async fn seed_active_shared_spec_runtime(repo: &SqlxRepo, card_id: &str, thread_id: Option<&str>) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: calm_server::model::new_id(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: thread_id.map(str::to_string),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 #[tokio::test]
-async fn cleanup_legacy_spec_rows_on_boot_marks_legacy_specs_as_failed_to_spawn() {
+async fn cleanup_legacy_spec_rows_on_boot_does_not_persist_failed_status() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card_id = seed_spec(
         &repo,
@@ -121,7 +147,7 @@ async fn cleanup_legacy_spec_rows_on_boot_marks_legacy_specs_as_failed_to_spawn(
     calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
 
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
-    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(card.payload.get("codex_thread_status").is_none());
 }
 
 #[tokio::test]
@@ -158,7 +184,7 @@ async fn cleanup_legacy_spec_rows_on_boot_unlinks_owned_appserver_sock() {
     calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
 
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
-    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(card.payload.get("codex_thread_status").is_none());
     assert!(
         !sock.exists(),
         "stale persisted appserver_sock was not removed"
@@ -186,7 +212,7 @@ async fn cleanup_legacy_spec_rows_on_boot_rejects_traversal_appserver_sock() {
     calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
 
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
-    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(card.payload.get("codex_thread_status").is_none());
     assert!(
         unrelated.exists(),
         "unrelated appserver_sock path was incorrectly removed"
@@ -214,7 +240,7 @@ async fn cleanup_legacy_spec_rows_on_boot_skips_reap_for_unverified_pgid() {
     calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
 
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
-    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(card.payload.get("codex_thread_status").is_none());
     assert!(
         repo.card_codex_thread_get_by_card(&card_id)
             .await
@@ -244,7 +270,7 @@ async fn cleanup_legacy_spec_rows_on_boot_skips_reap_for_init_pgid() {
     calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
 
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
-    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(card.payload.get("codex_thread_status").is_none());
     assert!(
         repo.card_codex_thread_get_by_card(&card_id)
             .await
@@ -254,7 +280,7 @@ async fn cleanup_legacy_spec_rows_on_boot_skips_reap_for_init_pgid() {
 }
 
 #[tokio::test]
-async fn cleanup_legacy_spec_rows_on_boot_skips_shared_specs() {
+async fn cleanup_legacy_spec_rows_on_boot_treats_payload_shared_without_runtime_as_legacy() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card_id = seed_spec(
         &repo,
@@ -262,12 +288,43 @@ async fn cleanup_legacy_spec_rows_on_boot_skips_shared_specs() {
         WaveLifecycle::Draft,
     )
     .await;
+    seed_thread_mapping(&repo, &card_id, "T1").await;
     let state = state(repo.clone()).await;
 
     calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
 
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
     assert!(card.payload.get("codex_thread_status").is_none());
+    assert!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cleanup_legacy_spec_rows_on_boot_skips_active_shared_spec_runtime() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = seed_spec(
+        &repo,
+        json!({"codex_source": "shared", "codex_thread_id": "T1"}),
+        WaveLifecycle::Draft,
+    )
+    .await;
+    seed_active_shared_spec_runtime(&repo, &card_id, Some("T1")).await;
+    let state = state(repo.clone()).await;
+
+    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
+
+    let card = repo.card_get(&card_id).await.unwrap().unwrap();
+    assert!(card.payload.get("codex_thread_status").is_none());
+    let runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("active shared runtime");
+    assert_eq!(runtime.status, RunStatus::Running);
 }
 
 #[tokio::test]

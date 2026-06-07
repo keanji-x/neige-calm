@@ -19,12 +19,10 @@
 //!      renderer-process leak.
 //!   2. **This sweeper.** Catches the residual shape: a crashed server,
 //!      a SIGKILL'd writer, or a partial-success transaction that left
-//!      a terminal row whose `card_id` no longer matches any
-//!      `cards.payload.terminal_id`. The orphan SQL definition is
-//!      unchanged from the pre-#197 contract (see
-//!      [`crate::db::RepoRead::terminals_orphaned`]) so the
-//!      `eventBridge.tsx:60-70` 3-step terminal-card creation race
-//!      window is still absorbed by the 60-second grace.
+//!      a terminal row whose card has no active runtime. The orphan SQL
+//!      definition is runtime-based (see
+//!      [`crate::db::RepoRead::terminals_orphaned`]); the 60-second grace
+//!      absorbs terminal/runtime creation races.
 //!
 //! ## What the sweeper is *not*
 //!

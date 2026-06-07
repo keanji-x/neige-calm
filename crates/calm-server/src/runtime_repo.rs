@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{Sqlite, Transaction};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
@@ -134,6 +135,19 @@ pub trait RuntimeRepo {
     ) -> Result<Option<CardRuntime>>;
 
     async fn runtime_get_active_for_card(&self, card_id: &CardId) -> Result<Option<CardRuntime>>;
+
+    /// Runtime row used by read-time payload projection. This preserves the
+    /// active-runtime lookup as the primary source, but also allows a latest
+    /// failed no-thread runtime to surface the legacy `failed_to_spawn` state.
+    async fn runtime_get_projectable_for_card(
+        &self,
+        card_id: &CardId,
+    ) -> Result<Option<CardRuntime>>;
+
+    async fn runtime_get_projectable_for_cards(
+        &self,
+        card_ids: &[CardId],
+    ) -> Result<HashMap<CardId, CardRuntime>>;
 
     /// Active = starting/running/idle/turn_pending, matching the
     /// active-per-card partial unique constraint. Returns codex-owned

@@ -79,12 +79,13 @@
 //!     the client falls back to a cold refetch.
 //!   * Keep the subscription set in a local `HashSet<String>` per connection.
 
-use crate::db::RepoEventWrite;
+use crate::db::RouteRepo;
 use crate::event;
 #[cfg(test)]
 use crate::event::EventScope;
 use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
 use crate::ids::ActorId;
+use crate::runtime_lookup::project_runtime_into_event_payload;
 use crate::state::AppState;
 use crate::validation::should_skip_event_for_overlay_version;
 use axum::{
@@ -211,6 +212,17 @@ async fn handle(socket: WebSocket, state: AppState) {
                         continue;
                     }
                     if event::topics(&env.event).iter().any(|t| subs.contains(t)) {
+                        let mut env = env;
+                        if let Err(e) =
+                            project_runtime_into_event_payload(state.repo.as_ref(), &mut env.event)
+                                .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "ws /api/events: runtime projection failed; dropping frame"
+                            );
+                            continue;
+                        }
                         let payload = match render_envelope(&env) {
                             Ok(p) => p,
                             Err(e) => {
@@ -257,7 +269,7 @@ enum ReplayOutcome {
 /// pass at the top of the main loop's `bus.recv()` branch.
 async fn run_replay<S>(
     tx: &mut S,
-    repo: &dyn RepoEventWrite,
+    repo: &dyn RouteRepo,
     subs: &HashSet<String>,
     since: i64,
 ) -> ReplayOutcome
@@ -341,6 +353,16 @@ where
             scope,
             event: ev,
         };
+        let mut env = env;
+        if let Err(e) = project_runtime_into_event_payload(repo, &mut env.event).await {
+            tracing::warn!(
+                error = %e,
+                id,
+                "ws /api/events: runtime projection failed; dropping frame"
+            );
+            last_id = id;
+            continue;
+        }
         let payload = match render_envelope(&env) {
             Ok(p) => p,
             Err(e) => {

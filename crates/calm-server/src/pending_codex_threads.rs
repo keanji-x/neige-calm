@@ -15,15 +15,14 @@ use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_update_tx, runtime_bind_attribution_tx,
-    runtime_clear_terminal_run_id_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
-    runtime_set_status_tx,
+    runtime_bind_attribution_tx, runtime_clear_terminal_run_id_tx, runtime_complete_tx,
+    runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
 use crate::db::{Repo, RepoEventWrite, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
-use crate::model::{CardPatch, CardRole};
+use crate::model::CardRole;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -175,19 +174,31 @@ impl PendingThreadStartRegistry {
             };
 
             let age_ms = entry.registered_at.elapsed().as_millis();
-            let card_id = entry.card_id;
-            let role = entry.role;
-            let wave_id = entry.wave_id;
-            self.bind_entry(&card_id, role, wave_id.as_deref(), thread_id)
-                .await?;
-            tracing::info!(
-                target = "shared_codex_daemon::pending_bind",
-                %thread_id,
-                %card_id,
-                age_ms,
-                "bound pending shared codex empty-card thread start"
-            );
-            return Ok(Some(card_id));
+            let card_id = entry.card_id.clone();
+            match self.bind_entry(&card_id, thread_id).await {
+                Ok(()) => {
+                    tracing::info!(
+                        target = "shared_codex_daemon::pending_bind",
+                        %thread_id,
+                        %card_id,
+                        age_ms,
+                        "bound pending shared codex empty-card thread start"
+                    );
+                    return Ok(Some(card_id));
+                }
+                Err(err) => {
+                    let mut queue = self.queue.lock().await;
+                    queue.push_front(entry);
+                    tracing::warn!(
+                        target = "shared_codex_daemon::pending_bind",
+                        %thread_id,
+                        %card_id,
+                        error = %err,
+                        "pending bind failed; re-parked entry"
+                    );
+                    return Ok(None);
+                }
+            }
         }
     }
 
@@ -305,40 +316,22 @@ impl PendingThreadStartRegistry {
         );
     }
 
-    async fn bind_entry(
-        &self,
-        card_id: &str,
-        role: CardRole,
-        wave_id: Option<&str>,
-        thread_id: &str,
-    ) -> Result<()> {
+    async fn bind_entry(&self, card_id: &str, thread_id: &str) -> Result<()> {
         let card = self
             .repo
             .card_get(card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-        let mut payload = card.payload.clone();
-        let Some(map) = payload.as_object_mut() else {
-            return Err(CalmError::Internal(format!(
-                "codex card {card_id} payload is not a JSON object; cannot bind thread id"
-            )));
-        };
-        map.insert(
-            "codex_thread_id".into(),
-            serde_json::Value::String(thread_id.to_string()),
-        );
-        map.insert(
-            "codex_thread_status".into(),
-            serde_json::Value::String("started".into()),
-        );
 
-        let scope =
-            crate::routes::cards::card_scope(self.repo.as_ref(), card.id.clone(), card.wave_id)
-                .await?;
+        let scope = crate::routes::cards::card_scope(
+            self.repo.as_ref(),
+            card.id.clone(),
+            card.wave_id.clone(),
+        )
+        .await?;
         let card_id_for_tx = card_id.to_string();
         let thread_id_for_tx = thread_id.to_string();
-        let wave_id_for_tx = wave_id.map(ToOwned::to_owned);
-        let payload_for_tx = payload;
+        let card_for_event = card;
         let card_role_cache = CardRoleCache::default();
         let wave_cove_cache = WaveCoveCache::default();
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
@@ -351,46 +344,31 @@ impl PendingThreadStartRegistry {
             &write,
             move |tx| {
                 Box::pin(async move {
-                    card_codex_thread_upsert_tx(
+                    let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                        .await?
+                        .ok_or_else(|| {
+                            CalmError::Internal(format!(
+                                "no active runtime for card {card_id_for_tx} during pending thread bind"
+                            ))
+                        })?;
+                    runtime_bind_attribution_tx(
                         tx,
-                        &card_id_for_tx,
-                        &thread_id_for_tx,
-                        role,
-                        wave_id_for_tx.as_deref(),
-                    )
-                    .await?;
-                    if let Some(runtime) =
-                        runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
-                    {
-                        runtime_bind_attribution_tx(
-                            tx,
-                            &runtime.id,
-                            ThreadAttribution {
-                                runtime_id: runtime.id.clone(),
-                                provider: AgentProvider::Codex,
-                                thread_id: Some(thread_id_for_tx.clone()),
-                                session_id: None,
-                                active_turn_id: None,
-                            },
-                        )
-                        .await?;
-                        runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
-                        // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
-                        if runtime.kind == RuntimeKind::SharedSpec {
-                            runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
-                        }
-                    }
-                    let card = card_update_tx(
-                        tx,
-                        &card_id_for_tx,
-                        CardPatch {
-                            kind: None,
-                            sort: None,
-                            payload: Some(payload_for_tx),
-                            deletable: None,
+                        &runtime.id,
+                        ThreadAttribution {
+                            runtime_id: runtime.id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id_for_tx.clone()),
+                            session_id: None,
+                            active_turn_id: None,
                         },
                     )
                     .await?;
+                    runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                    // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
+                    if runtime.kind == RuntimeKind::SharedSpec {
+                        runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
+                    }
+                    let card = card_for_event;
                     Ok((card.clone(), Event::CardUpdated(card)))
                 })
             },
@@ -409,21 +387,10 @@ pub(crate) async fn card_payload_clear_pending_status(
         .card_get(card_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let mut payload = card.payload.clone();
-    let Some(map) = payload.as_object_mut() else {
-        return Err(CalmError::Internal(format!(
-            "codex card {card_id} payload is not a JSON object; cannot mark spawn failure"
-        )));
-    };
-    map.insert(
-        "codex_thread_status".into(),
-        serde_json::Value::String("failed_to_spawn".into()),
-    );
-
     let scope =
         crate::routes::cards::card_scope(repo, card.id.clone(), card.wave_id.clone()).await?;
     let card_id_for_tx = card_id.to_string();
-    let payload_for_tx = payload;
+    let card_for_event = card;
     let card_role_cache = CardRoleCache::default();
     let wave_cove_cache = WaveCoveCache::default();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
@@ -439,17 +406,7 @@ pub(crate) async fn card_payload_clear_pending_status(
                 if let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? {
                     runtime_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
                 }
-                let card = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload_for_tx),
-                        deletable: None,
-                    },
-                )
-                .await?;
+                let card = card_for_event;
                 Ok((card.clone(), Event::CardUpdated(card)))
             })
         },
@@ -484,4 +441,62 @@ pub fn spawn_periodic_expire_task(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::model::{NewCard, NewCove, NewWave};
+    use serde_json::json;
+
+    async fn seed_card_without_runtime() -> (Arc<SqlxRepo>, EventBus, String) {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let cove = repo
+            .cove_create(NewCove {
+                name: "pending".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "pending".into(),
+                sort: None,
+                cwd: "/workspace".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1}),
+            })
+            .await
+            .unwrap();
+        (repo, EventBus::new(), card.id.to_string())
+    }
+
+    #[tokio::test]
+    async fn bind_errors_when_no_active_runtime() {
+        let (repo, events, card_id) = seed_card_without_runtime().await;
+        let registry = PendingThreadStartRegistry::new(repo, events);
+
+        let err = registry.bind_entry(&card_id, "T-missing-runtime").await;
+
+        match err {
+            Err(CalmError::Internal(message)) => assert_eq!(
+                message,
+                format!("no active runtime for card {card_id} during pending thread bind")
+            ),
+            other => panic!("expected missing-runtime internal error, got {other:?}"),
+        }
+    }
 }

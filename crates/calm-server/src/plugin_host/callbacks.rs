@@ -29,6 +29,7 @@ use crate::db::{RepoRead, RouteRepo, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
+use crate::runtime_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};
@@ -424,7 +425,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         card_scope_for_callback(ctx.repo.as_ref(), card_id.clone(), &wave_id_for_scope).await;
     let card_id_for_tx = card_id.0.clone();
     let write_for_tx = ctx.write.clone();
-    let (stored, _id) = write_with_event_typed(
+    let (mut stored, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         actor,
         scope,
@@ -455,6 +456,9 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         crate::error::CalmError::NotFound(s) => entity_not_found(s),
         other => internal_repo_err(other),
     })?;
+    project_runtime_into_card_payload(ctx.repo.as_ref(), &mut stored)
+        .await
+        .map_err(internal_repo_err)?;
     serde_json::to_value(&stored).map_err(|e| RpcError::internal(format!("serde: {e}")))
 }
 
@@ -516,7 +520,7 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let card_id = p.card_id.clone();
     let scope =
         card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), card.wave_id.as_str()).await;
-    let (updated, _id) = write_with_event_typed(
+    let (mut updated, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         actor,
         scope,
@@ -535,6 +539,9 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         crate::error::CalmError::NotFound(s) => entity_not_found(s),
         other => internal_repo_err(other),
     })?;
+    project_runtime_into_card_payload(ctx.repo.as_ref(), &mut updated)
+        .await
+        .map_err(internal_repo_err)?;
     serde_json::to_value(&updated).map_err(|e| RpcError::internal(format!("serde: {e}")))
 }
 

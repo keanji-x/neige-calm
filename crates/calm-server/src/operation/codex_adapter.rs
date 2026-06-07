@@ -8,15 +8,14 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
-    event_append_for_operation_tx, runtime_bind_attribution_tx, runtime_complete_tx,
+    card_with_codex_create_tx, event_append_for_operation_tx, runtime_bind_attribution_tx,
     runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
+use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
@@ -267,7 +266,9 @@ impl ProviderAdapter for CodexAdapter {
             payload.request.theme,
         )
         .await?;
-        let event = Event::CardAdded(card.clone());
+        let projected_card =
+            project_codex_runtime_fields_for_response(card.clone(), Some(&term.id), None, None);
+        let event = Event::CardAdded(projected_card.clone());
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
             &event,
@@ -283,7 +284,7 @@ impl ProviderAdapter for CodexAdapter {
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
-            serde_json::to_value(&card)?,
+            serde_json::to_value(&projected_card)?,
         );
         output.data = json!({
             "card_id": card.id,
@@ -311,7 +312,6 @@ impl ProviderAdapter for CodexAdapter {
     ) -> Result<AppServerInteractOutcome> {
         let payload: CodexCreateOperationPayload = serde_json::from_value(op.payload.clone())?;
         let card_id = output_string(output, "card_id")?;
-        let wave_id = output_string(output, "wave_id")?;
         let cwd = output_string(output, "cwd")?;
 
         if let Some(prompt_text) = output_prompt(output)? {
@@ -325,10 +325,8 @@ impl ProviderAdapter for CodexAdapter {
                         row.thread_id
                     } else {
                         self.shared_codex_appserver
-                            .thread_start_for_card(
+                            .thread_start_mint_for_card(
                                 &card_id,
-                                CardRole::Plain,
-                                Some(wave_id.as_str()),
                                 SharedThreadStartParams {
                                     cwd: cwd.clone(),
                                     approval_policy: "never".into(),
@@ -349,7 +347,6 @@ impl ProviderAdapter for CodexAdapter {
                 output,
                 payload.actor.clone(),
                 &card_id,
-                &wave_id,
                 &thread_id,
             )
             .await?;
@@ -477,7 +474,7 @@ impl ProviderAdapter for CodexAdapter {
                 json!({ "card_id": card_id.clone() }),
             ));
             steps.push(step(
-                "clear_codex_thread_id_from_payload",
+                "runtime_set_status_failed_for_card",
                 json!({ "card_id": card_id }),
             ));
         } else {
@@ -552,15 +549,12 @@ impl ProviderAdapter for CodexAdapter {
                 }
                 Ok(())
             }
-            "clear_codex_thread_id_from_payload" => {
+            "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
-                clear_codex_thread_id_from_payload(
-                    ctx,
-                    &self.card_role_cache,
-                    &self.wave_cove_cache,
-                    &card_id,
-                )
-                .await
+                ctx.repo
+                    .runtime_complete_for_card(&card_id, RunStatus::Failed)
+                    .await?;
+                Ok(())
             }
             "pending_codex_threads_remove_by_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
@@ -626,7 +620,6 @@ async fn persist_prompt_thread(
     output: &TxOutput,
     actor: ActorId,
     card_id: &str,
-    wave_id: &str,
     thread_id: &str,
 ) -> Result<Card> {
     let card = ctx
@@ -634,22 +627,11 @@ async fn persist_prompt_thread(
         .card_get(card_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let mut payload = card.payload.clone();
-    let Some(map) = payload.as_object_mut() else {
-        return Err(CalmError::Internal(format!(
-            "codex card {card_id} payload is not a JSON object; cannot persist codex_thread_id"
-        )));
-    };
-    map.insert(
-        "codex_thread_id".into(),
-        Value::String(thread_id.to_string()),
-    );
 
     let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
     let card_id_for_tx = card_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
-    let wave_id_for_tx = wave_id.to_string();
-    let payload_for_tx = payload;
+    let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
@@ -662,14 +644,6 @@ async fn persist_prompt_thread(
         &write,
         move |tx| {
             Box::pin(async move {
-                card_codex_thread_upsert_tx(
-                    tx,
-                    &card_id_for_tx,
-                    &thread_id_for_tx,
-                    CardRole::Plain,
-                    Some(wave_id_for_tx.as_str()),
-                )
-                .await?;
                 let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
                     .await?
                     .ok_or_else(|| {
@@ -677,6 +651,7 @@ async fn persist_prompt_thread(
                             "codex card {card_id_for_tx} has no active runtime to bind"
                         ))
                     })?;
+                let terminal_id_for_projection = runtime.terminal_run_id.clone();
                 runtime_bind_attribution_tx(
                     tx,
                     &runtime.id,
@@ -692,17 +667,12 @@ async fn persist_prompt_thread(
                 if runtime.status != RunStatus::Running {
                     runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
                 }
-                let card = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload_for_tx),
-                        deletable: None,
-                    },
-                )
-                .await?;
+                let card = project_codex_runtime_fields_for_response(
+                    card_for_event,
+                    terminal_id_for_projection.as_deref(),
+                    Some(&thread_id_for_tx),
+                    Some("started"),
+                );
                 let mut checkpoint_output = output_for_tx.clone();
                 checkpoint_output.result = serde_json::to_value(&card)?;
                 checkpoint_output.target_id = Some(card.id.to_string());
@@ -762,20 +732,10 @@ async fn persist_pending_thread_status(
         .card_get(card_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let mut payload = card.payload.clone();
-    let Some(map) = payload.as_object_mut() else {
-        return Err(CalmError::Internal(format!(
-            "codex card {card_id} payload is not a JSON object; cannot persist pending status"
-        )));
-    };
-    map.insert(
-        "codex_thread_status".into(),
-        Value::String("pending_thread_start".into()),
-    );
 
     let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
     let card_id_for_tx = card_id.to_string();
-    let payload_for_tx = payload;
+    let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
@@ -795,18 +755,14 @@ async fn persist_pending_thread_status(
                             "codex card {card_id_for_tx} has no active runtime to mark pending"
                         ))
                     })?;
+                let terminal_id_for_projection = runtime.terminal_run_id.clone();
                 runtime_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
-                let card = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload_for_tx),
-                        deletable: None,
-                    },
-                )
-                .await?;
+                let card = project_codex_runtime_fields_for_response(
+                    card_for_event,
+                    terminal_id_for_projection.as_deref(),
+                    None,
+                    Some("pending_thread_start"),
+                );
                 let mut checkpoint_output = output_for_tx.clone();
                 checkpoint_output.result = serde_json::to_value(&card)?;
                 checkpoint_output.target_id = Some(card.id.to_string());
@@ -827,53 +783,29 @@ async fn persist_pending_thread_status(
     Ok(updated)
 }
 
-async fn clear_codex_thread_id_from_payload(
-    ctx: &SpawnCtx,
-    card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
-    card_id: &str,
-) -> Result<()> {
-    let Some(card) = ctx.repo.card_get(card_id).await? else {
-        return Ok(());
-    };
-    let mut payload = card.payload.clone();
-    let Some(map) = payload.as_object_mut() else {
-        return Ok(());
-    };
-    map.remove("codex_thread_id");
-    let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
-    let card_id_for_tx = card_id.to_string();
-    let payload_for_tx = payload;
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
-    let (_updated, _id) = write_with_event_typed(
-        ctx.repo.as_ref(),
-        ActorId::Kernel,
-        scope,
-        None,
-        &ctx.events,
-        &write,
-        move |tx| {
-            Box::pin(async move {
-                if let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? {
-                    runtime_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
-                }
-                let card = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload_for_tx),
-                        deletable: None,
-                    },
-                )
-                .await?;
-                Ok((card.clone(), Event::CardUpdated(card)))
-            })
-        },
-    )
-    .await?;
-    Ok(())
+fn project_codex_runtime_fields_for_response(
+    mut card: Card,
+    terminal_id: Option<&str>,
+    thread_id: Option<&str>,
+    thread_status: Option<&str>,
+) -> Card {
+    if let Some(map) = card.payload.as_object_mut() {
+        if let Some(terminal_id) = terminal_id {
+            insert_payload_string(map, "terminal_id", terminal_id);
+        }
+        if let Some(thread_id) = thread_id {
+            insert_payload_string(map, "codex_thread_id", thread_id);
+        }
+        if let Some(thread_status) = thread_status {
+            insert_payload_string(map, "codex_thread_status", thread_status);
+        }
+    }
+    card
+}
+
+fn insert_payload_string(map: &mut serde_json::Map<String, Value>, key: &str, value: &str) {
+    map.entry(key.to_string())
+        .or_insert_with(|| Value::String(value.to_string()));
 }
 
 fn validate_optional_color(value: Option<&str>, field: &str) -> Result<()> {

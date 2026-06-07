@@ -13,6 +13,9 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::wave_report;
 use crate::model::{Card, CardRole, Wave};
+use crate::runtime_lookup::{
+    project_runtime_into_card_payload, project_runtime_into_cards_payload,
+};
 use crate::state::WriteContext;
 use crate::{db::WaveEvent, event::Event, event::EventScope};
 use serde_json::{Value, json};
@@ -175,7 +178,15 @@ async fn wave_cat(
             let card = card_in_wave(&ctx, &wave, parts[1]).await?;
             match parts[2] {
                 "meta.json" => content_json(&card_meta(&ctx, &card)),
-                "payload.json" => content_json(&card.payload),
+                "payload.json" => {
+                    let mut card = card;
+                    project_runtime_into_card_payload(ctx.repo.as_ref(), &mut card)
+                        .await
+                        .map_err(|e| {
+                            RpcError::internal(format!("wave_file: runtime projection: {e}"))
+                        })?;
+                    content_json(&card.payload)
+                }
                 "events.json" => {
                     let hook_events = hook_events_for_card(&ctx, &wave, &card.id).await?;
                     content_json(&hook_events_json(&hook_events))
@@ -386,7 +397,10 @@ struct RunProjection {
 }
 
 async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProjection>, RpcError> {
-    let cards = cards_for_wave(ctx, wave).await?;
+    let mut cards = cards_for_wave(ctx, wave).await?;
+    project_runtime_into_cards_payload(ctx.repo.as_ref(), &mut cards)
+        .await
+        .map_err(|e| RpcError::internal(format!("wave_file: runtime projection: {e}")))?;
     let events = ctx
         .repo
         .events_for_wave(

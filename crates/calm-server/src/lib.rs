@@ -660,20 +660,6 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
             }
         }
 
-        let mut payload = card.payload.clone();
-        let Some(map) = payload.as_object_mut() else {
-            tracing::warn!(
-                card_id = %card.id,
-                wave_id = %card.wave_id,
-                "legacy spec boot cleanup found non-object payload; leaving row unchanged"
-            );
-            continue;
-        };
-        map.insert(
-            "codex_thread_status".into(),
-            serde_json::Value::String("failed_to_spawn".into()),
-        );
-
         let scope = match routes::cards::card_scope(
             state.repo.as_ref(),
             card.id.clone(),
@@ -697,6 +683,7 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
         let wave_id = card.wave_id.to_string();
         let log_card_id = card_id.clone();
         let log_wave_id = wave_id.clone();
+        let card_for_event = card;
         let result = db::write_with_event_typed(
             state.repo.as_ref(),
             crate::ids::ActorId::Kernel,
@@ -706,17 +693,17 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
             state.write(),
             move |tx| {
                 Box::pin(async move {
-                    let updated = db::sqlite::card_update_tx(
-                        tx,
-                        &card_id,
-                        crate::model::CardPatch {
-                            kind: None,
-                            sort: None,
-                            payload: Some(payload),
-                            deletable: None,
-                        },
-                    )
-                    .await?;
+                    if let Some(runtime) =
+                        db::sqlite::runtime_get_active_for_card_tx(tx, &card_id).await?
+                    {
+                        db::sqlite::runtime_complete_tx(
+                            tx,
+                            &runtime.id,
+                            crate::runtime_repo::RunStatus::Failed,
+                        )
+                        .await?;
+                    }
+                    let updated = card_for_event;
                     Ok((updated.clone(), crate::event::Event::CardUpdated(updated)))
                 })
             },
@@ -765,7 +752,7 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
                 tracing::warn!(
                     card_id = %log_card_id,
                     wave_id = %log_wave_id,
-                    "legacy spec row cannot be taken over by shared daemon; marked failed_to_spawn"
+                    "legacy spec row cannot be taken over by shared daemon; marked active runtime failed when present"
                 );
             }
             Err(e) => {
@@ -773,7 +760,7 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
                     card_id = %log_card_id,
                     wave_id = %log_wave_id,
                     error = %e,
-                    "legacy spec boot cleanup failed to mark row failed_to_spawn"
+                    "legacy spec boot cleanup failed to mark active runtime failed"
                 );
             }
         }

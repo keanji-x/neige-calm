@@ -73,8 +73,8 @@ use tokio::task::JoinHandle;
 use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
-    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_set_status_tx,
+    card_update_tx, card_with_codex_create_tx, runtime_bind_attribution_tx,
+    runtime_clear_terminal_run_id_tx, runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
 use crate::db::{Repo, RouteRepo};
 use crate::db::{write_in_tx_typed, write_with_event_typed};
@@ -88,7 +88,7 @@ use crate::model::{CardPatch, CardRole};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_with_parts;
-use crate::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::spec_card::build_codex_env_map;
 use crate::spec_push::SpecPushRegistry;
@@ -344,13 +344,9 @@ impl Dispatcher {
                             let Some(map) = payload.as_object_mut() else {
                                 return Err(CalmError::Internal(format!(
                                     "spec card {card_id_for_tx} payload is not a JSON object; \
-                                     cannot persist TUI-created codex_thread_id"
+                                     cannot clear initial-prompt marker"
                                 )));
                             };
-                            map.insert(
-                                "codex_thread_id".into(),
-                                serde_json::Value::String(thread_id_for_tx.clone()),
-                            );
                             map.remove("appserver_needs_initial_prompt");
                             let card = card_update_tx(
                                 tx,
@@ -363,14 +359,26 @@ impl Dispatcher {
                                 },
                             )
                             .await?;
-                            card_codex_thread_upsert_tx(
-                                tx,
-                                card_id_for_tx.as_str(),
-                                thread_id_for_tx.as_str(),
-                                CardRole::Spec,
-                                Some(card.wave_id.as_str()),
-                            )
-                            .await?;
+                            if let Some(runtime) =
+                                runtime_get_active_for_card_tx(tx, card_id_for_tx.as_str()).await?
+                            {
+                                runtime_bind_attribution_tx(
+                                    tx,
+                                    &runtime.id,
+                                    ThreadAttribution {
+                                        runtime_id: runtime.id.clone(),
+                                        provider: AgentProvider::Codex,
+                                        thread_id: Some(thread_id_for_tx.clone()),
+                                        session_id: None,
+                                        active_turn_id: None,
+                                    },
+                                )
+                                .await?;
+                                runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                                if runtime.kind == RuntimeKind::SharedSpec {
+                                    runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
+                                }
+                            }
                             Ok((card.clone(), Event::CardUpdated(card)))
                         })
                     },
@@ -1508,8 +1516,8 @@ impl Inner {
         // Worker-card payload — bookkeeping fields the FSM / UI use
         // to distinguish worker codex cards from plain ones. The
         // canonical `card_with_codex_create_tx` helper stamps
-        // `schemaVersion`, `terminal_id`, and `cwd` itself; we merge
-        // those fields after the helper runs by going through
+        // `schemaVersion` and `cwd` itself; runtime identity is projected at
+        // read time. We merge those fields after the helper runs by going through
         // `card_update_tx` once more. (Simpler than threading payload
         // overrides into the helper; the tx still commits atomically.)
         let mut bookkeeping = serde_json::Map::new();
@@ -1881,8 +1889,8 @@ impl Inner {
         let env = serde_json::Value::Object(env_map);
 
         // Worker-terminal bookkeeping (idempotency_key, role_request,
-        // cmd, optional cwd). Merged into the canonical payload
-        // (schemaVersion + terminal_id) after the helper writes it.
+        // cmd, optional cwd). Merged into the canonical schema payload after
+        // the helper writes it.
         let mut bookkeeping = serde_json::Map::new();
         bookkeeping.insert(
             "idempotency_key".into(),
@@ -2407,17 +2415,15 @@ async fn spawn_codex_worker_via_shared_daemon(
     // calm.task_completed / calm.task_failed when the job is done. The
     // legacy path injects this via SeededCardRole::Worker into the per-card
     // CODEX_HOME config.toml; for the shared path we must thread it
-    // explicitly through thread_start_for_card.
+    // explicitly through thread_start.
     let worker_instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Worker.prompt_template(),
         ctx.wave_id.as_str(),
     );
     let thread_id = match inner
         .shared_codex_appserver
-        .thread_start_for_card(
+        .thread_start_mint_for_card(
             card_id,
-            CardRole::Worker,
-            Some(ctx.wave_id.as_str()),
             SharedThreadStartParams {
                 cwd: ctx.cwd.to_string(),
                 approval_policy: "never".into(),
@@ -2429,15 +2435,11 @@ async fn spawn_codex_worker_via_shared_daemon(
     {
         Ok(id) => id,
         Err(e) => {
-            // thread_start failed (transport error, daemon crash, mapping
-            // write failure inside thread_start_for_card). The card +
-            // terminal rows were already committed with the idempotency_key
-            // — without rollback they'd permanently short-circuit retries.
-            // rollback_orphan_worker's pre-spawn fallthrough deletes both
-            // rows; thread_start_for_card may have partially written
-            // card_codex_threads, so reap that too. card_codex_thread is
-            // independent of rollback_orphan_worker so we delete it
-            // explicitly.
+            // thread_start failed (transport error, daemon crash). The
+            // card + terminal rows were already committed with the
+            // idempotency_key; without rollback they'd permanently
+            // short-circuit retries. rollback_orphan_worker's pre-spawn
+            // fallthrough deletes both rows.
             let _ = rollback_orphan_worker(
                 inner.repo.as_ref(),
                 inner.terminal_renderer.as_ref(),
@@ -2446,7 +2448,6 @@ async fn spawn_codex_worker_via_shared_daemon(
                 ctx.term.id.as_str(),
             )
             .await;
-            let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
             tracing::warn!(
                 target: "shared_codex_daemon::worker",
                 card_id,
@@ -2465,21 +2466,18 @@ async fn spawn_codex_worker_via_shared_daemon(
         "thread_start_succeeded"
     );
 
-    // Persist the runtime markers (codex_source, codex_thread_id, ...) BEFORE
-    // the PTY spawn so legacy auto-submit's session_start hook sees
-    // codex_thread_id present and skips the legacy Enter injection. The
-    // persist is SILENT (no CardUpdated event) — wave subscribers refetch on
-    // CardUpdated and could mount the card before its renderer entry is
+    // Persist runtime identity + app-server handle state BEFORE the PTY spawn.
+    // The persist is SILENT (no CardUpdated event) — wave subscribers refetch
+    // on CardUpdated and could mount the card before its renderer entry is
     // live (issue #310 race). CardAdded remains the first visible event,
     // emitted by the caller after spawn succeeds.
     if let Err(e) =
         persist_shared_worker_runtime_fields(inner, ctx.card, &thread_id, &remote_uri).await
     {
-        // The thread/start succeeded but persisting the runtime markers
+        // The thread/start succeeded but persisting runtime/handle state
         // failed (e.g. SQLite IO error). Without rollback, the card +
         // terminal rows stay with idempotency_key intact and short-circuit
-        // future retries; the card_codex_threads mapping was already
-        // upserted by thread_start_for_card and must be reaped too.
+        // future retries.
         let _ = rollback_orphan_worker(
             inner.repo.as_ref(),
             inner.terminal_renderer.as_ref(),
@@ -2488,7 +2486,6 @@ async fn spawn_codex_worker_via_shared_daemon(
             ctx.term.id.as_str(),
         )
         .await;
-        let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
         tracing::warn!(
             target: "shared_codex_daemon::worker",
             card_id,
@@ -2542,15 +2539,6 @@ async fn spawn_codex_worker_via_shared_daemon(
                 ctx.term.id.as_str(),
             )
             .await;
-            if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
-                tracing::warn!(
-                    target: "shared_codex_daemon::worker",
-                    card_id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "card_codex_thread delete failed during turn_start rollback"
-                );
-            }
             tracing::error!(
                 target: "shared_codex_daemon::worker",
                 card_id,
@@ -2632,7 +2620,6 @@ async fn spawn_codex_worker_via_shared_daemon(
                         "failed to interrupt shared worker turn after TUI spawn failure"
                     );
                 }
-                let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
                 tracing::error!(
                     target: "shared_codex_daemon::worker",
                     card_id,
@@ -2741,14 +2728,6 @@ async fn persist_shared_worker_runtime_fields(
                     "worker card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
                 )));
             };
-            map.insert(
-                "codex_source".into(),
-                serde_json::Value::String("shared".into()),
-            );
-            map.insert(
-                "codex_thread_id".into(),
-                serde_json::Value::String(thread_id_for_tx.clone()),
-            );
             map.insert(
                 "appserver_sock".into(),
                 serde_json::Value::String(remote_uri_for_tx),

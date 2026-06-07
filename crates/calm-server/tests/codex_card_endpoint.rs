@@ -18,6 +18,7 @@ use calm_server::operation::{OperationRuntime, SpawnCtx, SpawnHandle, SqlxOperat
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::RendererConfig;
@@ -588,12 +589,15 @@ async fn post_codex_card_empty_spawn_failure_reaps_pty_and_keeps_failed_card() {
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     assert!(boot.state.terminal_renderer.get(terminal_id).is_none());
     assert!(boot.repo.terminal_get(terminal_id).await.unwrap().is_some());
-    let failed_card = boot
+    let mut failed_card = boot
         .repo
         .card_get(added_card.id.as_str())
         .await
         .unwrap()
         .expect("failed codex card remains visible");
+    project_runtime_into_card_payload(boot.repo.as_ref(), &mut failed_card)
+        .await
+        .unwrap();
     assert_eq!(
         failed_card.payload["codex_thread_status"],
         "failed_to_spawn"
