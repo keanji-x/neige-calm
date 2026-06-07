@@ -1032,14 +1032,13 @@ export interface components {
          * @description Body for `POST /api/waves/:wave_id/codex-cards`.
          *
          *     Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
-         *     stamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty
+         *     persists schema/UI fields and projects identity from `runtimes`). Empty
          *     `cwd` falls back to `$HOME` then the server's cwd.
          *
          *     `prompt` is the hands-free entry point: when non-empty, the kernel starts
-         *     a shared thread,
-         *     persists its id on both the payload and `card_codex_threads`, sends the
-         *     prompt via `turn/start`, waits for `turn/started` or `turn/completed`,
-         *     and starts the TUI as `codex resume <thread_id> --remote unix://...`.
+         *     a shared thread, binds it to the runtime row, sends the prompt via
+         *     `turn/start`, waits for `turn/started` or `turn/completed`, and starts
+         *     the TUI as `codex resume <thread_id> --remote unix://...`.
          *
          *     Empty / absent `prompt` reverts to the user-initiated flow: codex
          *     boots through the shared remote, the composer is empty, the user types
@@ -1117,10 +1116,10 @@ export interface components {
          * @description Body for `POST /api/waves/:wave_id/terminal-cards`.
          *
          *     Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
-         *     stamps `{schemaVersion, terminal_id}` itself). Empty `program` falls back
-         *     to `$SHELL` then `/bin/sh`; empty `cwd` falls back to `$HOME` then the
-         *     server's cwd. `env` is merged into the daemon's environment as additional
-         *     vars on top of `TERM` / `COLORTERM` / inherited.
+         *     persists schema payload and projects identity from `runtimes`). Empty
+         *     `program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to
+         *     `$HOME` then the server's cwd. `env` is merged into the daemon's environment
+         *     as additional vars on top of `TERM` / `COLORTERM` / inherited.
          */
         NewTerminalCardBody: {
             /** @description Empty string or missing → `$HOME` (then cwd of server). */
