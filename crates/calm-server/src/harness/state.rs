@@ -48,10 +48,7 @@ pub fn run_status_for(state: &HarnessState) -> RunStatus {
 
 impl HarnessState {
     pub fn can_issue_turn(&self) -> bool {
-        matches!(
-            self,
-            Self::Idle | Self::TurnCompleted { .. } | Self::Resumed { .. }
-        )
+        matches!(self, Self::Idle | Self::TurnCompleted { .. })
     }
 
     pub fn active_turn_id(&self) -> Option<String> {

@@ -346,6 +346,11 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     since: Instant::now(),
                     reason: "system_error".into(),
                 };
+            } else if status.get("type").and_then(Value::as_str) == Some("idle") {
+                let mut state = inner.state.lock().await;
+                if matches!(*state, HarnessState::Resumed { .. }) {
+                    *state = HarnessState::Idle;
+                }
             }
         }
         Notification::TurnStarted { turn, .. } => {
@@ -556,6 +561,27 @@ async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<Observation>) {
 }
 
 async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
+    let resume_elapsed = {
+        let state = inner.state.lock().await;
+        match &*state {
+            HarnessState::Resumed { resumed_at } => {
+                Instant::now().duration_since(*resumed_at) >= inner.config.resumed_reconcile_budget
+            }
+            _ => false,
+        }
+    };
+    if resume_elapsed {
+        let mut state = inner.state.lock().await;
+        if let HarnessState::Resumed { resumed_at } = &*state
+            && Instant::now().duration_since(*resumed_at) >= inner.config.resumed_reconcile_budget
+        {
+            *state = HarnessState::Idle;
+            drop(state);
+            persist_snapshot(inner).await?;
+            return Ok(());
+        }
+    }
+
     if let Some((_, deadline)) = *inner.interrupt_deadline.lock().await
         && Instant::now() >= deadline
     {
