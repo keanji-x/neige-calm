@@ -799,6 +799,7 @@ async fn shared_spec_takeover_reparks_handle_and_pushes_via_shared_daemon() {
     );
 }
 
+#[tokio::test]
 async fn shared_spec_takeover_skips_harness_runtime_snapshot() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(false).await;
