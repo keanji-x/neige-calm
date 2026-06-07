@@ -135,7 +135,7 @@ SELECT
   'shared-spec',
   'codex',
   CASE WHEN ct.thread_id IS NULL THEN 'turn_pending' ELSE 'running' END,
-  NULL,
+  CASE WHEN ct.thread_id IS NULL THEN t.id ELSE NULL END,
   ct.thread_id,
   NULL,
   NULL,
@@ -147,19 +147,14 @@ SELECT
   NULL
 FROM cards c
 LEFT JOIN card_codex_threads ct ON ct.card_id = c.id
+LEFT JOIN terminals t ON t.card_id = c.id
+  AND json_extract(c.payload, '$.terminal_id') = t.id
+  AND t.exit_code IS NULL
+  AND COALESCE(t.signal_killed, 0) = 0
 WHERE c.kind = 'codex'
   AND c.role = 'spec'
   AND json_extract(c.payload, '$.codex_source') = 'shared'
-  AND (
-    ct.thread_id IS NOT NULL
-    OR EXISTS (
-      SELECT 1
-      FROM terminals t
-      WHERE t.card_id = c.id
-        AND t.exit_code IS NULL
-        AND COALESCE(t.signal_killed, 0) = 0
-    )
-  )
+  AND (ct.thread_id IS NOT NULL OR t.id IS NOT NULL)
   AND NOT EXISTS (
     SELECT 1 FROM runtimes r WHERE r.card_id = c.id
   );

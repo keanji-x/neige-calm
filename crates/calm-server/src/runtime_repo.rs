@@ -169,6 +169,9 @@ pub trait RuntimeRepo {
         attr: ThreadAttribution,
     ) -> Result<()>;
 
+    async fn runtime_clear_terminal_run_id_tx(&self, tx: &mut Tx<'_>, id: &RuntimeId)
+    -> Result<()>;
+
     async fn runtime_set_handle_state_tx(
         &self,
         tx: &mut Tx<'_>,

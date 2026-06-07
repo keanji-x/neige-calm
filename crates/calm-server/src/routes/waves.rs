@@ -908,7 +908,15 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         // shared marker stamped here without a thread_id before the pending
         // FIFO mutates. If this persist fails, no stale pending entry can
         // consume a later unrelated thread/started notification.
-        persist_shared_spec_runtime_fields(s, cs, spec_card_id, wave, None).await?;
+        persist_shared_spec_runtime_fields(
+            s,
+            cs,
+            spec_card_id,
+            wave,
+            Some(terminal.id.as_str()),
+            None,
+        )
+        .await?;
         cs.pending_codex_threads
             .register(
                 PendingEntry::new(
@@ -954,7 +962,8 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         // and the payload stamp — the goal was never delivered to the thread,
         // so leaving it as resumable would silently drop the user's wave
         // title.
-        persist_shared_spec_runtime_fields(s, cs, spec_card_id, wave, Some(&thread_id)).await?;
+        persist_shared_spec_runtime_fields(s, cs, spec_card_id, wave, None, Some(&thread_id))
+            .await?;
         let initial_turn_result = async {
             cs.shared_codex_appserver
                 .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
@@ -1103,6 +1112,7 @@ async fn persist_shared_spec_runtime_fields(
     cs: &CodexShellState,
     spec_card_id: &str,
     wave: &Wave,
+    terminal_run_id: Option<&str>,
     thread_id: Option<&str>,
 ) -> Result<()> {
     let scope = EventScope::Card {
@@ -1111,6 +1121,7 @@ async fn persist_shared_spec_runtime_fields(
         cove: wave.cove_id.clone(),
     };
     let card_id_for_tx = spec_card_id.to_string();
+    let terminal_run_id_for_tx = terminal_run_id.map(str::to_string);
     let thread_id_for_tx = thread_id.map(str::to_string);
     let remote_uri = cs.shared_codex_appserver.remote_uri();
     let (_card, _id) = write_with_event_typed(
@@ -1170,7 +1181,7 @@ async fn persist_shared_spec_runtime_fields(
                     } else {
                         RunStatus::TurnPending
                     },
-                    terminal_run_id: None,
+                    terminal_run_id: terminal_run_id_for_tx.clone(),
                     thread_id: thread_id_for_tx.clone(),
                     session_id: None,
                     active_turn_id: None,

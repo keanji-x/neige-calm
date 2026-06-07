@@ -4,10 +4,11 @@ use std::time::{Duration, Instant};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -178,6 +179,100 @@ async fn bind_persists_to_card_codex_threads_and_payload() {
         Event::CardUpdated(card) => assert_eq!(card.id.as_str(), card_id),
         other => panic!("expected card.updated, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn bind_entry_clears_terminal_run_id() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id = seed_card(&repo, &wave_id, "term-bind-clear").await;
+    let runtime_id = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some("term-bind-clear".into()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    registry
+        .register(entry(&card_id, &wave_id, "term-bind-clear"))
+        .await
+        .unwrap();
+
+    registry.on_thread_started("T-bind-clear").await.unwrap();
+
+    let runtime = repo
+        .runtime_get_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .expect("runtime row");
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert!(runtime.terminal_run_id.is_none());
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-bind-clear"));
+}
+
+#[tokio::test]
+async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id = seed_card(&repo, &wave_id, "term-codex-card").await;
+    let runtime_id = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some("term-codex-card".into()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    registry
+        .register(entry(&card_id, &wave_id, "term-codex-card"))
+        .await
+        .unwrap();
+
+    registry.on_thread_started("T-codex-card").await.unwrap();
+
+    let runtime = repo
+        .runtime_get_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .expect("runtime row");
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(
+        runtime.terminal_run_id.as_deref(),
+        Some("term-codex-card"),
+        "CodexCard runtime must keep terminal_run_id; it is its completion identity"
+    );
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-codex-card"));
 }
 
 #[tokio::test]

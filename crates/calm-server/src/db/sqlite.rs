@@ -1981,6 +1981,26 @@ pub async fn runtime_bind_attribution_tx(
     Ok(())
 }
 
+pub async fn runtime_clear_terminal_run_id_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+) -> RuntimeResult<()> {
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET terminal_run_id = NULL, updated_at_ms = ?1
+            WHERE id = ?2"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    }
+    Ok(())
+}
+
 pub async fn runtime_set_handle_state_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
@@ -2951,6 +2971,14 @@ impl RuntimeRepo for SqlxRepo {
         attr: ThreadAttribution,
     ) -> RuntimeResult<()> {
         runtime_bind_attribution_tx(tx, id, attr).await
+    }
+
+    async fn runtime_clear_terminal_run_id_tx(
+        &self,
+        tx: &mut RuntimeTx<'_>,
+        id: &RuntimeId,
+    ) -> RuntimeResult<()> {
+        runtime_clear_terminal_run_id_tx(tx, id).await
     }
 
     async fn runtime_set_handle_state_tx(
