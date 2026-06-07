@@ -41,7 +41,12 @@ async fn queued_rows_move_into_handle_state_and_are_deleted() {
         .await
         .unwrap();
     let runtime_id = new_id();
-    let mut snapshot = HarnessSnapshot::initial(7, vec![]);
+    let stale_obs = Observation::TaskCompleted {
+        idempotency_key: "task-stale".into(),
+        result: json!({"stale": true}),
+    };
+    let mut snapshot = HarnessSnapshot::initial(7, vec![stale_obs.clone()]);
+    snapshot.pending_envelope_ids = vec![Some(7)];
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-q".into());
     let mut tx = repo.pool().begin().await.unwrap();
@@ -70,11 +75,7 @@ async fn queued_rows_move_into_handle_state_and_are_deleted() {
     repo.spec_card_enqueue_observation(
         card.id.as_str(),
         7,
-        &serde_json::to_string(&Observation::TaskCompleted {
-            idempotency_key: "task-stale".into(),
-            result: json!({"stale": true}),
-        })
-        .unwrap(),
+        &serde_json::to_string(&stale_obs).unwrap(),
     )
     .await
     .unwrap();
@@ -106,15 +107,22 @@ async fn queued_rows_move_into_handle_state_and_are_deleted() {
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(stored.push_watermark, 9);
-    assert_eq!(stored.pending_queue.len(), 2);
+    assert_eq!(stored.pending_queue.len(), 3);
+    assert_eq!(stored.pending_envelope_ids, vec![Some(7), Some(8), Some(9)]);
     assert!(matches!(
         &stored.pending_queue[0],
+        Observation::TaskCompleted {
+            idempotency_key, ..
+        } if idempotency_key == "task-stale"
+    ));
+    assert!(matches!(
+        &stored.pending_queue[1],
         Observation::TaskCompleted {
             idempotency_key, ..
         } if idempotency_key == "task-8"
     ));
     assert!(matches!(
-        &stored.pending_queue[1],
+        &stored.pending_queue[2],
         Observation::WaveGoal { text } if text == "legacy rendered text"
     ));
 }

@@ -47,6 +47,7 @@ struct Inner {
     observations: mpsc::Sender<HarnessObservationDelivery>,
     state: Mutex<HarnessState>,
     pending_queue: Mutex<VecDeque<Observation>>,
+    pending_envelope_ids: Mutex<VecDeque<Option<i64>>>,
     push_watermark: Mutex<i64>,
     last_turn_id: Mutex<Option<String>>,
     last_report_body_sha256: Mutex<Option<String>>,
@@ -197,21 +198,24 @@ fn inner_from_params(
     observations: mpsc::Sender<HarnessObservationDelivery>,
     shutdown: broadcast::Sender<()>,
 ) -> Arc<Inner> {
-    let debounce = debounce_from_initial_queue(&params.snapshot.pending_queue);
-    let state = state_from_snapshot(&params.snapshot);
+    let mut snapshot = params.snapshot;
+    snapshot.align_pending_envelope_ids();
+    let debounce = debounce_from_initial_queue(&snapshot.pending_queue);
+    let state = state_from_snapshot(&snapshot);
     Arc::new(Inner {
         runtime_id: params.runtime_id,
         _wave_id: params.wave_id,
         card_id: params.card_id,
-        thread_id: RwLock::new(params.thread_id.or(params.snapshot.last_thread_id.clone())),
+        thread_id: RwLock::new(params.thread_id.or(snapshot.last_thread_id.clone())),
         repo: params.repo,
         daemon: params.daemon,
         observations,
         state: Mutex::new(state),
-        pending_queue: Mutex::new(params.snapshot.pending_queue.into_iter().collect()),
-        push_watermark: Mutex::new(params.snapshot.push_watermark),
-        last_turn_id: Mutex::new(params.snapshot.last_turn_id),
-        last_report_body_sha256: Mutex::new(params.snapshot.last_report_body_sha256),
+        pending_envelope_ids: Mutex::new(snapshot.pending_envelope_ids.into_iter().collect()),
+        pending_queue: Mutex::new(snapshot.pending_queue.into_iter().collect()),
+        push_watermark: Mutex::new(snapshot.push_watermark),
+        last_turn_id: Mutex::new(snapshot.last_turn_id),
+        last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
         shutdown,
@@ -301,6 +305,11 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
     }
     let hard_fire = obs.is_hard_fire();
     inner.pending_queue.lock().await.push_back(obs);
+    inner
+        .pending_envelope_ids
+        .lock()
+        .await
+        .push_back(envelope_id);
     let now = Instant::now();
     let mut debounce = inner.debounce.lock().await;
     if debounce.first_pending_at.is_none() {
@@ -500,9 +509,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     persist_snapshot(inner).await?;
 
-    let drained = {
+    let (drained, drained_envelope_ids) = {
         let mut queue = inner.pending_queue.lock().await;
-        queue.drain(..).collect::<Vec<_>>()
+        let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+        (
+            queue.drain(..).collect::<Vec<_>>(),
+            envelope_ids.drain(..).collect::<Vec<_>>(),
+        )
     };
     if drained.is_empty() {
         *inner.state.lock().await = prior_turn
@@ -518,7 +531,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
-        rebuffer_head(inner, drained).await;
+        rebuffer_head(inner, drained, drained_envelope_ids).await;
         *inner.state.lock().await = HarnessState::PendingThreadStart;
         persist_snapshot(inner).await?;
         return Ok(());
@@ -534,7 +547,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             persist_snapshot(inner).await?;
         }
         Err(e) => {
-            rebuffer_head(inner, drained).await;
+            rebuffer_head(inner, drained, drained_envelope_ids).await;
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
                 .unwrap_or(HarnessState::TurnCompleted {
@@ -547,10 +560,18 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
-async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<Observation>) {
+async fn rebuffer_head(
+    inner: &Arc<Inner>,
+    drained: Vec<Observation>,
+    drained_envelope_ids: Vec<Option<i64>>,
+) {
     let mut queue = inner.pending_queue.lock().await;
+    let mut envelope_ids = inner.pending_envelope_ids.lock().await;
     for obs in drained.into_iter().rev() {
         queue.push_front(obs);
+    }
+    for envelope_id in drained_envelope_ids.into_iter().rev() {
+        envelope_ids.push_front(envelope_id);
     }
     let now = Instant::now();
     *inner.debounce.lock().await = DebounceState {
@@ -697,6 +718,13 @@ async fn issue_interrupt_for_turn(
 async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let state = inner.state.lock().await.clone();
     let queue = inner.pending_queue.lock().await.iter().cloned().collect();
+    let pending_envelope_ids = inner
+        .pending_envelope_ids
+        .lock()
+        .await
+        .iter()
+        .copied()
+        .collect();
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
@@ -705,6 +733,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
         &state,
         push_watermark,
         queue,
+        pending_envelope_ids,
         last_thread_id,
         last_turn_id,
         last_report_body_sha256,
@@ -786,11 +815,15 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
     match snapshot.phase {
         HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
         HarnessPhaseTag::Idle => HarnessState::Idle,
-        // IssuingTurn is persisted before turn/start fires, so retrying after
-        // recovery is correct and cannot duplicate a turn codex has seen.
-        HarnessPhaseTag::IssuingTurn => HarnessState::TurnCompleted {
-            last_turn_id: snapshot.last_turn_id.clone().unwrap_or_default(),
-        },
+        HarnessPhaseTag::IssuingTurn => {
+            if snapshot.last_turn_id.is_some() {
+                HarnessState::Resumed { resumed_at: now }
+            } else {
+                HarnessState::TurnCompleted {
+                    last_turn_id: String::new(),
+                }
+            }
+        }
         HarnessPhaseTag::IssuingInterrupt | HarnessPhaseTag::TurnRunning => {
             HarnessState::Resumed { resumed_at: now }
         }

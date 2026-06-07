@@ -203,10 +203,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 thread_id: existing,
             });
         }
-        let thread_id = if let Some(row) = self.repo.card_codex_thread_get_by_card(&card_id).await?
-            && !row.thread_id.trim().is_empty()
+        let thread_id = if let Some(runtime) =
+            self.repo.runtime_get_active_for_card(&card_id).await?
+            && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
         {
-            row.thread_id
+            thread_id
+        } else if let Some(row) = self.repo.card_codex_thread_get_by_card(&card_id).await?
+            && let Some(thread_id) = non_empty_string(Some(row.thread_id.as_str()))
+        {
+            thread_id
         } else {
             let developer_instructions = crate::spec_card::render_system_prompt(
                 crate::spec_card::SeededCardRole::Spec.prompt_template(),
@@ -339,9 +344,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             config: HarnessConfig::default(),
             snapshot,
         });
-        handle.persist_snapshot().await?;
         self.harness_registry
             .insert(runtime_id.clone(), handle.clone());
+        handle.persist_snapshot().await?;
         Ok(SpawnHandle::Harness { runtime_id })
     }
 
@@ -460,6 +465,13 @@ fn output_string(output: &TxOutput, key: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| CalmError::Internal(format!("spec harness tx_output missing {key}")))
+}
+
+fn non_empty_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn output_optional_string(output: &TxOutput, key: &str) -> Result<Option<String>> {

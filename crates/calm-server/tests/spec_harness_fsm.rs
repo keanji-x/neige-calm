@@ -118,6 +118,53 @@ async fn harness_with(
     (repo, harness, runtime_id, thread_id)
 }
 
+async fn harness_from_snapshot(
+    repo: Arc<SqlxRepo>,
+    daemon: Arc<SharedCodexAppServer>,
+    snapshot: HarnessSnapshot,
+) -> (SpecHarness, String) {
+    let card = seed_card(&repo).await;
+    let runtime_id = new_id();
+    let thread_id = snapshot
+        .last_thread_id
+        .clone()
+        .unwrap_or_else(|| "thread-offline".to_string());
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: runtime_id.clone(),
+        wave_id: card.wave_id,
+        card_id: card.id,
+        thread_id: Some(thread_id),
+        repo,
+        daemon,
+        config: HarnessConfig::default(),
+        snapshot,
+    });
+    (harness, runtime_id)
+}
+
 async fn wait_for_state(
     harness: &SpecHarness,
     pred: impl Fn(&HarnessState) -> bool,
@@ -134,6 +181,39 @@ async fn wait_for_state(
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn issuing_turn_snapshot_with_turn_id_restores_resumed() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::IssuingTurn;
+    snapshot.last_thread_id = Some("thread-prior".into());
+    snapshot.last_turn_id = Some("T1".into());
+    let (harness, _runtime_id) = harness_from_snapshot(repo, daemon, snapshot).await;
+
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::Resumed { .. }
+    ));
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn issuing_turn_snapshot_without_turn_id_restores_retryable_completed() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::IssuingTurn;
+    snapshot.last_thread_id = Some("thread-prior".into());
+    let (harness, _runtime_id) = harness_from_snapshot(repo, daemon, snapshot).await;
+
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::TurnCompleted { last_turn_id } if last_turn_id.is_empty()
+    ));
+    harness.shutdown().await.unwrap();
 }
 
 #[tokio::test]

@@ -85,23 +85,26 @@ pub async fn rehydrate_spec_push_queue(
     if rows.is_empty() {
         return Ok(Vec::new());
     }
+    snapshot.align_pending_envelope_ids();
     let mut row_ids = Vec::new();
     let mut rehydrated_ids = Vec::new();
-    let mut max_envelope_id = snapshot.push_watermark;
+    let mut seen_envelope_ids: HashSet<i64> = snapshot
+        .pending_envelope_ids
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
     for (id, envelope_id, text) in rows {
-        if envelope_id <= snapshot.push_watermark {
-            row_ids.push(id);
-            continue;
-        }
         let obs =
             serde_json::from_str::<Observation>(&text).unwrap_or(Observation::WaveGoal { text });
-        snapshot.pending_queue.push(obs);
-        snapshot.push_watermark = snapshot.push_watermark.max(envelope_id);
-        max_envelope_id = max_envelope_id.max(envelope_id);
-        rehydrated_ids.push(envelope_id);
+        if seen_envelope_ids.insert(envelope_id) {
+            snapshot.pending_queue.push(obs);
+            snapshot.pending_envelope_ids.push(Some(envelope_id));
+            snapshot.push_watermark = snapshot.push_watermark.max(envelope_id);
+            rehydrated_ids.push(envelope_id);
+        }
         row_ids.push(id);
     }
-    snapshot.push_watermark = max_envelope_id;
 
     persist_recovered_snapshot(repo, card_id, snapshot, row_ids).await?;
     Ok(rehydrated_ids)
@@ -135,6 +138,7 @@ async fn replay_harness_events_since(
             continue;
         };
         snapshot.pending_queue.push(obs);
+        snapshot.pending_envelope_ids.push(Some(id));
         snapshot.push_watermark = snapshot.push_watermark.max(id);
         replayed += 1;
     }

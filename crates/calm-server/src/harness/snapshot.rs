@@ -25,6 +25,8 @@ pub struct HarnessSnapshot {
     #[serde(default)]
     pub pending_queue: Vec<Observation>,
     #[serde(default)]
+    pub pending_envelope_ids: Vec<Option<i64>>,
+    #[serde(default)]
     pub last_thread_id: Option<String>,
     #[serde(default)]
     pub last_turn_id: Option<String>,
@@ -49,12 +51,14 @@ pub enum HarnessPhaseTag {
 
 impl HarnessSnapshot {
     pub fn initial(push_watermark: i64, pending_queue: Vec<Observation>) -> Self {
+        let pending_envelope_ids = vec![None; pending_queue.len()];
         Self {
             schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
             phase: HarnessPhaseTag::PendingThreadStart,
             push_watermark,
             pending_queue,
+            pending_envelope_ids,
             last_thread_id: None,
             last_turn_id: None,
             last_report_body_sha256: None,
@@ -66,6 +70,7 @@ impl HarnessSnapshot {
         state: &HarnessState,
         push_watermark: i64,
         pending_queue: Vec<Observation>,
+        pending_envelope_ids: Vec<Option<i64>>,
         last_thread_id: Option<String>,
         last_turn_id: Option<String>,
         last_report_body_sha256: Option<String>,
@@ -81,6 +86,7 @@ impl HarnessSnapshot {
             phase,
             push_watermark,
             pending_queue,
+            pending_envelope_ids,
             last_thread_id,
             last_turn_id,
             last_report_body_sha256,
@@ -89,9 +95,10 @@ impl HarnessSnapshot {
     }
 
     pub fn from_value_strict(value: Value) -> Self {
-        let snapshot: Self =
+        let mut snapshot: Self =
             serde_json::from_value(value).expect("deserialize SpecHarness snapshot");
         snapshot.assert_known_schema();
+        snapshot.align_pending_envelope_ids();
         snapshot
     }
 
@@ -106,6 +113,12 @@ impl HarnessSnapshot {
             "invalid SpecHarness snapshot mode {}; expected harness",
             self.mode
         );
+    }
+
+    pub fn align_pending_envelope_ids(&mut self) {
+        self.pending_envelope_ids
+            .resize(self.pending_queue.len(), None);
+        self.pending_envelope_ids.truncate(self.pending_queue.len());
     }
 }
 
