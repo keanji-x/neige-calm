@@ -4,11 +4,12 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -83,6 +84,31 @@ async fn create_card(repo: &SqlxRepo, wave_id: &str, role: CardRole) -> String {
     card.id.to_string()
 }
 
+async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.to_string()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 async fn get(app: axum::Router, thread_id: &str) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
@@ -98,6 +124,20 @@ async fn get(app: axum::Router, thread_id: &str) -> (StatusCode, Value) {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, body)
+}
+
+#[tokio::test]
+async fn resolve_card_for_thread_prefers_runtime_mapping() {
+    let (app, repo, wave_id) = fresh().await;
+    let card_id = create_card(&repo, &wave_id, CardRole::Worker).await;
+    bind_runtime_thread(&repo, &card_id, "thread-runtime").await;
+
+    let (status, body) = get(app, "thread-runtime").await;
+    assert_eq!(status, StatusCode::OK, "body={body:?}");
+    assert_eq!(body["thread_id"], "thread-runtime");
+    assert_eq!(body["card_id"], card_id);
+    assert_eq!(body["role"], "worker");
+    assert_eq!(body["wave_id"], wave_id);
 }
 
 #[tokio::test]

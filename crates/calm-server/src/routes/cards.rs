@@ -11,11 +11,12 @@
 
 use crate::actor::Actor;
 use crate::codex_appserver::{InputItem, Notification};
-use crate::db::RepoRead;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx, card_update_tx,
-    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx, terminal_delete_tx,
+    runtime_complete_tx, runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
+    terminal_delete_tx,
 };
+use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
@@ -25,7 +26,8 @@ use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::waves::{
     await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
 };
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use crate::runtime_lookup::{card_is_shared_spec, resolve_active_thread_for_card};
+use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -66,12 +68,24 @@ pub(crate) async fn card_scope(
     })
 }
 
-fn is_shared_codex_card(card: &Card) -> bool {
-    card.payload.get("codex_source").and_then(Value::as_str) == Some("shared")
-}
-
-pub(crate) async fn interrupt_shared_card_active_turn(cs: &CodexShellState, card: &Card) {
-    if !is_shared_codex_card(card) {
+pub(crate) async fn interrupt_shared_card_active_turn(
+    repo: &dyn RouteRepo,
+    cs: &CodexShellState,
+    card: &Card,
+) {
+    let active_runtime = match repo.runtime_get_active_for_card(&card.id.to_string()).await {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            tracing::warn!(
+                target: "runtime_lookup::fallback",
+                card_id = %card.id,
+                error = %e,
+                "runtime shared-card discriminator query failed; falling back to card payload"
+            );
+            None
+        }
+    };
+    if !card_is_shared_spec(card, active_runtime.as_ref()) {
         return;
     }
     if let Err(e) = cs
@@ -712,7 +726,11 @@ async fn spawn_reset_via_shared_daemon(
             "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
         ));
     }
-    let old_mapping = s.repo.card_codex_thread_get_by_card(spec_card_id).await?;
+    let old_runtime = s
+        .repo
+        .runtime_get_active_for_card(&spec_card_id.to_string())
+        .await?;
+    let old_thread_id = resolve_active_thread_for_card(s.repo.as_ref(), spec_card_id).await?;
     let mut notifications = cs.shared_codex_appserver.subscribe_notifications();
     let status: spec_push::SharedStatus =
         std::sync::Arc::new(tokio::sync::Mutex::new(SpecPushStatus::default()));
@@ -756,14 +774,14 @@ async fn spawn_reset_via_shared_daemon(
     }
     .await;
     if let Err(e) = turn_result {
-        if let Some(row) = old_mapping.as_ref() {
+        if let Some(old_thread_id) = old_thread_id.as_ref() {
             if let Err(rollback_err) = s
                 .repo
                 .card_codex_thread_upsert(
                     spec_card_id,
-                    &row.thread_id,
-                    row.role,
-                    row.wave_id.as_deref(),
+                    old_thread_id,
+                    CardRole::Spec,
+                    Some(wave.id.as_str()),
                 )
                 .await
             {
@@ -786,6 +804,13 @@ async fn spawn_reset_via_shared_daemon(
                 "failed to delete new card_codex_thread mapping after shared reset turn_start failure"
             );
         }
+        rollback_shared_reset_runtime_after_turn_failure(
+            s,
+            spec_card_id,
+            old_runtime.as_ref(),
+            &thread_id,
+        )
+        .await;
         tracing::warn!(
             target: "shared_codex_daemon::spec_card_reset",
             card_id = %spec_card_id,
@@ -797,18 +822,18 @@ async fn spawn_reset_via_shared_daemon(
         return Err(e);
     }
 
-    if let Some(row) = old_mapping.as_ref()
-        && row.thread_id != thread_id
+    if let Some(old_thread_id) = old_thread_id.as_ref()
+        && old_thread_id != &thread_id
         && let Err(e) = cs
             .shared_codex_appserver
-            .interrupt_active_turn(&row.thread_id)
+            .interrupt_active_turn(old_thread_id)
             .await
     {
         tracing::warn!(
             target: "shared_codex_daemon::spec_card_reset",
             card_id = %spec_card_id,
             wave_id = %wave.id,
-            old_thread_id = %row.thread_id,
+            old_thread_id = %old_thread_id,
             new_thread_id = %thread_id,
             error = %e,
             "failed to interrupt old active shared codex turn after reset"
@@ -825,6 +850,67 @@ async fn spawn_reset_via_shared_daemon(
             developer_instructions: None,
         },
     })
+}
+
+async fn rollback_shared_reset_runtime_after_turn_failure(
+    s: &RouteState,
+    spec_card_id: &str,
+    old_runtime: Option<&CardRuntime>,
+    failed_thread_id: &str,
+) {
+    let card_id_for_tx = spec_card_id.to_string();
+    let old_runtime = old_runtime.cloned();
+    let failed_thread_id = failed_thread_id.to_string();
+    let failed_thread_id_for_log = failed_thread_id.clone();
+    let result = write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let Some(current) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? else {
+                return Ok(());
+            };
+            if current.thread_id.as_deref() != Some(failed_thread_id.as_str()) {
+                return Ok(());
+            }
+
+            if let Some(old) = old_runtime {
+                if old.id == current.id {
+                    return Ok(());
+                }
+                runtime_supersede_tx(
+                    tx,
+                    &current.id,
+                    RuntimeInit {
+                        id: new_id(),
+                        card_id: old.card_id,
+                        kind: old.kind,
+                        agent_provider: old.agent_provider,
+                        status: old.status,
+                        terminal_run_id: old.terminal_run_id,
+                        thread_id: old.thread_id,
+                        session_id: old.session_id,
+                        active_turn_id: old.active_turn_id,
+                        handle_state_json: old.handle_state_json,
+                        lease_owner: old.lease_owner,
+                        lease_until_ms: old.lease_until_ms,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await?;
+            } else {
+                runtime_complete_tx(tx, &current.id, RunStatus::Failed).await?;
+            }
+            Ok(())
+        })
+    })
+    .await;
+    if let Err(e) = result {
+        tracing::warn!(
+            target: "shared_codex_daemon::spec_card_reset",
+            card_id = %spec_card_id,
+            failed_thread_id = %failed_thread_id_for_log,
+            error = %e,
+            "failed to restore active runtime after shared reset turn_start failure"
+        );
+    }
 }
 
 async fn persist_shared_reset_runtime_fields(
@@ -964,7 +1050,7 @@ pub(crate) async fn delete_card(
     let wave_id = card.wave_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
 
-    interrupt_shared_card_active_turn(&cs, &card).await;
+    interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, &card).await;
 
     // Issue #197 — eager teardown. The `terminals.card_id` FK is
     // `ON DELETE RESTRICT` (migration 0011); the row must be removed,

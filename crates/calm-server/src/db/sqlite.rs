@@ -1793,6 +1793,67 @@ async fn runtime_get_active_for_card_from_pool(
     row.as_ref().map(card_runtime_from_row).transpose()
 }
 
+async fn runtime_get_active_by_thread_from_pool(
+    pool: &SqlitePool,
+    provider: AgentProvider,
+    thread_id: &str,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE agent_provider = ?1
+             AND thread_id = ?2
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+    )
+    .bind(agent_provider_to_db(&provider))
+    .bind(thread_id)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
+async fn runtime_active_shared_thread_attribution_from_pool(
+    pool: &SqlitePool,
+) -> RuntimeResult<Vec<(String, String)>> {
+    sqlx::query_as::<_, (String, String)>(
+        r#"SELECT thread_id, card_id
+           FROM runtimes
+           WHERE kind IN ('shared-spec', 'codex')
+             AND agent_provider = 'codex'
+             AND thread_id IS NOT NULL
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY created_at_ms ASC, card_id ASC"#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn runtimes_active_for_kind_from_pool(
+    pool: &SqlitePool,
+    kind: RuntimeKind,
+) -> RuntimeResult<Vec<CardRuntime>> {
+    let rows = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE kind = ?1
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY created_at_ms ASC, card_id ASC"#,
+    )
+    .bind(runtime_kind_to_db(&kind))
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(card_runtime_from_row).collect()
+}
+
 pub async fn runtime_get_by_id_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
@@ -2537,6 +2598,8 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn card_codex_threads_active_shared_only(&self) -> Result<Vec<CardCodexThreadRow>> {
+        // Deprecated fallback for PR2b's runtime-first read switch. New
+        // callers should prefer `RuntimeRepo::runtime_active_shared_thread_attribution`.
         let rows = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
             r#"SELECT ct.thread_id,
                       ct.card_id,
@@ -2658,9 +2721,10 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
-        // Orphan: no card.payload.terminal_id references this terminal row,
-        // AND the row was created more than `grace_seconds` ago (absorbs the
-        // 3-step terminal-card create race in `eventBridge.tsx:60-70`).
+        // Orphan: no active runtime owns this terminal row and no legacy
+        // card.payload.terminal_id references it, AND the row was created
+        // more than `grace_seconds` ago (absorbs the 3-step terminal-card
+        // create race in `eventBridge.tsx:60-70`).
         //
         // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
@@ -2672,6 +2736,11 @@ impl RepoRead for SqlxRepo {
                       t.created_at
                FROM terminals t
                WHERE NOT EXISTS (
+                   SELECT 1 FROM runtimes r
+                   WHERE r.terminal_run_id = t.id
+                     AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
+               )
+               AND NOT EXISTS (
                    SELECT 1 FROM cards c
                    WHERE json_extract(c.payload, '$.terminal_id') = t.id
                )
@@ -2720,7 +2789,17 @@ impl RepoRead for SqlxRepo {
                JOIN waves w ON w.id = c.wave_id
                JOIN terminals t ON t.id = json_extract(c.payload, '$.terminal_id')
                WHERE c.role = 'spec'
-                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
+                 AND (
+                       COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
+                       OR EXISTS (
+                           SELECT 1
+                             FROM runtimes r
+                            WHERE r.card_id = c.id
+                              AND r.kind = 'shared-spec'
+                              AND r.thread_id IS NULL
+                              AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
+                       )
+                 )
                  AND t.exit_code IS NULL
                  AND COALESCE(t.signal_killed, 0) = 0
                  AND NOT EXISTS (
@@ -2887,11 +2966,29 @@ impl RepoRead for SqlxRepo {
 
 #[async_trait]
 impl RuntimeRepo for SqlxRepo {
+    async fn runtime_get_active_by_thread(
+        &self,
+        provider: AgentProvider,
+        thread_id: &str,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        runtime_get_active_by_thread_from_pool(&self.pool, provider, thread_id).await
+    }
+
     async fn runtime_get_active_for_card(
         &self,
         card_id: &crate::runtime_repo::CardId,
     ) -> RuntimeResult<Option<CardRuntime>> {
         runtime_get_active_for_card_from_pool(&self.pool, card_id).await
+    }
+
+    async fn runtime_active_shared_thread_attribution(
+        &self,
+    ) -> RuntimeResult<Vec<(String, String)>> {
+        runtime_active_shared_thread_attribution_from_pool(&self.pool).await
+    }
+
+    async fn runtimes_active_for_kind(&self, kind: RuntimeKind) -> RuntimeResult<Vec<CardRuntime>> {
+        runtimes_active_for_kind_from_pool(&self.pool, kind).await
     }
 
     async fn runtime_get_by_id(&self, id: &RuntimeId) -> RuntimeResult<Option<CardRuntime>> {

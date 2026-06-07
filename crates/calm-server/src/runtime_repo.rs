@@ -124,7 +124,26 @@ pub struct RuntimeInit {
 
 #[async_trait]
 pub trait RuntimeRepo {
+    /// Active = starting/running/idle/turn_pending, matching the
+    /// active-per-card partial unique constraint. Looks up a runtime by
+    /// provider-owned thread id for bridge/app-server attribution.
+    async fn runtime_get_active_by_thread(
+        &self,
+        provider: AgentProvider,
+        thread_id: &str,
+    ) -> Result<Option<CardRuntime>>;
+
     async fn runtime_get_active_for_card(&self, card_id: &CardId) -> Result<Option<CardRuntime>>;
+
+    /// Active = starting/running/idle/turn_pending, matching the
+    /// active-per-card partial unique constraint. Returns codex-owned
+    /// thread attributions used to rebuild the shared app-server cache.
+    async fn runtime_active_shared_thread_attribution(&self) -> Result<Vec<(String, String)>>;
+
+    /// Active = starting/running/idle/turn_pending, matching the
+    /// active-per-card partial unique constraint. Batch scan for boot
+    /// takeover flows that need all live runtimes of a specific kind.
+    async fn runtimes_active_for_kind(&self, kind: RuntimeKind) -> Result<Vec<CardRuntime>>;
 
     async fn runtime_get_by_id(&self, id: &RuntimeId) -> Result<Option<CardRuntime>>;
 

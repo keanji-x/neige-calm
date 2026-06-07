@@ -39,6 +39,8 @@ use crate::mcp_server::handshake::handle_initialize;
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
 };
+use crate::runtime_lookup::resolve_card_for_thread as resolve_card_for_thread_runtime;
+use crate::runtime_repo::AgentProvider;
 use crate::state::WriteContext;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -461,25 +463,36 @@ async fn resolve_thread_identity(
 ) -> Result<ToolCallIdentity, RpcError> {
     let thread_id =
         thread_id.ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
-    let row = ctx
+    let card_id =
+        resolve_card_for_thread_runtime(ctx.repo.as_ref(), AgentProvider::Codex, thread_id)
+            .await
+            .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
+            .ok_or_else(|| {
+                tracing::warn!(
+                    target: "shared_codex_daemon::mcp_identity_miss",
+                    thread_id,
+                    tool = %tool_name,
+                    "mcp_server: tools/call thread id did not resolve to a card"
+                );
+                RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
+            })?;
+    let card = ctx
         .repo
-        .card_codex_thread_get_by_thread(thread_id)
+        .card_get(&card_id)
         .await
-        .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
-        .ok_or_else(|| {
-            tracing::warn!(
-                target: "shared_codex_daemon::mcp_identity_miss",
-                thread_id,
-                tool = %tool_name,
-                "mcp_server: tools/call thread id did not resolve to a card"
-            );
-            RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
-        })?;
+        .map_err(|e| RpcError::internal(format!("tools/call card lookup: {e}")))?
+        .ok_or_else(|| RpcError::method_not_found(&format!("unknown card_id: {card_id}")))?;
+    let role = ctx
+        .repo
+        .card_role_get(&card_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("tools/call card role lookup: {e}")))?
+        .ok_or_else(|| RpcError::method_not_found(&format!("unknown card_id: {card_id}")))?;
     Ok(ToolCallIdentity {
-        card_id: row.card_id,
-        role: row.role,
-        wave_id: row.wave_id,
-        thread_id: row.thread_id,
+        card_id,
+        role,
+        wave_id: Some(card.wave_id.to_string()),
+        thread_id: thread_id.to_string(),
     })
 }
 

@@ -2,9 +2,9 @@
 //!
 //! Coverage:
 //!
-//!   1. **Orphan detection.** A terminal whose card payload doesn't carry
-//!      its `terminal_id` is picked up by `terminals_orphaned`; a live
-//!      payload-linked terminal is not.
+//!   1. **Orphan detection.** A terminal whose active runtime and legacy
+//!      card payload no longer carry its id is picked up by
+//!      `terminals_orphaned`; live runtime/payload-linked terminals are not.
 //!   2. **Grace window.** A freshly-created orphan is held back by the
 //!      `grace_seconds` parameter; the same orphan, queried with a smaller
 //!      grace, surfaces.
@@ -31,10 +31,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardPatch, NewCard, NewCove, NewTerminal, NewWave};
+use calm_server::model::{CardPatch, NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::runtime_repo::{RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_sweeper;
 use serde_json::json;
@@ -152,6 +153,42 @@ async fn unlink_card(state: &AppState, card_id: &str) {
         .unwrap();
 }
 
+async fn complete_terminal_runtime_for_card(state: &AppState, card_id: &str) {
+    let Some(term) = state.repo.terminal_get_by_card(card_id).await.unwrap() else {
+        return;
+    };
+    state
+        .repo
+        .runtime_complete_for_terminal(&term.id, RunStatus::Exited)
+        .await
+        .unwrap();
+}
+
+async fn seed_active_terminal_runtime(concrete: &SqlxRepo, card_id: &str, terminal_id: &str) {
+    let mut tx = concrete.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::Terminal,
+            agent_provider: None,
+            status: RunStatus::Running,
+            terminal_run_id: Some(terminal_id.to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 /// Backdate the `created_at` of every terminal row to `now - 120 s` so
 /// the sweeper's production 60-second grace window treats them as
 /// orphans. Returning early before the sweep call avoids the sleep-
@@ -183,12 +220,28 @@ async fn orphan_detection_skips_linked_pair_and_finds_unlinked() {
 
     // Drop the link by clearing the card payload.
     unlink_card(&state, &card_id).await;
+    complete_terminal_runtime_for_card(&state, &card_id).await;
 
     // grace=-1 makes any row in the past eligible (the cutoff sits in the
     // future, so every row's `created_at` is less than it).
     let orphans = state.repo.terminals_orphaned(-1).await.unwrap();
     assert_eq!(orphans.len(), 1, "expected one orphan");
     assert_eq!(orphans[0].id, terminal_id);
+}
+
+#[tokio::test]
+async fn orphan_detection_skips_runtime_owned_terminal_without_payload_link() {
+    let (state, concrete) = fresh_state().await;
+    let (card_id, terminal_id) = seed_linked_pair(&state).await;
+    seed_active_terminal_runtime(&concrete, &card_id, &terminal_id).await;
+
+    unlink_card(&state, &card_id).await;
+
+    let orphans = state.repo.terminals_orphaned(-1).await.unwrap();
+    assert!(
+        orphans.is_empty(),
+        "active runtime-owned terminal must not appear as orphan, got: {orphans:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +255,7 @@ async fn grace_window_holds_back_fresh_orphans() {
 
     // Unlink → fresh orphan, just-now `created_at`.
     unlink_card(&state, &card_id).await;
+    complete_terminal_runtime_for_card(&state, &card_id).await;
 
     // Big grace window: orphan is "too fresh" — held back.
     let orphans = state.repo.terminals_orphaned(60).await.unwrap();
@@ -228,6 +282,7 @@ async fn sweep_emits_terminal_deleted_with_kernel_actor() {
 
     // Unlink → orphan; backdate so the production-grace `sweep` sees it.
     unlink_card(&state, &card_id).await;
+    complete_terminal_runtime_for_card(&state, &card_id).await;
     age_all_terminals_past_grace(&concrete).await;
     // Drain envelopes the seed + unlink emitted (card.added, card.updated x2).
     while sub.try_recv().is_ok() {}
@@ -283,6 +338,7 @@ async fn cleanup_safe_when_daemon_already_dead() {
     let (card_id, terminal_id) = seed_linked_pair(&state).await;
     // No renderer entry and no pid: cleanup should still delete the row.
     unlink_card(&state, &card_id).await;
+    complete_terminal_runtime_for_card(&state, &card_id).await;
     age_all_terminals_past_grace(&concrete).await;
 
     // Sweep should still complete: renderer shutdown misses → SIGTERM
@@ -316,6 +372,7 @@ async fn cleanup_safe_with_stale_pid() {
         .await
         .unwrap();
     unlink_card(&state, &card_id).await;
+    complete_terminal_runtime_for_card(&state, &card_id).await;
     age_all_terminals_past_grace(&concrete).await;
 
     terminal_sweeper::sweep(&state).await.unwrap();
