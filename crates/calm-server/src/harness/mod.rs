@@ -17,7 +17,7 @@ pub use config::HarnessConfig;
 pub use observation::{HookKind, Observation};
 pub use registry::HarnessRegistry;
 pub use run_loop::{SpecHarness, SpecHarnessParams};
-pub use snapshot::{HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot};
+pub use snapshot::{HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
 pub use state::{HarnessState, IssuingKind, run_status_for};
 
 pub async fn spawn_recovered_harness(

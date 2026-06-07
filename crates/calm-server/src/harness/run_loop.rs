@@ -71,6 +71,7 @@ impl SpecHarness {
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let notifications = params.daemon.subscribe_notifications();
+        let debounce = debounce_from_initial_queue(&params.snapshot.pending_queue);
         let state = state_from_snapshot(&params.snapshot);
         let inner = Arc::new(Inner {
             runtime_id: params.runtime_id,
@@ -85,7 +86,7 @@ impl SpecHarness {
             push_watermark: Mutex::new(params.snapshot.push_watermark),
             last_turn_id: Mutex::new(params.snapshot.last_turn_id),
             last_report_body_sha256: Mutex::new(params.snapshot.last_report_body_sha256),
-            debounce: Mutex::new(DebounceState::default()),
+            debounce: Mutex::new(debounce),
             interrupt_deadline: Mutex::new(None),
             shutdown: shutdown_tx,
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -161,6 +162,18 @@ impl SpecHarness {
 
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
+    }
+}
+
+fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
+    if queue.is_empty() {
+        return DebounceState::default();
+    }
+    let now = Instant::now();
+    DebounceState {
+        first_pending_at: Some(now),
+        last_pending_at: Some(now),
+        hard_fire: queue.iter().any(Observation::is_hard_fire),
     }
 }
 
@@ -275,15 +288,6 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             *inner.interrupt_deadline.lock().await = None;
         }
         Notification::TurnCompleted { turn, .. } => {
-            if inner.interrupt_deadline.lock().await.is_some()
-                && turn.get("status").and_then(Value::as_str) != Some("interrupted")
-            {
-                tracing::warn!(
-                    status = ?turn.get("status"),
-                    "spec harness waiting for interrupted completion before clearing interrupt watchdog"
-                );
-                return persist_snapshot(inner).await;
-            }
             let fallback_turn_id = inner.last_turn_id.lock().await.clone();
             let turn_id = turn
                 .get("id")
@@ -291,6 +295,33 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 .or(fallback_turn_id.as_deref())
                 .unwrap_or("unknown-turn")
                 .to_string();
+            let interrupt_target = {
+                let state = inner.state.lock().await;
+                match &*state {
+                    HarnessState::Issuing {
+                        kind: IssuingKind::Interrupt { target_turn_id, .. },
+                        ..
+                    } => Some(target_turn_id.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(target_turn_id) = interrupt_target {
+                if turn_id != target_turn_id {
+                    tracing::debug!(
+                        observed_turn_id = %turn_id,
+                        target_turn_id = %target_turn_id,
+                        status = ?turn.get("status"),
+                        "spec harness ignoring non-target completion while interrupt is pending"
+                    );
+                    return persist_snapshot(inner).await;
+                }
+                *inner.last_turn_id.lock().await = Some(target_turn_id.clone());
+                *inner.state.lock().await = HarnessState::TurnCompleted {
+                    last_turn_id: target_turn_id,
+                };
+                *inner.interrupt_deadline.lock().await = None;
+                return persist_snapshot(inner).await;
+            }
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             *inner.state.lock().await = HarnessState::TurnCompleted {
                 last_turn_id: turn_id,

@@ -33,7 +33,7 @@ pub mod aspect;
 pub mod auth;
 pub mod card_kind;
 pub mod harness;
-use crate::runtime_repo::RunStatus;
+use crate::runtime_repo::{RunStatus, RuntimeKind};
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
@@ -475,6 +475,15 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         ) {
             continue;
         }
+        if card_has_active_harness_runtime(state, &card_id).await {
+            tracing::debug!(
+                target: "shared_codex_daemon::spec_card",
+                card_id = %card_id,
+                wave_id = %wave_id,
+                "shared spec boot takeover skipping harness runtime"
+            );
+            continue;
+        }
         let watermark = boot_takeover_watermark(&card.payload);
         let wave_key: crate::ids::WaveId = wave_id.clone().into();
         let status: spec_push::SharedStatus =
@@ -511,6 +520,15 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         resumed += 1;
     }
     for (card_id, wave_id, terminal_id, watermark) in pending_initial_prompt_cards {
+        if card_has_active_harness_runtime(state, &card_id).await {
+            tracing::debug!(
+                target: "shared_codex_daemon::spec_card",
+                card_id = %card_id,
+                wave_id = %wave_id,
+                "shared spec pending boot takeover skipping harness runtime"
+            );
+            continue;
+        }
         if let Err(e) = state
             .pending_codex_threads
             .register(
@@ -808,6 +826,32 @@ fn boot_takeover_watermark(payload: &serde_json::Value) -> i64 {
         .get("push_watermark")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0)
+}
+
+async fn card_has_active_harness_runtime(state: &state::AppState, card_id: &str) -> bool {
+    match state
+        .repo
+        .runtime_get_active_for_card(&card_id.to_string())
+        .await
+    {
+        Ok(Some(runtime)) => {
+            runtime.kind == RuntimeKind::SharedSpec
+                && runtime.handle_state_json.as_ref().is_some_and(|state| {
+                    state.get("mode").and_then(serde_json::Value::as_str)
+                        == Some(crate::harness::HARNESS_MODE)
+                })
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                target: "shared_codex_daemon::spec_card",
+                card_id,
+                error = %e,
+                "shared spec boot takeover runtime lookup failed while checking harness mode"
+            );
+            false
+        }
+    }
 }
 
 async fn register_and_catch_up(

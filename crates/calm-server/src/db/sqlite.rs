@@ -2882,6 +2882,15 @@ impl RepoRead for SqlxRepo {
                  AND COALESCE(t.signal_killed, 0) = 0
                  AND NOT EXISTS (
                        SELECT 1
+                         FROM runtimes hr
+                        WHERE hr.card_id = c.id
+                          AND hr.kind = 'shared-spec'
+                          AND hr.status IN ('starting', 'running', 'idle', 'turn_pending')
+                          AND hr.handle_state_json IS NOT NULL
+                          AND json_extract(hr.handle_state_json, '$.mode') = 'harness'
+                 )
+                 AND NOT EXISTS (
+                       SELECT 1
                          FROM card_codex_threads ct
                         WHERE ct.card_id = c.id
                  )

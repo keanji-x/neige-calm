@@ -38,7 +38,12 @@ pub enum HookKind {
 
 impl Observation {
     pub fn is_hard_fire(&self) -> bool {
-        !matches!(self, Observation::ReportEdited { .. })
+        matches!(
+            self,
+            Observation::TaskCompleted { .. }
+                | Observation::TaskFailed { .. }
+                | Observation::WorkerHookStop { .. }
+        )
     }
 
     pub fn report_sha256(&self) -> Option<&str> {

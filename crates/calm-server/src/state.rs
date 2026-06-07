@@ -454,7 +454,7 @@ impl AppState {
         // #293 — the push registry, shared with the dispatcher. Clone-cheap
         // (`Arc<DashMap>` inside); the dispatcher takes a clone so its push
         // path resolves the same handles `create_wave` parks here.
-        let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer(
+        let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer_and_harness(
             repo.clone(),
             events.clone(),
             write.clone(),
@@ -466,6 +466,7 @@ impl AppState {
             None,
             // #293 — share the push registry (push is the only path now).
             spec_push.clone(),
+            harness.clone(),
             shared_codex_appserver.clone(),
             Dispatcher::permits_from_env(8),
         ));
@@ -811,22 +812,25 @@ impl AppState {
         // `create_wave` (push is the only path now). Construct it before the
         // dispatcher spawn so the dispatcher's push path and the route both
         // touch the same `Arc<DashMap>`.
-        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer(
-            repo.clone(),
-            events.clone(),
-            write.clone(),
-            codex.clone(),
-            daemon.clone(),
-            terminal_renderer.clone(),
-            // PR7a.1 — hand the MCP server handle to the dispatcher so
-            // worker codex spawns can join the same MCP wire the spec
-            // card uses.
-            Some(mcp_server.clone()),
-            // #293 — share the push registry (push is the only path now).
-            spec_push.clone(),
-            shared_codex_appserver.clone(),
-            crate::dispatcher::Dispatcher::permits_from_env(8),
-        ));
+        let dispatcher = Arc::new(
+            crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness(
+                repo.clone(),
+                events.clone(),
+                write.clone(),
+                codex.clone(),
+                daemon.clone(),
+                terminal_renderer.clone(),
+                // PR7a.1 — hand the MCP server handle to the dispatcher so
+                // worker codex spawns can join the same MCP wire the spec
+                // card uses.
+                Some(mcp_server.clone()),
+                // #293 — share the push registry (push is the only path now).
+                spec_push.clone(),
+                harness.clone(),
+                shared_codex_appserver.clone(),
+                crate::dispatcher::Dispatcher::permits_from_env(8),
+            ),
+        );
 
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
