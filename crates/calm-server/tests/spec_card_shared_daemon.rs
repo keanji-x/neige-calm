@@ -162,6 +162,16 @@ async fn spec_card(repo: &SqlxRepo, wave_id: &str) -> calm_server::model::Card {
         .expect("spec card")
 }
 
+async fn runtime_status_for_card(repo: &SqlxRepo, card_id: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT status FROM runtimes WHERE card_id = ?1 ORDER BY updated_at_ms DESC LIMIT 1",
+    )
+    .bind(card_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap()
+}
+
 async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
     for _ in 0..50 {
         if let Ok(raw) = std::fs::read_to_string(path) {
@@ -254,6 +264,37 @@ async fn non_empty_wave_routes_spec_card_to_shared_daemon() {
             .any(|row| row.get("method").and_then(Value::as_str) == Some("thread/start")),
         "shared daemon should receive thread/start: {rows:?}"
     );
+}
+
+#[tokio::test]
+async fn non_empty_shared_spec_turn_start_failure_marks_runtime_failed_and_rolls_back() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_TURN_START", "1");
+    }
+    let boot = boot(true).await;
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "turn start fails").await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_FAIL_TURN_START");
+    }
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+
+    let wave_id = wave["id"].as_str().unwrap().to_string();
+    let spec = spec_card(&boot.repo, &wave_id).await;
+    assert!(spec.payload.get("codex_source").is_none());
+    assert!(spec.payload.get("codex_thread_id").is_none());
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(spec.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        runtime_status_for_card(&boot.repo, spec.id.as_str()).await,
+        "failed"
+    );
+    assert!(!boot.state.spec_push.contains(&wave_id.into()));
 }
 
 #[tokio::test]
@@ -355,6 +396,10 @@ async fn empty_shared_spec_respawn_failure_does_not_leave_card_stamped() {
     let spec = spec_card(&boot.repo, &wave_id).await;
     assert!(spec.payload.get("codex_source").is_none());
     assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
+    assert_eq!(
+        runtime_status_for_card(&boot.repo, spec.id.as_str()).await,
+        "failed"
+    );
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
 }

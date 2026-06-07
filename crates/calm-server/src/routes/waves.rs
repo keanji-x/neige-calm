@@ -885,9 +885,25 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             .ok_or_else(|| {
                 CalmError::Internal(format!("spec terminal row missing for card {spec_card_id}"))
             })?;
-        cs.shared_codex_appserver
+        if let Err(e) = cs
+            .shared_codex_appserver
             .ensure_respawn_for_current_settings()
-            .await?;
+            .await
+        {
+            if let Err(mark_err) = w
+                .repo
+                .runtime_complete_for_card(spec_card_id, RunStatus::Failed)
+                .await
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %spec_card_id,
+                    error = %mark_err,
+                    "failed to mark empty spec runtime failed after respawn error"
+                );
+            }
+            return Err(e);
+        }
         // Empty-goal path: thread is fresh-started by TUI; payload needs the
         // shared marker stamped here without a thread_id before the pending
         // FIFO mutates. If this persist fails, no stale pending entry can
@@ -949,6 +965,19 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         }
         .await;
         if let Err(e) = initial_turn_result {
+            if let Err(mark_err) = w
+                .repo
+                .runtime_complete_for_card(spec_card_id, RunStatus::Failed)
+                .await
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %spec_card_id,
+                    thread_id = %thread_id,
+                    error = %mark_err,
+                    "failed to mark spec runtime failed after initial turn error"
+                );
+            }
             // Rollback: the goal never reached the thread. Boot takeover
             // would otherwise treat this card as resumable with no record
             // that the wave title was lost.
