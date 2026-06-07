@@ -32,6 +32,7 @@ pub mod actor;
 pub mod aspect;
 pub mod auth;
 pub mod card_kind;
+pub mod harness;
 use crate::runtime_repo::RunStatus;
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the

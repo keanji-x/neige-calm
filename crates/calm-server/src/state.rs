@@ -10,11 +10,15 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
+use crate::harness::HarnessRegistry;
 use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
 use crate::model::CardRole;
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::codex_adapter::CodexAdapter;
+use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
+use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
+use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use crate::operation::terminal_adapter::TerminalAdapter;
 use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
@@ -94,6 +98,7 @@ pub struct WorkerState {
     pub dispatcher: Arc<Dispatcher>,
     pub mcp_server: Option<Arc<McpServer>>,
     pub spec_push: SpecPushRegistry,
+    pub harness: HarnessRegistry,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub write: WriteContext,
 }
@@ -128,6 +133,7 @@ pub struct BootState {
     pub dispatcher: Arc<Dispatcher>,
     pub mcp_server: Option<Arc<McpServer>>,
     pub spec_push: SpecPushRegistry,
+    pub harness: HarnessRegistry,
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
@@ -153,6 +159,7 @@ impl BootState {
             dispatcher: self.dispatcher.clone(),
             mcp_server: self.mcp_server.clone(),
             spec_push: self.spec_push.clone(),
+            harness: self.harness.clone(),
             terminal_renderer: self.terminal_renderer.clone(),
             write,
         };
@@ -178,6 +185,7 @@ impl BootState {
             dispatcher: self.dispatcher,
             mcp_server: self.mcp_server,
             spec_push: self.spec_push,
+            harness: self.harness,
             shared_codex_appserver: self.shared_codex_appserver,
             pending_codex_threads: self.pending_codex_threads,
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial,
@@ -276,6 +284,7 @@ pub struct AppState {
     /// (`Arc<DashMap<…>>` inside); the dispatcher push path resolves a wave's
     /// client through this registry.
     pub spec_push: SpecPushRegistry,
+    pub harness: HarnessRegistry,
     /// PR4 (#410) — one server-wide codex app-server supervisor.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     /// FIFO attribution registry for empty cards that fresh-start a thread
@@ -373,6 +382,7 @@ impl AppState {
         let card_role_cache = card_role_cache.unwrap_or_default();
         let wave_cove_cache = wave_cove_cache.unwrap_or_default();
         let spec_push = SpecPushRegistry::new();
+        let harness = HarnessRegistry::new();
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
             events.clone(),
@@ -403,9 +413,27 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
+            repo.clone(),
+            shared_codex_appserver.clone(),
+            harness.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let spec_harness_interrupt_adapter =
+            Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
+        let spec_harness_shutdown_adapter =
+            Arc::new(SpecHarnessShutdownAdapter::new(harness.clone()));
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
-            vec![terminal_adapter, codex_adapter, claude_adapter],
+            vec![
+                terminal_adapter,
+                codex_adapter,
+                claude_adapter,
+                spec_harness_start_adapter,
+                spec_harness_interrupt_adapter,
+                spec_harness_shutdown_adapter,
+            ],
             events.clone(),
             SpawnCtx::new(
                 route_repo.clone(),
@@ -464,6 +492,7 @@ impl AppState {
             // their own handles or drive the gated e2e; the default is empty.
             // Same instance the dispatcher above holds a clone of.
             spec_push,
+            harness,
             shared_codex_appserver,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
@@ -528,9 +557,27 @@ impl AppState {
             self.card_role_cache.clone(),
             self.wave_cove_cache.clone(),
         ));
+        let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
+            self.raw.clone(),
+            self.shared_codex_appserver.clone(),
+            self.harness.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
+        let spec_harness_interrupt_adapter =
+            Arc::new(SpecHarnessInterruptAdapter::new(self.harness.clone()));
+        let spec_harness_shutdown_adapter =
+            Arc::new(SpecHarnessShutdownAdapter::new(self.harness.clone()));
         let runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
-            vec![terminal_adapter, codex_adapter, claude_adapter],
+            vec![
+                terminal_adapter,
+                codex_adapter,
+                claude_adapter,
+                spec_harness_start_adapter,
+                spec_harness_interrupt_adapter,
+                spec_harness_shutdown_adapter,
+            ],
             self.events.clone(),
             SpawnCtx::new(
                 route_repo,
@@ -678,6 +725,7 @@ impl AppState {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let spec_push = SpecPushRegistry::new();
+        let harness = HarnessRegistry::new();
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
             events.clone(),
@@ -718,10 +766,28 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
+            repo.clone(),
+            shared_codex_appserver.clone(),
+            harness.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let spec_harness_interrupt_adapter =
+            Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
+        let spec_harness_shutdown_adapter =
+            Arc::new(SpecHarnessShutdownAdapter::new(harness.clone()));
         let operation_runtime = Arc::new(
             OperationRuntime::new(
                 operation_repo,
-                vec![terminal_adapter, codex_adapter, claude_adapter],
+                vec![
+                    terminal_adapter,
+                    codex_adapter,
+                    claude_adapter,
+                    spec_harness_start_adapter,
+                    spec_harness_interrupt_adapter,
+                    spec_harness_shutdown_adapter,
+                ],
                 events.clone(),
                 SpawnCtx::new(
                     route_repo.clone(),
@@ -798,6 +864,7 @@ impl AppState {
             // path now). The dispatcher above holds a clone of this same
             // instance for its push path.
             spec_push,
+            harness,
             shared_codex_appserver,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
@@ -807,6 +874,19 @@ impl AppState {
             operation_runtime,
         };
         let state = state.into_app_state();
+
+        if let Err(e) = crate::harness::recover_harnesses_on_boot(
+            state.raw.clone(),
+            state.shared_codex_appserver.clone(),
+            &state.harness,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                "spec harness boot recovery failed; continuing without recovered harness tasks"
+            );
+        }
 
         // Orphan-terminal sweeper (Scope C). Ticks every 30s, reaps
         // terminal rows that no active runtime references via

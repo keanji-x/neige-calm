@@ -1,5 +1,8 @@
 pub mod claude_adapter;
 pub mod codex_adapter;
+pub mod spec_harness_interrupt_adapter;
+pub mod spec_harness_shutdown_adapter;
+pub mod spec_harness_start_adapter;
 pub mod terminal_adapter;
 
 use std::collections::HashMap;
@@ -16,6 +19,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, EventBus};
 use crate::model::{new_id, now_ms};
 use crate::routes::terminal::spawn_terminal_with_parts;
+use crate::runtime_repo::RuntimeId;
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
 
@@ -115,7 +119,7 @@ impl SpawnCtx {
             env,
         )
         .await?;
-        Ok(SpawnHandle {
+        Ok(SpawnHandle::Terminal {
             terminal_id: term.id.clone(),
             renderer_id: entry.terminal_id.clone(),
         })
@@ -123,9 +127,15 @@ impl SpawnCtx {
 }
 
 #[derive(Clone, Debug)]
-pub struct SpawnHandle {
-    pub terminal_id: String,
-    pub renderer_id: String,
+pub enum SpawnHandle {
+    Terminal {
+        terminal_id: String,
+        renderer_id: String,
+    },
+    Harness {
+        runtime_id: RuntimeId,
+    },
+    NoOp,
 }
 
 #[derive(Clone, Debug)]
@@ -757,6 +767,35 @@ impl OperationRuntime {
                         .is_none()
                     {
                         log_lost_lease(&op, PhaseTag::AppServerInteract);
+                    }
+                    return Ok(());
+                }
+                if !adapter.phases().contains(&PhaseTag::SpawnStarted) {
+                    let output = required_output(&op)?.clone();
+                    match adapter
+                        .spawn_side_effect(&output, &op, &self.spawn_ctx)
+                        .await
+                    {
+                        Ok(_handle) => {
+                            if let Some(result) = self.repo.set_phase(&op, Phase::Succeeded).await?
+                            {
+                                if let Some(result) = operation_result_from(&result)? {
+                                    self.completion.complete(result);
+                                }
+                            } else {
+                                log_lost_lease(&op, PhaseTag::Succeeded);
+                            }
+                        }
+                        Err(e) => {
+                            self.fail_with_compensation(
+                                adapter.as_ref(),
+                                op,
+                                PhaseTag::TxCommitted,
+                                e.to_string(),
+                                output,
+                            )
+                            .await?;
+                        }
                     }
                     return Ok(());
                 }

@@ -684,6 +684,11 @@ impl SharedCodexAppServer {
     }
 
     #[cfg(feature = "fixtures")]
+    pub fn emit_notification_for_test(&self, notification: Notification) {
+        let _ = self.notifications.send(notification);
+    }
+
+    #[cfg(feature = "fixtures")]
     pub fn set_active_turn_for_test(&self, thread_id: &str, turn_id: &str) {
         self.active_turns
             .insert(thread_id.to_string(), turn_id.to_string());
@@ -1432,7 +1437,7 @@ fn thread_started_id(notification: &Notification) -> Option<&str> {
     }
 }
 
-fn thread_id_from_started(params: &serde_json::Value) -> Option<&str> {
+pub fn thread_id_from_started(params: &serde_json::Value) -> Option<&str> {
     if let Some(id) = params
         .get("thread")
         .and_then(|thread| thread.get("id"))
@@ -1461,7 +1466,7 @@ fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
         .or_else(|| params.get("turnId").and_then(serde_json::Value::as_str))
 }
 
-fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
+pub fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
     params.get("threadId").and_then(serde_json::Value::as_str)
 }
 
