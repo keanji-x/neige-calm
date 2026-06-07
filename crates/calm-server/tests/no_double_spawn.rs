@@ -23,8 +23,8 @@ use calm_server::operation::terminal_adapter::{
 };
 use calm_server::operation::{
     CompensationStateVersioned, Operation, OperationKey, OperationOutcome, OperationRepo,
-    OperationResult, OperationRuntime, Phase, ProviderAdapter, RecoveryItem, SpawnCtx, SpawnHandle,
-    SqlxOperationRepo, TxOutput,
+    OperationResult, OperationRuntime, Phase, PhaseTag, ProviderAdapter, RecoveryItem, SpawnCtx,
+    SpawnHandle, SqlxOperationRepo, TxOutput,
 };
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -1085,13 +1085,8 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
         .await
         .unwrap();
 
-    let row = sqlx::query("SELECT phase FROM operations WHERE id = ?1")
-        .bind(&op_id)
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap();
-    let phase: String = row.try_get("phase").unwrap();
-    assert_eq!(phase, "succeeded");
+    let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    assert_eq!(phase, PhaseTag::Succeeded);
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
 }
 
@@ -1402,13 +1397,8 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
         .emit_turn_started_for_test("t1", "recovered-turn");
     recovery.await.unwrap();
 
-    let row = sqlx::query("SELECT phase FROM operations WHERE id = ?1")
-        .bind(&op_id)
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap();
-    let phase: String = row.try_get("phase").unwrap();
-    assert_eq!(phase, "succeeded");
+    let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    assert_eq!(phase, PhaseTag::Succeeded);
     assert_eq!(
         boot.state
             .shared_codex_appserver
@@ -1524,15 +1514,15 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
         .await
         .unwrap();
 
-    let row = sqlx::query("SELECT phase, tx_output_json FROM operations WHERE id = ?1")
+    let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    let row = sqlx::query("SELECT tx_output_json FROM operations WHERE id = ?1")
         .bind(&op_id)
         .fetch_one(boot.repo.pool())
         .await
         .unwrap();
-    let phase: String = row.try_get("phase").unwrap();
     let tx_output_json: String = row.try_get("tx_output_json").unwrap();
     let recovered_output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
-    assert_eq!(phase, "succeeded");
+    assert_eq!(phase, PhaseTag::Succeeded);
     assert_eq!(
         boot.state
             .shared_codex_appserver
@@ -1645,15 +1635,11 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
     wait_for_notification_receivers(&boot.state.shared_codex_appserver, 1).await;
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::resume();
     recovery.await.unwrap();
 
-    let row = sqlx::query("SELECT phase FROM operations WHERE id = ?1")
-        .bind(&op_id)
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap();
-    let phase: String = row.try_get("phase").unwrap();
-    assert_eq!(phase, "failed");
+    let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    assert_eq!(phase, PhaseTag::Failed);
     assert_eq!(
         boot.state
             .shared_codex_appserver
@@ -1746,13 +1732,8 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
         .await
         .unwrap();
 
-    let row = sqlx::query("SELECT phase FROM operations WHERE id = ?1")
-        .bind(&op_id)
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap();
-    let phase: String = row.try_get("phase").unwrap();
-    assert_eq!(phase, "succeeded");
+    let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    assert_eq!(phase, PhaseTag::Succeeded);
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
     assert!(
@@ -2148,6 +2129,36 @@ async fn wait_for_notification_receivers(shared: &SharedCodexAppServer, min: usi
         );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+async fn wait_for_terminal_phase(boot: &Boot, op_id: &str, timeout: Duration) -> PhaseTag {
+    let repo = SqlxOperationRepo::new(boot.repo.pool().clone());
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        boot.state.operation_runtime.drive().await.unwrap();
+        let op = repo
+            .get_operation(op_id)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("operation {op_id} missing"));
+        let phase = op.phase.tag();
+        if is_terminal_phase(phase) {
+            return phase;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for terminal operation phase; op_id={op_id}, phase={}",
+            phase.as_str()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn is_terminal_phase(phase: PhaseTag) -> bool {
+    matches!(
+        phase,
+        PhaseTag::Succeeded | PhaseTag::Failed | PhaseTag::Stuck
+    )
 }
 
 fn output_optional_i64_for_test(output: &TxOutput, key: &str) -> Option<i64> {
