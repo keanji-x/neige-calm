@@ -629,13 +629,13 @@ async fn shared_reset_writes_runtime_and_projects_new_thread_id() {
     assert_eq!(body["terminal_id"], json!(terminal.id.as_str()));
     assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
 
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(card.id.as_str())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    let mapping = boot
+        .repo
+        .card_codex_thread_get_by_card(card.id.as_str())
+        .await
+        .unwrap()
+        .expect("#524 reset path writes legacy mapping atomically with runtime");
+    assert_eq!(mapping.thread_id, "fake-thread-0001");
     let runtime = boot
         .repo
         .runtime_get_active_for_card(&card.id.to_string())

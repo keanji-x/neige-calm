@@ -727,7 +727,7 @@ async fn restart_resumes_rollout_backed_threads() {
 }
 
 #[tokio::test]
-async fn thread_start_for_card_respects_needs_respawn_flag() {
+async fn thread_start_mint_for_card_respects_needs_respawn_flag() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
     let daemon = server(&root, repo.clone()).await;
@@ -738,10 +738,8 @@ async fn thread_start_for_card_respects_needs_respawn_flag() {
     daemon.mark_needs_respawn();
     assert!(daemon.needs_respawn_on_next_thread_start_for_test());
     let thread_id = daemon
-        .thread_start_for_card(
+        .thread_start_mint_for_card(
             &card_id,
-            CardRole::Plain,
-            None,
             SharedThreadStartParams {
                 cwd: "/tmp".into(),
                 approval_policy: "never".into(),

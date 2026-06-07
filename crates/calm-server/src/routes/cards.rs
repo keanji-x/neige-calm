@@ -30,7 +30,7 @@ use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
     resolve_active_thread_for_card,
 };
-use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};

@@ -2415,17 +2415,15 @@ async fn spawn_codex_worker_via_shared_daemon(
     // calm.task_completed / calm.task_failed when the job is done. The
     // legacy path injects this via SeededCardRole::Worker into the per-card
     // CODEX_HOME config.toml; for the shared path we must thread it
-    // explicitly through thread_start_for_card.
+    // explicitly through thread_start.
     let worker_instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Worker.prompt_template(),
         ctx.wave_id.as_str(),
     );
     let thread_id = match inner
         .shared_codex_appserver
-        .thread_start_for_card(
+        .thread_start_mint_for_card(
             card_id,
-            CardRole::Worker,
-            Some(ctx.wave_id.as_str()),
             SharedThreadStartParams {
                 cwd: ctx.cwd.to_string(),
                 approval_policy: "never".into(),
@@ -2437,15 +2435,11 @@ async fn spawn_codex_worker_via_shared_daemon(
     {
         Ok(id) => id,
         Err(e) => {
-            // thread_start failed (transport error, daemon crash, mapping
-            // write failure inside thread_start_for_card). The card +
-            // terminal rows were already committed with the idempotency_key
-            // — without rollback they'd permanently short-circuit retries.
-            // rollback_orphan_worker's pre-spawn fallthrough deletes both
-            // rows; thread_start_for_card may have partially written
-            // card_codex_threads, so reap that too. card_codex_thread is
-            // independent of rollback_orphan_worker so we delete it
-            // explicitly.
+            // thread_start failed (transport error, daemon crash). The
+            // card + terminal rows were already committed with the
+            // idempotency_key; without rollback they'd permanently
+            // short-circuit retries. rollback_orphan_worker's pre-spawn
+            // fallthrough deletes both rows.
             let _ = rollback_orphan_worker(
                 inner.repo.as_ref(),
                 inner.terminal_renderer.as_ref(),
@@ -2454,7 +2448,6 @@ async fn spawn_codex_worker_via_shared_daemon(
                 ctx.term.id.as_str(),
             )
             .await;
-            let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
             tracing::warn!(
                 target: "shared_codex_daemon::worker",
                 card_id,
@@ -2493,7 +2486,6 @@ async fn spawn_codex_worker_via_shared_daemon(
             ctx.term.id.as_str(),
         )
         .await;
-        let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
         tracing::warn!(
             target: "shared_codex_daemon::worker",
             card_id,
@@ -2547,15 +2539,6 @@ async fn spawn_codex_worker_via_shared_daemon(
                 ctx.term.id.as_str(),
             )
             .await;
-            if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
-                tracing::warn!(
-                    target: "shared_codex_daemon::worker",
-                    card_id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "card_codex_thread delete failed during turn_start rollback"
-                );
-            }
             tracing::error!(
                 target: "shared_codex_daemon::worker",
                 card_id,
@@ -2637,7 +2620,6 @@ async fn spawn_codex_worker_via_shared_daemon(
                         "failed to interrupt shared worker turn after TUI spawn failure"
                     );
                 }
-                let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
                 tracing::error!(
                     target: "shared_codex_daemon::worker",
                     card_id,

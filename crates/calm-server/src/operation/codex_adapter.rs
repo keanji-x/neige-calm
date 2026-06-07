@@ -312,7 +312,6 @@ impl ProviderAdapter for CodexAdapter {
     ) -> Result<AppServerInteractOutcome> {
         let payload: CodexCreateOperationPayload = serde_json::from_value(op.payload.clone())?;
         let card_id = output_string(output, "card_id")?;
-        let wave_id = output_string(output, "wave_id")?;
         let cwd = output_string(output, "cwd")?;
 
         if let Some(prompt_text) = output_prompt(output)? {
@@ -326,10 +325,8 @@ impl ProviderAdapter for CodexAdapter {
                         row.thread_id
                     } else {
                         self.shared_codex_appserver
-                            .thread_start_for_card(
+                            .thread_start_mint_for_card(
                                 &card_id,
-                                CardRole::Plain,
-                                Some(wave_id.as_str()),
                                 SharedThreadStartParams {
                                     cwd: cwd.clone(),
                                     approval_policy: "never".into(),
@@ -634,6 +631,7 @@ async fn persist_prompt_thread(
     let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
     let card_id_for_tx = card_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
+    let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
@@ -737,6 +735,7 @@ async fn persist_pending_thread_status(
 
     let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
     let card_id_for_tx = card_id.to_string();
+    let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());

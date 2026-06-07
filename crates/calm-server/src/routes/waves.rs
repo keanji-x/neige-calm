@@ -937,10 +937,8 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         );
         let thread_id = cs
             .shared_codex_appserver
-            .thread_start_for_card(
+            .thread_start_mint_for_card(
                 spec_card_id,
-                CardRole::Spec,
-                Some(wave.id.as_str()),
                 crate::shared_codex_appserver::SharedThreadStartParams {
                     cwd: wave.cwd.clone(),
                     approval_policy: "never".into(),
@@ -999,15 +997,6 @@ pub(crate) async fn spawn_push_via_shared_daemon(
                     thread_id = %thread_id,
                     error = %interrupt_err,
                     "failed to interrupt active spec turn during initial turn rollback"
-                );
-            }
-            if let Err(rollback_err) = s.repo.card_codex_thread_delete_by_card(spec_card_id).await {
-                tracing::warn!(
-                    target: "shared_codex_daemon::spec_card",
-                    card_id = %spec_card_id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "card_codex_thread delete failed during turn_start rollback"
                 );
             }
             if let Err(rollback_err) =

@@ -87,12 +87,23 @@ async fn seed_card_with_runtime_kind(
     .await
     .unwrap();
 
+    start_runtime_for_card(repo, card.id.as_str(), terminal_id, runtime_kind).await;
+    card.id.to_string()
+}
+
+async fn start_runtime_for_card(
+    repo: &SqlxRepo,
+    card_id: &str,
+    terminal_id: &str,
+    runtime_kind: RuntimeKind,
+) -> String {
+    let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     repo.runtime_start_tx(
         &mut tx,
         RuntimeInit {
-            id: new_id(),
-            card_id: card.id.to_string(),
+            id: runtime_id.clone(),
+            card_id: card_id.to_string(),
             kind: runtime_kind,
             agent_provider: Some(AgentProvider::Codex),
             status: RunStatus::TurnPending,
@@ -109,7 +120,7 @@ async fn seed_card_with_runtime_kind(
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    card.id.to_string()
+    runtime_id
 }
 
 async fn projected_card(repo: &SqlxRepo, card_id: &str) -> calm_server::model::Card {
@@ -328,6 +339,81 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
         "CodexCard runtime must keep terminal_run_id; it is its completion identity"
     );
     assert_eq!(runtime.thread_id.as_deref(), Some("T-codex-card"));
+}
+
+#[tokio::test]
+async fn on_thread_started_re_parks_entry_when_runtime_missing() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id =
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-missing", RuntimeKind::SharedSpec).await;
+    registry
+        .register(entry(&card_id, &wave_id, "term-missing"))
+        .await
+        .unwrap();
+    repo.runtime_complete_for_card(&card_id, RunStatus::Failed)
+        .await
+        .unwrap();
+
+    let bound = registry.on_thread_started("T-repark").await.unwrap();
+
+    assert_eq!(bound, None);
+    assert_eq!(registry.pending_count().await, 1);
+    assert!(
+        repo.runtime_get_active_for_card(&card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "missing-runtime bind must not recreate legacy attribution"
+    );
+}
+
+#[tokio::test]
+async fn on_thread_started_succeeds_after_runtime_reappears() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id =
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-retry", RuntimeKind::SharedSpec).await;
+    registry
+        .register(entry(&card_id, &wave_id, "term-retry"))
+        .await
+        .unwrap();
+    repo.runtime_complete_for_card(&card_id, RunStatus::Failed)
+        .await
+        .unwrap();
+
+    assert_eq!(registry.on_thread_started("T-retry").await.unwrap(), None);
+    assert_eq!(registry.pending_count().await, 1);
+
+    let runtime_id =
+        start_runtime_for_card(&repo, &card_id, "term-retry", RuntimeKind::SharedSpec).await;
+
+    assert_eq!(
+        registry.on_thread_started("T-retry").await.unwrap(),
+        Some(card_id.clone())
+    );
+    assert_eq!(registry.pending_count().await, 0);
+    let runtime = repo
+        .runtime_get_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .expect("reappeared runtime row");
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert!(runtime.terminal_run_id.is_none());
+    assert_eq!(runtime.thread_id.as_deref(), Some("T-retry"));
+    assert!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "retry bind must persist to runtime SOT, not legacy attribution"
+    );
 }
 
 #[tokio::test]

@@ -455,7 +455,10 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
-    let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    let mut failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    project_runtime_into_cards_payload(boot.repo.as_ref(), &mut failed_cards)
+        .await
+        .unwrap();
     assert_eq!(failed_cards.len(), 1);
     assert_eq!(
         failed_cards[0].payload["codex_thread_status"], "failed_to_spawn",
@@ -652,7 +655,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: RunStatus::TurnPending,
-            terminal_run_id: Some(failed_terminal_id.to_string()),
+            terminal_run_id: Some(terminal.id.to_string()),
             thread_id: None,
             session_id: None,
             active_turn_id: None,

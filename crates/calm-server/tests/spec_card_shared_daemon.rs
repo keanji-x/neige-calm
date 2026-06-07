@@ -12,12 +12,14 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::{AgentProvider, RuntimeKind, ThreadAttribution};
+use calm_server::runtime_repo::{
+    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use clap::Parser;
@@ -204,6 +206,37 @@ async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     .await
     .unwrap();
     tx.commit().await.unwrap();
+}
+
+async fn start_pending_shared_spec_runtime(
+    repo: &SqlxRepo,
+    card_id: &str,
+    terminal_id: &str,
+) -> String {
+    let runtime_id = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some(terminal_id.to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    runtime_id
 }
 
 async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
@@ -508,15 +541,48 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
         .terminal_set_exit(terminal_id, None, false)
         .await
         .unwrap();
-    assert_eq!(
-        reloaded
-            .pending_codex_threads
-            .on_thread_started("T-spec-reloaded")
-            .await
-            .unwrap()
-            .as_deref(),
-        Some(spec.id.as_str())
-    );
+    let first_bind = reloaded
+        .pending_codex_threads
+        .on_thread_started("T-spec-reloaded")
+        .await
+        .unwrap();
+    match first_bind.as_deref() {
+        Some(card_id) => assert_eq!(card_id, spec.id.as_str()),
+        None => {
+            assert_eq!(
+                reloaded.pending_codex_threads.pending_count().await,
+                1,
+                "missing-runtime bind must re-park the pending entry"
+            );
+            assert!(
+                boot.repo
+                    .card_codex_thread_get_by_card(spec.id.as_str())
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "missing-runtime bind must not recreate legacy attribution"
+            );
+            assert!(
+                boot.repo
+                    .runtime_get_active_for_card(&spec.id.to_string())
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "first failed bind should be the missing-runtime race"
+            );
+            start_pending_shared_spec_runtime(&boot.repo, spec.id.as_str(), terminal_id).await;
+            assert_eq!(
+                reloaded
+                    .pending_codex_threads
+                    .on_thread_started("T-spec-reloaded")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(spec.id.as_str())
+            );
+        }
+    }
+    assert_eq!(reloaded.pending_codex_threads.pending_count().await, 0);
     let runtime = boot
         .repo
         .runtime_get_active_for_card(&spec.id.to_string())

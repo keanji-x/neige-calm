@@ -174,16 +174,31 @@ impl PendingThreadStartRegistry {
             };
 
             let age_ms = entry.registered_at.elapsed().as_millis();
-            let card_id = entry.card_id;
-            self.bind_entry(&card_id, thread_id).await?;
-            tracing::info!(
-                target = "shared_codex_daemon::pending_bind",
-                %thread_id,
-                %card_id,
-                age_ms,
-                "bound pending shared codex empty-card thread start"
-            );
-            return Ok(Some(card_id));
+            let card_id = entry.card_id.clone();
+            match self.bind_entry(&card_id, thread_id).await {
+                Ok(()) => {
+                    tracing::info!(
+                        target = "shared_codex_daemon::pending_bind",
+                        %thread_id,
+                        %card_id,
+                        age_ms,
+                        "bound pending shared codex empty-card thread start"
+                    );
+                    return Ok(Some(card_id));
+                }
+                Err(err) => {
+                    let mut queue = self.queue.lock().await;
+                    queue.push_front(entry);
+                    tracing::warn!(
+                        target = "shared_codex_daemon::pending_bind",
+                        %thread_id,
+                        %card_id,
+                        error = %err,
+                        "pending bind failed; re-parked entry"
+                    );
+                    return Ok(None);
+                }
+            }
         }
     }
 
@@ -329,26 +344,29 @@ impl PendingThreadStartRegistry {
             &write,
             move |tx| {
                 Box::pin(async move {
-                    if let Some(runtime) =
-                        runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
-                    {
-                        runtime_bind_attribution_tx(
-                            tx,
-                            &runtime.id,
-                            ThreadAttribution {
-                                runtime_id: runtime.id.clone(),
-                                provider: AgentProvider::Codex,
-                                thread_id: Some(thread_id_for_tx.clone()),
-                                session_id: None,
-                                active_turn_id: None,
-                            },
-                        )
-                        .await?;
-                        runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
-                        // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
-                        if runtime.kind == RuntimeKind::SharedSpec {
-                            runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
-                        }
+                    let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                        .await?
+                        .ok_or_else(|| {
+                            CalmError::Internal(format!(
+                                "no active runtime for card {card_id_for_tx} during pending thread bind"
+                            ))
+                        })?;
+                    runtime_bind_attribution_tx(
+                        tx,
+                        &runtime.id,
+                        ThreadAttribution {
+                            runtime_id: runtime.id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id_for_tx.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await?;
+                    runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                    // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
+                    if runtime.kind == RuntimeKind::SharedSpec {
+                        runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
                     }
                     let card = card_for_event;
                     Ok((card.clone(), Event::CardUpdated(card)))
@@ -423,4 +441,62 @@ pub fn spawn_periodic_expire_task(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::model::{NewCard, NewCove, NewWave};
+    use serde_json::json;
+
+    async fn seed_card_without_runtime() -> (Arc<SqlxRepo>, EventBus, String) {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let cove = repo
+            .cove_create(NewCove {
+                name: "pending".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "pending".into(),
+                sort: None,
+                cwd: "/workspace".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1}),
+            })
+            .await
+            .unwrap();
+        (repo, EventBus::new(), card.id.to_string())
+    }
+
+    #[tokio::test]
+    async fn bind_errors_when_no_active_runtime() {
+        let (repo, events, card_id) = seed_card_without_runtime().await;
+        let registry = PendingThreadStartRegistry::new(repo, events);
+
+        let err = registry.bind_entry(&card_id, "T-missing-runtime").await;
+
+        match err {
+            Err(CalmError::Internal(message)) => assert_eq!(
+                message,
+                format!("no active runtime for card {card_id} during pending thread bind")
+            ),
+            other => panic!("expected missing-runtime internal error, got {other:?}"),
+        }
+    }
 }
