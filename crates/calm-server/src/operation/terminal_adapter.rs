@@ -225,7 +225,7 @@ impl ProviderAdapter for TerminalAdapter {
 
     async fn app_server_interact(
         &self,
-        _output: &TxOutput,
+        _output: &mut TxOutput,
         _op: &Operation,
         _ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {

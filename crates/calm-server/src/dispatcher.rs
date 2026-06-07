@@ -939,6 +939,12 @@ impl Inner {
         // already narrowed us to two variants; the `_` arm exists for
         // future-proofing in case the filter ever widens.
         let req = match &envelope.event {
+            // #481 PR2 N4 guard marker: route-origin `codex-create` is
+            // framework-owned by OperationRuntime/CodexAdapter and does
+            // not emit `Event::TerminalJobRequested` or
+            // `Event::CodexJobRequested`. This dispatcher arm remains
+            // the legacy worker request path until PR5 rewrites
+            // `spawn_codex_worker`.
             Event::CodexJobRequested {
                 idempotency_key,
                 goal,

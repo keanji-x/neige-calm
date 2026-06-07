@@ -13,6 +13,7 @@ use crate::event::EventBus;
 use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
 use crate::model::CardRole;
+use crate::operation::codex_adapter::CodexAdapter;
 use crate::operation::terminal_adapter::TerminalAdapter;
 use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
@@ -370,6 +371,13 @@ impl AppState {
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
         let wave_cove_cache = wave_cove_cache.unwrap_or_default();
+        let spec_push = SpecPushRegistry::new();
+        let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
+            repo.clone(),
+            events.clone(),
+        ));
+        let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
+        let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
         let operation_repo = Arc::new(SqlxOperationRepo::new(
             repo.sqlite_pool()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
@@ -379,9 +387,18 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let codex_adapter = Arc::new(CodexAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
-            vec![terminal_adapter],
+            vec![terminal_adapter, codex_adapter],
             events.clone(),
             SpawnCtx::new(
                 route_repo.clone(),
@@ -402,12 +419,6 @@ impl AppState {
         // #293 — the push registry, shared with the dispatcher. Clone-cheap
         // (`Arc<DashMap>` inside); the dispatcher takes a clone so its push
         // path resolves the same handles `create_wave` parks here.
-        let spec_push = SpecPushRegistry::new();
-        let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
-        let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
-            repo.clone(),
-            events.clone(),
-        ));
         let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
@@ -448,7 +459,7 @@ impl AppState {
             spec_push,
             shared_codex_appserver,
             pending_codex_threads,
-            pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
+            pending_codex_threads_spawn_serial,
             // #322 — aspect registry. Identical set in test/replay and
             // production (see `build_aspect_registry` doc) so a test
             // exercising the production register path (e.g.
@@ -471,6 +482,7 @@ impl AppState {
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
         self.shared_codex_appserver = shared.clone();
         self.codex_shell.shared_codex_appserver = shared;
+        self.rebuild_fixture_operation_runtime();
         self
     }
 
@@ -478,7 +490,44 @@ impl AppState {
     pub fn with_pending_codex_threads(mut self, pending: Arc<PendingThreadStartRegistry>) -> Self {
         self.pending_codex_threads = pending.clone();
         self.codex_shell.pending_codex_threads = pending;
+        self.rebuild_fixture_operation_runtime();
         self
+    }
+
+    #[cfg(feature = "fixtures")]
+    fn rebuild_fixture_operation_runtime(&mut self) {
+        let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
+        let operation_repo =
+            Arc::new(SqlxOperationRepo::new(self.raw.sqlite_pool().expect(
+                "fixture OperationRuntime requires a sqlite-backed Repo",
+            )));
+        let terminal_adapter = Arc::new(TerminalAdapter::new(
+            route_repo.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
+        let codex_adapter = Arc::new(CodexAdapter::new(
+            route_repo.clone(),
+            self.codex.clone(),
+            self.shared_codex_appserver.clone(),
+            self.pending_codex_threads.clone(),
+            self.pending_codex_threads_spawn_serial.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
+        let runtime = Arc::new(OperationRuntime::new_unchecked(
+            operation_repo,
+            vec![terminal_adapter, codex_adapter],
+            self.events.clone(),
+            SpawnCtx::new(
+                route_repo,
+                self.daemon.clone(),
+                self.terminal_renderer.clone(),
+                self.events.clone(),
+            ),
+        ));
+        self.operation_runtime = runtime.clone();
+        self.route.operation_runtime = runtime;
     }
 
     pub fn card_kind_registry(&self) -> &CardKindRegistry {
@@ -615,6 +664,23 @@ impl AppState {
 
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        let spec_push = SpecPushRegistry::new();
+        let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
+            repo.clone(),
+            events.clone(),
+        ));
+        spawn_periodic_expire_task(
+            pending_codex_threads.clone(),
+            Duration::from_secs(60),
+            Duration::from_secs(60 * 60 * 6),
+        );
+        let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
+        let shared_codex_appserver = SharedCodexAppServer::new_with_pending(
+            cfg,
+            codex.shared_codex_home.clone(),
+            repo.clone(),
+            Some(pending_codex_threads.clone()),
+        );
         let operation_repo = Arc::new(SqlxOperationRepo::new(
             repo.sqlite_pool()
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
@@ -624,10 +690,19 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let codex_adapter = Arc::new(CodexAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let operation_runtime = Arc::new(
             OperationRuntime::new(
                 operation_repo,
-                vec![terminal_adapter],
+                vec![terminal_adapter, codex_adapter],
                 events.clone(),
                 SpawnCtx::new(
                     route_repo.clone(),
@@ -651,22 +726,6 @@ impl AppState {
         // `create_wave` (push is the only path now). Construct it before the
         // dispatcher spawn so the dispatcher's push path and the route both
         // touch the same `Arc<DashMap>`.
-        let spec_push = SpecPushRegistry::new();
-        let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
-            repo.clone(),
-            events.clone(),
-        ));
-        spawn_periodic_expire_task(
-            pending_codex_threads.clone(),
-            Duration::from_secs(60),
-            Duration::from_secs(60 * 60 * 6),
-        );
-        let shared_codex_appserver = SharedCodexAppServer::new_with_pending(
-            cfg,
-            codex.shared_codex_home.clone(),
-            repo.clone(),
-            Some(pending_codex_threads.clone()),
-        );
         let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
@@ -722,7 +781,7 @@ impl AppState {
             spec_push,
             shared_codex_appserver,
             pending_codex_threads,
-            pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
+            pending_codex_threads_spawn_serial,
             // #322 — aspect registry, boot-installed once and shared via
             // `Arc` to every handler / actor that needs it.
             aspects: build_aspect_registry(),

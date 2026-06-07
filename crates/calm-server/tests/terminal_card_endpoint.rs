@@ -35,10 +35,13 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::{NewCove, NewWave};
+use calm_server::operation::codex_adapter::CodexAdapter;
 use calm_server::operation::terminal_adapter::TerminalAdapter;
 use calm_server::operation::{OperationRuntime, SpawnCtx, SpawnHandle, SqlxOperationRepo};
+use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::RendererConfig;
 use futures::future::BoxFuture;
@@ -99,7 +102,7 @@ async fn boot() -> Boot {
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();
-    let state = AppState::from_parts(
+    let mut state = AppState::from_parts(
         repo.clone(),
         events.clone(),
         daemon,
@@ -119,6 +122,14 @@ async fn boot() -> Boot {
         None,
         None,
     );
+    let pending = Arc::new(PendingThreadStartRegistry::new(
+        repo.clone(),
+        events.clone(),
+    ));
+    let shared =
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), Some(pending.clone()));
+    state = state.with_shared_codex_appserver(shared);
+    state = state.with_pending_codex_threads(pending);
     let state = install_success_spawn_runtime(state, repo.clone(), events.clone());
 
     let app = routes::router()
@@ -142,7 +153,11 @@ fn install_success_spawn_runtime(
     repo: Arc<dyn Repo>,
     events: EventBus,
 ) -> AppState {
-    let hook = Arc::new(
+    install_spawn_runtime_with_hook(state, repo, events, silent_spawn_hook())
+}
+
+fn silent_spawn_hook() -> TestSpawnHook {
+    Arc::new(
         move |terminal_id: String,
               _program: String,
               _cwd: String,
@@ -155,8 +170,7 @@ fn install_success_spawn_runtime(
                 })
             })
         },
-    );
-    install_spawn_runtime_with_hook(state, repo, events, hook)
+    )
 }
 
 fn install_spawn_runtime_with_hook(
@@ -170,15 +184,25 @@ fn install_spawn_runtime_with_hook(
         repo.sqlite_pool()
             .expect("terminal endpoint tests require sqlite repo"),
     ));
-    let adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
+    let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
         state.wave_cove_cache.clone(),
         hook,
     ));
+    let codex_adapter = Arc::new(CodexAdapter::new_with_spawn_hook(
+        route_repo.clone(),
+        state.codex.clone(),
+        state.shared_codex_appserver.clone(),
+        state.pending_codex_threads.clone(),
+        state.pending_codex_threads_spawn_serial.clone(),
+        state.card_role_cache.clone(),
+        state.wave_cove_cache.clone(),
+        silent_spawn_hook(),
+    ));
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
-        vec![adapter],
+        vec![terminal_adapter, codex_adapter],
         events.clone(),
         SpawnCtx::new(
             route_repo,
@@ -293,6 +317,36 @@ async fn post_with_idempotency(
     (status, json)
 }
 
+async fn post_codex_card(
+    app: axum::Router,
+    wave_id: &str,
+    body: Value,
+    idempotency_key: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/waves/{wave_id}/codex-cards"))
+        .header("content-type", "application/json");
+    if let Some(key) = idempotency_key {
+        req = req.header("Idempotency-Key", key);
+    }
+    let resp = app
+        .oneshot(
+            req.body(Body::from(body.to_string()))
+                .expect("build codex-card POST request"),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+fn operation_key_is_new_id_shape(operation_key: &str) -> bool {
+    operation_key.len() == 32 && operation_key.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 async fn post_with_actor(
     app: axum::Router,
     uri: String,
@@ -355,6 +409,70 @@ async fn post_terminal_card_same_idempotency_key_returns_same_card() {
     assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
     assert_eq!(second_status, StatusCode::CREATED, "body={second_card:?}");
     assert_eq!(first_card, second_card);
+}
+
+#[tokio::test]
+async fn post_terminal_card_idempotency_key_reused_by_codex_operation_uses_fresh_operation_key() {
+    let boot = boot_happy().await;
+    let codex_key = "abc";
+    let terminal_key = "codex-create:abc";
+
+    let codex_body = json!({
+        "cwd": "",
+        "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+    });
+    let (codex_status, codex_card) =
+        post_codex_card(boot.app.clone(), &boot.wave_id, codex_body, Some(codex_key)).await;
+    assert_eq!(codex_status, StatusCode::CREATED, "body={codex_card:?}");
+
+    let terminal_body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
+    let terminal_uri = format!("/api/waves/{}/terminal-cards", boot.wave_id);
+    let (terminal_status, terminal_card) = post_with_idempotency(
+        boot.app.clone(),
+        terminal_uri,
+        terminal_body,
+        Some(terminal_key),
+    )
+    .await;
+    assert_eq!(
+        terminal_status,
+        StatusCode::CREATED,
+        "body={terminal_card:?}"
+    );
+    assert_ne!(codex_card["id"], terminal_card["id"]);
+
+    let pool = boot
+        .repo
+        .sqlite_pool()
+        .expect("terminal endpoint tests require sqlite repo");
+    let rows = sqlx::query(
+        "SELECT kind, operation_key, idempotency_key FROM operations WHERE idempotency_key IN (?1, ?2) ORDER BY kind",
+    )
+    .bind(codex_key)
+    .bind(terminal_key)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let observed: Vec<(String, String, String)> = rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.try_get("kind").unwrap(),
+                row.try_get("operation_key").unwrap(),
+                row.try_get("idempotency_key").unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0].0, "codex-create");
+    assert_eq!(observed[0].2, codex_key);
+    assert_eq!(observed[1].0, "terminal-create");
+    assert_eq!(observed[1].2, terminal_key);
+    assert!(operation_key_is_new_id_shape(&observed[0].1));
+    assert!(operation_key_is_new_id_shape(&observed[1].1));
+    assert_ne!(observed[0].1, observed[1].1);
+    assert_ne!(observed[0].1, terminal_key);
+    assert_ne!(observed[1].1, terminal_key);
 }
 
 #[tokio::test]

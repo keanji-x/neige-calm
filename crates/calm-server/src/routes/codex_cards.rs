@@ -24,26 +24,21 @@
 //!
 
 use crate::actor::Actor;
-use crate::codex_appserver::{InputItem, Notification};
-use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
-    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_set_status_tx,
-};
-use crate::db::write_with_event_typed;
+use crate::codex_appserver::Notification;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::Event;
-use crate::ids::ActorId;
-use crate::model::{Card, CardPatch, CardRole, new_id};
-use crate::pending_codex_threads::{PendingEntry, card_payload_clear_pending_status};
-use crate::routes::cards::card_scope;
-use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_terminal_for_route;
-use crate::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
-use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
+use crate::model::{Card, new_id};
+use crate::operation::codex_adapter::{
+    CodexCreateOperationPayload, CodexCreateRequestInput, normalize_codex_create_request,
+};
+use crate::operation::{OperationKey, OperationOutcome};
+use crate::routes::terminal_cards::{
+    calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
+};
+use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::post,
 };
 use serde::Deserialize;
@@ -128,601 +123,60 @@ pub struct NewCodexCardBody {
 #[allow(deprecated)]
 pub(crate) async fn create_codex_card(
     State(s): State<RouteState>,
-    State(w): State<WorkerState>,
-    State(cs): State<CodexShellState>,
     actor: Actor,
+    headers: HeaderMap,
     Path(wave_id): Path<String>,
     Json(p): Json<NewCodexCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
-    // 1. Parent wave must exist. Surfaces as 404 *before* we open the
-    //    transaction — same shape as the terminal-card route. The
-    //    `card_with_codex_create_tx` helper would surface a foreign-key
-    //    failure as 500 (Internal) at txn commit which is less informative
-    //    than this explicit pre-check.
-    if s.repo.wave_get(&wave_id).await?.is_none() {
-        return Err(CalmError::NotFound(format!("wave {wave_id}")));
-    }
-
-    // Validate `cwd` at the request boundary: a value containing ASCII
-    // control characters (`\n`, `\r`, `\t`, `\0`, `\x7f`, ...) would
-    // produce invalid downstream process state. Reject up front with 400 so
-    // the caller gets a deterministic, debuggable signal instead of a daemon
-    // spawn failure deep in the pipeline. Only validates when the caller
-    // supplied a value — `None` / empty string still falls back to
-    // `default_cwd()` below.
-    if let Some(raw) = p.cwd.as_deref()
-        && raw.chars().any(|c| c.is_ascii_control())
-    {
-        return Err(CalmError::BadRequest(
-            "cwd must not contain ASCII control characters".into(),
-        ));
-    }
-    let icon_bg = normalize_optional_css_color(p.icon_bg.as_deref(), "icon_bg")?;
-    let icon_fg = normalize_optional_css_color(p.icon_fg.as_deref(), "icon_fg")?;
-
-    // 2. Pre-mint the card id before the row hits the DB.
-    let card_id = new_id();
-
-    // 3. Resolve cwd — empty / missing falls back to `$HOME`.
-    let cwd = p
-        .cwd
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .map(String::from)
-        .unwrap_or_else(default_cwd);
-
-    // Normalize prompt up-front: trim + non-empty filter. This is the
-    // single source of truth for "is this a hands-free spawn?" — the
-    // payload stamp, the config.toml write, and the codex argv all key
-    // off the same Option<String>. None / empty → user-initiated flow.
-    let prompt = p
-        .prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-
-    if !cs.shared_codex_appserver.is_running() {
-        return Err(CalmError::Internal(
-            "shared codex app-server is not running".into(),
-        ));
-    }
-
-    // 4. Assemble the env map the daemon will forward to the PTY child:
-    //    CODEX_HOME / NEIGE_CARD_ID / NEIGE_CALM_BASE_URL plus proxy vars
-    //    pulled from `load_settings`. Only inject HTTP(S)_PROXY when the
-    //    user has a non-empty override — empty would *clear* the container
-    //    default which is the opposite of what the user expects.
-    let codex_home_path = cs.codex.codex_home_dir().to_string_lossy().to_string();
-    let settings = load_settings(s.repo.as_ref()).await?;
-    let mut env_map = serde_json::Map::new();
-    env_map.insert(
-        "CODEX_HOME".to_string(),
-        serde_json::Value::String(codex_home_path.clone()),
-    );
-    env_map.insert(
-        "NEIGE_CARD_ID".to_string(),
-        serde_json::Value::String(card_id.clone()),
-    );
-    env_map.insert(
-        "NEIGE_CALM_BASE_URL".to_string(),
-        serde_json::Value::String(cs.codex.ingest_url.clone()),
-    );
-    if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
-        // codex (and the OpenAI client it links) reads `HTTPS_PROXY` /
-        // `HTTP_PROXY` (uppercase); most reqwest-based tools also honor
-        // lowercase. Cheap to write both.
-        env_map.insert(
-            "HTTP_PROXY".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-        env_map.insert(
-            "http_proxy".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-    }
-    if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
-        env_map.insert(
-            "HTTPS_PROXY".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-        env_map.insert(
-            "https_proxy".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-    }
-    let env = serde_json::Value::Object(env_map);
-
-    // 5. Single transaction: card row + terminal row + payload link + event.
-    //    A single `card.added` envelope carries the final-state card to
-    //    all peers — no intermediate `payload=null` snapshot, no follow-up
-    //    `card.updated`.
-    let sort = p.sort;
-    let card_id_for_tx = card_id.clone();
-    let cwd_for_tx = cwd.clone();
-    let env_for_tx = env.clone();
-    let prompt_for_tx = prompt.clone();
-    let icon_bg_for_tx = icon_bg.clone();
-    let icon_fg_for_tx = icon_fg.clone();
-    // #177 — host browser's theme is written onto the terminal row in
-    // the same tx that mints the card. The spawn helper below reads
-    // `term.theme_fg/bg` directly when stamping the daemon argv, so
-    // any spawn for this row (initial, auto-revive, dispatcher) gets
-    // identical `--terminal-fg/-bg` values by construction.
-    let theme_for_tx = p.theme;
-    // Pre-built `EventScope::Card` — `card_id` is pre-minted on this
-    // endpoint (see module-level doc), so the scope is fully determined
-    // before the txn opens.
-    let scope = card_scope(
-        s.repo.as_ref(),
-        card_id.clone().into(),
-        wave_id.clone().into(),
-    )
-    .await?;
-    let wave_id_for_tx = wave_id.clone();
-    let write_for_tx = s.write.clone();
-    let (mut card, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor.to_actor_id(),
-        scope,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
-            Box::pin(async move {
-                let (card, _term, _token) = card_with_codex_create_tx(
-                    tx,
-                    card_id_for_tx,
-                    wave_id_for_tx.into(),
-                    sort,
-                    cwd_for_tx,
-                    env_for_tx,
-                    prompt_for_tx,
-                    icon_bg_for_tx,
-                    icon_fg_for_tx,
-                    // User-facing codex cards stay Plain. The spec
-                    // role is exclusively minted by the wave-create
-                    // route (PR6), and the dispatcher mints Worker
-                    // role through the standalone card_create path.
-                    // PR7a: Plain cards skip token minting, so the
-                    // third return slot is always `None` here — we
-                    // discard it explicitly to make the contract
-                    // obvious at the call site.
-                    crate::model::CardRole::Plain,
-                    // Issue #229 PR A — user-facing codex cards are
-                    // user-deletable. Spec cards take the `false`
-                    // route via routes/waves.rs.
-                    true,
-                    write_for_tx.role_cache(),
-                    theme_for_tx,
-                )
-                .await?;
-                Ok((card.clone(), Event::CardAdded(card)))
-            })
-        },
-    )
-    .await?;
-
-    // 6. Fetch the persisted terminal row so we can hand it to
-    //    `spawn_terminal_for`. Guaranteed to exist: the transaction above
-    //    committed both card and terminal as one unit.
-    let term = s
-        .repo
-        .terminal_get_by_card(card.id.as_ref())
-        .await?
-        .ok_or_else(|| {
-            CalmError::Internal(format!(
-                "terminal vanished after commit for card {}",
-                card.id
-            ))
-        })?;
-
-    let _pending_spawn_serial_guard = if prompt.is_none() {
-        Some(cs.pending_codex_threads_spawn_serial.lock().await)
-    } else {
-        None
-    };
-
-    let command_line = if let Some(prompt_text) = prompt.as_deref() {
-        // Non-empty user prompt cards run turn #1 on the server-wide shared
-        // app-server, then the PTY TUI attaches to that durable thread via
-        // `codex resume ... --remote`.
-        let mut notifs = cs.shared_codex_appserver.subscribe_notifications();
-        let thread_id = match cs
-            .shared_codex_appserver
-            .thread_start_for_card(
-                card.id.as_ref(),
-                CardRole::Plain,
-                Some(wave_id.as_str()),
-                crate::shared_codex_appserver::SharedThreadStartParams {
-                    cwd: cwd.clone(),
-                    approval_policy: "never".into(),
-                    sandbox_mode: "workspace-write".into(),
-                    developer_instructions: None,
-                },
-            )
-            .await
-        {
-            Ok(thread_id) => thread_id,
-            Err(e) => {
-                tracing::error!(
-                    target = "shared_codex_daemon::user_prompt_card_start_failed",
-                    card_id = %card.id,
-                    error = %e,
-                );
-                if let Err(mark_err) = w
-                    .repo
-                    .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
-                    .await
-                {
-                    tracing::warn!(
-                        card_id = %card.id,
-                        terminal_id = %term.id,
-                        error = %mark_err,
-                        "failed to mark prompt codex runtime failed after thread/start error"
-                    );
-                }
-                return Err(e);
-            }
-        };
-
-        let mut payload = card.payload.clone();
-        let Some(map) = payload.as_object_mut() else {
-            return Err(CalmError::Internal(format!(
-                "codex card {} payload is not a JSON object; cannot persist codex_thread_id",
-                card.id
-            )));
-        };
-        map.insert(
-            "codex_thread_id".into(),
-            serde_json::Value::String(thread_id.clone()),
-        );
-
-        let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
-        let card_id_for_tx = card.id.to_string();
-        let thread_id_for_tx = thread_id.clone();
-        let wave_id_for_tx = wave_id.clone();
-        let payload_for_tx = payload;
-        let persist_result = write_with_event_typed(
-            s.repo.as_ref(),
-            actor.to_actor_id(),
-            scope,
-            None,
-            &s.events,
-            &s.write,
-            move |tx| {
-                Box::pin(async move {
-                    card_codex_thread_upsert_tx(
-                        tx,
-                        &card_id_for_tx,
-                        &thread_id_for_tx,
-                        CardRole::Plain,
-                        Some(wave_id_for_tx.as_str()),
-                    )
-                    .await?;
-                    let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
-                        .await?
-                        .ok_or_else(|| {
-                            CalmError::Internal(format!(
-                                "codex card {card_id_for_tx} has no active runtime to bind"
-                            ))
-                        })?;
-                    runtime_bind_attribution_tx(
-                        tx,
-                        &runtime.id,
-                        ThreadAttribution {
-                            runtime_id: runtime.id.clone(),
-                            provider: AgentProvider::Codex,
-                            thread_id: Some(thread_id_for_tx.clone()),
-                            session_id: None,
-                            active_turn_id: None,
-                        },
-                    )
-                    .await?;
-                    runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
-                    let card = card_update_tx(
-                        tx,
-                        &card_id_for_tx,
-                        CardPatch {
-                            kind: None,
-                            sort: None,
-                            payload: Some(payload_for_tx),
-                            deletable: None,
-                        },
-                    )
-                    .await?;
-                    Ok((card.clone(), Event::CardUpdated(card)))
-                })
+    let request = normalize_codex_create_request(CodexCreateRequestInput {
+        wave_id,
+        sort: p.sort,
+        cwd: p.cwd,
+        prompt: p.prompt,
+        icon_bg: p.icon_bg,
+        icon_fg: p.icon_fg,
+        theme: p.theme,
+    })?;
+    let idempotency_key = parse_idempotency_key_header(&headers)?;
+    let operation_key = new_id();
+    let payload_hash = stable_payload_hash(&serde_json::json!({
+        "actor": actor.as_str(),
+        "request": &request,
+    }))?;
+    let actor = actor.to_actor_id();
+    let payload = serde_json::to_value(CodexCreateOperationPayload { actor, request })?;
+    let op_id = s
+        .operation_runtime
+        .submit(
+            "codex-create",
+            OperationKey {
+                operation_key,
+                idempotency_key,
+                payload_hash,
             },
-        )
-        .await;
-        let (updated, _id) = match persist_result {
-            Ok(updated) => updated,
-            Err(e) => {
-                if let Err(mark_err) = w
-                    .repo
-                    .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
-                    .await
-                {
-                    tracing::warn!(
-                        card_id = %card.id,
-                        terminal_id = %term.id,
-                        thread_id = %thread_id,
-                        error = %mark_err,
-                        "failed to mark prompt codex runtime failed after thread persist error"
-                    );
-                }
-                if let Err(rollback_err) = s
-                    .repo
-                    .card_codex_thread_delete_by_card(card.id.as_ref())
-                    .await
-                {
-                    tracing::warn!(
-                        card_id = %card.id,
-                        terminal_id = %term.id,
-                        thread_id = %thread_id,
-                        rollback_error = %rollback_err,
-                        "card_codex_thread delete failed during prompt thread persist rollback"
-                    );
-                }
-                return Err(e);
-            }
-        };
-        card = updated;
-
-        if let Err(e) = cs
-            .shared_codex_appserver
-            .turn_start(&thread_id, vec![InputItem::text(prompt_text)])
-            .await
-        {
-            if let Err(mark_err) = w
-                .repo
-                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    thread_id = %thread_id,
-                    error = %mark_err,
-                    "failed to mark prompt codex runtime failed after turn/start error"
-                );
-            }
-            if let Err(rollback_err) = s
-                .repo
-                .card_codex_thread_delete_by_card(card.id.as_ref())
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "card_codex_thread delete failed during prompt turn/start rollback"
-                );
-            }
-            if let Err(rollback_err) =
-                clear_prompt_thread_stamp(&s, actor.to_actor_id(), &card).await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "payload clear failed during prompt turn/start rollback"
-                );
-            }
-            return Err(e);
-        }
-        if let Err(e) = await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await {
-            if let Err(mark_err) = w
-                .repo
-                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    thread_id = %thread_id,
-                    error = %mark_err,
-                    "failed to mark prompt codex runtime failed after lifecycle wait error"
-                );
-            }
-            if let Err(interrupt_err) = cs
-                .shared_codex_appserver
-                .interrupt_active_turn(&thread_id)
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    thread_id = %thread_id,
-                    error = %interrupt_err,
-                    "failed to interrupt active prompt codex turn during lifecycle rollback"
-                );
-            }
-            if let Err(rollback_err) = s
-                .repo
-                .card_codex_thread_delete_by_card(card.id.as_ref())
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "card_codex_thread delete failed during prompt lifecycle rollback"
-                );
-            }
-            if let Err(rollback_err) =
-                clear_prompt_thread_stamp(&s, actor.to_actor_id(), &card).await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "payload clear failed during prompt lifecycle rollback"
-                );
-            }
-            return Err(e);
-        }
-
-        tracing::info!(
-            target = "shared_codex_daemon::user_prompt_card_started",
-            card_id = %card.id,
-            wave_id = %wave_id,
-            thread_id = %thread_id,
-            prompt_len = prompt_text.len(),
-        );
-        format!(
-            "codex resume {} --remote {}",
-            shell_single_quote(&thread_id),
-            shell_single_quote(&cs.shared_codex_appserver.remote_uri()),
-        )
-    } else {
-        if let Err(e) = cs
-            .shared_codex_appserver
-            .ensure_respawn_for_current_settings()
-            .await
-        {
-            if let Err(mark_err) = w
-                .repo
-                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    error = %mark_err,
-                    "failed to mark empty codex runtime failed after respawn error"
-                );
-            }
-            return Err(e);
-        }
-
-        let mut payload = card.payload.clone();
-        let Some(map) = payload.as_object_mut() else {
-            return Err(CalmError::Internal(format!(
-                "codex card {} payload is not a JSON object; cannot persist pending status",
-                card.id
-            )));
-        };
-        map.insert(
-            "codex_thread_status".into(),
-            serde_json::Value::String("pending_thread_start".into()),
-        );
-
-        let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
-        let card_id_for_tx = card.id.to_string();
-        let payload_for_tx = payload;
-        let (updated, _id) = write_with_event_typed(
-            s.repo.as_ref(),
-            actor.to_actor_id(),
-            scope,
-            None,
-            &s.events,
-            &s.write,
-            move |tx| {
-                Box::pin(async move {
-                    let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
-                        .await?
-                        .ok_or_else(|| {
-                            CalmError::Internal(format!(
-                                "codex card {card_id_for_tx} has no active runtime to mark pending"
-                            ))
-                        })?;
-                    runtime_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
-                    let card = card_update_tx(
-                        tx,
-                        &card_id_for_tx,
-                        CardPatch {
-                            kind: None,
-                            sort: None,
-                            payload: Some(payload_for_tx),
-                            deletable: None,
-                        },
-                    )
-                    .await?;
-                    Ok((card.clone(), Event::CardUpdated(card)))
-                })
-            },
+            payload,
         )
         .await?;
-        card = updated;
-
-        cs.pending_codex_threads
-            .register(PendingEntry::new(
-                card.id.to_string(),
-                Some(wave_id.clone()),
-                term.id.to_string(),
-            ))
-            .await?;
-
-        format!(
-            "codex --remote {}",
-            shell_single_quote(&cs.shared_codex_appserver.remote_uri()),
-        )
-    };
-
-    // 7. Persisted rows remain on spawn failure, but shared empty-card
-    //    pending state must be rolled back immediately.
-    if let Err(e) = spawn_terminal_for_route(&s, &w, &term, &command_line, &cwd, &env).await {
-        if prompt.is_none() {
-            let removed = cs
-                .pending_codex_threads
-                .remove_by_card(card.id.as_ref())
-                .await;
-            let payload_rolled_back =
-                card_payload_clear_pending_status(s.repo.as_ref(), &s.events, card.id.as_ref())
-                    .await
-                    .is_ok();
-            tracing::warn!(
-                target: "shared_codex_daemon::pending_rollback_on_spawn_failure",
-                card_id = %card.id,
-                removed,
-                payload_rolled_back,
-                error = %e,
-                "PTY spawn failed; rolled back pending registry + payload"
-            );
-            if let Err(mark_err) = w
-                .repo
-                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card.id,
-                    terminal_id = %term.id,
-                    error = %mark_err,
-                    "failed to mark empty codex runtime failed after spawn error"
-                );
-            }
-        } else if let Err(mark_err) = w
-            .repo
-            .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
-            .await
-        {
-            tracing::warn!(
-                card_id = %card.id,
-                terminal_id = %term.id,
-                error = %mark_err,
-                "failed to mark prompt codex runtime failed after spawn error"
-            );
+    let result = s.operation_runtime.wait(&op_id).await?;
+    match result.outcome {
+        OperationOutcome::Succeeded { result }
+        | OperationOutcome::SucceededViaCollision { result, .. } => {
+            let card: Card = serde_json::from_value(result)?;
+            Ok((StatusCode::CREATED, Json(card)))
         }
-        return Err(e);
+        OperationOutcome::Failed {
+            last_error,
+            from_phase,
+            last_error_class,
+        } => Err(calm_error_from_operation_failure(
+            last_error_class.as_deref(),
+            last_error,
+            from_phase,
+        )),
+        OperationOutcome::Stuck { .. } => {
+            Err(CalmError::Internal("operation stuck, see DB".to_string()))
+        }
     }
-
-    tracing::info!(
-        card_id = %card.id,
-        terminal_id = %term.id,
-        cwd = %cwd,
-        hands_free = prompt.is_some(),
-        shared_prompt_thread = prompt.is_some(),
-        shared_empty_thread_pending = prompt.is_none(),
-        "spawned interactive codex"
-    );
-
-    Ok((StatusCode::CREATED, Json(card)))
 }
 
 // ---------------------------------------------------------------------------
@@ -744,7 +198,7 @@ pub(crate) fn default_cwd() -> String {
         })
 }
 
-async fn await_shared_initial_turn_lifecycle(
+pub(crate) async fn await_shared_initial_turn_lifecycle(
     rx: &mut tokio::sync::broadcast::Receiver<Notification>,
     thread_id: &str,
 ) -> Result<()> {
@@ -781,62 +235,6 @@ async fn await_shared_initial_turn_lifecycle(
             }
         }
     }
-}
-
-async fn clear_prompt_thread_stamp(s: &RouteState, actor: ActorId, card: &Card) -> Result<()> {
-    let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
-    let card_id_for_tx = card.id.to_string();
-    let (_card, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor,
-        scope,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
-            Box::pin(async move {
-                // Fetch the live payload inside the tx so a concurrent
-                // patch (e.g. a plugin reacting to the CardUpdated event
-                // emitted by the forward path) is not clobbered by a
-                // stale snapshot captured before rollback started.
-                // Mirrors clear_shared_spec_runtime_fields in waves.rs.
-                let row: Option<(String,)> =
-                    sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
-                        .bind(&card_id_for_tx)
-                        .fetch_optional(&mut **tx)
-                        .await?;
-                let payload_text = row
-                    .ok_or_else(|| CalmError::NotFound(format!("card {card_id_for_tx}")))?
-                    .0;
-                let mut payload: serde_json::Value = serde_json::from_str(&payload_text)
-                    .map_err(|e| {
-                        CalmError::Internal(format!(
-                            "card {card_id_for_tx} payload is not valid JSON: {e}"
-                        ))
-                    })?;
-                let Some(map) = payload.as_object_mut() else {
-                    return Err(CalmError::Internal(format!(
-                        "codex card {card_id_for_tx} payload is not a JSON object; cannot clear codex_thread_id"
-                    )));
-                };
-                map.remove("codex_thread_id");
-                let card = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload),
-                        deletable: None,
-                    },
-                )
-                .await?;
-                Ok((card.clone(), Event::CardUpdated(card)))
-            })
-        },
-    )
-    .await?;
-    Ok(())
 }
 
 /// Wrap a string in POSIX-shell single quotes, escaping any embedded
