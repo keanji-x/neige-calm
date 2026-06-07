@@ -176,10 +176,8 @@ pub fn bounded_exponential_backoff(initial: Duration, max: Duration, attempt: u6
 pub type NotificationFanout = broadcast::Sender<Notification>;
 
 pub struct SharedCodexAppServer {
-    state: Arc<Mutex<SharedDaemonState>>,
     sock: PathBuf,
     home: Arc<SharedCodexHome>,
-    runtime: Arc<Mutex<Option<SharedDaemonRuntime>>>,
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
     active_turns: Arc<DashMap<String, String>>,
@@ -190,16 +188,8 @@ pub struct SharedCodexAppServer {
     kernel_thread_start_serial: Arc<Mutex<()>>,
     codex_bin: String,
     log_dir: PathBuf,
-    client: Arc<Mutex<Option<Arc<CodexAppServer>>>>,
-    child: Arc<Mutex<Option<Child>>>,
-    monitor_started: AtomicBool,
-    restart_lock: Mutex<()>,
     restart_count: std::sync::atomic::AtomicU64,
     needs_respawn_on_next_thread_start: Arc<AtomicBool>,
-    taken_over_pid_watcher: Mutex<Option<JoinHandle<()>>>,
-    last_error: Arc<Mutex<Option<String>>>,
-    // ----- #480 PR5a additions (parallel state — read+written by transition APIs;
-    // existing fields remain authoritative until PR5b migration) -----
     /// #480 §C — typestate-companion state machine. PR5b migrates readers.
     core: Arc<tokio::sync::Mutex<SupervisorCore>>,
     /// #480 §C — serializes process transitions (replaces `restart_lock` in PR5b).
@@ -260,6 +250,35 @@ pub struct LaunchedSharedDaemon {
     pub watcher: SupervisorWatcher,
 }
 
+pub(crate) struct RunningProcessParts {
+    child: Option<Child>,
+    runtime: SharedDaemonRuntime,
+    watcher: SupervisorWatcher,
+}
+
+impl SupervisorState {
+    /// Return last_error string when present (Restarting.reason, Failed.last_error).
+    /// None for Idle/Starting/Running.
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            SupervisorState::Restarting { reason, .. } => Some(reason.as_str()),
+            SupervisorState::Failed { last_error, .. } => Some(last_error.as_str()),
+            _ => None,
+        }
+    }
+
+    /// DB string mapping for persistence + status_snapshot.
+    pub fn as_shared_daemon_state(&self) -> SharedDaemonState {
+        match self {
+            SupervisorState::Idle => SharedDaemonState::Idle,
+            SupervisorState::Starting { .. } => SharedDaemonState::Starting,
+            SupervisorState::Running { .. } => SharedDaemonState::Running,
+            SupervisorState::Restarting { .. } => SharedDaemonState::Restarting,
+            SupervisorState::Failed { .. } => SharedDaemonState::Failed,
+        }
+    }
+}
+
 impl SharedCodexAppServer {
     pub fn new_stub(repo: Arc<dyn Repo>) -> Arc<Self> {
         Self::new_stub_inner(repo, None)
@@ -285,10 +304,8 @@ impl SharedCodexAppServer {
         let home = Arc::new(SharedCodexHome::new(root.join("codex-home"), legacy));
         let (tx, _) = broadcast::channel(16);
         Arc::new(Self {
-            state: Arc::new(Mutex::new(SharedDaemonState::Idle)),
             sock: root.join("run/codex-appserver.sock"),
             home,
-            runtime: Arc::new(Mutex::new(None)),
             repo,
             thread_cache: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
@@ -299,14 +316,8 @@ impl SharedCodexAppServer {
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
-            client: Arc::new(Mutex::new(None)),
-            child: Arc::new(Mutex::new(None)),
-            monitor_started: AtomicBool::new(false),
-            restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
-            taken_over_pid_watcher: Mutex::new(None),
-            last_error: Arc::new(Mutex::new(None)),
             core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
                 state: SupervisorState::Idle,
                 attempts: 0,
@@ -329,10 +340,8 @@ impl SharedCodexAppServer {
         let data_dir = cfg.data_dir_resolved();
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
-            state: Arc::new(Mutex::new(SharedDaemonState::Idle)),
             sock: data_dir.join("run/codex-appserver.sock"),
             home,
-            runtime: Arc::new(Mutex::new(None)),
             repo,
             thread_cache: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
@@ -346,14 +355,8 @@ impl SharedCodexAppServer {
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
-            client: Arc::new(Mutex::new(None)),
-            child: Arc::new(Mutex::new(None)),
-            monitor_started: AtomicBool::new(false),
-            restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
-            taken_over_pid_watcher: Mutex::new(None),
-            last_error: Arc::new(Mutex::new(None)),
             core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
                 state: SupervisorState::Idle,
                 attempts: 0,
@@ -367,16 +370,10 @@ impl SharedCodexAppServer {
         self.rebuild_thread_cache_from_db().await?;
         let record = self.repo.shared_daemon_runtime_get().await?;
         if self.try_takeover_live(&record).await? {
-            if let Some(runtime) = self.runtime.lock().await.clone() {
-                self.spawn_taken_over_pid_watcher(runtime).await;
-            }
             return Ok(());
         }
 
-        self.remove_stale_socket_before_spawn().await?;
-        self.start_new_process(SharedDaemonState::Starting, false, None)
-            .await?;
-        self.spawn_spawned_child_watcher();
+        self.start_new_process(false, None).await?;
         Ok(())
     }
 
@@ -389,7 +386,7 @@ impl SharedCodexAppServer {
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
         self.reap_and_respawn_with_current_settings().await?;
-        let client = self.client().await?;
+        let client = self.connected_client().await?;
         let thread = client
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
@@ -438,7 +435,7 @@ impl SharedCodexAppServer {
                 "turn/start for thread missing shared daemon card mapping"
             );
         }
-        let client = self.client().await?;
+        let client = self.connected_client().await?;
         let turn = client.turn_start(thread_id, items).await?;
         let turn_id = turn
             .turn_id()
@@ -450,7 +447,7 @@ impl SharedCodexAppServer {
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
-        let client = self.client().await?;
+        let client = self.connected_client().await?;
         client.turn_interrupt(thread_id, turn_id).await
     }
 
@@ -485,9 +482,9 @@ impl SharedCodexAppServer {
     }
 
     pub fn is_running(&self) -> bool {
-        self.state
+        self.core
             .try_lock()
-            .is_ok_and(|state| *state == SharedDaemonState::Running)
+            .is_ok_and(|core| matches!(core.state, SupervisorState::Running { .. }))
     }
 
     pub fn remote_uri(&self) -> String {
@@ -500,15 +497,26 @@ impl SharedCodexAppServer {
     }
 
     pub fn status_snapshot(&self) -> SharedDaemonStatus {
+        let (state, runtime, last_error) = self
+            .core
+            .try_lock()
+            .map(|core| {
+                let runtime = match &core.state {
+                    SupervisorState::Running { runtime, .. } => Some(runtime.clone()),
+                    _ => None,
+                };
+                (
+                    core.state.as_shared_daemon_state(),
+                    runtime,
+                    core.state.last_error().map(String::from),
+                )
+            })
+            .unwrap_or((SharedDaemonState::Failed, None, None));
         SharedDaemonStatus {
-            state: self
-                .state
-                .try_lock()
-                .map(|g| *g)
-                .unwrap_or(SharedDaemonState::Failed),
+            state,
             sock: self.sock.display().to_string(),
             codex_home: self.home.path().display().to_string(),
-            runtime: self.runtime.try_lock().ok().and_then(|g| g.clone()),
+            runtime,
             cached_threads: self.thread_cache.len(),
             pending_count: self
                 .pending_codex_threads_handle
@@ -516,7 +524,7 @@ impl SharedCodexAppServer {
                 .map(|pending| pending.pending_count_snapshot())
                 .unwrap_or(0),
             restart_count: self.restart_count.load(Ordering::SeqCst),
-            last_error: self.last_error.try_lock().ok().and_then(|g| g.clone()),
+            last_error,
         }
     }
 
@@ -569,11 +577,9 @@ impl SharedCodexAppServer {
         hex[..16].to_string()
     }
 
-    async fn client(&self) -> Result<Arc<CodexAppServer>> {
-        self.client
-            .lock()
+    async fn connected_client(&self) -> Result<Arc<CodexAppServer>> {
+        self.running_client()
             .await
-            .clone()
             .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
     }
 
@@ -594,7 +600,10 @@ impl SharedCodexAppServer {
         ))
     }
 
-    async fn try_takeover_live(&self, record: &crate::db::SharedCodexDaemonRecord) -> Result<bool> {
+    async fn try_takeover_live(
+        self: &Arc<Self>,
+        record: &crate::db::SharedCodexDaemonRecord,
+    ) -> Result<bool> {
         let (Some(pid), Some(pgid), Some(start_time), Some(boot_id), Some(started_at)) = (
             record.pid,
             record.pgid,
@@ -639,15 +648,31 @@ impl SharedCodexAppServer {
         match connect_initialized(&sock).await {
             Ok((client, notifications)) => {
                 let client = Arc::new(client);
-                self.install_client(client, notifications).await;
-                *self.runtime.lock().await = Some(SharedDaemonRuntime {
+                let runtime = SharedDaemonRuntime {
                     pid,
                     pgid,
                     boot_id,
                     process_start_time: start_time,
                     started_at,
+                };
+                self.install_client(notifications).await;
+                let watcher_self = Arc::downgrade(self);
+                let watcher_runtime = runtime.clone();
+                let handle = tokio::spawn(async move {
+                    Self::watch_taken_over_pid(watcher_self, watcher_runtime).await;
                 });
-                *self.state.lock().await = SharedDaemonState::Running;
+                self.start_new_process_typestate(|_| async move {
+                    Ok(LaunchedSharedDaemon {
+                        child: None,
+                        client,
+                        runtime,
+                        watcher: SupervisorWatcher {
+                            kind: WatcherKind::TakenOverPid { pid },
+                            handle,
+                        },
+                    })
+                })
+                .await?;
                 self.resume_cached_threads().await;
                 Ok(true)
             }
@@ -666,13 +691,28 @@ impl SharedCodexAppServer {
     }
 
     async fn start_new_process(
-        &self,
-        state: SharedDaemonState,
+        self: &Arc<Self>,
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<()> {
-        let _guard = self.restart_lock.lock().await;
-        *self.state.lock().await = state;
+        let this = Arc::clone(self);
+        self.start_new_process_typestate(move |_| {
+            let this = Arc::clone(&this);
+            async move {
+                this.launch_spawned_process(increment_restart_count, last_error)
+                    .await
+            }
+        })
+        .await?;
+        self.resume_cached_threads().await;
+        Ok(())
+    }
+
+    async fn launch_spawned_process(
+        self: &Arc<Self>,
+        increment_restart_count: bool,
+        last_error: Option<String>,
+    ) -> Result<LaunchedSharedDaemon> {
         std::fs::create_dir_all(self.sock.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(&self.log_dir)?;
         self.remove_stale_socket_before_spawn().await?;
@@ -740,17 +780,16 @@ impl SharedCodexAppServer {
             })
             .await?;
         let child = spawn_guard.disarm();
-        *self.child.lock().await = Some(child);
         let client = Arc::new(client);
-        self.install_client(client, notifications).await;
-        *self.runtime.lock().await = Some(runtime.clone());
-        *self.state.lock().await = SharedDaemonState::Running;
+        self.install_client(notifications).await;
+        let watcher_self = Arc::downgrade(self);
+        let handle = tokio::spawn(async move {
+            Self::watch_spawned_child(watcher_self).await;
+        });
         self.restart_backoff.note_relaunch_now();
         if increment_restart_count {
             self.restart_count.fetch_add(1, Ordering::SeqCst);
         }
-        *self.last_error.lock().await = last_error.clone();
-        self.resume_cached_threads().await;
         tracing::info!(
             target = "shared_codex_daemon::start",
             boot_id = %boot_id,
@@ -759,7 +798,15 @@ impl SharedCodexAppServer {
             home = %self.home.path().display(),
             "shared codex app-server running"
         );
-        Ok(())
+        Ok(LaunchedSharedDaemon {
+            child: Some(child),
+            client,
+            runtime,
+            watcher: SupervisorWatcher {
+                kind: WatcherKind::SpawnedChild,
+                handle,
+            },
+        })
     }
 
     async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
@@ -807,25 +854,30 @@ impl SharedCodexAppServer {
             target: "shared_codex_daemon::restart",
             "respawning shared codex app-server before thread/start because runtime settings changed"
         );
-        *self.client.lock().await = None;
-        *self.state.lock().await = SharedDaemonState::Restarting;
+        let prev_pid = self.running_runtime().await.map(|runtime| runtime.pid);
+        let running = self
+            .begin_restart(prev_pid, "settings changed".to_string())
+            .await;
 
-        self.reap_current_child_or_runtime().await;
+        self.reap_current_child_or_runtime(running).await;
 
-        self.start_new_process(SharedDaemonState::Restarting, true, None)
-            .await?;
-        self.spawn_spawned_child_watcher();
+        self.start_new_process(true, None).await?;
         Ok(())
     }
 
-    async fn reap_current_child_or_runtime(&self) {
-        let runtime = self.runtime.lock().await.take();
-        let child = self.child.lock().await.take();
+    async fn reap_current_child_or_runtime(&self, running: Option<RunningProcessParts>) {
+        let Some(RunningProcessParts {
+            runtime,
+            child,
+            watcher,
+        }) = running
+        else {
+            return;
+        };
+        watcher.handle.abort();
         if let Some(mut child) = child {
-            let pgid = runtime
-                .as_ref()
-                .map(|runtime| runtime.pgid)
-                .or_else(|| child.id().and_then(|pid| i32::try_from(pid).ok()));
+            let pgid =
+                Some(runtime.pgid).or_else(|| child.id().and_then(|pid| i32::try_from(pid).ok()));
             if let Some(pgid) = pgid {
                 signal_process_group(pgid, libc::SIGTERM);
             }
@@ -848,10 +900,6 @@ impl SharedCodexAppServer {
             return;
         }
 
-        let Some(runtime) = runtime else {
-            return;
-        };
-        self.abort_taken_over_pid_watcher().await;
         reap_verified_process_group(
             runtime.pid,
             runtime.pgid,
@@ -908,12 +956,7 @@ impl SharedCodexAppServer {
         }
     }
 
-    async fn install_client(
-        &self,
-        client: Arc<CodexAppServer>,
-        mut notifications: crate::codex_appserver::NotificationStream,
-    ) {
-        *self.client.lock().await = Some(client);
+    async fn install_client(&self, mut notifications: crate::codex_appserver::NotificationStream) {
         let tx = self.notifications.clone();
         let pending = self.pending_codex_threads_handle.clone();
         let repo = self.repo.clone();
@@ -990,7 +1033,7 @@ impl SharedCodexAppServer {
     }
 
     async fn resume_cached_threads(&self) {
-        let Some(client) = self.client.lock().await.clone() else {
+        let Some(client) = self.running_client().await else {
             return;
         };
         for entry in self.thread_cache.iter() {
@@ -1011,37 +1054,39 @@ impl SharedCodexAppServer {
         }
     }
 
-    fn spawn_spawned_child_watcher(self: &Arc<Self>) {
-        if self.monitor_started.swap(true, Ordering::SeqCst) {
-            return;
+    async fn running_client(&self) -> Option<Arc<CodexAppServer>> {
+        let core = self.core.lock().await;
+        match &core.state {
+            SupervisorState::Running { client, .. } => Some(client.clone()),
+            _ => None,
         }
-        let this = Arc::downgrade(self);
-        tokio::spawn(async move {
-            Self::watch_spawned_child(this).await;
-        });
     }
 
-    async fn spawn_taken_over_pid_watcher(self: &Arc<Self>, runtime: SharedDaemonRuntime) {
-        if self.monitor_started.swap(true, Ordering::SeqCst) {
-            return;
+    async fn running_runtime(&self) -> Option<SharedDaemonRuntime> {
+        let core = self.core.lock().await;
+        match &core.state {
+            SupervisorState::Running { runtime, .. } => Some(runtime.clone()),
+            _ => None,
         }
-        let this = Arc::downgrade(self);
-        let handle = tokio::spawn(async move {
-            Self::watch_taken_over_pid(this.clone(), runtime).await;
-            if let Some(this) = this.upgrade() {
-                *this.taken_over_pid_watcher.lock().await = None;
-                Self::watch_spawned_child(Arc::downgrade(&this)).await;
-                return;
-            }
-            Self::watch_spawned_child(this).await;
-        });
-        *self.taken_over_pid_watcher.lock().await = Some(handle);
     }
 
-    async fn abort_taken_over_pid_watcher(&self) {
-        if let Some(handle) = self.taken_over_pid_watcher.lock().await.take() {
-            handle.abort();
-            self.monitor_started.store(false, Ordering::SeqCst);
+    async fn try_take_exited_running_child(
+        &self,
+    ) -> Option<(std::process::ExitStatus, SharedDaemonRuntime)> {
+        let mut core = self.core.lock().await;
+        match &mut core.state {
+            SupervisorState::Running { child, runtime, .. } => match child
+                .as_mut()
+                .and_then(|child| child.try_wait().ok())
+                .flatten()
+            {
+                Some(status) => {
+                    *child = None;
+                    Some((status, runtime.clone()))
+                }
+                None => None,
+            },
+            _ => None,
         }
     }
 
@@ -1051,28 +1096,9 @@ impl SharedCodexAppServer {
             let Some(this) = this.upgrade() else {
                 return;
             };
-            let exited = {
-                let mut guard = this.child.lock().await;
-                match guard
-                    .as_mut()
-                    .and_then(|child| child.try_wait().ok())
-                    .flatten()
-                {
-                    Some(status) => {
-                        *guard = None;
-                        Some(status)
-                    }
-                    None => None,
-                }
-            };
-            if let Some(status) = exited {
-                let uptime_sec = this
-                    .runtime
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(|runtime| (now_ms() - runtime.started_at).max(0) / 1000)
-                    .unwrap_or(0);
+            let exited = this.try_take_exited_running_child().await;
+            if let Some((status, runtime)) = exited {
+                let uptime_sec = (now_ms() - runtime.started_at).max(0) / 1000;
                 let error = format!("shared codex app-server exited: {status}");
                 tracing::warn!(
                     target = "shared_codex_daemon::stop",
@@ -1081,7 +1107,12 @@ impl SharedCodexAppServer {
                     signal = status.signal(),
                     "shared codex app-server stopped"
                 );
-                this.restart_after_crash(error).await;
+                Arc::clone(&this).restart_after_crash(error).await;
+                // #480 PR5b: restart_after_crash spawns a new SupervisorWatcher
+                // for the replacement Running state. This task's loop must end
+                // here so we don't accumulate one stale watcher per crash.
+                // Mirrors `watch_taken_over_pid`'s return-after-restart shape.
+                return;
             }
         }
     }
@@ -1105,52 +1136,52 @@ impl SharedCodexAppServer {
                     reason = "taken-over daemon exited",
                     "shared codex app-server takeover pid exited"
                 );
-                this.restart_after_crash(error).await;
+                Arc::clone(&this).restart_after_crash(error).await;
                 return;
             }
         }
     }
 
-    async fn restart_after_crash(&self, error: String) {
-        *self.client.lock().await = None;
-        *self.runtime.lock().await = None;
-        *self.state.lock().await = SharedDaemonState::Restarting;
-        *self.last_error.lock().await = Some(error.clone());
-        let count = self.restart_count.load(Ordering::SeqCst) + 1;
-        tracing::warn!(
-            target = "shared_codex_daemon::restart",
-            prior_state = ?SharedDaemonState::Running,
-            restart_count = count,
-            last_error = %error,
-            "restarting shared codex app-server"
-        );
-        let delay = self.restart_backoff.next_delay();
-        tokio::time::sleep(delay).await;
-        if let Err(e) = self
-            .start_new_process(SharedDaemonState::Restarting, true, Some(error.clone()))
-            .await
-        {
-            *self.state.lock().await = SharedDaemonState::Failed;
-            *self.last_error.lock().await = Some(e.to_string());
-            let _ = self
-                .repo
-                .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                    state: SharedDaemonState::Failed.as_db_str().to_string(),
-                    pid: None,
-                    pgid: None,
-                    sock_path: Some(self.sock.display().to_string()),
-                    codex_home_path: Some(self.home.path().display().to_string()),
-                    process_start_time: None,
-                    boot_id: None,
-                    started_at: None,
-                    last_error: Some(e.to_string()),
-                    increment_restart_count: false,
-                    daemon_env_signature: Some(self.current_env_signature().await.unwrap_or_else(
-                        |_| Self::compute_env_signature(&self.ingest_url, None, None),
-                    )),
-                })
-                .await;
-        }
+    fn restart_after_crash(
+        self: Arc<Self>,
+        error: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+        Box::pin(async move {
+            let prev_pid = self.running_runtime().await.map(|runtime| runtime.pid);
+            let _running = self.begin_restart(prev_pid, error.clone()).await;
+            let count = self.restart_count.load(Ordering::SeqCst) + 1;
+            tracing::warn!(
+                target = "shared_codex_daemon::restart",
+                prior_state = ?SharedDaemonState::Running,
+                restart_count = count,
+                last_error = %error,
+                "restarting shared codex app-server"
+            );
+            let delay = self.restart_backoff.next_delay();
+            tokio::time::sleep(delay).await;
+            if let Err(e) = self.start_new_process(true, Some(error.clone())).await {
+                let _ = self
+                    .repo
+                    .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+                        state: SharedDaemonState::Failed.as_db_str().to_string(),
+                        pid: None,
+                        pgid: None,
+                        sock_path: Some(self.sock.display().to_string()),
+                        codex_home_path: Some(self.home.path().display().to_string()),
+                        process_start_time: None,
+                        boot_id: None,
+                        started_at: None,
+                        last_error: Some(e.to_string()),
+                        increment_restart_count: false,
+                        daemon_env_signature: Some(
+                            self.current_env_signature().await.unwrap_or_else(|_| {
+                                Self::compute_env_signature(&self.ingest_url, None, None)
+                            }),
+                        ),
+                    })
+                    .await;
+            }
+        })
     }
 }
 
@@ -1160,11 +1191,10 @@ impl SharedCodexAppServer {
     /// PR5a stub: parallel-writes the new state but does NOT replace the
     /// existing `start_new_process` impl. PR5b makes this the canonical
     /// path.
-    #[allow(dead_code)]
-    pub(crate) async fn start_new_process_typestate<F, Fut>(&self, spawn: F) -> anyhow::Result<()>
+    pub(crate) async fn start_new_process_typestate<F, Fut>(&self, spawn: F) -> Result<()>
     where
         F: FnOnce(PathBuf) -> Fut + Send,
-        Fut: std::future::Future<Output = anyhow::Result<LaunchedSharedDaemon>> + Send,
+        Fut: std::future::Future<Output = Result<LaunchedSharedDaemon>> + Send,
     {
         let _serial = self.transition_serial.lock().await;
         let socket_path = self.sock.clone();
@@ -1178,6 +1208,7 @@ impl SharedCodexAppServer {
         match spawn(socket_path).await {
             Ok(launched) => {
                 let mut core = self.core.lock().await;
+                core.attempts = 0;
                 core.state = SupervisorState::Running {
                     child: launched.child,
                     client: launched.client,
@@ -1199,17 +1230,36 @@ impl SharedCodexAppServer {
 
     /// #480 §C — typestate transition: mark a restart in progress.
     /// **Invariant**: must hold `transition_serial`.
-    #[allow(dead_code)]
-    pub(crate) async fn begin_restart(&self, prev_pid: Option<i32>, reason: String) {
+    pub(crate) async fn begin_restart(
+        &self,
+        prev_pid: Option<i32>,
+        reason: String,
+    ) -> Option<RunningProcessParts> {
         let _serial = self.transition_serial.lock().await;
         let mut core = self.core.lock().await;
         core.attempts = core.attempts.saturating_add(1);
         let attempts = core.attempts;
-        core.state = SupervisorState::Restarting {
-            prev_pid,
-            reason,
-            attempts,
-        };
+        let old_state = std::mem::replace(
+            &mut core.state,
+            SupervisorState::Restarting {
+                prev_pid,
+                reason,
+                attempts,
+            },
+        );
+        match old_state {
+            SupervisorState::Running {
+                child,
+                runtime,
+                watcher,
+                ..
+            } => Some(RunningProcessParts {
+                child,
+                runtime,
+                watcher,
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -1415,26 +1465,28 @@ async fn reap_listener_if_alive(sock_path: &Path) -> Result<()> {
 }
 
 struct SpawnedChildGuard {
-    child: Option<Child>,
+    spawned_child: Option<Child>,
     pgid: i32,
 }
 
 impl SpawnedChildGuard {
     fn new(child: Child, pgid: i32) -> Self {
         Self {
-            child: Some(child),
+            spawned_child: Some(child),
             pgid,
         }
     }
 
     fn disarm(&mut self) -> Child {
-        self.child.take().expect("spawn guard disarmed once")
+        self.spawned_child
+            .take()
+            .expect("spawn guard disarmed once")
     }
 }
 
 impl Drop for SpawnedChildGuard {
     fn drop(&mut self) {
-        if self.child.is_none() {
+        if self.spawned_child.is_none() {
             return;
         }
         tracing::warn!(
@@ -1449,8 +1501,8 @@ impl Drop for SpawnedChildGuard {
 
 impl Drop for SharedCodexAppServer {
     fn drop(&mut self) {
-        if let Ok(runtime) = self.runtime.try_lock()
-            && let Some(runtime) = runtime.as_ref()
+        if let Ok(core) = self.core.try_lock()
+            && let SupervisorState::Running { runtime, .. } = &core.state
         {
             let _ = signal_process_group(runtime.pgid, libc::SIGTERM);
         }
@@ -1500,7 +1552,17 @@ impl SharedCodexAppServer {
     }
 
     pub async fn taken_over_pid_watcher_active_for_test(&self) -> bool {
-        self.taken_over_pid_watcher.lock().await.is_some()
+        let core = self.core.lock().await;
+        matches!(
+            &core.state,
+            SupervisorState::Running {
+                watcher: SupervisorWatcher {
+                    kind: WatcherKind::TakenOverPid { .. },
+                    ..
+                },
+                ..
+            }
+        )
     }
 }
 
