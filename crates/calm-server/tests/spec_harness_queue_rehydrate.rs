@@ -69,6 +69,17 @@ async fn queued_rows_move_into_handle_state_and_are_deleted() {
 
     repo.spec_card_enqueue_observation(
         card.id.as_str(),
+        7,
+        &serde_json::to_string(&Observation::TaskCompleted {
+            idempotency_key: "task-stale".into(),
+            result: json!({"stale": true}),
+        })
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    repo.spec_card_enqueue_observation(
+        card.id.as_str(),
         8,
         &serde_json::to_string(&Observation::TaskCompleted {
             idempotency_key: "task-8".into(),
@@ -94,6 +105,7 @@ async fn queued_rows_move_into_handle_state_and_are_deleted() {
     let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
+    assert_eq!(stored.push_watermark, 9);
     assert_eq!(stored.pending_queue.len(), 2);
     assert!(matches!(
         &stored.pending_queue[0],

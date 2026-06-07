@@ -70,12 +70,21 @@ pub async fn rehydrate_spec_push_queue(
     if rows.is_empty() {
         return Ok(());
     }
-    let row_ids = rows.iter().map(|(id, _, _)| *id).collect::<Vec<_>>();
-    for (_, _, text) in rows {
+    let mut row_ids = Vec::new();
+    let mut max_envelope_id = snapshot.push_watermark;
+    for (id, envelope_id, text) in rows {
+        if envelope_id <= snapshot.push_watermark {
+            row_ids.push(id);
+            continue;
+        }
         let obs =
             serde_json::from_str::<Observation>(&text).unwrap_or(Observation::WaveGoal { text });
         snapshot.pending_queue.push(obs);
+        snapshot.push_watermark = snapshot.push_watermark.max(envelope_id);
+        max_envelope_id = max_envelope_id.max(envelope_id);
+        row_ids.push(id);
     }
+    snapshot.push_watermark = max_envelope_id;
 
     let runtime_state = serde_json::to_value(&snapshot)?;
     let runtime_id = snapshot_runtime_id(repo.as_ref(), card_id).await?;

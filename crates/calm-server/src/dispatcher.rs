@@ -1283,14 +1283,54 @@ impl Inner {
                 );
                 return;
             };
+            let observation_text = match serde_json::to_string(&observation) {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!(
+                        wave_id = %wave_id,
+                        spec_card_id = %spec_card_id,
+                        runtime_id = %runtime_id,
+                        envelope_id,
+                        kind = event.kind_tag(),
+                        error = %e,
+                        "dispatcher push: harness observation serialize failed; cursor NOT bumped"
+                    );
+                    return;
+                }
+            };
+            let durable_queue_id = match self
+                .repo
+                .spec_card_enqueue_observation(
+                    spec_card_id.as_str(),
+                    envelope_id,
+                    &observation_text,
+                )
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(
+                        wave_id = %wave_id,
+                        spec_card_id = %spec_card_id,
+                        runtime_id = %runtime_id,
+                        envelope_id,
+                        kind = event.kind_tag(),
+                        error = %e,
+                        "dispatcher push: harness durable inbox enqueue failed; cursor NOT bumped"
+                    );
+                    return;
+                }
+            };
+            self.push_cursor.bump(spec_card_id.clone(), envelope_id);
             let Some(harness) = self.harness.get(&runtime_id) else {
                 tracing::warn!(
                     wave_id = %wave_id,
                     spec_card_id = %spec_card_id,
                     runtime_id = %runtime_id,
                     envelope_id,
+                    spec_push_queue_id = durable_queue_id,
                     kind = event.kind_tag(),
-                    "dispatcher push: no live SpecHarness for harness runtime; cursor NOT bumped"
+                    "dispatcher push: no live SpecHarness for harness runtime; durable inbox row will replay on boot"
                 );
                 return;
             };
@@ -1300,21 +1340,22 @@ impl Inner {
                 runtime_id = %runtime_id,
                 envelope_id,
                 kind = event.kind_tag(),
-                "dispatcher push: delivering observation to spec harness"
+                spec_push_queue_id = durable_queue_id,
+                "dispatcher push: delivering durable observation to spec harness"
             );
-            if let Err(e) = harness.observe(observation) {
+            if let Err(e) = harness.observe_durable(observation, durable_queue_id, envelope_id) {
                 tracing::warn!(
                     wave_id = %wave_id,
                     spec_card_id = %spec_card_id,
                     runtime_id = %runtime_id,
                     envelope_id,
+                    spec_push_queue_id = durable_queue_id,
                     kind = event.kind_tag(),
                     error = %e,
-                    "dispatcher push: SpecHarness observation enqueue failed; cursor NOT bumped"
+                    "dispatcher push: SpecHarness observation enqueue failed; durable inbox row will replay on boot"
                 );
                 return;
             }
-            self.push_cursor.bump(spec_card_id, envelope_id);
             return;
         }
 

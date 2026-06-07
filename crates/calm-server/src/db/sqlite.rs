@@ -3231,16 +3231,21 @@ impl RuntimeRepo for SqlxRepo {
 
     async fn runtimes_recover_orphans_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
         let rows = sqlx::query(
-            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                      thread_id, session_id, active_turn_id, handle_state_json,
-                      lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                      completed_at_ms
-               FROM runtimes
-               WHERE kind = 'shared-spec'
-                 AND status IN ('starting', 'running', 'idle', 'turn_pending')
-                 AND handle_state_json IS NOT NULL
-                 AND json_extract(handle_state_json, '$.mode') = 'harness'
-               ORDER BY created_at_ms ASC, card_id ASC"#,
+            r#"SELECT r.id, r.card_id, r.kind, r.agent_provider, r.status, r.terminal_run_id,
+	                      r.thread_id, r.session_id, r.active_turn_id, r.handle_state_json,
+	                      r.lease_owner, r.lease_until_ms, r.created_at_ms, r.updated_at_ms,
+	                      r.completed_at_ms
+	               FROM runtimes r
+	               JOIN cards c ON c.id = r.card_id
+	               JOIN waves w ON w.id = c.wave_id
+	               WHERE r.kind = 'shared-spec'
+	                 AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
+	                 AND r.handle_state_json IS NOT NULL
+	                 AND json_extract(r.handle_state_json, '$.mode') = 'harness'
+	                 -- Keep harness boot recovery aligned with the legacy
+	                 -- takeover filters above: terminal waves must stay inert.
+	                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
+	               ORDER BY r.created_at_ms ASC, r.card_id ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;

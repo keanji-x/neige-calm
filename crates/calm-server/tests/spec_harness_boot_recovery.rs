@@ -87,3 +87,80 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     assert_eq!(restored.last_turn_id.as_deref(), Some("turn-recovered"));
     handle.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn boot_recovery_skips_terminal_waves() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "boot-terminal".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "boot-terminal".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET lifecycle = 'done' WHERE id = ?1")
+        .bind(wave.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+    let runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(
+        42,
+        vec![Observation::WaveGoal {
+            text: "do not recover".into(),
+        }],
+    );
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some("thread-terminal".into());
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread-terminal".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let registry = HarnessRegistry::new();
+    let recovered = recover_harnesses_on_boot(repo, daemon, &registry)
+        .await
+        .unwrap();
+    assert_eq!(recovered, 0);
+    assert!(registry.get(&runtime_id).is_none());
+}
