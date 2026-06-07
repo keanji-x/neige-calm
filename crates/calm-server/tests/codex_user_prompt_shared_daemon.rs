@@ -192,6 +192,16 @@ fn theme() -> Value {
     json!({"fg": [216,219,226], "bg": [15,20,24]})
 }
 
+async fn runtime_status_for_card(repo: &SqlxRepo, card_id: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT status FROM runtimes WHERE card_id = ?1 ORDER BY updated_at_ms DESC LIMIT 1",
+    )
+    .bind(card_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn create_prompt_card_calls_shared_daemon_thread_start() {
     let _guard = ENV_LOCK.lock().await;
@@ -433,6 +443,61 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
     assert!(
         cards[0].payload.get("codex_thread_status").is_none(),
         "respawn failure must happen before stamping pending status"
+    );
+}
+
+#[tokio::test]
+async fn prompt_card_thread_start_respawn_failure_marks_runtime_failed() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_INITIALIZE", "1");
+    }
+    boot.state.shared_codex_appserver.mark_needs_respawn();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "prompt": "respawn then fail", "theme": theme() }),
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_FAIL_INITIALIZE");
+    }
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
+    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(
+        runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
+        "failed"
+    );
+}
+
+#[tokio::test]
+async fn prompt_card_turn_start_failure_marks_runtime_failed() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_TURN_START", "1");
+    }
+    let boot = boot().await;
+
+    let (status, body) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "prompt": "turn should fail", "theme": theme() }),
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_FAIL_TURN_START");
+    }
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
+    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(
+        runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
+        "failed"
     );
 }
 

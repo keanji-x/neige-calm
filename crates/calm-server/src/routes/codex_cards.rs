@@ -349,6 +349,18 @@ pub(crate) async fn create_codex_card(
                     card_id = %card.id,
                     error = %e,
                 );
+                if let Err(mark_err) = w
+                    .repo
+                    .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+                    .await
+                {
+                    tracing::warn!(
+                        card_id = %card.id,
+                        terminal_id = %term.id,
+                        error = %mark_err,
+                        "failed to mark prompt codex runtime failed after thread/start error"
+                    );
+                }
                 return Err(e);
             }
         };
@@ -425,10 +437,42 @@ pub(crate) async fn create_codex_card(
         .await?;
         card = updated;
 
-        cs.shared_codex_appserver
+        if let Err(e) = cs
+            .shared_codex_appserver
             .turn_start(&thread_id, vec![InputItem::text(prompt_text)])
-            .await?;
-        await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await?;
+            .await
+        {
+            if let Err(mark_err) = w
+                .repo
+                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    thread_id = %thread_id,
+                    error = %mark_err,
+                    "failed to mark prompt codex runtime failed after turn/start error"
+                );
+            }
+            return Err(e);
+        }
+        if let Err(e) = await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await {
+            if let Err(mark_err) = w
+                .repo
+                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    thread_id = %thread_id,
+                    error = %mark_err,
+                    "failed to mark prompt codex runtime failed after lifecycle wait error"
+                );
+            }
+            return Err(e);
+        }
 
         tracing::info!(
             target = "shared_codex_daemon::user_prompt_card_started",
