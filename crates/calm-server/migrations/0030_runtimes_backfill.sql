@@ -50,6 +50,7 @@ SELECT
 FROM cards c
 JOIN terminals t ON t.card_id = c.id
 WHERE c.kind = 'terminal'
+  AND json_extract(c.payload, '$.terminal_id') = t.id
   AND t.exit_code IS NULL
   AND COALESCE(t.signal_killed, 0) = 0
   AND NOT EXISTS (
@@ -82,6 +83,7 @@ FROM cards c
 LEFT JOIN card_codex_threads ct ON ct.card_id = c.id
 JOIN terminals t ON t.card_id = c.id
 WHERE c.kind = 'codex'
+  AND json_extract(c.payload, '$.terminal_id') = t.id
   AND c.role != 'spec'
   AND t.exit_code IS NULL
   AND COALESCE(t.signal_killed, 0) = 0
@@ -114,6 +116,7 @@ SELECT
 FROM cards c
 JOIN terminals t ON t.card_id = c.id
 WHERE c.kind = 'claude'
+  AND json_extract(c.payload, '$.terminal_id') = t.id
   AND t.exit_code IS NULL
   AND COALESCE(t.signal_killed, 0) = 0
   AND NOT EXISTS (

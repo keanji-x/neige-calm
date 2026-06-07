@@ -218,8 +218,8 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('card-preexisting', 'wave-1', 'terminal', 5.0, '{"terminal_id":"term-preexisting"}', 1600, 1600, 'plain', 1),
               ('card-codex-threadless', 'wave-1', 'codex', 6.0, '{"terminal_id":"term-codex-threadless"}', 1700, 1700, 'plain', 1),
               ('card-legacy-spec', 'wave-3', 'codex', 7.0, '{"terminal_id":"term-legacy-spec","codex_source":"legacy"}', 1800, 1800, 'spec', 0),
-              ('card-codex-shared-worker', 'wave-2', 'codex', 8.0, '{"codex_source":"shared","appserver_sock":"/tmp/codex.sock"}', 1900, 1900, 'worker', 1),
-              ('card-codex-shared-plain', 'wave-2', 'codex', 9.0, '{"codex_source":"shared"}', 2000, 2000, 'plain', 1),
+              ('card-codex-shared-worker', 'wave-2', 'codex', 8.0, '{"terminal_id":"term-codex-shared-worker","codex_source":"shared","appserver_sock":"/tmp/codex.sock"}', 1900, 1900, 'worker', 1),
+              ('card-codex-shared-plain', 'wave-2', 'codex', 9.0, '{"terminal_id":"term-codex-shared-plain","codex_source":"shared"}', 2000, 2000, 'plain', 1),
               ('card-claude-sessionless', 'wave-2', 'claude', 10.0, '{"terminal_id":"term-claude-sessionless"}', 2100, 2100, 'worker', 1),
               ('card-stale-clean-exit', 'wave-2', 'terminal', 11.0, '{"terminal_id":"term-stale-clean-exit"}', 2200, 2200, 'plain', 1),
               ('card-stale-signal', 'wave-2', 'terminal', 12.0, '{"terminal_id":"term-stale-signal"}', 2300, 2300, 'plain', 1),
@@ -624,5 +624,79 @@ async fn migration_0030_completes_stale_runtimes_created_with_subsecond_precisio
             .expect("completed timestamp")
             >= created_at_ms,
         "stale runtime completion timestamp must preserve runtimes CHECK"
+    );
+}
+
+#[tokio::test]
+async fn migration_0030_skips_orphan_terminal_backfill() {
+    let pool = pool_staged_at_0027().await;
+
+    // Minimal cove/wave.
+    sqlx::query(
+        r#"INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
+           VALUES ('cove-1', 'c', '#000000', 0.0, 'user', 1000, 1000)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO waves
+              (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at)
+           VALUES ('wave-1', 'cove-1', 'w', 0.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Two orphan shapes per kind:
+    //   *-missing: payload has no terminal_id at all
+    //   *-wrong  : payload.terminal_id points to a different terminal id
+    sqlx::query(
+        r#"INSERT INTO cards
+              (id, wave_id, kind, sort, payload, created_at, updated_at, role, deletable)
+           VALUES
+              ('card-term-missing',   'wave-1', 'terminal', 0.0, '{}',                                       1100, 1100, 'plain',  1),
+              ('card-term-wrong',     'wave-1', 'terminal', 1.0, '{"terminal_id":"term-other-1"}',           1200, 1200, 'plain',  1),
+              ('card-codex-missing',  'wave-1', 'codex',    2.0, '{}',                                       1300, 1300, 'plain',  1),
+              ('card-codex-wrong',    'wave-1', 'codex',    3.0, '{"terminal_id":"term-other-2"}',           1400, 1400, 'plain',  1),
+              ('card-claude-missing', 'wave-1', 'claude',   4.0, '{}',                                       1500, 1500, 'worker', 1),
+              ('card-claude-wrong',   'wave-1', 'claude',   5.0, '{"terminal_id":"term-other-3"}',           1600, 1600, 'worker', 1)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        r#"INSERT INTO terminals
+              (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at, exit_code, signal_killed)
+           VALUES
+              ('term-orphan-1', 'card-term-missing',   'bash',   '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1100, NULL, 0),
+              ('term-orphan-2', 'card-term-wrong',     'bash',   '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1200, NULL, 0),
+              ('term-orphan-3', 'card-codex-missing',  'codex',  '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1300, NULL, 0),
+              ('term-orphan-4', 'card-codex-wrong',    'codex',  '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1400, NULL, 0),
+              ('term-orphan-5', 'card-claude-missing', 'claude', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1500, NULL, 0),
+              ('term-orphan-6', 'card-claude-wrong',   'claude', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1600, NULL, 0)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    apply_sql(&pool, "0028_runtimes", MIGRATION_0028_SQL).await;
+    apply_sql(&pool, "0030_runtimes_backfill", MIGRATION_0030_SQL).await;
+
+    let count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM runtimes
+           WHERE card_id IN (
+             'card-term-missing','card-term-wrong',
+             'card-codex-missing','card-codex-wrong',
+             'card-claude-missing','card-claude-wrong'
+           )"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        count, 0,
+        "orphan-terminal cards must not backfill any runtime"
     );
 }
