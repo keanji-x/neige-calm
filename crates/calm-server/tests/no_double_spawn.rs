@@ -387,9 +387,9 @@ async fn boot_with_counted_spawn() -> Boot {
                 let spawn_index = count.fetch_add(1, Ordering::SeqCst);
                 repo.terminal_set_pid(&terminal_id, Some(48_100 + spawn_index as u32))
                     .await?;
-                Ok(SpawnHandle {
-                    renderer_id: terminal_id.clone(),
-                    terminal_id,
+                Ok(SpawnHandle::Terminal {
+                    terminal_id: terminal_id.clone(),
+                    renderer_id: terminal_id,
                 })
             })
         },
@@ -503,9 +503,9 @@ async fn boot_codex_with_counted_spawn() -> Boot {
                 let spawn_index = count.fetch_add(1, Ordering::SeqCst);
                 repo.terminal_set_pid(&terminal_id, Some(58_100 + spawn_index as u32))
                     .await?;
-                Ok(SpawnHandle {
-                    renderer_id: terminal_id.clone(),
-                    terminal_id,
+                Ok(SpawnHandle::Terminal {
+                    terminal_id: terminal_id.clone(),
+                    renderer_id: terminal_id,
                 })
             })
         },
@@ -621,7 +621,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
                 let spawn_index = count.fetch_add(1, Ordering::SeqCst);
                 repo.terminal_set_pid(&terminal_id, Some(78_100 + spawn_index as u32))
                     .await?;
-                Ok(SpawnHandle {
+                Ok(SpawnHandle::Terminal {
                     renderer_id: terminal_id.clone(),
                     terminal_id,
                 })
@@ -690,9 +690,9 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
                         "thread/started {thread_id} was not consumed by pending FIFO"
                     )));
                 }
-                Ok(SpawnHandle {
-                    renderer_id: terminal_id.clone(),
-                    terminal_id,
+                Ok(SpawnHandle::Terminal {
+                    terminal_id: terminal_id.clone(),
+                    renderer_id: terminal_id,
                 })
             })
         },
@@ -2421,9 +2421,9 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
             let count = count_for_hook.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Ok(SpawnHandle {
-                    renderer_id: terminal_id.clone(),
-                    terminal_id,
+                Ok(SpawnHandle::Terminal {
+                    terminal_id: terminal_id.clone(),
+                    renderer_id: terminal_id,
                 })
             })
         },

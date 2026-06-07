@@ -74,10 +74,13 @@ use crate::model::{
     CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
     NewWave, Wave, WaveDetail, WavePatch, new_id, now_ms,
 };
+use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::{OperationKey, OperationOutcome};
 use crate::pending_codex_threads::PendingEntry;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::load_settings;
+use crate::routes::terminal_cards::stable_payload_hash;
 use crate::runtime_lookup::project_runtime_into_cards_payload;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
@@ -375,6 +378,18 @@ pub(crate) async fn create_wave(
                  Set `attach_folder: true` to claim it for cove `{body_cove_id}`."
             )));
         }
+    }
+
+    if spec_harness_enabled() {
+        return create_wave_with_spec_harness(
+            s,
+            actor,
+            p,
+            attach_folder,
+            body_cove_id,
+            normalized_cwd,
+        )
+        .await;
     }
 
     // 1. Pre-mint the spec card id BEFORE the tx opens — we need it to
@@ -859,6 +874,187 @@ pub(crate) async fn create_wave(
     }
 
     Ok((StatusCode::CREATED, Json(wave)).into_response())
+}
+
+#[allow(deprecated)]
+async fn create_wave_with_spec_harness(
+    s: RouteState,
+    actor: Actor,
+    p: NewWave,
+    attach_folder: bool,
+    body_cove_id: String,
+    normalized_cwd: String,
+) -> Result<Response> {
+    let spec_card_id = new_id();
+    let report_card_id = new_id();
+    let actor_for_hash = actor.as_str().to_string();
+    let actor_id = actor.to_actor_id();
+    let write_for_tx = s.write.clone();
+    let spec_card_id_for_tx = spec_card_id.clone();
+    let report_card_id_for_tx = report_card_id.clone();
+    let cove_id_for_attach = body_cove_id;
+    let normalized_cwd_for_tx = normalized_cwd;
+    let ((wave,), _event_ids) = write_with_events_typed(
+        s.repo.as_ref(),
+        actor_id.clone(),
+        None,
+        &s.events,
+        &s.write,
+        move |tx| {
+            Box::pin(async move {
+                if attach_folder {
+                    cove_folder_create_tx(tx, &cove_id_for_attach, &normalized_cwd_for_tx).await?;
+                }
+
+                let wave = wave_create_tx(tx, p, write_for_tx.cove_cache()).await?;
+                let wave_id = wave.id.clone();
+                let cove_id = wave.cove_id.clone();
+
+                let report_payload =
+                    serde_json::to_value(WaveReportPayload::initial()).map_err(|e| {
+                        CalmError::Internal(format!(
+                            "wave_create: serialize wave-report payload: {e}"
+                        ))
+                    })?;
+                let report_card = card_create_with_id_tx(
+                    tx,
+                    report_card_id_for_tx.clone(),
+                    NewCard {
+                        wave_id: wave_id.clone(),
+                        kind: "wave-report".into(),
+                        sort: Some(-1.0),
+                        payload: report_payload,
+                    },
+                    CardRole::ReportCard,
+                    false,
+                    write_for_tx.role_cache(),
+                )
+                .await?;
+
+                let layout_overlay = overlay_upsert_tx(
+                    tx,
+                    NewOverlay {
+                        plugin_id: "kernel".into(),
+                        entity_kind: "view".into(),
+                        entity_id: wave_id.as_str().to_string(),
+                        kind: "layout".into(),
+                        payload: serde_json::json!({
+                            "schemaVersion": 1,
+                            "positions": {
+                                spec_card_id_for_tx.as_str(): {
+                                    "x": 0, "y": 0, "w": 6, "h": 12
+                                },
+                                report_card_id_for_tx.as_str(): {
+                                    "x": 6, "y": 0, "w": 6, "h": 12
+                                }
+                            }
+                        }),
+                    },
+                )
+                .await?;
+
+                let wave_scope = EventScope::Wave {
+                    wave: wave_id.clone(),
+                    cove: cove_id.clone(),
+                };
+                let report_card_scope = EventScope::Card {
+                    card: report_card.id.clone(),
+                    wave: wave_id,
+                    cove: cove_id,
+                };
+                let events = vec![
+                    (wave_scope.clone(), Event::WaveUpdated(wave.clone())),
+                    (report_card_scope, Event::CardAdded(report_card)),
+                    (wave_scope, Event::OverlaySet(layout_overlay)),
+                ];
+                Ok(((wave,), events))
+            })
+        },
+    )
+    .await?;
+
+    let goal = wave.title.trim().to_string();
+    let request = SpecHarnessStartOperationPayload {
+        actor: actor_id,
+        wave_id: wave.id.to_string(),
+        card_id: Some(spec_card_id.clone()),
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: (!goal.is_empty()).then_some(goal),
+    };
+    let op_payload = serde_json::to_value(&request)?;
+    let payload_hash = stable_payload_hash(&serde_json::json!({
+        "actor": actor_for_hash,
+        "request": &request,
+    }))?;
+    match s
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash,
+            },
+            op_payload,
+        )
+        .await
+    {
+        Ok(op_id) => match s.operation_runtime.wait(&op_id).await {
+            Ok(result) => match result.outcome {
+                OperationOutcome::Succeeded { .. }
+                | OperationOutcome::SucceededViaCollision { .. } => {}
+                OperationOutcome::Failed {
+                    last_error,
+                    from_phase,
+                    ..
+                } => {
+                    tracing::warn!(
+                        spec_card_id,
+                        wave_id = %wave.id,
+                        ?from_phase,
+                        error = %last_error,
+                        "spec harness start operation failed; wave created but spec agent is inert"
+                    );
+                }
+                OperationOutcome::Stuck { reason, from_phase } => {
+                    tracing::warn!(
+                        spec_card_id,
+                        wave_id = %wave.id,
+                        ?from_phase,
+                        reason,
+                        "spec harness start operation stuck; wave created but spec agent is inert"
+                    );
+                }
+            },
+            Err(e) => tracing::warn!(
+                spec_card_id,
+                wave_id = %wave.id,
+                error = %e,
+                "spec harness start wait failed; wave created but spec agent may be inert"
+            ),
+        },
+        Err(e) => tracing::warn!(
+            spec_card_id,
+            wave_id = %wave.id,
+            error = %e,
+            "spec harness start submission failed; wave created but spec agent is inert"
+        ),
+    }
+
+    Ok((StatusCode::CREATED, Json(wave)).into_response())
+}
+
+fn spec_harness_enabled() -> bool {
+    std::env::var("NEIGE_SPEC_HARNESS_ENABLED")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) async fn spawn_push_via_shared_daemon(

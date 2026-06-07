@@ -3245,6 +3245,33 @@ impl RuntimeRepo for SqlxRepo {
         .await?;
         rows.iter().map(card_runtime_from_row).collect()
     }
+
+    async fn runtimes_recover_harnesses_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
+        let rows = sqlx::query(
+            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                      thread_id, session_id, active_turn_id, handle_state_json,
+                      lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                      completed_at_ms
+               FROM runtimes
+               WHERE kind = 'shared-spec'
+                 AND status IN ('starting', 'running', 'idle', 'turn_pending')
+                 AND handle_state_json IS NOT NULL
+                 AND json_extract(handle_state_json, '$.mode') = 'harness'
+               ORDER BY created_at_ms ASC, card_id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let runtimes = rows
+            .iter()
+            .map(card_runtime_from_row)
+            .collect::<RuntimeResult<Vec<_>>>()?;
+        for runtime in &runtimes {
+            if let Some(value) = runtime.handle_state_json.clone() {
+                crate::harness::HarnessSnapshot::from_value_strict(value);
+            }
+        }
+        Ok(runtimes)
+    }
 }
 
 // ---------------------------------------------------------------------------

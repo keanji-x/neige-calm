@@ -249,6 +249,20 @@ pub enum Notification {
 }
 
 impl Notification {
+    pub fn thread_id(&self) -> Option<&str> {
+        match self {
+            Notification::ThreadStarted { params } => {
+                crate::shared_codex_appserver::thread_id_from_started(params)
+            }
+            Notification::ThreadStatusChanged { thread_id, .. }
+            | Notification::TurnStarted { thread_id, .. }
+            | Notification::TurnCompleted { thread_id, .. } => Some(thread_id.as_str()),
+            Notification::Item { params, .. } | Notification::Other { params, .. } => {
+                crate::shared_codex_appserver::other_thread_id(params)
+            }
+        }
+    }
+
     /// Parse a notification frame's `method` + `params` into a typed
     /// variant. Never fails: unknown / malformed shapes degrade to
     /// [`Notification::Other`] (or keep raw params), keeping the consumer
@@ -1299,5 +1313,53 @@ mod tests {
             Notification::Other { method, .. } => assert_eq!(method, "thread/realtime/sdp"),
             other => panic!("expected Other, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn notification_thread_id_reads_direct_variants() {
+        let status = Notification::ThreadStatusChanged {
+            thread_id: "thread-status".into(),
+            status: json!({ "type": "idle" }),
+        };
+        let started = Notification::TurnStarted {
+            thread_id: "thread-started".into(),
+            turn: json!({ "id": "turn-1" }),
+        };
+        let completed = Notification::TurnCompleted {
+            thread_id: "thread-completed".into(),
+            turn: json!({ "id": "turn-1" }),
+        };
+
+        assert_eq!(status.thread_id(), Some("thread-status"));
+        assert_eq!(started.thread_id(), Some("thread-started"));
+        assert_eq!(completed.thread_id(), Some("thread-completed"));
+    }
+
+    #[test]
+    fn notification_thread_id_reads_thread_started_params() {
+        let nested = Notification::ThreadStarted {
+            params: json!({ "thread": { "id": "thread-nested" } }),
+        };
+        let flat = Notification::ThreadStarted {
+            params: json!({ "threadId": "thread-flat" }),
+        };
+
+        assert_eq!(nested.thread_id(), Some("thread-nested"));
+        assert_eq!(flat.thread_id(), Some("thread-flat"));
+    }
+
+    #[test]
+    fn notification_thread_id_reads_item_and_other_params() {
+        let item = Notification::Item {
+            method: "item/completed".into(),
+            params: json!({ "threadId": "thread-item" }),
+        };
+        let other = Notification::Other {
+            method: "approval/request".into(),
+            params: json!({ "threadId": "thread-other" }),
+        };
+
+        assert_eq!(item.thread_id(), Some("thread-item"));
+        assert_eq!(other.thread_id(), Some("thread-other"));
     }
 }
