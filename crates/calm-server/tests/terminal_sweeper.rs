@@ -177,6 +177,7 @@ async fn seed_shared_spec_pair(
     let (card, term, _mcp_token) = card_with_codex_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "/tmp".into(),
@@ -245,6 +246,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
     let (card, term, _mcp_token) = card_with_codex_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "/tmp".into(),

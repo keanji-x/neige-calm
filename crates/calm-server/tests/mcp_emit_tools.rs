@@ -87,6 +87,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
+        &calm_server::model::new_id(),
         wave.id.clone(),
         None,
         "/workspace".into(),
@@ -109,6 +110,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
     let (_card_b, _term_b, _tok_b) = card_with_codex_create_tx(
         &mut tx,
         other_card_id.clone(),
+        &calm_server::model::new_id(),
         wave.id.clone(),
         None,
         "/workspace".into(),

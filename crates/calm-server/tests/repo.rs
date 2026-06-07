@@ -1040,6 +1040,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
     let (card, term) = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
+        &calm_server::model::new_id(),
         w.id.clone(),
         None,
         "bash".into(),
@@ -1105,6 +1106,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
     let err = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
+        &calm_server::model::new_id(),
         "wave-that-does-not-exist".into(),
         None,
         "bash".into(),
@@ -1147,6 +1149,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
     let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
+        &calm_server::model::new_id(),
         w.id.clone(),
         Some(42.0),
         "bash".into(),
@@ -1181,6 +1184,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
+        &calm_server::model::new_id(),
         w.id.clone(),
         None,
         "bash".into(),
@@ -1269,6 +1273,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     let (card, term, mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
+        &calm_server::model::new_id(),
         w.id.clone(),
         None,
         "/workspace".into(),
@@ -1343,6 +1348,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
     let err = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id,
+        &calm_server::model::new_id(),
         "wave-that-does-not-exist".into(),
         None,
         "/workspace".into(),
@@ -1386,6 +1392,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
     let (card, _term, _mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id,
+        &calm_server::model::new_id(),
         w.id.clone(),
         Some(7.0),
         "/workspace".into(),

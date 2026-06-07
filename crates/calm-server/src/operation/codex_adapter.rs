@@ -118,6 +118,8 @@ impl CodexAdapter {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CodexCreateOperationPayload {
     pub actor: ActorId,
+    #[serde(default)]
+    pub runtime_id: Option<String>,
     pub request: NormalizedCodexCreateRequest,
 }
 
@@ -242,6 +244,7 @@ impl ProviderAdapter for CodexAdapter {
     ) -> Result<TxOutput> {
         let payload: CodexCreateOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
+        let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         let wave_id = payload.request.wave_id.clone();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let scope = card_scope(
@@ -253,6 +256,7 @@ impl ProviderAdapter for CodexAdapter {
         let (card, term, _token) = card_with_codex_create_tx(
             tx,
             card_id.clone(),
+            &runtime_id,
             WaveId::from(wave_id.clone()),
             payload.request.sort,
             payload.request.cwd.clone(),
@@ -282,12 +286,13 @@ impl ProviderAdapter for CodexAdapter {
             event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
 
         let mut output = TxOutput::new(
-            "card",
-            Some(card.id.to_string()),
+            "runtime",
+            Some(runtime_id.clone()),
             serde_json::to_value(&projected_card)?,
         );
         output.data = json!({
             "card_id": card.id,
+            "runtime_id": runtime_id,
             "wave_id": card.wave_id,
             "terminal_id": term.id,
             "cwd": payload.request.cwd,
@@ -351,7 +356,6 @@ impl ProviderAdapter for CodexAdapter {
             )
             .await?;
             output.result = serde_json::to_value(&updated)?;
-            output.target_id = Some(updated.id.to_string());
             let turn_started_at_ms = output_optional_i64(output, "turn_started_at_ms")?;
             if turn_started_at_ms.is_none() {
                 self.shared_codex_appserver
@@ -381,7 +385,6 @@ impl ProviderAdapter for CodexAdapter {
             )
             .await?;
             output.result = serde_json::to_value(&updated)?;
-            output.target_id = Some(updated.id.to_string());
             Ok(
                 AppServerInteractOutcome::RegisteredPendingForLaterAttribution {
                     entry_id: card_id,
@@ -675,7 +678,6 @@ async fn persist_prompt_thread(
                 );
                 let mut checkpoint_output = output_for_tx.clone();
                 checkpoint_output.result = serde_json::to_value(&card)?;
-                checkpoint_output.target_id = Some(card.id.to_string());
                 checkpoint_app_server_interact_tx(
                     tx,
                     &op_for_tx,
@@ -765,7 +767,6 @@ async fn persist_pending_thread_status(
                 );
                 let mut checkpoint_output = output_for_tx.clone();
                 checkpoint_output.result = serde_json::to_value(&card)?;
-                checkpoint_output.target_id = Some(card.id.to_string());
                 checkpoint_app_server_interact_tx(
                     tx,
                     &op_for_tx,

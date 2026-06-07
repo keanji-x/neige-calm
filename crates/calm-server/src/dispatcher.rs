@@ -1621,6 +1621,7 @@ impl Inner {
                     let (mut card, _term, mcp_token) = card_with_codex_create_tx(
                         tx,
                         new_card_id_for_tx,
+                        &crate::model::new_id(),
                         wave_for_tx,
                         None,
                         cwd_for_tx,
@@ -1942,6 +1943,7 @@ impl Inner {
                     let (mut card, _term) = crate::db::sqlite::card_with_terminal_create_tx(
                         tx,
                         new_card_id_for_tx,
+                        &crate::model::new_id(),
                         wave_for_tx,
                         None,
                         cmd_for_tx,

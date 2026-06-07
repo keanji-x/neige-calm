@@ -8,7 +8,8 @@ use calm_server::db::sqlite::{
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{
-    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepoError, ThreadAttribution,
+    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError,
+    ThreadAttribution,
 };
 use serde_json::json;
 
@@ -94,6 +95,7 @@ async fn runtime_start_tx_terminal_persists_active_row() {
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -133,6 +135,7 @@ async fn runtime_complete_for_terminal_exited_path() {
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -181,6 +184,7 @@ async fn runtime_complete_for_terminal_failed_path() {
     let (card, term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -235,6 +239,7 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -283,6 +288,7 @@ async fn runtime_complete_for_card_noop_when_no_active() {
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -331,6 +337,7 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
     let (card, _term) = card_with_terminal_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "bash".into(),
@@ -384,6 +391,7 @@ async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
     let (card, term, _token) = card_with_codex_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "/workspace".into(),
@@ -675,6 +683,7 @@ async fn runtime_start_tx_claude_records_session_when_present() {
     let (card, term) = card_with_claude_create_tx(
         &mut tx,
         new_id(),
+        &new_id(),
         wave.id,
         None,
         "claude --session-id".into(),
@@ -749,6 +758,73 @@ async fn runtime_handle_state_json_roundtrip() {
         .unwrap()
         .expect("runtime");
     assert_eq!(persisted.handle_state_json, Some(state));
+}
+
+#[tokio::test]
+async fn runtimes_recover_orphans_skips_unleased_runtimes() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "terminal").await;
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::Terminal,
+        None,
+        RunStatus::Running,
+    );
+    init.now_ms = now_ms() - 120_000;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(&mut tx, init).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let recovered = repo.runtimes_recover_orphans_on_boot().await.unwrap();
+    assert!(recovered.is_empty());
+}
+
+#[tokio::test]
+async fn runtimes_recover_orphans_finds_expired_lease() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let now = now_ms();
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    init.lease_owner = Some("test".into());
+    init.lease_until_ms = Some(now - 1_000);
+    init.now_ms = now - 120_000;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(&mut tx, init).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let recovered = repo.runtimes_recover_orphans_on_boot().await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].id, runtime.id);
+}
+
+#[tokio::test]
+async fn runtimes_recover_orphans_skips_active_lease() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "claude").await;
+    let now = now_ms();
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::ClaudeCard,
+        Some(AgentProvider::Claude),
+        RunStatus::Running,
+    );
+    init.lease_owner = Some("test".into());
+    init.lease_until_ms = Some(now + 60_000);
+    init.now_ms = now - 120_000;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(&mut tx, init).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let recovered = repo.runtimes_recover_orphans_on_boot().await.unwrap();
+    assert!(recovered.is_empty());
 }
 
 #[tokio::test]

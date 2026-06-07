@@ -95,6 +95,7 @@ async fn boot() -> Boot {
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
+        &calm_server::model::new_id(),
         wave.id.clone(),
         None,
         "/workspace".into(),
