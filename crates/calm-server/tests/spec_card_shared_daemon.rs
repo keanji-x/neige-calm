@@ -528,6 +528,20 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
     assert!(pending.remove_by_card(spec.id.as_str()).await);
     drop(boot.state.spec_push.remove(&wave_id.clone().into()));
 
+    // Restore runtime to TurnPending right before takeover. In CI's spawn-
+    // supervised path, attach_reader can mark the runtime Exited before the
+    // takeover query runs (the codex TUI fixture exits quickly). The takeover
+    // SQL only matches active-state shared-spec runtimes; this reset keeps
+    // the test scoped to the takeover behavior, not terminal exit timing.
+    sqlx::query(
+        "UPDATE runtimes SET status = 'turn_pending', completed_at_ms = NULL
+         WHERE card_id = ?1 AND kind = 'shared-spec'",
+    )
+    .bind(spec.id.as_str())
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
     let reloaded = reloaded_state_from_boot(&boot);
     assert_eq!(reloaded.pending_codex_threads.pending_count().await, 0);
     calm_server::takeover_shared_spec_cards_on_boot(&reloaded).await;
