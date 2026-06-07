@@ -2882,6 +2882,15 @@ impl RepoRead for SqlxRepo {
                  AND COALESCE(t.signal_killed, 0) = 0
                  AND NOT EXISTS (
                        SELECT 1
+                         FROM runtimes hr
+                        WHERE hr.card_id = c.id
+                          AND hr.kind = 'shared-spec'
+                          AND hr.status IN ('starting', 'running', 'idle', 'turn_pending')
+                          AND hr.handle_state_json IS NOT NULL
+                          AND json_extract(hr.handle_state_json, '$.mode') = 'harness'
+                 )
+                 AND NOT EXISTS (
+                       SELECT 1
                          FROM card_codex_threads ct
                         WHERE ct.card_id = c.id
                  )
@@ -3244,6 +3253,38 @@ impl RuntimeRepo for SqlxRepo {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(card_runtime_from_row).collect()
+    }
+
+    async fn runtimes_recover_harnesses_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
+        let rows = sqlx::query(
+            r#"SELECT r.id, r.card_id, r.kind, r.agent_provider, r.status, r.terminal_run_id,
+	                      r.thread_id, r.session_id, r.active_turn_id, r.handle_state_json,
+	                      r.lease_owner, r.lease_until_ms, r.created_at_ms, r.updated_at_ms,
+	                      r.completed_at_ms
+	               FROM runtimes r
+	               JOIN cards c ON c.id = r.card_id
+	               JOIN waves w ON w.id = c.wave_id
+	               WHERE r.kind = 'shared-spec'
+	                 AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
+	                 AND r.handle_state_json IS NOT NULL
+	                 AND json_extract(r.handle_state_json, '$.mode') = 'harness'
+	                 -- Keep harness boot recovery aligned with the legacy
+	                 -- takeover filters above: terminal waves must stay inert.
+	                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
+	               ORDER BY r.created_at_ms ASC, r.card_id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let runtimes = rows
+            .iter()
+            .map(card_runtime_from_row)
+            .collect::<RuntimeResult<Vec<_>>>()?;
+        for runtime in &runtimes {
+            if let Some(value) = runtime.handle_state_json.clone() {
+                crate::harness::HarnessSnapshot::from_value_strict(value);
+            }
+        }
+        Ok(runtimes)
     }
 }
 

@@ -184,9 +184,9 @@ fn success_spawn_hook() -> (Arc<AtomicUsize>, TestSpawnHook) {
             let count = count_for_hook.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Ok(SpawnHandle {
-                    renderer_id: terminal_id.clone(),
-                    terminal_id,
+                Ok(SpawnHandle::Terminal {
+                    terminal_id: terminal_id.clone(),
+                    renderer_id: terminal_id,
                 })
             })
         },
@@ -202,9 +202,9 @@ fn silent_spawn_hook() -> TestSpawnHook {
               _env: Value|
               -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
             Box::pin(async move {
-                Ok(SpawnHandle {
-                    renderer_id: terminal_id.clone(),
-                    terminal_id,
+                Ok(SpawnHandle::Terminal {
+                    terminal_id: terminal_id.clone(),
+                    renderer_id: terminal_id,
                 })
             })
         },

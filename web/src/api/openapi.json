@@ -3786,6 +3786,16 @@
           },
           "terminal_id": {
             "type": "string"
+          },
+          "wave": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Wave"
+              }
+            ]
           }
         }
       },

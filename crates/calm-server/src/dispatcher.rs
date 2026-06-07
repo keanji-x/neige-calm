@@ -83,6 +83,10 @@ use crate::event::{
     BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use crate::event_cursor::EventCursorCache;
+use crate::harness::{
+    HarnessRegistry, HookKind as HarnessHookKind, Observation as HarnessObservation,
+    is_harness_snapshot_value,
+};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::{CardPatch, CardRole};
 use crate::routes::codex_cards::shell_single_quote;
@@ -95,6 +99,7 @@ use crate::spec_push::SpecPushRegistry;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_sweeper::{reap_terminal_artifacts_with_renderer, reap_terminal_pid_only};
+use sha2::{Digest, Sha256};
 
 pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 
@@ -111,12 +116,19 @@ const DEFAULT_PERMITS: usize = 8;
 const RECENT_KEYS_TTL: Duration = Duration::from_secs(60);
 
 pub(crate) fn event_warrants_spec_push(event: &Event, write: &WriteContext) -> bool {
+    event_warrants_spec_push_with_role(event, |card_id| write.verify_role(card_id))
+}
+
+pub(crate) fn event_warrants_spec_push_with_role(
+    event: &Event,
+    mut role_for_card: impl FnMut(&CardId) -> Option<CardRole>,
+) -> bool {
     match event {
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => true,
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
-            let is_worker = write.verify_role(card_id) == Some(CardRole::Worker);
+            let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
             is_turn_end && is_worker
         }
         _ => false,
@@ -643,6 +655,35 @@ impl Dispatcher {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         permits: usize,
     ) -> Self {
+        Self::spawn_with_terminal_renderer_and_harness(
+            repo,
+            events,
+            write,
+            codex,
+            daemon,
+            terminal_renderer,
+            mcp_server,
+            spec_push,
+            HarnessRegistry::new(),
+            shared_codex_appserver,
+            permits,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_terminal_renderer_and_harness(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        codex: Arc<CodexClient>,
+        daemon: Arc<DaemonClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        spec_push: SpecPushRegistry,
+        harness: HarnessRegistry,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        permits: usize,
+    ) -> Self {
         let permits = if permits == 0 {
             DEFAULT_PERMITS
         } else {
@@ -667,6 +708,7 @@ impl Dispatcher {
             terminal_renderer,
             mcp_server,
             spec_push,
+            harness,
             shared_codex_appserver,
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
             // a SEPARATE instance from anything else: keyed by the spec
@@ -805,6 +847,10 @@ struct Inner {
     /// `push_observation` on it. Empty when a kernel restart lost the
     /// in-memory handle (no crash-recovery — see `push_to_spec`).
     spec_push: SpecPushRegistry,
+    /// Harness-backed shared specs are driven by the same dispatcher
+    /// observations, but through `SpecHarness::observe` instead of the
+    /// legacy `SpecPushHandle` registry.
+    harness: HarnessRegistry,
     /// PR4 shared codex daemon. Worker codex cards start through this daemon.
     shared_codex_appserver: Arc<SharedCodexAppServer>,
     /// #293 PR3b — DEDICATED push watermark cache keyed by the spec
@@ -1233,6 +1279,93 @@ impl Inner {
             return;
         }
 
+        if let Some(runtime_id) = self.harness_runtime_id_for_spec_card(&spec_card_id).await {
+            let Some(observation) = harness_observation_from_event(&wave_id, event) else {
+                tracing::debug!(
+                    wave_id = %wave_id,
+                    spec_card_id = %spec_card_id,
+                    envelope_id,
+                    kind = event.kind_tag(),
+                    "dispatcher push: harness runtime found but event did not map to a harness observation"
+                );
+                return;
+            };
+            let observation_text = match serde_json::to_string(&observation) {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!(
+                        wave_id = %wave_id,
+                        spec_card_id = %spec_card_id,
+                        runtime_id = %runtime_id,
+                        envelope_id,
+                        kind = event.kind_tag(),
+                        error = %e,
+                        "dispatcher push: harness observation serialize failed; cursor NOT bumped"
+                    );
+                    return;
+                }
+            };
+            let durable_queue_id = match self
+                .repo
+                .spec_card_enqueue_observation(
+                    spec_card_id.as_str(),
+                    envelope_id,
+                    &observation_text,
+                )
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(
+                        wave_id = %wave_id,
+                        spec_card_id = %spec_card_id,
+                        runtime_id = %runtime_id,
+                        envelope_id,
+                        kind = event.kind_tag(),
+                        error = %e,
+                        "dispatcher push: harness durable inbox enqueue failed; cursor NOT bumped"
+                    );
+                    return;
+                }
+            };
+            self.push_cursor.bump(spec_card_id.clone(), envelope_id);
+            let Some(harness) = self.harness.get(&runtime_id) else {
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    spec_card_id = %spec_card_id,
+                    runtime_id = %runtime_id,
+                    envelope_id,
+                    spec_push_queue_id = durable_queue_id,
+                    kind = event.kind_tag(),
+                    "dispatcher push: no live SpecHarness for harness runtime; durable inbox row will replay on boot"
+                );
+                return;
+            };
+            tracing::info!(
+                wave_id = %wave_id,
+                spec_card_id = %spec_card_id,
+                runtime_id = %runtime_id,
+                envelope_id,
+                kind = event.kind_tag(),
+                spec_push_queue_id = durable_queue_id,
+                "dispatcher push: delivering durable observation to spec harness"
+            );
+            if let Err(e) = harness.observe_durable(observation, durable_queue_id, envelope_id) {
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    spec_card_id = %spec_card_id,
+                    runtime_id = %runtime_id,
+                    envelope_id,
+                    spec_push_queue_id = durable_queue_id,
+                    kind = event.kind_tag(),
+                    error = %e,
+                    "dispatcher push: SpecHarness observation enqueue failed; durable inbox row will replay on boot"
+                );
+                return;
+            }
+            return;
+        }
+
         // Resolve the live push handle. Absent → warn + return (no crash).
         // #313 problem #1: this is no longer the "permanent failure" state —
         // boot takeover ([`crate::legacy spec takeover`]) re-
@@ -1392,6 +1525,36 @@ impl Inner {
                 None
             }
         })
+    }
+
+    async fn harness_runtime_id_for_spec_card(
+        self: &Arc<Self>,
+        spec_card_id: &CardId,
+    ) -> Option<String> {
+        let runtime = match self
+            .repo
+            .runtime_get_active_for_card(&spec_card_id.to_string())
+            .await
+        {
+            Ok(runtime) => runtime?,
+            Err(e) => {
+                tracing::warn!(
+                    spec_card_id = %spec_card_id,
+                    error = %e,
+                    "dispatcher push: active runtime lookup failed; falling back to legacy spec push"
+                );
+                return None;
+            }
+        };
+        if runtime.kind != RuntimeKind::SharedSpec {
+            return None;
+        }
+        let handle_state = runtime.handle_state_json.as_ref()?;
+        if is_harness_snapshot_value(handle_state) {
+            Some(runtime.id)
+        } else {
+            None
+        }
     }
 
     async fn dispatch(
@@ -2182,6 +2345,55 @@ fn build_observation(event: &Event) -> String {
             )
         }
     }
+}
+
+pub(crate) fn harness_observation_from_event(
+    wave_id: &WaveId,
+    event: &Event,
+) -> Option<HarnessObservation> {
+    match event {
+        Event::TaskCompleted {
+            idempotency_key,
+            result,
+            ..
+        } => Some(HarnessObservation::TaskCompleted {
+            idempotency_key: idempotency_key.clone(),
+            result: result.clone(),
+        }),
+        Event::TaskFailed {
+            idempotency_key,
+            reason,
+        } => Some(HarnessObservation::TaskFailed {
+            idempotency_key: idempotency_key.clone(),
+            error: reason.clone(),
+        }),
+        Event::WaveReportEdited { body_after, .. } => Some(HarnessObservation::ReportEdited {
+            wave_id: wave_id.clone(),
+            body_sha256: sha256_hex(body_after),
+            body: body_after.clone(),
+        }),
+        Event::CodexHook { card_id, kind, .. } if kind == "hook.codex.stop" => {
+            Some(HarnessObservation::WorkerHookStop {
+                wave_id: wave_id.clone(),
+                card_id: card_id.clone(),
+                kind: HarnessHookKind::CodexStop,
+            })
+        }
+        Event::ClaudeHook { card_id, kind, .. } if kind == "hook.claude.stop" => {
+            Some(HarnessObservation::WorkerHookStop {
+                wave_id: wave_id.clone(),
+                card_id: card_id.clone(),
+                kind: HarnessHookKind::ClaudeStop,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn sha256_hex(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Outcome of [`rollback_orphan_worker`]. The caller dispatches on the

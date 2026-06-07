@@ -20,9 +20,14 @@ use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_in_tx_typed, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
+use crate::harness::is_harness_snapshot_value;
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
+use crate::model::{Card, CardPatch, CardRole, NewCard, Wave, new_id, now_ms};
+use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
+use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
+use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::routes::waves::{
     await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
 };
@@ -30,7 +35,7 @@ use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
     resolve_active_thread_for_card,
 };
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -501,6 +506,8 @@ pub struct ResetSpecCardResponse {
     pub card_id: CardId,
     pub terminal_id: String,
     pub new_thread_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wave: Option<Wave>,
 }
 
 #[utoipa::path(
@@ -519,6 +526,7 @@ pub(crate) async fn reset_spec_card(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
     State(cs): State<CodexShellState>,
+    actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<ResetSpecCardResponse>> {
     let card = s
@@ -535,7 +543,7 @@ pub(crate) async fn reset_spec_card(
             "card {id} is not a spec codex card",
         )));
     }
-    let response = reset_spec_card_shared(s, w, cs, card).await?;
+    let response = reset_spec_card_shared(s, w, cs, actor, card).await?;
     Ok(Json(response))
 }
 
@@ -557,6 +565,7 @@ async fn reset_spec_card_shared(
     s: RouteState,
     w: WorkerState,
     cs: CodexShellState,
+    actor: Actor,
     card: Card,
 ) -> Result<ResetSpecCardResponse> {
     if !cs.shared_codex_appserver.is_running() {
@@ -565,13 +574,24 @@ async fn reset_spec_card_shared(
             card.id
         )));
     }
-    let terminal = s
-        .repo
-        .terminal_get_by_card(card.id.as_str())
-        .await?
-        .ok_or_else(|| {
-            CalmError::Internal(format!("spec terminal row missing for card {}", card.id))
-        })?;
+    let terminal = match s.repo.terminal_get_by_card(card.id.as_str()).await? {
+        Some(terminal) => terminal,
+        None => {
+            let active_runtime = s
+                .repo
+                .runtime_get_active_for_card(&card.id.to_string())
+                .await?;
+            if card_payload_marks_spec_harness(&card)
+                || active_runtime.as_ref().is_some_and(is_harness_runtime)
+            {
+                return reset_spec_harness_card(s, actor, card, active_runtime).await;
+            }
+            return Err(CalmError::Internal(format!(
+                "spec terminal row missing for card {}",
+                card.id
+            )));
+        }
+    };
     let wave = s
         .repo
         .wave_get(card.wave_id.as_str())
@@ -725,7 +745,117 @@ async fn reset_spec_card_shared(
         card_id,
         terminal_id,
         new_thread_id: reset,
+        wave: None,
     })
+}
+
+fn is_harness_runtime(runtime: &CardRuntime) -> bool {
+    runtime.kind == RuntimeKind::SharedSpec
+        && runtime
+            .handle_state_json
+            .as_ref()
+            .is_some_and(is_harness_snapshot_value)
+}
+
+fn card_payload_marks_spec_harness(card: &Card) -> bool {
+    card.payload
+        .get("spec_harness")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+async fn reset_spec_harness_card(
+    s: RouteState,
+    actor: Actor,
+    card: Card,
+    runtime: Option<CardRuntime>,
+) -> Result<ResetSpecCardResponse> {
+    let wave = s
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+
+    if let Some(runtime) = runtime {
+        let shutdown_payload = serde_json::to_value(SpecHarnessShutdownOperationPayload {
+            runtime_id: runtime.id.clone(),
+        })?;
+        run_reset_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
+    }
+    s.repo
+        .card_codex_thread_delete_by_card(card.id.as_str())
+        .await?;
+
+    let goal = wave.title.trim().to_string();
+    let start_request = SpecHarnessStartOperationPayload {
+        actor: actor.to_actor_id(),
+        wave_id: wave.id.to_string(),
+        spec_card_id: card.id.clone(),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: (!goal.is_empty()).then_some(goal),
+    };
+    let start_payload = serde_json::to_value(start_request)?;
+    run_reset_operation(&s, "spec-harness-start", start_payload).await?;
+
+    let active = s
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await?
+        .ok_or_else(|| CalmError::Internal(format!("runtime for card {} missing", card.id)))?;
+    let new_thread_id = active.thread_id.clone().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "spec harness reset succeeded without a thread_id for card {}",
+            card.id
+        ))
+    })?;
+    let wave = s
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+
+    Ok(ResetSpecCardResponse {
+        card_id: card.id,
+        terminal_id: String::new(),
+        new_thread_id,
+        wave: Some(wave),
+    })
+}
+
+async fn run_reset_operation(s: &RouteState, kind: &str, payload: Value) -> Result<()> {
+    let payload_hash = stable_payload_hash(&payload)?;
+    let op_id = s
+        .operation_runtime
+        .submit(
+            kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash,
+            },
+            payload,
+        )
+        .await?;
+    let result = s.operation_runtime.wait(&op_id).await?;
+    match result.outcome {
+        OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
+            Ok(())
+        }
+        OperationOutcome::Failed {
+            last_error,
+            from_phase,
+            last_error_class,
+        } => Err(calm_error_from_operation_failure(
+            last_error_class.as_deref(),
+            last_error,
+            from_phase,
+        )),
+        OperationOutcome::Stuck { .. } => {
+            Err(CalmError::Internal("operation stuck, see DB".to_string()))
+        }
+    }
 }
 
 async fn spawn_reset_via_shared_daemon(

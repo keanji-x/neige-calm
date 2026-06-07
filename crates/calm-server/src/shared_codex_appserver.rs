@@ -553,6 +553,12 @@ impl SharedCodexAppServer {
         client.turn_interrupt(thread_id, turn_id).await
     }
 
+    pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
+        self.active_turns
+            .get(thread_id)
+            .map(|entry| entry.value().clone())
+    }
+
     pub async fn interrupt_active_turn(&self, thread_id: &str) -> Result<()> {
         let Some(turn_id) = self
             .active_turns
@@ -681,6 +687,11 @@ impl SharedCodexAppServer {
             thread_id: thread_id.to_string(),
             turn: serde_json::json!({ "id": turn_id }),
         });
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn emit_notification_for_test(&self, notification: Notification) {
+        let _ = self.notifications.send(notification);
     }
 
     #[cfg(feature = "fixtures")]
@@ -1432,7 +1443,7 @@ fn thread_started_id(notification: &Notification) -> Option<&str> {
     }
 }
 
-fn thread_id_from_started(params: &serde_json::Value) -> Option<&str> {
+pub fn thread_id_from_started(params: &serde_json::Value) -> Option<&str> {
     if let Some(id) = params
         .get("thread")
         .and_then(|thread| thread.get("id"))
@@ -1461,7 +1472,7 @@ fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
         .or_else(|| params.get("turnId").and_then(serde_json::Value::as_str))
 }
 
-fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
+pub fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
     params.get("threadId").and_then(serde_json::Value::as_str)
 }
 

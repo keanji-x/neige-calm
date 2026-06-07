@@ -7,16 +7,19 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx, runtime_start_tx};
 use calm_server::event::EventBus;
+use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot};
 use calm_server::ids::WaveId;
-use calm_server::model::{Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id};
+use calm_server::model::{
+    Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id, now_ms,
+};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::routes::theme::RequestTheme;
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::RuntimeKind;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use clap::Parser;
@@ -603,6 +606,158 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
     let (status, body) = post_empty(boot.app, &format!("/api/cards/{}/spec/reset", card.id)).await;
 
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
+
+#[tokio::test]
+async fn reset_spec_card_restarts_terminal_less_harness_card() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "spec_harness": true,
+                "push_watermark": 3
+            }),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    let old_runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(3, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some("thread-old".into());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: old_runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread-old".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["terminal_id"], json!(""));
+    assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
+    assert_eq!(body["wave"]["id"], json!(boot.wave_id));
+    assert!(
+        boot.repo
+            .terminal_get_by_card(card.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        boot.repo
+            .runtime_get_by_id(&old_runtime_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Superseded
+    );
+    let active = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("new active runtime");
+    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert!(boot.state.harness.get(&active.id).is_some());
+    if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "spec_harness": true,
+                "push_watermark": 0
+            }),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    assert!(
+        boot.repo
+            .runtime_get_active_for_card(&card.id.to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["terminal_id"], json!(""));
+    assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
+    assert_eq!(body["wave"]["id"], json!(boot.wave_id));
+    assert!(
+        boot.repo
+            .terminal_get_by_card(card.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let active = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("new active runtime");
+    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert!(boot.state.harness.get(&active.id).is_some());
+    if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]
