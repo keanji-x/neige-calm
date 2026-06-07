@@ -19,10 +19,10 @@
 //!      renderer-process leak.
 //!   2. **This sweeper.** Catches the residual shape: a crashed server,
 //!      a SIGKILL'd writer, or a partial-success transaction that left
-//!      a terminal row no active runtime owns via
-//!      `runtimes.terminal_run_id`. The orphan SQL definition is
-//!      runtime-based (see [`crate::db::RepoRead::terminals_orphaned`]);
-//!      the 60-second grace absorbs terminal/runtime creation races.
+//!      a terminal row whose card has no active runtime. The orphan SQL
+//!      definition is runtime-based (see
+//!      [`crate::db::RepoRead::terminals_orphaned`]); the 60-second grace
+//!      absorbs terminal/runtime creation races.
 //!
 //! ## What the sweeper is *not*
 //!

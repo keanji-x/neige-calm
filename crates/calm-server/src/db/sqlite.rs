@@ -1787,41 +1787,6 @@ async fn runtime_get_active_for_card_from_pool(
     row.as_ref().map(card_runtime_from_row).transpose()
 }
 
-async fn runtime_get_active_for_cards_from_pool(
-    pool: &SqlitePool,
-    card_ids: &[RuntimeCardId],
-) -> RuntimeResult<HashMap<RuntimeCardId, CardRuntime>> {
-    if card_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE status IN ('starting', 'running', 'idle', 'turn_pending')
-             AND card_id IN ("#,
-    );
-    let mut separated = query.separated(", ");
-    for card_id in card_ids {
-        separated.push_bind(card_id);
-    }
-    separated.push_unseparated(
-        ") ORDER BY card_id ASC, updated_at_ms DESC, created_at_ms DESC, id DESC",
-    );
-
-    let rows = query.build().fetch_all(pool).await?;
-    let mut out = HashMap::new();
-    for row in rows {
-        let runtime = card_runtime_from_row(&row)?;
-        let card_id = runtime.card_id.clone();
-        out.entry(card_id).or_insert(runtime);
-    }
-    Ok(out)
-}
-
 async fn runtime_get_projectable_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
@@ -2842,8 +2807,8 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
-        // Orphan: no active runtime owns this terminal row, AND the row was
-        // created more than `grace_seconds` ago.
+        // Orphan: this terminal's card has no active runtime, AND the row
+        // was created more than `grace_seconds` ago.
         //
         // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
@@ -2856,7 +2821,7 @@ impl RepoRead for SqlxRepo {
                FROM terminals t
                WHERE NOT EXISTS (
                    SELECT 1 FROM runtimes r
-                   WHERE r.terminal_run_id = t.id
+                   WHERE r.card_id = t.card_id
                      AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
                )
                AND t.created_at < ?1"#,
@@ -3093,13 +3058,6 @@ impl RuntimeRepo for SqlxRepo {
         card_id: &crate::runtime_repo::CardId,
     ) -> RuntimeResult<Option<CardRuntime>> {
         runtime_get_active_for_card_from_pool(&self.pool, card_id).await
-    }
-
-    async fn runtime_get_active_for_cards(
-        &self,
-        card_ids: &[crate::runtime_repo::CardId],
-    ) -> RuntimeResult<HashMap<crate::runtime_repo::CardId, CardRuntime>> {
-        runtime_get_active_for_cards_from_pool(&self.pool, card_ids).await
     }
 
     async fn runtime_get_projectable_for_card(

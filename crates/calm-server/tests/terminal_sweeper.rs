@@ -29,11 +29,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, runtime_complete_for_card_tx, runtime_start_tx,
+};
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardPatch, NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms};
+use calm_server::model::{
+    CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms,
+};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_sweeper;
 use serde_json::json;
@@ -139,6 +143,146 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
     (card.id.to_string(), term.id)
 }
 
+/// Seed a spec codex card + terminal whose active runtime is a shared-spec
+/// row with `thread_id` bound and `terminal_run_id = NULL`, matching the
+/// post-migration shape for bound shared-spec threads.
+async fn seed_shared_spec_pair(
+    state: &AppState,
+    concrete: &SqlxRepo,
+    thread_id: &str,
+) -> (String, String) {
+    let cove = state
+        .raw_repo()
+        .cove_create(NewCove {
+            name: "c".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = state
+        .raw_repo()
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "w".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+
+    let mut tx = concrete.pool().begin().await.unwrap();
+    let (card, term, _mcp_token) = card_with_codex_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "/tmp".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Spec,
+        false,
+        concrete.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+        .await
+        .unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (card.id.to_string(), term.id)
+}
+
+async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -> (String, String) {
+    let cove = state
+        .raw_repo()
+        .cove_create(NewCove {
+            name: "c".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = state
+        .raw_repo()
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "w".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+
+    let mut tx = concrete.pool().begin().await.unwrap();
+    let (card, term, _mcp_token) = card_with_codex_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "/tmp".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Spec,
+        false,
+        concrete.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+        .await
+        .unwrap();
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO runtimes (
+               id, card_id, kind, agent_provider, status, terminal_run_id,
+               thread_id, session_id, active_turn_id, handle_state_json,
+               lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+               completed_at_ms
+           )
+           VALUES (?1, ?2, 'shared-spec', 'codex', 'running', NULL,
+                   't1', NULL, NULL, NULL, NULL, NULL, ?3, ?3, NULL)"#,
+    )
+    .bind(new_id())
+    .bind(card.id.as_str())
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (card.id.to_string(), term.id)
+}
+
 /// Strip any legacy payload link. This should not affect orphan detection;
 /// runtime ownership is now the contract.
 async fn unlink_card(state: &AppState, card_id: &str) {
@@ -217,6 +361,69 @@ async fn orphan_detection_skips_runtime_owned_terminal_without_payload_link() {
     assert!(
         orphans.is_empty(),
         "active runtime-owned terminal must not appear as orphan, got: {orphans:?}"
+    );
+}
+
+#[tokio::test]
+async fn orphan_sweep_protects_shared_spec_terminal_with_null_terminal_run_id() {
+    let (state, concrete) = fresh_state().await;
+    let (_card_id, terminal_id) = seed_shared_spec_pair(&state, &concrete, "t1").await;
+    age_all_terminals_past_grace(&concrete).await;
+
+    terminal_sweeper::sweep(&state).await.unwrap();
+
+    assert!(
+        state
+            .repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "active shared-spec runtime must protect its card terminal"
+    );
+}
+
+#[tokio::test]
+async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
+    let (state, concrete) = fresh_state().await;
+    let (card_id, terminal_id) = seed_shared_spec_pair(&state, &concrete, "t1").await;
+
+    state
+        .repo
+        .runtime_complete_for_card(&card_id, RunStatus::Exited)
+        .await
+        .unwrap();
+    age_all_terminals_past_grace(&concrete).await;
+
+    terminal_sweeper::sweep(&state).await.unwrap();
+
+    assert!(
+        state
+            .repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "completed shared-spec runtime must leave terminal orphan-eligible"
+    );
+}
+
+#[tokio::test]
+async fn migrated_shared_spec_terminal_survives_sweep() {
+    let (state, concrete) = fresh_state().await;
+    let (_card_id, terminal_id) = seed_migrated_shared_spec_pair(&state, &concrete).await;
+    age_all_terminals_past_grace(&concrete).await;
+
+    terminal_sweeper::sweep(&state).await.unwrap();
+
+    assert!(
+        state
+            .repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "migration-shaped active shared-spec runtime must protect terminal"
     );
 }
 

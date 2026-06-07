@@ -219,8 +219,9 @@ async fn handle(socket: WebSocket, state: AppState) {
                         {
                             tracing::warn!(
                                 error = %e,
-                                "ws /api/events: runtime projection failed for live event"
+                                "ws /api/events: runtime projection failed; dropping frame"
                             );
+                            continue;
                         }
                         let payload = match render_envelope(&env) {
                             Ok(p) => p,
@@ -357,8 +358,10 @@ where
             tracing::warn!(
                 error = %e,
                 id,
-                "ws /api/events: runtime projection failed for replay event"
+                "ws /api/events: runtime projection failed; dropping frame"
             );
+            last_id = id;
+            continue;
         }
         let payload = match render_envelope(&env) {
             Ok(p) => p,

@@ -136,11 +136,6 @@ pub trait RuntimeRepo {
 
     async fn runtime_get_active_for_card(&self, card_id: &CardId) -> Result<Option<CardRuntime>>;
 
-    async fn runtime_get_active_for_cards(
-        &self,
-        card_ids: &[CardId],
-    ) -> Result<HashMap<CardId, CardRuntime>>;
-
     /// Runtime row used by read-time payload projection. This preserves the
     /// active-runtime lookup as the primary source, but also allows a latest
     /// failed no-thread runtime to surface the legacy `failed_to_spawn` state.

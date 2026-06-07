@@ -773,6 +773,102 @@ async fn runtime_start_tx_shared_spec_thread_present_running() {
 }
 
 #[tokio::test]
+async fn projection_overwrites_stale_legacy_keys_from_runtime() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "terminal_id": "OLD",
+                "codex_thread_status": "pending_thread_start",
+            }),
+        })
+        .await
+        .expect("create card");
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES ('NEW', ?1, 'codex', '/tmp', '{}', NULL, '255,255,255', '0,0,0', ?2)"#,
+    )
+    .bind(card.id.as_str())
+    .bind(now_ms())
+    .execute(repo.pool())
+    .await
+    .expect("insert terminal");
+
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    init.terminal_run_id = Some("NEW".into());
+    init.thread_id = Some("abc".into());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(&mut tx, init).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut projected = repo
+        .card_get(card.id.as_str())
+        .await
+        .unwrap()
+        .expect("card row");
+    project_runtime_into_card_payload(&repo, &mut projected)
+        .await
+        .unwrap();
+    assert_eq!(projected.payload["terminal_id"], "NEW");
+    assert_eq!(projected.payload["codex_thread_id"], "abc");
+    assert_eq!(projected.payload["codex_thread_status"], "started");
+
+    let once = projected.payload.clone();
+    project_runtime_into_card_payload(&repo, &mut projected)
+        .await
+        .unwrap();
+    assert_eq!(projected.payload, once);
+}
+
+#[tokio::test]
+async fn projection_prefers_active_runtime_over_failed_no_thread() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let failed = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::SharedSpec,
+        Some(AgentProvider::Codex),
+        RunStatus::Failed,
+    );
+    let mut active = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::SharedSpec,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    active.thread_id = Some("active-thread".into());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(&mut tx, failed).await.unwrap();
+    runtime_start_tx(&mut tx, active).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut projected = repo
+        .card_get(card.id.as_str())
+        .await
+        .unwrap()
+        .expect("card row");
+    project_runtime_into_card_payload(&repo, &mut projected)
+        .await
+        .unwrap();
+    assert_eq!(projected.payload["codex_thread_id"], "active-thread");
+    assert_eq!(projected.payload["codex_source"], "shared");
+    assert_eq!(projected.payload["codex_thread_status"], "started");
+}
+
+#[tokio::test]
 async fn runtime_shared_spec_reset_supersedes_active_runtime() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;

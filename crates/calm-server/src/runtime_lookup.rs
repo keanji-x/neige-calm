@@ -9,6 +9,7 @@ use crate::model::Card;
 use crate::runtime_repo::{
     AgentProvider, CardRuntime, Result as RuntimeResult, RunStatus, RuntimeKind, RuntimeRepo,
 };
+use serde_json::Value;
 
 /// Resolve an active codex thread for a card. Runtime rows are the source of
 /// truth; `card_codex_threads` is a transitional fallback for pre-backfill
@@ -149,8 +150,9 @@ pub async fn merge_active_shared_thread_attribution(
 /// and `codex_thread_status` for in-flight UI cases. This helper looks up the
 /// projectable runtime and patches those keys into payload before serialization.
 ///
-/// Idempotent — never overwrites a key that already exists in payload (for tests
-/// or migrations that pre-seed). Safe to call repeatedly.
+/// Runtime row is SOT; fields the runtime knows are overwritten in payload to
+/// reflect runtime truth. Fields the runtime has no opinion on are left
+/// untouched.
 pub async fn project_runtime_into_card_payload<R: RuntimeRepo + ?Sized>(
     repo: &R,
     card: &mut Card,
@@ -201,13 +203,16 @@ fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
     };
 
     if let Some(terminal_id) = non_empty(runtime.terminal_run_id.as_deref()) {
-        insert_missing_string(map, "terminal_id", terminal_id);
+        map.insert("terminal_id".into(), Value::String(terminal_id.to_string()));
     }
 
     if runtime.kind == RuntimeKind::ClaudeCard
         && let Some(session_id) = non_empty(runtime.session_id.as_deref())
     {
-        insert_missing_string(map, "claude_session_id", session_id);
+        map.insert(
+            "claude_session_id".into(),
+            Value::String(session_id.to_string()),
+        );
     }
 
     if matches!(
@@ -215,11 +220,14 @@ fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
         RuntimeKind::CodexCard | RuntimeKind::SharedSpec
     ) && let Some(thread_id) = non_empty(runtime.thread_id.as_deref())
     {
-        insert_missing_string(map, "codex_thread_id", thread_id);
+        map.insert(
+            "codex_thread_id".into(),
+            Value::String(thread_id.to_string()),
+        );
     }
 
     if runtime.kind == RuntimeKind::SharedSpec {
-        insert_missing_string(map, "codex_source", "shared");
+        map.insert("codex_source".into(), Value::String("shared".into()));
     }
 
     if matches!(
@@ -228,26 +236,26 @@ fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
     ) {
         match runtime.status {
             RunStatus::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
-                insert_missing_string(map, "codex_thread_status", "pending_thread_start");
+                map.insert(
+                    "codex_thread_status".into(),
+                    Value::String("pending_thread_start".into()),
+                );
             }
             RunStatus::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
-                insert_missing_string(map, "codex_thread_status", "failed_to_spawn");
+                map.insert(
+                    "codex_thread_status".into(),
+                    Value::String("failed_to_spawn".into()),
+                );
             }
             RunStatus::Running if non_empty(runtime.thread_id.as_deref()).is_some() => {
-                insert_missing_string(map, "codex_thread_status", "started");
+                map.insert(
+                    "codex_thread_status".into(),
+                    Value::String("started".into()),
+                );
             }
             _ => {}
         }
     }
-}
-
-fn insert_missing_string(
-    map: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: &str,
-) {
-    map.entry(key.to_string())
-        .or_insert_with(|| serde_json::Value::String(value.to_string()));
 }
 
 /// Runtime-first shared-codex discriminator. When no active runtime is
