@@ -12,8 +12,8 @@
 use crate::actor::Actor;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
-    card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx, card_update_tx,
-    runtime_complete_tx, runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
+    card_codex_thread_upsert_tx, card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx,
+    card_update_tx, runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
     terminal_delete_tx,
 };
 use crate::db::{RepoRead, RouteRepo};
@@ -27,7 +27,7 @@ use crate::routes::waves::{
     await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
 };
 use crate::runtime_lookup::{card_is_shared_spec, resolve_active_thread_for_card};
-use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -726,10 +726,6 @@ async fn spawn_reset_via_shared_daemon(
             "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
         ));
     }
-    let old_runtime = s
-        .repo
-        .runtime_get_active_for_card(&spec_card_id.to_string())
-        .await?;
     let old_thread_id = resolve_active_thread_for_card(s.repo.as_ref(), spec_card_id).await?;
     let mut notifications = cs.shared_codex_appserver.subscribe_notifications();
     let status: spec_push::SharedStatus =
@@ -740,10 +736,8 @@ async fn spawn_reset_via_shared_daemon(
     );
     let thread_id = cs
         .shared_codex_appserver
-        .thread_start_for_card(
+        .thread_start_mint_for_card(
             spec_card_id,
-            CardRole::Spec,
-            Some(wave.id.as_str()),
             crate::shared_codex_appserver::SharedThreadStartParams {
                 cwd: wave.cwd.clone(),
                 approval_policy: "never".into(),
@@ -774,50 +768,13 @@ async fn spawn_reset_via_shared_daemon(
     }
     .await;
     if let Err(e) = turn_result {
-        if let Some(old_thread_id) = old_thread_id.as_ref() {
-            if let Err(rollback_err) = s
-                .repo
-                .card_codex_thread_upsert(
-                    spec_card_id,
-                    old_thread_id,
-                    CardRole::Spec,
-                    Some(wave.id.as_str()),
-                )
-                .await
-            {
-                tracing::warn!(
-                    target: "shared_codex_daemon::spec_card_reset",
-                    card_id = %spec_card_id,
-                    thread_id = %thread_id,
-                    rollback_error = %rollback_err,
-                    "failed to restore old card_codex_thread mapping after shared reset turn_start failure"
-                );
-            }
-        } else if let Err(rollback_err) =
-            s.repo.card_codex_thread_delete_by_card(spec_card_id).await
-        {
-            tracing::warn!(
-                target: "shared_codex_daemon::spec_card_reset",
-                card_id = %spec_card_id,
-                thread_id = %thread_id,
-                rollback_error = %rollback_err,
-                "failed to delete new card_codex_thread mapping after shared reset turn_start failure"
-            );
-        }
-        rollback_shared_reset_runtime_after_turn_failure(
-            s,
-            spec_card_id,
-            old_runtime.as_ref(),
-            &thread_id,
-        )
-        .await;
         tracing::warn!(
             target: "shared_codex_daemon::spec_card_reset",
             card_id = %spec_card_id,
             wave_id = %wave.id,
             thread_id = %thread_id,
             error = %e,
-            "turn_start_failed_rolled_back"
+            "turn_start_failed"
         );
         return Err(e);
     }
@@ -852,67 +809,6 @@ async fn spawn_reset_via_shared_daemon(
     })
 }
 
-async fn rollback_shared_reset_runtime_after_turn_failure(
-    s: &RouteState,
-    spec_card_id: &str,
-    old_runtime: Option<&CardRuntime>,
-    failed_thread_id: &str,
-) {
-    let card_id_for_tx = spec_card_id.to_string();
-    let old_runtime = old_runtime.cloned();
-    let failed_thread_id = failed_thread_id.to_string();
-    let failed_thread_id_for_log = failed_thread_id.clone();
-    let result = write_in_tx_typed(s.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            let Some(current) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? else {
-                return Ok(());
-            };
-            if current.thread_id.as_deref() != Some(failed_thread_id.as_str()) {
-                return Ok(());
-            }
-
-            if let Some(old) = old_runtime {
-                if old.id == current.id {
-                    return Ok(());
-                }
-                runtime_supersede_tx(
-                    tx,
-                    &current.id,
-                    RuntimeInit {
-                        id: new_id(),
-                        card_id: old.card_id,
-                        kind: old.kind,
-                        agent_provider: old.agent_provider,
-                        status: old.status,
-                        terminal_run_id: old.terminal_run_id,
-                        thread_id: old.thread_id,
-                        session_id: old.session_id,
-                        active_turn_id: old.active_turn_id,
-                        handle_state_json: old.handle_state_json,
-                        lease_owner: old.lease_owner,
-                        lease_until_ms: old.lease_until_ms,
-                        now_ms: now_ms(),
-                    },
-                )
-                .await?;
-            } else {
-                runtime_complete_tx(tx, &current.id, RunStatus::Failed).await?;
-            }
-            Ok(())
-        })
-    })
-    .await;
-    if let Err(e) = result {
-        tracing::warn!(
-            target: "shared_codex_daemon::spec_card_reset",
-            card_id = %spec_card_id,
-            failed_thread_id = %failed_thread_id_for_log,
-            error = %e,
-            "failed to restore active runtime after shared reset turn_start failure"
-        );
-    }
-}
-
 async fn persist_shared_reset_runtime_fields(
     s: &RouteState,
     cs: &CodexShellState,
@@ -927,6 +823,7 @@ async fn persist_shared_reset_runtime_fields(
     };
     let card_id_for_tx = spec_card_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
+    let wave_id_for_tx = wave.id.to_string();
     let remote_uri = cs.shared_codex_appserver.remote_uri();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
@@ -971,6 +868,15 @@ async fn persist_shared_reset_runtime_fields(
                     lease_until_ms: None,
                     now_ms: now_ms(),
                 };
+                // Issue #524: keep legacy card/thread mapping and runtime supersede atomic.
+                card_codex_thread_upsert_tx(
+                    tx,
+                    &card_id_for_tx,
+                    &thread_id_for_tx,
+                    CardRole::Spec,
+                    Some(wave_id_for_tx.as_str()),
+                )
+                .await?;
                 if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
                 {
                     runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
