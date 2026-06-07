@@ -116,12 +116,19 @@ const DEFAULT_PERMITS: usize = 8;
 const RECENT_KEYS_TTL: Duration = Duration::from_secs(60);
 
 pub(crate) fn event_warrants_spec_push(event: &Event, write: &WriteContext) -> bool {
+    event_warrants_spec_push_with_role(event, |card_id| write.verify_role(card_id))
+}
+
+pub(crate) fn event_warrants_spec_push_with_role(
+    event: &Event,
+    mut role_for_card: impl FnMut(&CardId) -> Option<CardRole>,
+) -> bool {
     match event {
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => true,
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
-            let is_worker = write.verify_role(card_id) == Some(CardRole::Worker);
+            let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
             is_turn_end && is_worker
         }
         _ => false,
@@ -2340,7 +2347,10 @@ fn build_observation(event: &Event) -> String {
     }
 }
 
-fn harness_observation_from_event(wave_id: &WaveId, event: &Event) -> Option<HarnessObservation> {
+pub(crate) fn harness_observation_from_event(
+    wave_id: &WaveId,
+    event: &Event,
+) -> Option<HarnessObservation> {
     match event {
         Event::TaskCompleted {
             idempotency_key,

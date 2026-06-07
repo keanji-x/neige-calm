@@ -211,6 +211,61 @@ async fn running_to_wedged_on_system_error() {
 }
 
 #[tokio::test]
+async fn resumed_blocks_turn_start_until_idle_status() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let config = HarnessConfig {
+        debounce_min_idle: Duration::from_millis(10),
+        debounce_max_wait: Duration::from_millis(20),
+        resumed_reconcile_budget: Duration::from_secs(60),
+        ..HarnessConfig::default()
+    };
+    let (_repo, harness, _runtime_id, thread_id) =
+        harness_with(repo, daemon.clone(), HarnessPhaseTag::Resumed, config).await;
+    harness
+        .observe(Observation::WaveGoal {
+            text: "wait for reconcile".into(),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(daemon.turn_start_count_for_test(), 0);
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::Resumed { .. }
+    ));
+
+    daemon.emit_notification_for_test(Notification::ThreadStatusChanged {
+        thread_id,
+        status: json!({ "type": "idle" }),
+    });
+    wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+    assert_eq!(daemon.turn_start_count_for_test(), 1);
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn resumed_reconcile_budget_allows_turn_start_after_timeout() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let config = HarnessConfig {
+        debounce_min_idle: Duration::from_millis(10),
+        debounce_max_wait: Duration::from_millis(20),
+        resumed_reconcile_budget: Duration::from_millis(50),
+        ..HarnessConfig::default()
+    };
+    let (_repo, harness, _runtime_id, _thread_id) =
+        harness_with(repo, daemon.clone(), HarnessPhaseTag::Resumed, config).await;
+    harness
+        .observe(Observation::WaveGoal {
+            text: "wait for timeout".into(),
+        })
+        .unwrap();
+    wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+    assert_eq!(daemon.turn_start_count_for_test(), 1);
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn watchdog_interrupt_timeout_wedges() {
     let repo = fresh_repo().await;
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);

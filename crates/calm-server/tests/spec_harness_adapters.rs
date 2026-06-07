@@ -12,13 +12,13 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use calm_server::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
-use calm_server::operation::{OperationKey, OperationOutcome};
+use calm_server::operation::{OperationKey, OperationOutcome, TxOutput};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_repo::RunStatus;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::wave_cove_cache::WaveCoveCache;
-use serde_json::json;
+use serde_json::{Value, json};
 
 async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>, CardRoleCache) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -273,5 +273,95 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
             .cached_card_for_thread("fake-thread-0002")
             .is_none(),
         "recovery must not mint a second spec thread"
+    );
+}
+
+#[tokio::test]
+async fn start_adapter_reuses_card_thread_mapping_when_output_lacks_thread_id() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: Some("adapter goal".into()),
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let first_thread = repo
+        .card_codex_thread_get_by_card(&card_id)
+        .await
+        .unwrap()
+        .expect("thread row")
+        .thread_id;
+    assert_eq!(first_thread, "fake-thread-0001");
+
+    let (tx_output_json,): (String,) =
+        sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let mut output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
+    output
+        .data
+        .as_object_mut()
+        .expect("operation output data")
+        .remove("codex_thread_id");
+
+    sqlx::query(
+        r#"UPDATE operations
+              SET phase = 'app_server_interact',
+                  phase_detail_json = ?1,
+                  tx_output_json = ?2,
+                  lease_owner = NULL,
+                  lease_until_ms = NULL,
+                  completed_at_ms = NULL
+            WHERE id = ?3"#,
+    )
+    .bind(
+        serde_json::to_string(&serde_json::json!({
+            "kind": "mint_and_await",
+            "thread_id": Value::Null,
+        }))
+        .unwrap(),
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(&op_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    state.operation_runtime.drive().await.unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let recovered_thread = repo
+        .card_codex_thread_get_by_card(&card_id)
+        .await
+        .unwrap()
+        .expect("thread row after recovery")
+        .thread_id;
+    assert_eq!(recovered_thread, "fake-thread-0001");
+    assert!(
+        state
+            .shared_codex_appserver
+            .cached_card_for_thread("fake-thread-0002")
+            .is_none(),
+        "recovery must reuse card_codex_threads instead of minting another spec thread"
     );
 }

@@ -5,11 +5,15 @@ pub mod run_loop;
 pub mod snapshot;
 pub mod state;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::db::{Repo, write_in_tx_typed};
+use crate::dispatcher;
 use crate::error::Result;
-use crate::ids::CardId;
+use crate::event::Event;
+use crate::ids::{CardId, WaveId};
+use crate::model::CardRole;
 use crate::runtime_repo::CardRuntime;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
@@ -39,7 +43,18 @@ pub async fn spawn_recovered_harness(
     {
         snapshot.push_watermark = watermark;
     }
-    rehydrate_spec_push_queue(repo.clone(), &runtime.card_id, &mut snapshot).await?;
+    let catch_up_watermark = snapshot.push_watermark;
+    let rehydrated_ids =
+        rehydrate_spec_push_queue(repo.clone(), &runtime.card_id, &mut snapshot).await?;
+    replay_harness_events_since(
+        repo.clone(),
+        &runtime.card_id,
+        &card.wave_id,
+        catch_up_watermark,
+        &rehydrated_ids,
+        &mut snapshot,
+    )
+    .await?;
     let runtime_id = runtime.id.clone();
     if let Some(existing) = registry.remove(&runtime_id) {
         existing.shutdown().await?;
@@ -65,12 +80,13 @@ pub async fn rehydrate_spec_push_queue(
     repo: Arc<dyn Repo>,
     card_id: &str,
     snapshot: &mut HarnessSnapshot,
-) -> Result<()> {
+) -> Result<Vec<i64>> {
     let rows = repo.spec_card_queued_observations(card_id).await?;
     if rows.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut row_ids = Vec::new();
+    let mut rehydrated_ids = Vec::new();
     let mut max_envelope_id = snapshot.push_watermark;
     for (id, envelope_id, text) in rows {
         if envelope_id <= snapshot.push_watermark {
@@ -82,24 +98,93 @@ pub async fn rehydrate_spec_push_queue(
         snapshot.pending_queue.push(obs);
         snapshot.push_watermark = snapshot.push_watermark.max(envelope_id);
         max_envelope_id = max_envelope_id.max(envelope_id);
+        rehydrated_ids.push(envelope_id);
         row_ids.push(id);
     }
     snapshot.push_watermark = max_envelope_id;
 
-    let runtime_state = serde_json::to_value(&snapshot)?;
+    persist_recovered_snapshot(repo, card_id, snapshot, row_ids).await?;
+    Ok(rehydrated_ids)
+}
+
+async fn replay_harness_events_since(
+    repo: Arc<dyn Repo>,
+    card_id: &str,
+    wave_id: &WaveId,
+    watermark: i64,
+    rehydrated_ids: &[i64],
+    snapshot: &mut HarnessSnapshot,
+) -> Result<()> {
+    let rehydrated_skip: HashSet<i64> = rehydrated_ids.iter().copied().collect();
+    let rows = repo.events_since(watermark, None).await?;
+    let mut replayed = 0usize;
+    let mut skipped_rehydrated = 0usize;
+    for (id, _version, scope, event) in rows {
+        if scope.wave_id() != Some(wave_id) {
+            continue;
+        }
+        let role = role_needed_for_spec_push_filter(repo.as_ref(), &event).await?;
+        if !dispatcher::event_warrants_spec_push_with_role(&event, |_| role) {
+            continue;
+        }
+        if rehydrated_skip.contains(&id) {
+            skipped_rehydrated += 1;
+            continue;
+        }
+        let Some(obs) = dispatcher::harness_observation_from_event(wave_id, &event) else {
+            continue;
+        };
+        snapshot.pending_queue.push(obs);
+        snapshot.push_watermark = snapshot.push_watermark.max(id);
+        replayed += 1;
+    }
+    if replayed > 0 {
+        persist_recovered_snapshot(repo, card_id, snapshot, Vec::new()).await?;
+    }
+    if replayed > 0 || skipped_rehydrated > 0 {
+        tracing::info!(
+            card_id,
+            wave_id = %wave_id,
+            watermark,
+            replayed,
+            skipped_rehydrated,
+            "harness recovery: replayed spec push catch-up events into pending queue",
+        );
+    }
+    Ok(())
+}
+
+async fn role_needed_for_spec_push_filter(
+    repo: &dyn Repo,
+    event: &Event,
+) -> Result<Option<CardRole>> {
+    match event {
+        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {
+            repo.card_role_get(card_id.as_str()).await
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn persist_recovered_snapshot(
+    repo: Arc<dyn Repo>,
+    card_id: &str,
+    snapshot: &HarnessSnapshot,
+    row_ids: Vec<i64>,
+) -> Result<()> {
+    let runtime_state = serde_json::to_value(snapshot)?;
     let runtime_id = snapshot_runtime_id(repo.as_ref(), card_id).await?;
-    let ids_for_delete = row_ids.clone();
     write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
             crate::db::sqlite::runtime_set_handle_state_tx(tx, &runtime_id, Some(runtime_state))
                 .await?;
-            if !ids_for_delete.is_empty() {
-                let placeholders = std::iter::repeat_n("?", ids_for_delete.len())
+            if !row_ids.is_empty() {
+                let placeholders = std::iter::repeat_n("?", row_ids.len())
                     .collect::<Vec<_>>()
                     .join(",");
                 let sql = format!("DELETE FROM spec_push_queue WHERE id IN ({placeholders})");
                 let mut q = sqlx::query(&sql);
-                for id in ids_for_delete {
+                for id in row_ids {
                     q = q.bind(id);
                 }
                 q.execute(&mut **tx).await?;

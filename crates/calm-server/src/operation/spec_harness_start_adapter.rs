@@ -203,24 +203,29 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 thread_id: existing,
             });
         }
-        let developer_instructions = crate::spec_card::render_system_prompt(
-            crate::spec_card::SeededCardRole::Spec.prompt_template(),
-            &wave_id,
-        );
-        let thread_id = self
-            .daemon
-            .thread_start_for_card(
-                &card_id,
-                CardRole::Spec,
-                Some(&wave_id),
-                SharedThreadStartParams {
-                    cwd,
-                    approval_policy: "never".into(),
-                    sandbox_mode: "workspace-write".into(),
-                    developer_instructions: Some(developer_instructions),
-                },
-            )
-            .await?;
+        let thread_id = if let Some(row) = self.repo.card_codex_thread_get_by_card(&card_id).await?
+            && !row.thread_id.trim().is_empty()
+        {
+            row.thread_id
+        } else {
+            let developer_instructions = crate::spec_card::render_system_prompt(
+                crate::spec_card::SeededCardRole::Spec.prompt_template(),
+                &wave_id,
+            );
+            self.daemon
+                .thread_start_for_card(
+                    &card_id,
+                    CardRole::Spec,
+                    Some(&wave_id),
+                    SharedThreadStartParams {
+                        cwd,
+                        approval_policy: "never".into(),
+                        sandbox_mode: "workspace-write".into(),
+                        developer_instructions: Some(developer_instructions),
+                    },
+                )
+                .await?
+        };
         set_output_data(output, "codex_thread_id", json!(thread_id.clone()))?;
         let mut snapshot = output_snapshot(output)?;
         snapshot.phase = HarnessPhaseTag::Idle;
