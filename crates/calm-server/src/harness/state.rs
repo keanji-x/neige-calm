@@ -54,9 +54,8 @@ impl HarnessState {
         )
     }
 
-    pub fn prior_turn_id(&self) -> Option<String> {
+    pub fn active_turn_id(&self) -> Option<String> {
         match self {
-            Self::TurnCompleted { last_turn_id } => Some(last_turn_id.clone()),
             Self::TurnRunning { turn_id, .. } => Some(turn_id.clone()),
             Self::Issuing {
                 kind: IssuingKind::Interrupt { target_turn_id, .. },

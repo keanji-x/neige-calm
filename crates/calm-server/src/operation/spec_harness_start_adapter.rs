@@ -9,7 +9,7 @@ use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, event_append_for_operation_tx,
     runtime_bind_attribution_tx, runtime_start_tx,
 };
-use crate::db::{Repo, write_in_tx_typed};
+use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::harness::{
@@ -21,6 +21,7 @@ use crate::model::{CardPatch, CardRole, NewCard, new_id, now_ms};
 use crate::routes::cards::card_scope;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use crate::state::WriteContext;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -217,9 +218,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
     async fn app_server_interact(
         &self,
         output: &mut TxOutput,
-        _op: &Operation,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
+        let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
         let runtime_id = output_string(output, "runtime_id")?;
@@ -264,55 +266,65 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         map.remove("appserver_boot_id");
         map.remove("appserver_needs_initial_prompt");
 
-        let op_clone = _op.clone();
+        let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+        let write = WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
+        let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
-        let updated_card = write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                runtime_bind_attribution_tx(
-                    tx,
-                    &runtime_id,
-                    ThreadAttribution {
-                        runtime_id: runtime_id.clone(),
-                        provider: AgentProvider::Codex,
-                        thread_id: Some(thread_for_tx.clone()),
-                        session_id: None,
-                        active_turn_id: None,
-                    },
-                )
-                .await?;
-                crate::db::sqlite::runtime_set_handle_state_tx(
-                    tx,
-                    &runtime_id,
-                    Some(serde_json::to_value(&snapshot)?),
-                )
-                .await?;
-                let updated = card_update_tx(
-                    tx,
-                    &card_id,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(card_payload),
-                        deletable: None,
-                    },
-                )
-                .await?;
-                let mut checkpoint_output = output_clone;
-                checkpoint_output.result = serde_json::to_value(&updated)?;
-                checkpoint_output.target_id = Some(updated.id.to_string());
-                checkpoint_app_server_interact_tx(
-                    tx,
-                    &op_clone,
-                    AppServerInteractKind::MintAndAwait {
-                        thread_id: Some(thread_for_tx),
-                    },
-                    &checkpoint_output,
-                )
-                .await?;
-                Ok(updated)
-            })
-        })
+        let (updated_card, _id) = write_with_event_typed(
+            ctx.repo.as_ref(),
+            payload.actor,
+            scope,
+            None,
+            &ctx.events,
+            &write,
+            move |tx| {
+                Box::pin(async move {
+                    runtime_bind_attribution_tx(
+                        tx,
+                        &runtime_id,
+                        ThreadAttribution {
+                            runtime_id: runtime_id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_for_tx.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await?;
+                    crate::db::sqlite::runtime_set_handle_state_tx(
+                        tx,
+                        &runtime_id,
+                        Some(serde_json::to_value(&snapshot)?),
+                    )
+                    .await?;
+                    let card = card_update_tx(
+                        tx,
+                        &card_id,
+                        CardPatch {
+                            kind: None,
+                            sort: None,
+                            payload: Some(card_payload),
+                            deletable: None,
+                        },
+                    )
+                    .await?;
+                    let mut checkpoint_output = output_clone;
+                    checkpoint_output.result = serde_json::to_value(&card)?;
+                    checkpoint_output.target_id = Some(card.id.to_string());
+                    checkpoint_app_server_interact_tx(
+                        tx,
+                        &op_clone,
+                        AppServerInteractKind::MintAndAwait {
+                            thread_id: Some(thread_for_tx),
+                        },
+                        &checkpoint_output,
+                    )
+                    .await?;
+                    Ok((card.clone(), Event::CardUpdated(card)))
+                })
+            },
+        )
         .await?;
         card = updated_card;
         output.result = serde_json::to_value(&card)?;
@@ -332,6 +344,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = output_string(output, "wave_id")?;
         let thread_id = output_optional_string(output, "codex_thread_id")?;
         let snapshot = output_snapshot(output)?;
+        if let Some(existing) = self.harness_registry.remove(&runtime_id) {
+            existing.shutdown().await?;
+        }
         let handle = SpecHarness::run(SpecHarnessParams {
             runtime_id: runtime_id.clone(),
             wave_id: WaveId::from(wave_id),

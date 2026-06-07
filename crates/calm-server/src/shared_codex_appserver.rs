@@ -553,6 +553,12 @@ impl SharedCodexAppServer {
         client.turn_interrupt(thread_id, turn_id).await
     }
 
+    pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
+        self.active_turns
+            .get(thread_id)
+            .map(|entry| entry.value().clone())
+    }
+
     pub async fn interrupt_active_turn(&self, thread_id: &str) -> Result<()> {
         let Some(turn_id) = self
             .active_turns

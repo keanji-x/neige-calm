@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::db::{sqlite::runtime_get_by_id_tx, write_in_tx_typed};
+use crate::db::sqlite::runtime_get_by_id_tx;
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
 use crate::model::now_ms;
@@ -96,29 +96,12 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
         &self,
         output: &TxOutput,
         _op: &Operation,
-        ctx: &SpawnCtx,
+        _ctx: &SpawnCtx,
     ) -> Result<SpawnHandle> {
         let runtime_id = output_string(output, "runtime_id")?;
         if let Some(harness) = self.harness_registry.remove(&runtime_id) {
             harness.shutdown().await?;
         }
-        write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                sqlx::query(
-                    r#"UPDATE runtimes
-                          SET status = 'superseded',
-                              updated_at_ms = ?1,
-                              completed_at_ms = COALESCE(completed_at_ms, ?1)
-                        WHERE id = ?2"#,
-                )
-                .bind(now_ms())
-                .bind(runtime_id)
-                .execute(&mut **tx)
-                .await?;
-                Ok(())
-            })
-        })
-        .await?;
         Ok(SpawnHandle::NoOp)
     }
 

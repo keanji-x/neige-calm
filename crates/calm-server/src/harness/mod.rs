@@ -40,8 +40,12 @@ pub async fn spawn_recovered_harness(
         snapshot.push_watermark = watermark;
     }
     rehydrate_spec_push_queue(repo.clone(), &runtime.card_id, &mut snapshot).await?;
+    let runtime_id = runtime.id.clone();
+    if let Some(existing) = registry.remove(&runtime_id) {
+        existing.shutdown().await?;
+    }
     let handle = SpecHarness::run(SpecHarnessParams {
-        runtime_id: runtime.id.clone(),
+        runtime_id: runtime_id.clone(),
         wave_id: card.wave_id,
         card_id: CardId::from(runtime.card_id.clone()),
         thread_id: runtime
@@ -53,7 +57,7 @@ pub async fn spawn_recovered_harness(
         config: HarnessConfig::default(),
         snapshot,
     });
-    registry.insert(runtime.id, handle.clone());
+    registry.insert(runtime_id, handle.clone());
     Ok(Some(handle))
 }
 
