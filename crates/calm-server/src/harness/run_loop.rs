@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -52,6 +53,7 @@ struct Inner {
     debounce: Mutex<DebounceState>,
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
     shutdown: broadcast::Sender<()>,
+    shutting_down: Arc<AtomicBool>,
     abort_handle: StdMutex<Option<AbortHandle>>,
     config: HarnessConfig,
 }
@@ -86,6 +88,7 @@ impl SpecHarness {
             debounce: Mutex::new(DebounceState::default()),
             interrupt_deadline: Mutex::new(None),
             shutdown: shutdown_tx,
+            shutting_down: Arc::new(AtomicBool::new(false)),
             abort_handle: StdMutex::new(None),
             config: params.config,
         });
@@ -116,6 +119,7 @@ impl SpecHarness {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        self.inner.shutting_down.store(true, Ordering::SeqCst);
         let _ = self.inner.shutdown.send(());
         self.persist_snapshot().await?;
         if let Some(thread_id) = self.inner.thread_id.read().await.clone()
@@ -330,7 +334,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         if !state.can_issue_turn() {
             return Ok(());
         }
-        let prior = state.prior_turn_id();
+        let prior = match &*state {
+            HarnessState::TurnCompleted { last_turn_id } => Some(last_turn_id.clone()),
+            _ => None,
+        };
         *state = HarnessState::Issuing {
             since: Instant::now(),
             kind: IssuingKind::TurnStart,
@@ -431,11 +438,40 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
 }
 
 async fn issue_interrupt(inner: &Arc<Inner>, reason: String) -> Result<()> {
-    let turn_id = {
+    enum InterruptTarget {
+        Known(String),
+        ActiveThread,
+    }
+
+    let target = {
         let state = inner.state.lock().await;
-        state.prior_turn_id()
+        match &*state {
+            HarnessState::TurnRunning { .. } => state.active_turn_id().map(InterruptTarget::Known),
+            HarnessState::Issuing {
+                kind: IssuingKind::TurnStart,
+                ..
+            } => Some(InterruptTarget::ActiveThread),
+            _ => {
+                tracing::debug!(
+                    phase = ?*state,
+                    "spec harness interrupt ignored because no turn is active"
+                );
+                None
+            }
+        }
+    };
+    let turn_id = match target {
+        Some(InterruptTarget::Known(turn_id)) => Some(turn_id),
+        Some(InterruptTarget::ActiveThread) => {
+            let Some(thread_id) = inner.thread_id.read().await.clone() else {
+                return Ok(());
+            };
+            inner.daemon.active_turn_id_for_thread(&thread_id)
+        }
+        None => None,
     };
     let Some(turn_id) = turn_id else {
+        tracing::debug!("spec harness interrupt ignored because no active turn id is known");
         return Ok(());
     };
     issue_interrupt_for_turn(inner, turn_id, reason).await
@@ -501,6 +537,9 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    if inner.shutting_down.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     let snapshot = snapshot_for(inner).await;
     let runtime_id = inner.runtime_id.clone();
     let card_id = inner.card_id.to_string();
@@ -572,27 +611,14 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
     match snapshot.phase {
         HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
         HarnessPhaseTag::Idle => HarnessState::Idle,
-        HarnessPhaseTag::IssuingTurn => HarnessState::Issuing {
-            since: now,
-            kind: IssuingKind::TurnStart,
+        // IssuingTurn is persisted before turn/start fires, so retrying after
+        // recovery is correct and cannot duplicate a turn codex has seen.
+        HarnessPhaseTag::IssuingTurn => HarnessState::TurnCompleted {
+            last_turn_id: snapshot.last_turn_id.clone().unwrap_or_default(),
         },
-        HarnessPhaseTag::IssuingInterrupt => HarnessState::Issuing {
-            since: now,
-            kind: IssuingKind::Interrupt {
-                target_turn_id: snapshot
-                    .last_turn_id
-                    .clone()
-                    .unwrap_or_else(|| "unknown-turn".into()),
-                reason: "resumed_interrupt".into(),
-            },
-        },
-        HarnessPhaseTag::TurnRunning => HarnessState::TurnRunning {
-            turn_id: snapshot
-                .last_turn_id
-                .clone()
-                .unwrap_or_else(|| "unknown-turn".into()),
-            started_at: now,
-        },
+        HarnessPhaseTag::IssuingInterrupt | HarnessPhaseTag::TurnRunning => {
+            HarnessState::Resumed { resumed_at: now }
+        }
         HarnessPhaseTag::TurnCompleted => HarnessState::TurnCompleted {
             last_turn_id: snapshot
                 .last_turn_id
