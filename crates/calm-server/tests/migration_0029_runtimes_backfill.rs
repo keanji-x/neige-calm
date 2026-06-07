@@ -200,7 +200,8 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
            VALUES
               ('wave-1', 'cove-1', 'w', 0.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000),
               ('wave-2', 'cove-1', 'w2', 1.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000),
-              ('wave-3', 'cove-1', 'w3', 2.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000)"#,
+              ('wave-3', 'cove-1', 'w3', 2.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000),
+              ('wave-4', 'cove-1', 'w4', 3.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000)"#,
     )
     .execute(pool)
     .await
@@ -221,7 +222,8 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('card-codex-shared-plain', 'wave-2', 'codex', 9.0, '{"codex_source":"shared"}', 2000, 2000, 'plain', 1),
               ('card-claude-sessionless', 'wave-2', 'claude', 10.0, '{"terminal_id":"term-claude-sessionless"}', 2100, 2100, 'worker', 1),
               ('card-stale-clean-exit', 'wave-2', 'terminal', 11.0, '{"terminal_id":"term-stale-clean-exit"}', 2200, 2200, 'plain', 1),
-              ('card-stale-signal', 'wave-2', 'terminal', 12.0, '{"terminal_id":"term-stale-signal"}', 2300, 2300, 'plain', 1)"#,
+              ('card-stale-signal', 'wave-2', 'terminal', 12.0, '{"terminal_id":"term-stale-signal"}', 2300, 2300, 'plain', 1),
+              ('card-shared-dead-tui', 'wave-4', 'codex', 13.0, '{"codex_source":"shared"}', 2400, 2400, 'spec', 0)"#,
     )
     .execute(pool)
     .await
@@ -240,7 +242,9 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('term-codex-shared-plain', 'card-codex-shared-plain', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2000, NULL, 0),
               ('term-claude-sessionless', 'card-claude-sessionless', 'claude', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2100, NULL, 0),
               ('term-stale-clean-exit', 'card-stale-clean-exit', 'bash', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2200, 0, 0),
-              ('term-stale-signal', 'card-stale-signal', 'bash', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2300, NULL, 1)"#,
+              ('term-stale-signal', 'card-stale-signal', 'bash', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2300, NULL, 1),
+              ('term-shared-pending', 'card-shared-pending', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2400, NULL, 0),
+              ('term-shared-dead-tui', 'card-shared-dead-tui', 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 2500, 0, 0)"#,
     )
     .execute(pool)
     .await
@@ -478,6 +482,16 @@ async fn migration_0030_backfills_runtimes_and_is_idempotent() {
             .try_get::<Option<String>, _>("thread_id")
             .unwrap()
             .is_none()
+    );
+    assert!(
+        shared_pending
+            .try_get::<Option<String>, _>("terminal_run_id")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !by_card.contains_key("card-shared-dead-tui"),
+        "shared spec without a thread must not backfill turn_pending after its TUI exited"
     );
 
     let preexisting = by_card

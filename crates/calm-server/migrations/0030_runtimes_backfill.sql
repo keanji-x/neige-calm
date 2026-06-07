@@ -147,6 +147,16 @@ LEFT JOIN card_codex_threads ct ON ct.card_id = c.id
 WHERE c.kind = 'codex'
   AND c.role = 'spec'
   AND json_extract(c.payload, '$.codex_source') = 'shared'
+  AND (
+    ct.thread_id IS NOT NULL
+    OR EXISTS (
+      SELECT 1
+      FROM terminals t
+      WHERE t.card_id = c.id
+        AND t.exit_code IS NULL
+        AND COALESCE(t.signal_killed, 0) = 0
+    )
+  )
   AND NOT EXISTS (
     SELECT 1 FROM runtimes r WHERE r.card_id = c.id
   );
