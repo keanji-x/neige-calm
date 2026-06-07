@@ -15,6 +15,7 @@ use crate::mcp_server::McpServer;
 use crate::model::CardRole;
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::codex_adapter::CodexAdapter;
+use crate::operation::shared_daemon_spawn_adapter::SharedDaemonSpawnAdapter;
 use crate::operation::terminal_adapter::TerminalAdapter;
 use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
@@ -379,41 +380,6 @@ impl AppState {
         ));
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
         let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
-        let operation_repo = Arc::new(SqlxOperationRepo::new(
-            repo.sqlite_pool()
-                .expect("AppState::from_parts requires a sqlite-backed Repo"),
-        ));
-        let terminal_adapter = Arc::new(TerminalAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let codex_adapter = Arc::new(CodexAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            shared_codex_appserver.clone(),
-            pending_codex_threads.clone(),
-            pending_codex_threads_spawn_serial.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let claude_adapter = Arc::new(ClaudeAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
-            operation_repo,
-            vec![terminal_adapter, codex_adapter, claude_adapter],
-            events.clone(),
-            SpawnCtx::new(
-                route_repo.clone(),
-                daemon.clone(),
-                terminal_renderer.clone(),
-                events.clone(),
-            ),
-        ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
@@ -440,6 +406,59 @@ impl AppState {
             spec_push.clone(),
             shared_codex_appserver.clone(),
             Dispatcher::permits_from_env(8),
+        ));
+        let aspects = build_aspect_registry();
+        let operation_repo = Arc::new(SqlxOperationRepo::new(
+            repo.sqlite_pool()
+                .expect("AppState::from_parts requires a sqlite-backed Repo"),
+        ));
+        let terminal_adapter = Arc::new(TerminalAdapter::new(
+            route_repo.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let codex_adapter = Arc::new(CodexAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let claude_adapter = Arc::new(ClaudeAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let shared_daemon_spawn_adapter = Arc::new(SharedDaemonSpawnAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+            dispatcher.clone(),
+            spec_push.clone(),
+            aspects.clone(),
+        ));
+        let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
+            operation_repo,
+            vec![
+                terminal_adapter,
+                codex_adapter,
+                claude_adapter,
+                shared_daemon_spawn_adapter,
+            ],
+            events.clone(),
+            SpawnCtx::new(
+                route_repo.clone(),
+                daemon.clone(),
+                terminal_renderer.clone(),
+                events.clone(),
+            ),
         ));
         BootState {
             repo,
@@ -472,7 +491,7 @@ impl AppState {
             // exercising the production register path (e.g.
             // `SpecPushRegistry::park`) trips the same aspects production
             // would.
-            aspects: build_aspect_registry(),
+            aspects,
             operation_runtime,
         }
         .into_app_state()
@@ -528,9 +547,26 @@ impl AppState {
             self.card_role_cache.clone(),
             self.wave_cove_cache.clone(),
         ));
+        let shared_daemon_spawn_adapter = Arc::new(SharedDaemonSpawnAdapter::new(
+            route_repo.clone(),
+            self.codex.clone(),
+            self.shared_codex_appserver.clone(),
+            self.pending_codex_threads.clone(),
+            self.pending_codex_threads_spawn_serial.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+            self.dispatcher.clone(),
+            self.spec_push.clone(),
+            self.aspects.clone(),
+        ));
         let runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
-            vec![terminal_adapter, codex_adapter, claude_adapter],
+            vec![
+                terminal_adapter,
+                codex_adapter,
+                claude_adapter,
+                shared_daemon_spawn_adapter,
+            ],
             self.events.clone(),
             SpawnCtx::new(
                 route_repo,
@@ -694,45 +730,6 @@ impl AppState {
             repo.clone(),
             Some(pending_codex_threads.clone()),
         );
-        let operation_repo = Arc::new(SqlxOperationRepo::new(
-            repo.sqlite_pool()
-                .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
-        ));
-        let terminal_adapter = Arc::new(TerminalAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let codex_adapter = Arc::new(CodexAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            shared_codex_appserver.clone(),
-            pending_codex_threads.clone(),
-            pending_codex_threads_spawn_serial.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let claude_adapter = Arc::new(ClaudeAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let operation_runtime = Arc::new(
-            OperationRuntime::new(
-                operation_repo,
-                vec![terminal_adapter, codex_adapter, claude_adapter],
-                events.clone(),
-                SpawnCtx::new(
-                    route_repo.clone(),
-                    daemon.clone(),
-                    terminal_renderer.clone(),
-                    events.clone(),
-                ),
-            )
-            .await?,
-        );
-
         // PR5 (#136) — dispatcher worker. Subscribes to
         // `*.job_requested` envelopes and mints worker-roled cards
         // (Cap: `NEIGE_DISPATCHER_PERMITS` env override, default 8).
@@ -761,6 +758,62 @@ impl AppState {
             shared_codex_appserver.clone(),
             crate::dispatcher::Dispatcher::permits_from_env(8),
         ));
+        let aspects = build_aspect_registry();
+        let operation_repo = Arc::new(SqlxOperationRepo::new(
+            repo.sqlite_pool()
+                .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
+        ));
+        let terminal_adapter = Arc::new(TerminalAdapter::new(
+            route_repo.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let codex_adapter = Arc::new(CodexAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let claude_adapter = Arc::new(ClaudeAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let shared_daemon_spawn_adapter = Arc::new(SharedDaemonSpawnAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+            dispatcher.clone(),
+            spec_push.clone(),
+            aspects.clone(),
+        ));
+        let operation_runtime = Arc::new(
+            OperationRuntime::new(
+                operation_repo,
+                vec![
+                    terminal_adapter,
+                    codex_adapter,
+                    claude_adapter,
+                    shared_daemon_spawn_adapter,
+                ],
+                events.clone(),
+                SpawnCtx::new(
+                    route_repo.clone(),
+                    daemon.clone(),
+                    terminal_renderer.clone(),
+                    events.clone(),
+                ),
+            )
+            .await?,
+        );
 
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
@@ -803,7 +856,7 @@ impl AppState {
             pending_codex_threads_spawn_serial,
             // #322 — aspect registry, boot-installed once and shared via
             // `Arc` to every handler / actor that needs it.
-            aspects: build_aspect_registry(),
+            aspects,
             operation_runtime,
         };
         let state = state.into_app_state();

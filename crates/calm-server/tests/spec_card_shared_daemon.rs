@@ -459,25 +459,60 @@ async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
 async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstrap() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(true).await;
-    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
-    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
-    let wave_id = wave["id"].as_str().unwrap().to_string();
-    let spec = spec_card(&boot.repo, &wave_id).await;
-    // Force the terminal row "alive" — under CI's daemon spawn pipeline the
-    // PTY TUI exits quickly and reconcile/sweeper races mark the terminal
-    // dead before the test asserts. The takeover SQL (intentionally) skips
-    // dead terminals; this test exercises the *alive-terminal* re-park
-    // path, so reset exit_code+signal_killed here. terminal_set_exit with
-    // (None, false) writes UPDATE terminals SET exit_code=NULL,
-    // signal_killed=0 — effectively "resurrecting" the row for the test.
-    let terminal_id = spec.payload["terminal_id"].as_str().unwrap();
-    boot.repo
-        .terminal_set_exit(terminal_id, None, false)
+    let wave = boot
+        .repo
+        .wave_create(NewWave {
+            cove_id: boot.cove_id.clone().into(),
+            title: "".into(),
+            sort: None,
+            cwd: "/tmp/spec-shared".into(),
+            attach_folder: true,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
         .await
         .unwrap();
-    let pending = &boot.state.pending_codex_threads;
-    assert!(pending.remove_by_card(spec.id.as_str()).await);
-    drop(boot.state.spec_push.remove(&wave_id.clone().into()));
+    let wave_id = wave.id.to_string();
+    let terminal_id = format!("term-{}", calm_server::model::new_id());
+    let spec_card_id = calm_server::model::new_id();
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        spec_card_id,
+        NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_source": "shared",
+                "appserver_sock": boot.state.shared_codex_appserver.remote_uri(),
+                "push_watermark": 0,
+                "terminal_id": terminal_id.clone(),
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &boot.state.card_role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+    )
+    .bind(&terminal_id)
+    .bind(spec.id.as_str())
+    .bind("bash")
+    .bind("/tmp/spec-shared")
+    .bind("{}")
+    .bind(theme.fg_arg())
+    .bind(theme.bg_arg())
+    .bind(0_i64)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
 
     let reloaded = reloaded_state_from_boot(&boot);
     assert_eq!(reloaded.pending_codex_threads.pending_count().await, 0);

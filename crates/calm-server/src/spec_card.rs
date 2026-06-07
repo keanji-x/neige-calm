@@ -22,10 +22,12 @@
 //! reaps the persisted rows (~60s) per the same recovery semantics as
 //! `routes::codex_cards::create_codex_card`.
 
+use crate::db::RouteRepo;
 use crate::error::{CalmError, Result};
 use crate::routes::codex_cards::shell_single_quote;
-use crate::routes::terminal::spawn_terminal_for_route;
-use crate::state::{CodexClient, RouteState, WorkerState};
+use crate::routes::terminal::spawn_terminal_with_parts;
+use crate::state::{CodexClient, DaemonClient, RouteState, WorkerState};
+use crate::terminal_renderer::TerminalRendererRegistry;
 
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
 /// that documents the role; PR7a/PR7b will expand this with explicit
@@ -489,9 +491,38 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     // thread id after observing the first turn lifecycle.
     push: SpecPushDaemonArgs,
 ) -> Result<()> {
+    seed_and_spawn_spec_daemon_parts(
+        route.repo.as_ref(),
+        worker.daemon.as_ref(),
+        worker.terminal_renderer.as_ref(),
+        spec_card_id,
+        wave_id,
+        cwd,
+        env,
+        _mcp_token,
+        push,
+    )
+    .await
+}
+
+// The operation adapter owns the same post-commit spawn behavior but only has
+// the lower-level handles carried by SpawnCtx. Keep this parts helper narrow
+// rather than forcing the adapter to fabricate a RouteState.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn seed_and_spawn_spec_daemon_parts(
+    repo: &dyn RouteRepo,
+    daemon: &DaemonClient,
+    terminal_renderer: &TerminalRendererRegistry,
+    spec_card_id: String,
+    wave_id: String,
+    cwd: String,
+    env: serde_json::Value,
+    _mcp_token: Option<String>,
+    push: SpecPushDaemonArgs,
+) -> Result<()> {
     // 1. Look up the terminal row. Guaranteed to exist post-commit
     //    (the row was written inside the same tx as the spec card).
-    let term = match route.repo.terminal_get_by_card(&spec_card_id).await {
+    let term = match repo.terminal_get_by_card(&spec_card_id).await {
         Ok(Some(t)) => t,
         Ok(None) => {
             tracing::warn!(
@@ -531,8 +562,16 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    response hot path. Since #236, that synchronous wait is intentional:
     //    it is the acceptable cost vs. the correctness bug it closes.
     let command_line = push.command_line();
-    if let Err(e) =
-        spawn_terminal_for_route(&route, &worker, &term, &command_line, &cwd, &env).await
+    if let Err(e) = spawn_terminal_with_parts(
+        daemon,
+        terminal_renderer,
+        repo,
+        &term,
+        &command_line,
+        &cwd,
+        &env,
+    )
+    .await
     {
         tracing::warn!(
             card_id = %spec_card_id,

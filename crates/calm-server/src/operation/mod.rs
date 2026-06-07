@@ -1,5 +1,6 @@
 pub mod claude_adapter;
 pub mod codex_adapter;
+pub mod shared_daemon_spawn_adapter;
 pub mod terminal_adapter;
 
 use std::collections::HashMap;
@@ -1310,10 +1311,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(&output_text)
         .bind(&output.target_type)
         .bind(&output.target_id)
-        .bind(serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))?)
+        .bind(serde_json::to_string(&target_json_from_output(&output))?)
         .bind(now)
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
@@ -1402,10 +1400,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(serde_json::to_string(&output_for_db)?)
         .bind(&output.target_type)
         .bind(&output.target_id)
-        .bind(serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))?)
+        .bind(serde_json::to_string(&target_json_from_output(output))?)
         .bind(completed_at)
         .bind(now_ms())
         .bind(&op.id)
@@ -1454,10 +1449,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(serde_json::to_string(&output_for_db)?)
         .bind(&output.target_type)
         .bind(&output.target_id)
-        .bind(serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))?)
+        .bind(serde_json::to_string(&target_json_from_output(output))?)
         .bind(&state.reason)
         .bind(now_ms())
         .bind(&op.id)
@@ -1635,10 +1627,7 @@ pub(crate) async fn checkpoint_app_server_interact_tx(
     .bind(serde_json::to_string(&output_for_db)?)
     .bind(&output.target_type)
     .bind(&output.target_id)
-    .bind(serde_json::to_string(&json!({
-        "type": output.target_type,
-        "id": output.target_id,
-    }))?)
+    .bind(serde_json::to_string(&target_json_from_output(output))?)
     .bind(now_ms())
     .bind(&op.id)
     .bind(required_lease_owner(op)?)
@@ -1824,6 +1813,31 @@ fn target_from_payload(payload: &Value) -> (String, Option<String>, Value) {
         None,
         json!({ "type": "unknown", "id": Value::Null }),
     )
+}
+
+fn target_json_from_output(output: &TxOutput) -> Value {
+    let mut target = serde_json::Map::new();
+    target.insert("type".into(), Value::String(output.target_type.clone()));
+    target.insert(
+        "id".into(),
+        output
+            .target_id
+            .as_ref()
+            .map(|id| Value::String(id.clone()))
+            .unwrap_or(Value::Null),
+    );
+    if output.target_type == "wave" {
+        if let Some(spec_card_id) = output.data.get("spec_card_id").and_then(Value::as_str) {
+            target.insert(
+                "spec_card_id".into(),
+                Value::String(spec_card_id.to_string()),
+            );
+        }
+        if let Some(terminal_id) = output.data.get("terminal_id").and_then(Value::as_str) {
+            target.insert("terminal_id".into(), Value::String(terminal_id.to_string()));
+        }
+    }
+    Value::Object(target)
 }
 
 fn sqlite_version_at_least(version: &str, want_major: u64, want_minor: u64) -> bool {

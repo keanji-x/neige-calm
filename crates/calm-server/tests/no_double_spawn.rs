@@ -23,6 +23,9 @@ use calm_server::operation::claude_adapter::{
 use calm_server::operation::codex_adapter::{
     CodexAdapter, CodexCreateOperationPayload, NormalizedCodexCreateRequest,
 };
+use calm_server::operation::shared_daemon_spawn_adapter::{
+    SharedDaemonSpawnAdapter, SharedDaemonSpawnPayload,
+};
 use calm_server::operation::terminal_adapter::{
     TerminalAdapter, TerminalCreateOperationPayload, TerminalCreateRequestPayload,
 };
@@ -46,6 +49,16 @@ struct Boot {
     state: AppState,
     repo: Arc<SqlxRepo>,
     wave_id: String,
+    spawn_count: Arc<AtomicUsize>,
+    _tmp: TempDir,
+}
+
+struct SharedDaemonBoot {
+    state: AppState,
+    repo: Arc<SqlxRepo>,
+    wave_id: String,
+    spec_card_id: String,
+    terminal_id: String,
     spawn_count: Arc<AtomicUsize>,
     _tmp: TempDir,
 }
@@ -656,6 +669,159 @@ async fn boot_claude_with_counted_spawn() -> Boot {
     }
 }
 
+async fn boot_shared_daemon_with_counted_spawn() -> SharedDaemonBoot {
+    let tmp = TempDir::new().expect("tempdir for shared daemon spawn test");
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let cove = repo_dyn
+        .cove_create(NewCove {
+            name: "shared-daemon-operations-test".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo_dyn
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "shared-daemon-operations-test".into(),
+            sort: None,
+            cwd: "/workspace".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let daemon = Arc::new(DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        proc_supervisor_sock: None,
+    });
+    let events = EventBus::new();
+    let codex = Arc::new(CodexClient::new_stub());
+    let state = AppState::from_parts(
+        repo_dyn.clone(),
+        events.clone(),
+        daemon,
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo_dyn.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
+        )),
+        codex.clone(),
+        None,
+        None,
+    );
+    let pending = Arc::new(PendingThreadStartRegistry::new(
+        repo_dyn.clone(),
+        events.clone(),
+    ));
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(
+        repo_dyn.clone(),
+        Some(pending.clone()),
+    );
+    let state = state
+        .with_shared_codex_appserver(shared)
+        .with_pending_codex_threads(pending);
+
+    let spec_card_id = new_id();
+    let role_cache = state.card_role_cache.clone();
+    let wave_id_for_tx = wave.id.clone();
+    let (spec_card_id, terminal_id) = write_in_tx_typed(repo_dyn.as_ref(), move |tx| {
+        Box::pin(async move {
+            let (_card, terminal, _token) = card_with_codex_create_tx(
+                tx,
+                spec_card_id.clone(),
+                wave_id_for_tx,
+                None,
+                "/workspace".into(),
+                json!({}),
+                Some("shared daemon prompt".into()),
+                None,
+                None,
+                CardRole::Spec,
+                false,
+                &role_cache,
+                calm_server::routes::theme::RequestTheme::default_dark(),
+            )
+            .await?;
+            Ok((spec_card_id, terminal.id))
+        })
+    })
+    .await
+    .unwrap();
+
+    let spawn_count = Arc::new(AtomicUsize::new(0));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo_dyn.clone();
+    let count_for_hook = spawn_count.clone();
+    let repo_for_hook = route_repo.clone();
+    let hook = Arc::new(
+        move |terminal_id: String,
+              _program: String,
+              _cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let count = count_for_hook.clone();
+            let repo = repo_for_hook.clone();
+            Box::pin(async move {
+                let spawn_index = count.fetch_add(1, Ordering::SeqCst);
+                repo.terminal_set_pid(&terminal_id, Some(98_100 + spawn_index as u32))
+                    .await?;
+                Ok(SpawnHandle {
+                    renderer_id: terminal_id.clone(),
+                    terminal_id,
+                })
+            })
+        },
+    );
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let shared_adapter = Arc::new(SharedDaemonSpawnAdapter::new_with_spawn_hook(
+        route_repo.clone(),
+        codex,
+        state.shared_codex_appserver.clone(),
+        state.pending_codex_threads.clone(),
+        state.pending_codex_threads_spawn_serial.clone(),
+        state.card_role_cache.clone(),
+        state.wave_cove_cache.clone(),
+        state.dispatcher.clone(),
+        state.spec_push.clone(),
+        state.aspects.clone(),
+        hook,
+    ));
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![shared_adapter],
+        events.clone(),
+        SpawnCtx::new(
+            route_repo,
+            state.daemon.clone(),
+            state.terminal_renderer.clone(),
+            events,
+        ),
+    ));
+    let state = state.with_operation_runtime(runtime);
+
+    SharedDaemonBoot {
+        state,
+        repo,
+        wave_id: wave.id.to_string(),
+        spec_card_id,
+        terminal_id,
+        spawn_count,
+        _tmp: tmp,
+    }
+}
+
 async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boot {
     let mut boot = boot_codex_with_counted_spawn().await;
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
@@ -875,6 +1041,354 @@ async fn test_claude_create_no_double_spawn() {
             .dispatcher
             .recently_seen_contains("claude-create-same-key"),
         "OperationRuntime claude-create must not install dispatcher recently_seen"
+    );
+}
+
+#[tokio::test]
+async fn test_shared_daemon_spawn_no_double_spawn() {
+    let boot = boot_shared_daemon_with_counted_spawn().await;
+    let payload = serde_json::to_value(SharedDaemonSpawnPayload {
+        wave_id: boot.wave_id.clone(),
+        spec_card_id: boot.spec_card_id.clone(),
+        terminal_id: boot.terminal_id.clone(),
+        wave_title: "shared daemon prompt".into(),
+        wave_cwd: "/workspace".into(),
+        env: json!({}),
+        mcp_token: None,
+        needs_initial_prompt: false,
+    })
+    .unwrap();
+    let key = OperationKey {
+        operation_key: "op-shared-daemon-spawn-a".into(),
+        idempotency_key: Some("shared-daemon-spawn-same-key".into()),
+        payload_hash: "same-shared-daemon-payload-hash".into(),
+    };
+    let key_retry = OperationKey {
+        operation_key: "op-shared-daemon-spawn-b".into(),
+        ..key.clone()
+    };
+
+    let rt_a = boot.state.operation_runtime.clone();
+    let rt_b = boot.state.operation_runtime.clone();
+    let payload_a = payload.clone();
+    let payload_b = payload;
+    let a = tokio::spawn(async move {
+        let op_id = rt_a
+            .submit("shared-daemon-spawn", key, payload_a)
+            .await
+            .unwrap();
+        rt_a.wait(&op_id).await.unwrap()
+    });
+    let b = tokio::spawn(async move {
+        let op_id = rt_b
+            .submit("shared-daemon-spawn", key_retry, payload_b)
+            .await
+            .unwrap();
+        rt_b.wait(&op_id).await.unwrap()
+    });
+    let (a, b) = tokio::join!(a, b);
+    assert!(matches!(
+        a.unwrap().outcome,
+        OperationOutcome::Succeeded { .. }
+    ));
+    assert!(matches!(
+        b.unwrap().outcome,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let row =
+        sqlx::query("SELECT COUNT(*) AS n FROM operations WHERE kind = 'shared-daemon-spawn'")
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+    let count: i64 = row.try_get("n").unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn shared_daemon_spawn_waits_for_push_lock_without_deadlock() {
+    let boot = boot_shared_daemon_with_counted_spawn().await;
+    let payload = serde_json::to_value(SharedDaemonSpawnPayload {
+        wave_id: boot.wave_id.clone(),
+        spec_card_id: boot.spec_card_id.clone(),
+        terminal_id: boot.terminal_id.clone(),
+        wave_title: "shared daemon prompt".into(),
+        wave_cwd: "/workspace".into(),
+        env: json!({}),
+        mcp_token: None,
+        needs_initial_prompt: false,
+    })
+    .unwrap();
+    let key = OperationKey {
+        operation_key: "op-shared-daemon-push-lock".into(),
+        idempotency_key: Some("shared-daemon-push-lock".into()),
+        payload_hash: "shared-daemon-push-lock-hash".into(),
+    };
+    let wave_id = boot.wave_id.clone().into();
+    let guard = boot.state.dispatcher.push_lock(&wave_id).await;
+    let rt = boot.state.operation_runtime.clone();
+    let task = tokio::spawn(async move {
+        let op_id = rt
+            .submit("shared-daemon-spawn", key, payload)
+            .await
+            .unwrap();
+        rt.wait(&op_id).await.unwrap()
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        boot.spawn_count.load(Ordering::SeqCst),
+        0,
+        "spawn must wait behind the held per-wave push lock"
+    );
+    drop(guard);
+    let result = task.await.unwrap();
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn shared_daemon_recovery_from_app_server_interact_reuses_existing_card_codex_thread() {
+    let boot = boot_shared_daemon_with_counted_spawn().await;
+    boot.repo
+        .card_codex_thread_upsert(
+            &boot.spec_card_id,
+            "T-shared-original",
+            CardRole::Spec,
+            Some(&boot.wave_id),
+        )
+        .await
+        .unwrap();
+    let card = boot
+        .repo
+        .card_get(&boot.spec_card_id)
+        .await
+        .unwrap()
+        .expect("spec card");
+    let mut output = TxOutput::new(
+        "wave",
+        Some(boot.wave_id.clone()),
+        json!({
+            "type": "wave",
+            "id": boot.wave_id,
+            "spec_card_id": boot.spec_card_id,
+            "terminal_id": boot.terminal_id,
+        }),
+    );
+    output.result = serde_json::to_value(&card).unwrap();
+    output.data = json!({
+        "wave_id": boot.wave_id.clone(),
+        "spec_card_id": boot.spec_card_id.clone(),
+        "terminal_id": boot.terminal_id.clone(),
+        "wave_title": "recover shared prompt",
+        "wave_cwd": "/workspace",
+        "env": {},
+        "mcp_token": Value::Null,
+        "needs_initial_prompt": false,
+    });
+    let op_id = new_id();
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
+               created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, 'shared-daemon-spawn', ?3, ?4, 'wave', ?5, ?6, ?7, ?8,
+                   'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
+    )
+    .bind(&op_id)
+    .bind("shared-app-interact-recovery-op")
+    .bind("shared-app-interact-recovery-key")
+    .bind("shared-app-interact-recovery-hash")
+    .bind(&boot.wave_id)
+    .bind(
+        serde_json::to_string(&json!({
+            "type": "wave",
+            "id": boot.wave_id,
+            "spec_card_id": boot.spec_card_id,
+            "terminal_id": boot.terminal_id,
+        }))
+        .unwrap(),
+    )
+    .bind(
+        serde_json::to_string(&shared_daemon_payload(
+            &boot,
+            "recover shared prompt",
+            false,
+        ))
+        .unwrap(),
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(
+        serde_json::to_string(&json!({
+            "kind": "mint_and_await",
+            "thread_id": Value::Null,
+        }))
+        .unwrap(),
+    )
+    .bind("dead-process")
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let plan = boot
+        .state
+        .operation_runtime
+        .recover_on_boot()
+        .await
+        .unwrap();
+    assert_eq!(plan.items.len(), 1);
+    assert!(matches!(
+        &plan.items[0],
+        RecoveryItem::Recover {
+            op_id: planned,
+            from_phase: Phase::AppServerInteract { .. },
+            ..
+        } if planned == &op_id
+    ));
+    boot.state
+        .operation_runtime
+        .apply_recovery(plan)
+        .await
+        .unwrap();
+
+    let phase = wait_for_shared_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    assert_eq!(phase, PhaseTag::Succeeded);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+    let mapping = boot
+        .repo
+        .card_codex_thread_get_by_card(&boot.spec_card_id)
+        .await
+        .unwrap()
+        .expect("mapping row");
+    assert_eq!(mapping.thread_id, "T-shared-original");
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_thread("fake-thread-0001")
+            .await
+            .unwrap()
+            .is_none(),
+        "recovery should reuse the seeded thread row instead of minting a fresh thread"
+    );
+}
+
+#[tokio::test]
+async fn shared_daemon_recovery_from_spawn_started_empty_branch_rehydrates_pending_registry() {
+    let boot = boot_shared_daemon_with_counted_spawn().await;
+    let card = boot
+        .repo
+        .card_get(&boot.spec_card_id)
+        .await
+        .unwrap()
+        .expect("spec card");
+    let mut payload = card.payload.clone();
+    payload["codex_source"] = json!("shared");
+    payload["appserver_sock"] = json!(boot.state.shared_codex_appserver.remote_uri());
+    payload["push_watermark"] = json!(0);
+    let card = boot
+        .repo
+        .card_update(
+            &boot.spec_card_id,
+            CardPatch {
+                kind: None,
+                sort: None,
+                payload: Some(payload),
+                deletable: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut output = TxOutput::new(
+        "wave",
+        Some(boot.wave_id.clone()),
+        json!({
+            "type": "wave",
+            "id": boot.wave_id,
+            "spec_card_id": boot.spec_card_id,
+            "terminal_id": boot.terminal_id,
+        }),
+    );
+    output.result = serde_json::to_value(&card).unwrap();
+    output.data = json!({
+        "wave_id": boot.wave_id.clone(),
+        "spec_card_id": boot.spec_card_id.clone(),
+        "terminal_id": boot.terminal_id.clone(),
+        "wave_title": "",
+        "wave_cwd": "/workspace",
+        "env": {},
+        "mcp_token": Value::Null,
+        "needs_initial_prompt": true,
+        "pending_registered": true,
+    });
+    let op_id = new_id();
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, 'shared-daemon-spawn', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'spawn_started', ?9, ?10, ?11, ?11)"#,
+    )
+    .bind(&op_id)
+    .bind("shared-empty-spawn-started-recovery-op")
+    .bind("shared-empty-spawn-started-recovery-key")
+    .bind("shared-empty-spawn-started-recovery-hash")
+    .bind(&boot.wave_id)
+    .bind(
+        serde_json::to_string(&json!({
+            "type": "wave",
+            "id": boot.wave_id,
+            "spec_card_id": boot.spec_card_id,
+            "terminal_id": boot.terminal_id,
+        }))
+        .unwrap(),
+    )
+    .bind(serde_json::to_string(&shared_daemon_payload(&boot, "", true)).unwrap())
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind("dead-process")
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
+    let plan = boot
+        .state
+        .operation_runtime
+        .recover_on_boot()
+        .await
+        .unwrap();
+    assert_eq!(plan.items.len(), 1);
+    assert!(matches!(
+        &plan.items[0],
+        RecoveryItem::Recover {
+            op_id: planned,
+            from_phase: Phase::SpawnStarted,
+            ..
+        } if planned == &op_id
+    ));
+    boot.state
+        .operation_runtime
+        .apply_recovery(plan)
+        .await
+        .unwrap();
+
+    let phase = wait_for_shared_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    assert_eq!(phase, PhaseTag::Succeeded);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .handle_thread_started_notification_for_test("T-shared-empty")
+            .await
+            .unwrap()
     );
 }
 
@@ -2467,6 +2981,24 @@ fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
     .unwrap()
 }
 
+fn shared_daemon_payload(
+    boot: &SharedDaemonBoot,
+    title: &str,
+    needs_initial_prompt: bool,
+) -> Value {
+    serde_json::to_value(SharedDaemonSpawnPayload {
+        wave_id: boot.wave_id.clone(),
+        spec_card_id: boot.spec_card_id.clone(),
+        terminal_id: boot.terminal_id.clone(),
+        wave_title: title.to_string(),
+        wave_cwd: "/workspace".into(),
+        env: json!({}),
+        mcp_token: None,
+        needs_initial_prompt,
+    })
+    .unwrap()
+}
+
 async fn wait_for_notification_receivers(shared: &SharedCodexAppServer, min: usize) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     loop {
@@ -2482,6 +3014,33 @@ async fn wait_for_notification_receivers(shared: &SharedCodexAppServer, min: usi
 }
 
 async fn wait_for_terminal_phase(boot: &Boot, op_id: &str, timeout: Duration) -> PhaseTag {
+    let repo = SqlxOperationRepo::new(boot.repo.pool().clone());
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        boot.state.operation_runtime.drive().await.unwrap();
+        let op = repo
+            .get_operation(op_id)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("operation {op_id} missing"));
+        let phase = op.phase.tag();
+        if is_terminal_phase(phase) {
+            return phase;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for terminal operation phase; op_id={op_id}, phase={}",
+            phase.as_str()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_shared_terminal_phase(
+    boot: &SharedDaemonBoot,
+    op_id: &str,
+    timeout: Duration,
+) -> PhaseTag {
     let repo = SqlxOperationRepo::new(boot.repo.pool().clone());
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
