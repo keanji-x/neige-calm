@@ -1,5 +1,7 @@
 //! Runtime-first lookup helpers with legacy fallback during the PR2b read switch.
 
+use std::collections::HashMap;
+
 use crate::db::RouteRepo;
 use crate::error::Result;
 use crate::model::Card;
@@ -93,8 +95,54 @@ pub async fn resolve_claude_session_for_card(
     Ok(legacy_session)
 }
 
+/// Merge active shared codex thread attribution from runtime rows and legacy
+/// `card_codex_threads` rows. Runtime rows are inserted first; legacy rows then
+/// overwrite by card id because the daemon-touched legacy row is the most recent
+/// active-use signal during the PR2b two-write reset window.
+pub async fn merge_active_shared_thread_attribution(
+    repo: &dyn RouteRepo,
+) -> Result<HashMap<String, String>> {
+    let runtime_rows = repo.runtime_active_shared_thread_attribution().await?;
+    let legacy_rows = repo.card_codex_threads_active_shared_only().await?;
+
+    let mut merged = HashMap::new();
+    for (thread_id, card_id) in runtime_rows {
+        merged.insert(card_id, thread_id);
+    }
+
+    let mut legacy_fallbacks = 0usize;
+    for row in legacy_rows {
+        match merged.get(&row.card_id) {
+            Some(runtime_thread) if runtime_thread != &row.thread_id => {
+                tracing::warn!(
+                    target = "runtime_lookup::merge_conflict",
+                    card_id = %row.card_id,
+                    runtime_thread = %runtime_thread,
+                    legacy_thread = %row.thread_id,
+                    "runtime and legacy shared thread attribution disagree; using legacy"
+                );
+            }
+            None => legacy_fallbacks += 1,
+            _ => {}
+        }
+        merged.insert(row.card_id, row.thread_id);
+    }
+    if legacy_fallbacks > 0 {
+        tracing::warn!(
+            target: "runtime_lookup::fallback",
+            count = legacy_fallbacks,
+            "runtime shared thread attribution missed rows; merged legacy card_codex_threads fallback"
+        );
+    }
+
+    Ok(merged)
+}
+
 /// Runtime-first shared-codex discriminator. When no active runtime is
 /// available, falls back to the legacy payload stamp.
+///
+/// Returns true for any active codex card with a thread id; post-PR2a all codex
+/// traffic routes through the shared daemon, not only spec-card launches.
 pub fn card_is_shared_spec(card: &Card, runtime: Option<&CardRuntime>) -> bool {
     if let Some(runtime) = runtime {
         return runtime_marks_shared(runtime);

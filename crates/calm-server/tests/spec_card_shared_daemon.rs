@@ -16,6 +16,7 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::runtime_repo::{AgentProvider, ThreadAttribution};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use clap::Parser;
@@ -170,6 +171,30 @@ async fn runtime_status_for_card(repo: &SqlxRepo, card_id: &str) -> String {
     .fetch_one(repo.pool())
     .await
     .unwrap()
+}
+
+async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+    let runtime = repo
+        .runtime_get_active_for_card(&card_id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime for card");
+    let runtime_id = runtime.id.clone();
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_bind_attribution_tx(
+        &mut tx,
+        &runtime_id,
+        ThreadAttribution {
+            runtime_id: runtime_id.clone(),
+            provider: AgentProvider::Codex,
+            thread_id: Some(thread_id.to_string()),
+            session_id: runtime.session_id,
+            active_turn_id: runtime.active_turn_id,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
@@ -663,4 +688,36 @@ async fn shared_spec_takeover_reparks_handle_and_pushes_via_shared_daemon() {
         }),
         "re-parked shared pusher should issue turn/start through shared daemon: {rows:?}"
     );
+}
+
+#[tokio::test]
+async fn takeover_merges_runtime_and_legacy_legacy_wins_on_conflict() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true).await;
+    let (status, wave) =
+        post_wave(boot.app.clone(), &boot.cove_id, "shared takeover conflict").await;
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+    let wave_id = wave["id"].as_str().unwrap().to_string();
+    let spec = spec_card(&boot.repo, &wave_id).await;
+    bind_runtime_thread(&boot.repo, spec.id.as_str(), "thread-old").await;
+    boot.repo
+        .card_codex_thread_upsert(
+            spec.id.as_str(),
+            "thread-new",
+            CardRole::Spec,
+            Some(&wave_id),
+        )
+        .await
+        .unwrap();
+    drop(boot.state.spec_push.remove(&wave_id.clone().into()));
+
+    let reloaded = reloaded_state_from_boot(&boot);
+    calm_server::takeover_shared_spec_cards_on_boot(&reloaded).await;
+
+    let status = reloaded
+        .spec_push
+        .status(&wave_id.clone().into())
+        .await
+        .expect("re-parked shared pusher");
+    assert_eq!(status.last_thread_id.as_deref(), Some("thread-new"));
 }

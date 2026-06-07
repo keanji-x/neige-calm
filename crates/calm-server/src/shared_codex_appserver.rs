@@ -30,7 +30,9 @@ use crate::error::{CalmError, Result};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::routes::settings::load_settings;
-use crate::runtime_lookup::{resolve_active_thread_for_card, resolve_card_for_thread};
+use crate::runtime_lookup::{
+    merge_active_shared_thread_attribution, resolve_active_thread_for_card, resolve_card_for_thread,
+};
 use crate::runtime_repo::AgentProvider;
 use crate::shared_codex_home::SharedCodexHome;
 use crate::spec_appserver::{
@@ -1023,32 +1025,12 @@ impl SharedCodexAppServer {
     }
 
     async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
-        use std::collections::HashSet;
-
         self.thread_cache.clear();
         self.active_turns.clear();
-        let runtime_rows = self.repo.runtime_active_shared_thread_attribution().await?;
-        let mut runtime_cards = HashSet::new();
-        for (thread_id, card_id) in runtime_rows {
-            runtime_cards.insert(card_id.clone());
-            self.thread_cache.insert(thread_id, card_id);
-        }
 
-        let legacy_rows = self.repo.card_codex_threads_active_shared_only().await?;
-        let mut legacy_fallbacks = 0usize;
-        for row in legacy_rows {
-            if runtime_cards.contains(&row.card_id) {
-                continue;
-            }
-            self.thread_cache.insert(row.thread_id, row.card_id);
-            legacy_fallbacks += 1;
-        }
-        if legacy_fallbacks > 0 {
-            tracing::warn!(
-                target: "runtime_lookup::fallback",
-                count = legacy_fallbacks,
-                "runtime thread_cache rebuild missed rows; merged legacy card_codex_threads fallback"
-            );
+        let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
+        for (card_id, thread_id) in active_threads {
+            self.thread_cache.insert(thread_id, card_id);
         }
         Ok(())
     }

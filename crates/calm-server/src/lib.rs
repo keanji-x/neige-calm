@@ -32,7 +32,7 @@ pub mod actor;
 pub mod aspect;
 pub mod auth;
 pub mod card_kind;
-use crate::runtime_repo::{RunStatus, RuntimeKind};
+use crate::runtime_repo::RunStatus;
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
@@ -352,6 +352,8 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
     if !state.shared_codex_appserver.is_running() {
         return;
     }
+    // Keep paired with sqlite.rs's OR EXISTS branch: runtime-only empty-thread
+    // spec cards must still re-enter pending boot takeover before legacy stamps exist.
     let pending_initial_prompt_cards = match state
         .repo
         .shared_spec_cards_for_initial_prompt_takeover()
@@ -367,37 +369,33 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
             Vec::new()
         }
     };
-    let runtimes = match state
-        .repo
-        .runtimes_active_for_kind(RuntimeKind::SharedSpec)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(
-                target: "shared_codex_daemon::spec_card",
-                error = %e,
-                "shared spec boot takeover query failed; skipping"
-            );
-            return;
-        }
-    };
+    let active_threads =
+        match crate::runtime_lookup::merge_active_shared_thread_attribution(state.repo.as_ref())
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    error = %e,
+                    "shared spec boot takeover query failed; skipping"
+                );
+                return;
+            }
+        };
     let mut resumed = 0usize;
     let mut pending_reparked = 0usize;
-    for runtime in runtimes {
-        let Some(thread_id) = runtime.thread_id.clone() else {
-            continue;
-        };
-        let card_key: crate::ids::CardId = runtime.card_id.clone().into();
+    for (card_id, thread_id) in active_threads {
+        let card_key: crate::ids::CardId = card_id.clone().into();
         let role = if let Some(role) = state.write().verify_role(&card_key) {
             Some(role)
         } else {
-            match state.repo.card_role_get(&runtime.card_id).await {
+            match state.repo.card_role_get(&card_id).await {
                 Ok(role) => role,
                 Err(e) => {
                     tracing::warn!(
                         target: "shared_codex_daemon::spec_card",
-                        card_id = %runtime.card_id,
+                        card_id = %card_id,
                         error = %e,
                         "shared spec boot takeover role lookup failed"
                     );
@@ -408,12 +406,12 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         if role != Some(crate::model::CardRole::Spec) {
             continue;
         }
-        let Some(card) = (match state.repo.card_get(&runtime.card_id).await {
+        let Some(card) = (match state.repo.card_get(&card_id).await {
             Ok(card) => card,
             Err(e) => {
                 tracing::warn!(
                     target: "shared_codex_daemon::spec_card",
-                    card_id = %runtime.card_id,
+                    card_id = %card_id,
                     error = %e,
                     "shared spec boot takeover card lookup failed"
                 );
@@ -470,10 +468,10 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
             handle.watermark_sink.clone(),
             handle.queue_persist.clone(),
         )));
-        register_and_catch_up(state, &runtime.card_id, &wave_key, watermark, handle, true).await;
+        register_and_catch_up(state, &card_id, &wave_key, watermark, handle, true).await;
         tracing::info!(
             target: "shared_codex_daemon::spec_card",
-            card_id = %runtime.card_id,
+            card_id = %card_id,
             wave_id = %wave_id,
             thread_id = %thread_id,
             "shared spec boot takeover re-parked handle"
