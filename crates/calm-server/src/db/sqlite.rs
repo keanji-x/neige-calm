@@ -1791,6 +1791,11 @@ async fn runtime_get_projectable_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
 ) -> RuntimeResult<Option<CardRuntime>> {
+    // Project the card's CURRENT identity. We include terminal-status rows
+    // (failed/exited) so a card whose runtime just exited still surfaces its
+    // last-known thread_id/terminal_id/etc. for UI and history. 'superseded'
+    // is excluded — a superseded runtime has been replaced by a new active
+    // row, which the ORDER BY will pick up. Active states sort first.
     let row = sqlx::query(
         r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
                   thread_id, session_id, active_turn_id, handle_state_json,
@@ -1798,10 +1803,7 @@ async fn runtime_get_projectable_for_card_from_pool(
                   completed_at_ms
            FROM runtimes
            WHERE card_id = ?1
-             AND (
-                 status IN ('starting', 'running', 'idle', 'turn_pending')
-                 OR (status = 'failed' AND kind IN ('codex', 'shared-spec') AND thread_id IS NULL)
-             )
+             AND status != 'superseded'
            ORDER BY
              CASE
                  WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
@@ -1824,16 +1826,16 @@ async fn runtime_get_projectable_for_cards_from_pool(
         return Ok(HashMap::new());
     }
 
+    // See `runtime_get_projectable_for_card_from_pool` for the projection
+    // semantics — include terminal-state rows so last-known identity surfaces,
+    // exclude 'superseded' so the replacement active row is preferred.
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
                   thread_id, session_id, active_turn_id, handle_state_json,
                   lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
                   completed_at_ms
            FROM runtimes
-           WHERE (
-                 status IN ('starting', 'running', 'idle', 'turn_pending')
-                 OR (status = 'failed' AND kind IN ('codex', 'shared-spec') AND thread_id IS NULL)
-             )
+           WHERE status != 'superseded'
              AND card_id IN ("#,
     );
     let mut separated = query.separated(", ");
