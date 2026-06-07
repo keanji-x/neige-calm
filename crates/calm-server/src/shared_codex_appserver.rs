@@ -421,7 +421,13 @@ impl SharedCodexAppServer {
         wave_id: Option<&str>,
         params: SharedThreadStartParams,
     ) -> Result<String> {
-        let thread_id = self.thread_start_mint_for_card(card_id, params).await?;
+        // Hold `kernel_thread_start_serial` across BOTH the mint and the
+        // legacy upsert so `handle_thread_started_notification` (which
+        // takes the same lock before broadcasting) cannot dispatch the
+        // `thread/started` notification until non-reset callers have
+        // their `card_codex_threads` row in place.
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        let thread_id = self.thread_start_mint_inner(card_id, params).await?;
         self.repo
             .card_codex_thread_upsert(card_id, &thread_id, role, wave_id)
             .await?;
@@ -436,12 +442,26 @@ impl SharedCodexAppServer {
         Ok(thread_id)
     }
 
+    /// Issue #524 — kernel-only mint for the shared-spec reset path. Performs
+    /// the codex `thread/start` RPC and populates in-memory caches without
+    /// touching `card_codex_threads`. The reset route writes the legacy row
+    /// atomically alongside the runtime supersede in
+    /// `persist_shared_reset_runtime_fields`.
     pub async fn thread_start_mint_for_card(
         self: &Arc<Self>,
         card_id: &str,
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
+        self.thread_start_mint_inner(card_id, params).await
+    }
+
+    /// Caller MUST hold `kernel_thread_start_serial`.
+    async fn thread_start_mint_inner(
+        self: &Arc<Self>,
+        card_id: &str,
+        params: SharedThreadStartParams,
+    ) -> Result<String> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             let n = fake.next_thread.fetch_add(1, Ordering::SeqCst);
