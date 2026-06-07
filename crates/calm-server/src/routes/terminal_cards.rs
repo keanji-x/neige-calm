@@ -99,22 +99,8 @@ pub(crate) async fn create_terminal_card(
         env: p.env,
         theme: p.theme,
     });
-    let idempotency_key = match headers.get("idempotency-key") {
-        Some(value) => {
-            let value = value.to_str().map_err(|_| {
-                CalmError::BadRequest("invalid Idempotency-Key header (non-ASCII bytes)".into())
-            })?;
-            let value = value.trim();
-            if value.is_empty() {
-                return Err(CalmError::BadRequest(
-                    "invalid Idempotency-Key header (empty)".into(),
-                ));
-            }
-            Some(value.to_string())
-        }
-        None => None,
-    };
-    let operation_key = idempotency_key.clone().unwrap_or_else(new_id);
+    let idempotency_key = parse_idempotency_key_header(&headers)?;
+    let operation_key = new_id();
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
@@ -155,7 +141,25 @@ pub(crate) async fn create_terminal_card(
     }
 }
 
-fn calm_error_from_operation_failure(
+pub(crate) fn parse_idempotency_key_header(headers: &HeaderMap) -> Result<Option<String>> {
+    match headers.get("idempotency-key") {
+        Some(value) => {
+            let value = value.to_str().map_err(|_| {
+                CalmError::BadRequest("invalid Idempotency-Key header (non-ASCII bytes)".into())
+            })?;
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(CalmError::BadRequest(
+                    "invalid Idempotency-Key header (empty)".into(),
+                ));
+            }
+            Ok(Some(value.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn calm_error_from_operation_failure(
     last_error_class: Option<&str>,
     last_error: String,
     from_phase: crate::operation::PhaseTag,
@@ -171,7 +175,7 @@ fn calm_error_from_operation_failure(
     }
 }
 
-fn stable_payload_hash<T: Serialize>(value: &T) -> Result<String> {
+pub(crate) fn stable_payload_hash<T: Serialize>(value: &T) -> Result<String> {
     let value = canonical_json(serde_json::to_value(value)?);
     let bytes = serde_json::to_vec(&value)?;
     let mut hasher = Sha256::new();

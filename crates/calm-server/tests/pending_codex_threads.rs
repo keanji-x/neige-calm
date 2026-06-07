@@ -149,6 +149,38 @@ async fn register_and_bind_in_arrival_order() {
 }
 
 #[tokio::test]
+async fn register_is_idempotent_by_card_id_without_reordering() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let a = seed_card(&repo, &wave_id, "term-a").await;
+    let b = seed_card(&repo, &wave_id, "term-b").await;
+
+    registry
+        .register(entry(&a, &wave_id, "term-a"))
+        .await
+        .unwrap();
+    registry
+        .register(entry(&b, &wave_id, "term-b"))
+        .await
+        .unwrap();
+    registry
+        .register(entry(&a, &wave_id, "term-a"))
+        .await
+        .unwrap();
+
+    assert_eq!(registry.pending_count().await, 2);
+    assert_eq!(
+        registry.on_thread_started("T-1").await.unwrap(),
+        Some(a.clone()),
+        "duplicate registration must not move the first card to the back"
+    );
+    assert_eq!(
+        registry.on_thread_started("T-2").await.unwrap(),
+        Some(b.clone())
+    );
+}
+
+#[tokio::test]
 async fn bind_persists_to_card_codex_threads_and_payload() {
     let (repo, events, wave_id) = boot().await;
     let mut rx = events.subscribe();

@@ -81,10 +81,17 @@ impl PendingThreadStartRegistry {
         let wave_id = entry.wave_id.clone();
         let terminal_id = entry.terminal_id.clone();
         let pty_pid = entry.pty_pid;
-        let queue_len_after = {
+        let (queue_len_after, already_registered) = {
             let mut queue = self.queue.lock().await;
-            queue.push_back(entry);
-            queue.len()
+            if queue
+                .iter()
+                .any(|pending| pending.card_id == card_id.as_str())
+            {
+                (queue.len(), true)
+            } else {
+                queue.push_back(entry);
+                (queue.len(), false)
+            }
         };
         tracing::info!(
             target = "shared_codex_daemon::pending_register",
@@ -93,6 +100,7 @@ impl PendingThreadStartRegistry {
             %terminal_id,
             ?pty_pid,
             queue_len_after,
+            already_registered,
             "registered pending shared codex empty-card thread start"
         );
         Ok(())

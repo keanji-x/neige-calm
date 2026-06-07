@@ -10,6 +10,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+#[cfg(feature = "fixtures")]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -199,6 +201,24 @@ pub struct SharedCodexAppServer {
     /// #480 §C — serializes process transitions (replaces `restart_lock` in PR5b).
     transition_serial: Arc<tokio::sync::Mutex<()>>,
     ingest_url: String,
+    #[cfg(feature = "fixtures")]
+    fake: Option<Arc<FakeSharedCodexAppServer>>,
+}
+
+#[cfg(feature = "fixtures")]
+pub struct FakeSharedCodexAppServer {
+    next_thread: AtomicU64,
+    next_turn: AtomicU64,
+}
+
+#[cfg(feature = "fixtures")]
+impl FakeSharedCodexAppServer {
+    fn new() -> Self {
+        Self {
+            next_thread: AtomicU64::new(1),
+            next_turn: AtomicU64::new(1),
+        }
+    }
 }
 
 /// #480 PR5a — typestate companion to the existing `SharedDaemonState`.
@@ -285,7 +305,7 @@ impl SupervisorState {
 
 impl SharedCodexAppServer {
     pub fn new_stub(repo: Arc<dyn Repo>) -> Arc<Self> {
-        Self::new_stub_inner(repo, None)
+        Self::new_stub_inner(repo, None, false)
     }
 
     #[cfg(feature = "fixtures")]
@@ -293,12 +313,21 @@ impl SharedCodexAppServer {
         repo: Arc<dyn Repo>,
         pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     ) -> Arc<Self> {
-        Self::new_stub_inner(repo, pending_codex_threads_handle)
+        Self::new_stub_inner(repo, pending_codex_threads_handle, false)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn new_fake_running_with_pending(
+        repo: Arc<dyn Repo>,
+        pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+    ) -> Arc<Self> {
+        Self::new_stub_inner(repo, pending_codex_threads_handle, true)
     }
 
     fn new_stub_inner(
         repo: Arc<dyn Repo>,
         pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+        _fake_running: bool,
     ) -> Arc<Self> {
         let root = std::env::temp_dir().join(format!(
             "neige-shared-codex-appserver-stub-{}",
@@ -328,6 +357,8 @@ impl SharedCodexAppServer {
             })),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: "http://127.0.0.1:0".into(),
+            #[cfg(feature = "fixtures")]
+            fake: _fake_running.then(|| Arc::new(FakeSharedCodexAppServer::new())),
         })
     }
 
@@ -367,6 +398,8 @@ impl SharedCodexAppServer {
             })),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: cfg.codex_ingest_url_resolved(),
+            #[cfg(feature = "fixtures")]
+            fake: None,
         })
     }
 
@@ -389,6 +422,30 @@ impl SharedCodexAppServer {
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            let n = fake.next_thread.fetch_add(1, Ordering::SeqCst);
+            let thread_id = format!("fake-thread-{n:04}");
+            self.kernel_initiated_threads
+                .lock()
+                .await
+                .insert(thread_id.clone());
+            self.repo
+                .card_codex_thread_upsert(card_id, &thread_id, role, wave_id)
+                .await?;
+            self.thread_cache
+                .insert(thread_id.clone(), card_id.to_string());
+            tracing::info!(
+                target = "shared_codex_daemon::thread_start",
+                %card_id,
+                ?role,
+                thread_id = %thread_id,
+                wave_id,
+                cwd = %params.cwd,
+                "fixture shared codex app-server thread started"
+            );
+            return Ok(thread_id);
+        }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
         let thread = client
@@ -427,6 +484,12 @@ impl SharedCodexAppServer {
     /// later TUI-started `thread/start` calls hit a process with current env.
     pub async fn ensure_respawn_for_current_settings(self: &Arc<Self>) -> Result<()> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            self.needs_respawn_on_next_thread_start
+                .store(false, Ordering::Release);
+            return Ok(());
+        }
         self.reap_and_respawn_with_current_settings().await
     }
 
@@ -438,6 +501,18 @@ impl SharedCodexAppServer {
                 method = "turn/start",
                 "turn/start for thread missing shared daemon card mapping"
             );
+        }
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
+            let turn_id = format!("fake-turn-{n:04}");
+            self.active_turns
+                .insert(thread_id.to_string(), turn_id.clone());
+            let _ = self.notifications.send(Notification::TurnStarted {
+                thread_id: thread_id.to_string(),
+                turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
+            });
+            return Ok(turn_id);
         }
         let client = self.connected_client().await?;
         let turn = client.turn_start(thread_id, items).await?;
@@ -451,6 +526,12 @@ impl SharedCodexAppServer {
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            self.active_turns
+                .remove_if(thread_id, |_, active| active == turn_id);
+            return Ok(());
+        }
         let client = self.connected_client().await?;
         client.turn_interrupt(thread_id, turn_id).await
     }
@@ -463,7 +544,10 @@ impl SharedCodexAppServer {
         else {
             return Ok(());
         };
-        self.turn_interrupt(thread_id, &turn_id).await
+        self.turn_interrupt(thread_id, &turn_id).await?;
+        self.active_turns
+            .remove_if(thread_id, |_, active| active == &turn_id);
+        Ok(())
     }
 
     pub async fn interrupt_active_turn_for_card(&self, card_id: &str) -> Result<()> {
@@ -483,6 +567,10 @@ impl SharedCodexAppServer {
     }
 
     pub fn is_running(&self) -> bool {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return true;
+        }
         self.core
             .try_lock()
             .is_ok_and(|core| matches!(core.state, SupervisorState::Running { .. }))
@@ -498,6 +586,23 @@ impl SharedCodexAppServer {
     }
 
     pub fn status_snapshot(&self) -> SharedDaemonStatus {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return SharedDaemonStatus {
+                state: SharedDaemonState::Running,
+                sock: self.sock.display().to_string(),
+                codex_home: self.home.path().display().to_string(),
+                runtime: None,
+                cached_threads: self.thread_cache.len(),
+                pending_count: self
+                    .pending_codex_threads_handle
+                    .as_ref()
+                    .map(|pending| pending.pending_count_snapshot())
+                    .unwrap_or(0),
+                restart_count: self.restart_count.load(Ordering::SeqCst),
+                last_error: None,
+            };
+        }
         let (state, runtime, last_error) = self
             .core
             .try_lock()
@@ -538,6 +643,27 @@ impl SharedCodexAppServer {
         self.active_turns
             .get(thread_id)
             .map(|entry| entry.value().clone())
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn turn_start_count_for_test(&self) -> u64 {
+        self.fake
+            .as_ref()
+            .map(|fake| fake.next_turn.load(Ordering::SeqCst).saturating_sub(1))
+            .unwrap_or(0)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn notification_receiver_count_for_test(&self) -> usize {
+        self.notifications.receiver_count()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn emit_turn_started_for_test(&self, thread_id: &str, turn_id: &str) {
+        let _ = self.notifications.send(Notification::TurnStarted {
+            thread_id: thread_id.to_string(),
+            turn: serde_json::json!({ "id": turn_id }),
+        });
     }
 
     #[cfg(feature = "fixtures")]

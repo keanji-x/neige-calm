@@ -1,3 +1,4 @@
+pub mod codex_adapter;
 pub mod terminal_adapter;
 
 use std::collections::HashMap;
@@ -20,6 +21,7 @@ use crate::terminal_renderer::TerminalRendererRegistry;
 pub type OperationId = String;
 pub type TimestampMs = i64;
 pub type Tx<'tx> = Transaction<'tx, Sqlite>;
+const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
 #[derive(Clone, Debug)]
 pub struct OperationKey {
@@ -364,6 +366,16 @@ pub enum RecoveryItem {
 pub trait ProviderAdapter: Send + Sync {
     fn kind(&self) -> &'static str;
     fn phases(&self) -> &'static [PhaseTag];
+    fn app_server_interact_kind(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> Result<AppServerInteractKind> {
+        Err(CalmError::Internal(format!(
+            "{} does not declare an app_server_interact kind",
+            self.kind()
+        )))
+    }
 
     async fn validate(&self, input: &Value) -> Result<()>;
 
@@ -376,7 +388,7 @@ pub trait ProviderAdapter: Send + Sync {
 
     async fn app_server_interact(
         &self,
-        output: &TxOutput,
+        output: &mut TxOutput,
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome>;
@@ -432,10 +444,17 @@ pub trait OperationRepo: Send + Sync {
         adapter: &dyn ProviderAdapter,
     ) -> Result<Option<(Operation, Vec<BroadcastEnvelope>)>>;
     async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>>;
+    async fn set_phase_and_tx_output(
+        &self,
+        op: &Operation,
+        phase: Phase,
+        output: &TxOutput,
+    ) -> Result<Option<Operation>>;
     async fn set_compensating(
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
+        output: &TxOutput,
     ) -> Result<Option<Operation>>;
     async fn update_compensation_state(
         &self,
@@ -470,7 +489,7 @@ impl SqlxOperationRepo {
     async fn claim_operation_for_boot_recovery(&self, op_id: &str) -> Result<Option<Operation>> {
         let now = now_ms();
         let lease_owner = new_id();
-        let lease_until = now + 30_000;
+        let lease_until = now + OPERATION_LEASE_MS;
         let result = sqlx::query(
             r#"UPDATE operations
                SET lease_owner = ?1,
@@ -728,9 +747,17 @@ impl OperationRuntime {
             }
             Phase::TxCommitted => {
                 if adapter.phases().contains(&PhaseTag::AppServerInteract) {
-                    return Err(CalmError::Internal(
-                        "app_server_interact adapters are not implemented in PR1".into(),
-                    ));
+                    let output = required_output(&op)?;
+                    let kind = adapter.app_server_interact_kind(output, &op)?;
+                    if self
+                        .repo
+                        .set_phase(&op, Phase::AppServerInteract { kind })
+                        .await?
+                        .is_none()
+                    {
+                        log_lost_lease(&op, PhaseTag::AppServerInteract);
+                    }
+                    return Ok(());
                 }
                 if self
                     .repo
@@ -743,34 +770,51 @@ impl OperationRuntime {
                 Ok(())
             }
             Phase::AppServerInteract { .. } => {
-                let output = required_output(&op)?;
+                let mut output = required_output(&op)?.clone();
                 match adapter
-                    .app_server_interact(output, &op, &self.spawn_ctx)
-                    .await?
+                    .app_server_interact(&mut output, &op, &self.spawn_ctx)
+                    .await
                 {
-                    AppServerInteractOutcome::NotApplicable => {
+                    Ok(AppServerInteractOutcome::NotApplicable) => {
                         if self
                             .repo
-                            .set_phase(&op, Phase::SpawnStarted)
+                            .set_phase_and_tx_output(&op, Phase::SpawnStarted, &output)
                             .await?
                             .is_none()
                         {
                             log_lost_lease(&op, PhaseTag::SpawnStarted);
                         }
                     }
-                    AppServerInteractOutcome::MintedAndAwaited { .. }
-                    | AppServerInteractOutcome::RegisteredPendingForLaterAttribution { .. } => {
-                        return Err(CalmError::Internal(
-                            "app_server_interact outcomes are not implemented in PR1".into(),
-                        ));
+                    Ok(
+                        AppServerInteractOutcome::MintedAndAwaited { .. }
+                        | AppServerInteractOutcome::RegisteredPendingForLaterAttribution { .. },
+                    ) => {
+                        if self
+                            .repo
+                            .set_phase_and_tx_output(&op, Phase::SpawnStarted, &output)
+                            .await?
+                            .is_none()
+                        {
+                            log_lost_lease(&op, PhaseTag::SpawnStarted);
+                        }
+                    }
+                    Err(e) => {
+                        self.fail_with_compensation(
+                            adapter.as_ref(),
+                            op,
+                            PhaseTag::AppServerInteract,
+                            e.to_string(),
+                            output,
+                        )
+                        .await?;
                     }
                 }
                 Ok(())
             }
             Phase::SpawnStarted => {
-                let output = required_output(&op)?;
+                let output = required_output(&op)?.clone();
                 match adapter
-                    .spawn_side_effect(output, &op, &self.spawn_ctx)
+                    .spawn_side_effect(&output, &op, &self.spawn_ctx)
                     .await
                 {
                     Ok(_handle) => {
@@ -789,6 +833,7 @@ impl OperationRuntime {
                             op,
                             PhaseTag::SpawnStarted,
                             e.to_string(),
+                            output,
                         )
                         .await?;
                     }
@@ -831,12 +876,17 @@ impl OperationRuntime {
         op: Operation,
         from_phase: PhaseTag,
         reason: String,
+        output: TxOutput,
     ) -> Result<()> {
-        let output = required_output(&op)?.clone();
         let state = adapter
             .plan_compensation(from_phase, &reason, &output, &op)
             .await?;
-        if self.repo.set_compensating(&op, &state).await?.is_none() {
+        if self
+            .repo
+            .set_compensating(&op, &state, &output)
+            .await?
+            .is_none()
+        {
             log_lost_lease(&op, PhaseTag::Compensating);
         }
         Ok(())
@@ -1120,7 +1170,7 @@ impl OperationRepo for SqlxOperationRepo {
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>> {
         let now = now_ms();
         let lease_owner = new_id();
-        let lease_until = now + 30_000;
+        let lease_until = now + OPERATION_LEASE_MS;
         let mut tx = self.pool.begin().await?;
         let ids = sqlx::query(
             r#"SELECT id
@@ -1316,29 +1366,97 @@ impl OperationRepo for SqlxOperationRepo {
             .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
     }
 
+    async fn set_phase_and_tx_output(
+        &self,
+        op: &Operation,
+        phase: Phase,
+        output: &TxOutput,
+    ) -> Result<Option<Operation>> {
+        let (tag, detail) = phase.serialize_split();
+        let detail_text = optional_json_text(detail.as_ref())?;
+        let completed_at = matches!(
+            phase,
+            Phase::Succeeded | Phase::Failed | Phase::Stuck { .. }
+        )
+        .then(now_ms);
+        let mut output_for_db = output.clone();
+        output_for_db.post_commit_events.clear();
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET phase = ?1,
+                   phase_detail_json = ?2,
+                   tx_output_json = ?3,
+                   target_type = ?4,
+                   target_id = ?5,
+                   target_json = ?6,
+                   lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   completed_at_ms = COALESCE(?7, completed_at_ms),
+                   updated_at_ms = ?8
+               WHERE id = ?9
+                 AND lease_owner = ?10"#,
+        )
+        .bind(tag.as_str())
+        .bind(detail_text)
+        .bind(serde_json::to_string(&output_for_db)?)
+        .bind(&output.target_type)
+        .bind(&output.target_id)
+        .bind(serde_json::to_string(&json!({
+            "type": output.target_type,
+            "id": output.target_id,
+        }))?)
+        .bind(completed_at)
+        .bind(now_ms())
+        .bind(&op.id)
+        .bind(required_lease_owner(op)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.find_by_id(&op.id)
+            .await?
+            .map(Some)
+            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+    }
+
     async fn set_compensating(
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
+        output: &TxOutput,
     ) -> Result<Option<Operation>> {
         let text = serde_json::to_string(state)?;
+        let mut output_for_db = output.clone();
+        output_for_db.post_commit_events.clear();
         let result = sqlx::query(
             r#"UPDATE operations
                SET phase = 'compensating',
                    phase_detail_json = ?1,
                    compensation_state = ?2,
-                   last_error = ?3,
+                   tx_output_json = ?3,
+                   target_type = ?4,
+                   target_id = ?5,
+                   target_json = ?6,
+                   last_error = ?7,
                    lease_owner = NULL,
                    lease_until_ms = NULL,
-                   updated_at_ms = ?4
-               WHERE id = ?5
-                 AND lease_owner = ?6"#,
+                   updated_at_ms = ?8
+               WHERE id = ?9
+                 AND lease_owner = ?10"#,
         )
         .bind(serde_json::to_string(&json!({
             "from_phase": state.from_phase,
             "reason": state.reason,
         }))?)
         .bind(text)
+        .bind(serde_json::to_string(&output_for_db)?)
+        .bind(&output.target_type)
+        .bind(&output.target_id)
+        .bind(serde_json::to_string(&json!({
+            "type": output.target_type,
+            "id": output.target_id,
+        }))?)
         .bind(&state.reason)
         .bind(now_ms())
         .bind(&op.id)
@@ -1487,6 +1605,51 @@ impl SqlxOperationRepo {
         .await?;
         row.as_ref().map(operation_from_row).transpose()
     }
+}
+
+pub(crate) async fn checkpoint_app_server_interact_tx(
+    tx: &mut Tx<'_>,
+    op: &Operation,
+    kind: AppServerInteractKind,
+    output: &TxOutput,
+) -> Result<()> {
+    let phase = Phase::AppServerInteract { kind };
+    let (_tag, detail) = phase.serialize_split();
+    let detail_text = optional_json_text(detail.as_ref())?;
+    let mut output_for_db = output.clone();
+    output_for_db.post_commit_events.clear();
+    let result = sqlx::query(
+        r#"UPDATE operations
+           SET phase_detail_json = ?1,
+               tx_output_json = ?2,
+               target_type = ?3,
+               target_id = ?4,
+               target_json = ?5,
+               updated_at_ms = ?6
+           WHERE id = ?7
+             AND phase = 'app_server_interact'
+             AND lease_owner = ?8"#,
+    )
+    .bind(detail_text)
+    .bind(serde_json::to_string(&output_for_db)?)
+    .bind(&output.target_type)
+    .bind(&output.target_id)
+    .bind(serde_json::to_string(&json!({
+        "type": output.target_type,
+        "id": output.target_id,
+    }))?)
+    .bind(now_ms())
+    .bind(&op.id)
+    .bind(required_lease_owner(op)?)
+    .execute(&mut **tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(CalmError::Internal(format!(
+            "operation {} lost lease while checkpointing app_server_interact",
+            op.id
+        )));
+    }
+    Ok(())
 }
 
 fn operation_from_row(row: &SqliteRow) -> Result<Operation> {
@@ -1642,7 +1805,13 @@ fn optional_json_text(value: Option<&Value>) -> Result<Option<String>> {
 }
 
 fn target_from_payload(payload: &Value) -> (String, Option<String>, Value) {
-    if let Some(wave_id) = payload.get("wave_id").and_then(Value::as_str) {
+    let wave_id = payload.get("wave_id").and_then(Value::as_str).or_else(|| {
+        payload
+            .get("request")
+            .and_then(|request| request.get("wave_id"))
+            .and_then(Value::as_str)
+    });
+    if let Some(wave_id) = wave_id {
         return (
             "wave".to_string(),
             Some(wave_id.to_string()),

@@ -10,7 +10,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -446,11 +446,11 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
-    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
-    assert_eq!(cards.len(), 1);
-    assert!(
-        cards[0].payload.get("codex_thread_status").is_none(),
-        "respawn failure must happen before stamping pending status"
+    let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert_eq!(failed_cards.len(), 1);
+    assert_eq!(
+        failed_cards[0].payload["codex_thread_status"], "failed_to_spawn",
+        "runtime compensation must leave the failed card visible"
     );
 }
 
@@ -605,10 +605,9 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
     assert_eq!(failed_cards.len(), 1);
     assert_eq!(
-        failed_cards[0].payload["codex_thread_status"],
-        "failed_to_spawn"
+        failed_cards[0].payload["codex_thread_status"], "failed_to_spawn",
+        "runtime compensation must leave the failed card visible"
     );
-    let failed_terminal_id = failed_cards[0].payload["terminal_id"].as_str().unwrap();
 
     let card = boot
         .repo
@@ -620,12 +619,23 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         })
         .await
         .unwrap();
+    let terminal = boot
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: card.id.clone(),
+            program: "codex".into(),
+            cwd: "/".into(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
     let card_id = card.id.to_string();
     pending
         .register(PendingEntry::new(
             card_id.clone(),
             None,
-            failed_terminal_id.to_string(),
+            terminal.id.to_string(),
         ))
         .await
         .unwrap();
