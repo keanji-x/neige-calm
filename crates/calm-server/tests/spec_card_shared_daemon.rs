@@ -10,8 +10,9 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::InputItem;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx};
 use calm_server::event::EventBus;
+use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -795,6 +796,90 @@ async fn shared_spec_takeover_reparks_handle_and_pushes_via_shared_daemon() {
                 && value_contains_text(row, "after takeover observation")
         }),
         "re-parked shared pusher should issue turn/start through shared daemon: {rows:?}"
+    );
+}
+
+async fn shared_spec_takeover_skips_harness_runtime_snapshot() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(false).await;
+    let wave = boot
+        .repo
+        .wave_create(NewWave {
+            cove_id: boot.cove_id.clone().into(),
+            title: "harness takeover skip".into(),
+            sort: None,
+            cwd: "/tmp/spec-shared".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let thread_id = "thread-harness-takeover-skip".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    let spec = card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "codex_source": "shared",
+                "codex_thread_id": thread_id.clone(),
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &boot.state.card_role_cache,
+    )
+    .await
+    .unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: calm_server::model::new_id(),
+            card_id: spec.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    boot.repo
+        .card_codex_thread_upsert(
+            spec.id.as_str(),
+            &thread_id,
+            CardRole::Spec,
+            Some(wave.id.as_str()),
+        )
+        .await
+        .unwrap();
+
+    let fake_shared = SharedCodexAppServer::new_fake_running_with_pending(
+        boot.repo.clone(),
+        Some(boot.state.pending_codex_threads.clone()),
+    );
+    let reloaded = boot.state.clone().with_shared_codex_appserver(fake_shared);
+    let wave_id = wave.id.to_string();
+    assert!(!reloaded.spec_push.contains(&wave_id.clone().into()));
+    calm_server::takeover_shared_spec_cards_on_boot(&reloaded).await;
+    assert!(
+        !reloaded.spec_push.contains(&wave_id.clone().into()),
+        "legacy takeover must not re-park a SpecPushHandle for harness runtimes"
     );
 }
 

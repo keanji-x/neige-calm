@@ -109,6 +109,16 @@ impl HarnessSnapshot {
     }
 }
 
+pub fn is_harness_snapshot_value(value: &Value) -> bool {
+    match serde_json::from_value::<HarnessSnapshot>(value.clone()) {
+        Ok(snapshot) => {
+            snapshot.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION
+                && snapshot.mode == HARNESS_MODE
+        }
+        Err(_) => false,
+    }
+}
+
 impl From<&HarnessState> for HarnessPhaseTag {
     fn from(state: &HarnessState) -> Self {
         match state {
