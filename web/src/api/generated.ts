@@ -1294,6 +1294,7 @@ export interface components {
             card_id: string;
             new_thread_id: string;
             terminal_id: string;
+            wave?: null | components["schemas"]["Wave"];
         };
         ResolveQuery: {
             /**
