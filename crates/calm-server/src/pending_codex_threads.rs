@@ -18,7 +18,7 @@ use crate::db::sqlite::{
     runtime_bind_attribution_tx, runtime_clear_terminal_run_id_tx, runtime_complete_tx,
     runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
-use crate::db::{Repo, RepoEventWrite, write_with_event_typed};
+use crate::db::{Repo, RepoEventWrite, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
@@ -335,10 +335,9 @@ impl PendingThreadStartRegistry {
         let card_role_cache = CardRoleCache::default();
         let wave_cove_cache = WaveCoveCache::default();
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
-        let (_updated, _event_id) = write_with_event_typed(
+        let (_updated, _event_ids) = write_with_events_typed(
             self.repo.as_ref(),
             ActorId::Kernel,
-            scope,
             None,
             &self.events,
             &write,
@@ -351,6 +350,8 @@ impl PendingThreadStartRegistry {
                                 "no active runtime for card {card_id_for_tx} during pending thread bind"
                             ))
                         })?;
+                    let old_status = runtime.status.clone();
+                    let runtime_id = runtime.id.clone();
                     runtime_bind_attribution_tx(
                         tx,
                         &runtime.id,
@@ -369,7 +370,21 @@ impl PendingThreadStartRegistry {
                         runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
                     }
                     let card = card_for_event;
-                    Ok((card.clone(), Event::CardUpdated(card)))
+                    Ok((
+                        card.clone(),
+                        vec![
+                            (scope.clone(), Event::CardUpdated(card)),
+                            (
+                                scope,
+                                Event::RuntimeStatusChanged {
+                                    runtime_id,
+                                    card_id: card_id_for_tx,
+                                    old_status,
+                                    new_status: RunStatus::Running,
+                                },
+                            ),
+                        ],
+                    ))
                 })
             },
         )

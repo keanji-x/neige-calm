@@ -11,7 +11,7 @@ use crate::db::sqlite::{
     card_with_codex_create_tx, event_append_for_operation_tx, runtime_bind_attribution_tx,
     runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
-use crate::db::{write_in_tx_typed, write_with_event_typed};
+use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
@@ -24,7 +24,7 @@ use crate::routes::codex_cards::{
 };
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -273,6 +273,13 @@ impl ProviderAdapter for CodexAdapter {
         let projected_card =
             project_codex_runtime_fields_for_response(card.clone(), Some(&term.id), None, None);
         let event = Event::CardAdded(projected_card.clone());
+        let runtime_event = Event::RuntimeStarted {
+            runtime_id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Starting,
+        };
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
             &event,
@@ -282,8 +289,19 @@ impl ProviderAdapter for CodexAdapter {
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
+        if let Err(violation) = crate::role_gate::enforce_role(
+            &payload.actor,
+            &runtime_event,
+            &scope,
+            &self.card_role_cache,
+            &self.wave_cove_cache,
+        ) {
+            return Err(CalmError::Forbidden(violation.to_string()));
+        }
         let event_id =
             event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
+        let runtime_event_id =
+            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
 
         let mut output = TxOutput::new(
             "runtime",
@@ -302,9 +320,16 @@ impl ProviderAdapter for CodexAdapter {
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
+            actor: payload.actor.clone(),
+            scope: scope.clone(),
+            event,
+        });
+        output.post_commit_events.push(BroadcastEnvelope {
+            id: runtime_event_id,
+            event_version: SYNC_EVENT_VERSION,
             actor: payload.actor,
             scope,
-            event,
+            event: runtime_event,
         });
         Ok(output)
     }
@@ -638,10 +663,9 @@ async fn persist_prompt_thread(
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
-    let (updated, _id) = write_with_event_typed(
+    let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
         actor,
-        scope,
         None,
         &ctx.events,
         &write,
@@ -667,6 +691,8 @@ async fn persist_prompt_thread(
                     },
                 )
                 .await?;
+                let old_status = runtime.status.clone();
+                let runtime_id = runtime.id.clone();
                 if runtime.status != RunStatus::Running {
                     runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
                 }
@@ -687,7 +713,19 @@ async fn persist_prompt_thread(
                     &checkpoint_output,
                 )
                 .await?;
-                Ok((card.clone(), Event::CardUpdated(card)))
+                let mut events = vec![(scope.clone(), Event::CardUpdated(card.clone()))];
+                if old_status != RunStatus::Running {
+                    events.push((
+                        scope,
+                        Event::RuntimeStatusChanged {
+                            runtime_id,
+                            card_id: card_id_for_tx,
+                            old_status,
+                            new_status: RunStatus::Running,
+                        },
+                    ));
+                }
+                Ok((card, events))
             })
         },
     )
@@ -741,10 +779,9 @@ async fn persist_pending_thread_status(
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
-    let (updated, _id) = write_with_event_typed(
+    let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
         actor,
-        scope,
         None,
         &ctx.events,
         &write,
@@ -758,6 +795,8 @@ async fn persist_pending_thread_status(
                         ))
                     })?;
                 let terminal_id_for_projection = runtime.terminal_run_id.clone();
+                let old_status = runtime.status.clone();
+                let runtime_id = runtime.id.clone();
                 runtime_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
                 let card = project_codex_runtime_fields_for_response(
                     card_for_event,
@@ -776,7 +815,21 @@ async fn persist_pending_thread_status(
                     &checkpoint_output,
                 )
                 .await?;
-                Ok((card.clone(), Event::CardUpdated(card)))
+                Ok((
+                    card.clone(),
+                    vec![
+                        (scope.clone(), Event::CardUpdated(card)),
+                        (
+                            scope,
+                            Event::RuntimeStatusChanged {
+                                runtime_id,
+                                card_id: card_id_for_tx,
+                                old_status,
+                                new_status: RunStatus::TurnPending,
+                            },
+                        ),
+                    ],
+                ))
             })
         },
     )

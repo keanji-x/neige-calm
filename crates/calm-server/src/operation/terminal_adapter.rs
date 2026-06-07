@@ -5,14 +5,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
-use crate::db::sqlite::{card_with_terminal_create_tx, event_append_for_operation_tx};
+use crate::db::sqlite::{
+    card_with_terminal_create_tx, event_append_for_operation_tx, runtime_get_active_for_card_tx,
+    runtime_set_status_tx,
+};
+use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{CardRole, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::RunStatus;
+use crate::runtime_repo::{RunStatus, RuntimeKind};
+use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -193,6 +198,13 @@ impl ProviderAdapter for TerminalAdapter {
         )
         .await?;
         let event = Event::CardAdded(card.clone());
+        let runtime_event = Event::RuntimeStarted {
+            runtime_id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::Terminal,
+            agent_provider: None,
+            status: RunStatus::Starting,
+        };
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
             &event,
@@ -202,8 +214,19 @@ impl ProviderAdapter for TerminalAdapter {
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
+        if let Err(violation) = crate::role_gate::enforce_role(
+            &payload.actor,
+            &runtime_event,
+            &scope,
+            &self.card_role_cache,
+            &self.wave_cove_cache,
+        ) {
+            return Err(CalmError::Forbidden(violation.to_string()));
+        }
         let event_id =
             event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
+        let runtime_event_id =
+            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
 
         let projected_card = project_terminal_id_for_response(&card, &term.id);
         let mut output = TxOutput::new(
@@ -214,6 +237,7 @@ impl ProviderAdapter for TerminalAdapter {
         output.data = json!({
             "card_id": card.id,
             "runtime_id": runtime_id,
+            "wave_id": card.wave_id,
             "terminal_id": term.id,
             "program": program,
             "cwd": cwd,
@@ -222,9 +246,16 @@ impl ProviderAdapter for TerminalAdapter {
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
+            actor: payload.actor.clone(),
+            scope: scope.clone(),
+            event: Event::CardAdded(projected_card),
+        });
+        output.post_commit_events.push(BroadcastEnvelope {
+            id: runtime_event_id,
+            event_version: SYNC_EVENT_VERSION,
             actor: payload.actor,
             scope,
-            event: Event::CardAdded(projected_card),
+            event: runtime_event,
         });
         Ok(output)
     }
@@ -255,11 +286,65 @@ impl ProviderAdapter for TerminalAdapter {
             .await
         {
             Ok(handle) => {
-                if let Err(e) = ctx
-                    .repo
-                    .runtime_set_status_for_card(&card_id, RunStatus::Running)
-                    .await
-                {
+                let status_result: Result<()> = async {
+                    let wave_id = if let Some(wave_id) =
+                        output.data.get("wave_id").and_then(Value::as_str)
+                    {
+                        WaveId::from(wave_id.to_string())
+                    } else {
+                        ctx.repo
+                            .card_get(&card_id)
+                            .await?
+                            .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
+                            .wave_id
+                    };
+                    let scope =
+                        card_scope(ctx.repo.as_ref(), CardId::from(card_id.clone()), wave_id)
+                            .await?;
+                    let write = WriteContext::new(
+                        self.card_role_cache.clone(),
+                        self.wave_cove_cache.clone(),
+                    );
+                    let card_id_for_tx = card_id.clone();
+                    let (_unit, _ids) = write_with_events_typed(
+                        ctx.repo.as_ref(),
+                        ActorId::Kernel,
+                        None,
+                        &ctx.events,
+                        &write,
+                        move |tx| {
+                            Box::pin(async move {
+                                let runtime =
+                                    runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                                        .await?
+                                        .ok_or_else(|| {
+                                            CalmError::Internal(format!(
+                                                "terminal card {card_id_for_tx} has no active runtime to mark running"
+                                            ))
+                                        })?;
+                                let old_status = runtime.status.clone();
+                                runtime_set_status_tx(tx, &runtime.id, RunStatus::Running)
+                                    .await?;
+                                Ok((
+                                    (),
+                                    vec![(
+                                        scope,
+                                        Event::RuntimeStatusChanged {
+                                            runtime_id: runtime.id,
+                                            card_id: card_id_for_tx,
+                                            old_status,
+                                            new_status: RunStatus::Running,
+                                        },
+                                    )],
+                                ))
+                            })
+                        },
+                    )
+                    .await?;
+                    Ok(())
+                }
+                .await;
+                if let Err(e) = status_result {
                     tracing::warn!(
                         target: "operation::terminal_adapter::runtime_running_mark_failed",
                         card_id = %card_id,

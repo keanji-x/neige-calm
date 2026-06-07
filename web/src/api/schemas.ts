@@ -204,6 +204,53 @@ export const cardDeletedSchema = z.object({
   data: z.object({ id: z.string(), wave_id: z.string() }),
 });
 
+export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec']);
+export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
+
+export const agentProviderSchema = z.enum(['codex', 'claude']);
+export type AgentProvider = z.infer<typeof agentProviderSchema>;
+
+export const runStatusSchema = z.enum([
+  'starting',
+  'running',
+  'idle',
+  'turn_pending',
+  'failed',
+  'exited',
+  'superseded',
+]);
+export type RunStatus = z.infer<typeof runStatusSchema>;
+
+export const runtimeStartedSchema = z.object({
+  ev: z.literal('runtime.started'),
+  data: z.object({
+    runtime_id: z.string(),
+    card_id: z.string(),
+    kind: runtimeKindSchema,
+    agent_provider: agentProviderSchema.nullable(),
+    status: runStatusSchema,
+  }),
+});
+
+export const runtimeStatusChangedSchema = z.object({
+  ev: z.literal('runtime.status_changed'),
+  data: z.object({
+    runtime_id: z.string(),
+    card_id: z.string(),
+    old_status: runStatusSchema,
+    new_status: runStatusSchema,
+  }),
+});
+
+export const runtimeSupersededSchema = z.object({
+  ev: z.literal('runtime.superseded'),
+  data: z.object({
+    old_runtime_id: z.string(),
+    new_runtime_id: z.string(),
+    card_id: z.string(),
+  }),
+});
+
 /**
  * Issue #247 PR2 — `Event::WaveReportEdited`. Structured edit-log
  * companion to `card.updated` emitted from every wave-report write.
@@ -459,6 +506,9 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   cardAddedSchema,
   cardUpdatedSchema,
   cardDeletedSchema,
+  runtimeStartedSchema,
+  runtimeStatusChangedSchema,
+  runtimeSupersededSchema,
   waveReportEditedSchema,
   overlaySetSchema,
   overlayDeletedSchema,
@@ -491,6 +541,9 @@ export type WaveLifecycleChangedEvent = z.infer<typeof waveLifecycleChangedSchem
 export type CardAddedEvent = z.infer<typeof cardAddedSchema>;
 export type CardUpdatedEvent = z.infer<typeof cardUpdatedSchema>;
 export type CardDeletedEvent = z.infer<typeof cardDeletedSchema>;
+export type RuntimeStartedEvent = z.infer<typeof runtimeStartedSchema>;
+export type RuntimeStatusChangedEvent = z.infer<typeof runtimeStatusChangedSchema>;
+export type RuntimeSupersededEvent = z.infer<typeof runtimeSupersededSchema>;
 export type WaveReportEditedEvent = z.infer<typeof waveReportEditedSchema>;
 export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
