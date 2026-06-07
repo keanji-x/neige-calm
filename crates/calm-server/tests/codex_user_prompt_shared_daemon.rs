@@ -272,20 +272,17 @@ async fn create_prompt_card_writes_runtime_and_projects_thread_id() {
             .unwrap()
             .is_none()
     );
-    // Raw SQL so the assertion is robust to CI-only timing where the runtime
-    // can transition to Exited very quickly after the response (the spawned
-    // codex TUI fixture exits, attach_reader marks runtime Exited). Intent is
-    // to verify PR3 wrote a runtime row with the thread bound — regardless of
-    // current status — not the legacy `card_codex_threads` table.
-    let (kind, thread_id): (String, Option<String>) = sqlx::query_as(
-        "SELECT kind, thread_id FROM runtimes WHERE card_id = ?1 ORDER BY created_at_ms DESC LIMIT 1",
-    )
-    .bind(card_id)
-    .fetch_one(boot.repo.pool())
-    .await
-    .expect("runtime row exists for card");
-    assert_eq!(kind, "codex");
-    assert_eq!(thread_id.as_deref(), Some("fake-thread-0001"));
+    // Use projectable (broadened to include terminal-status rows) so the
+    // assertion is robust to CI-only timing where the codex TUI fixture
+    // exits quickly → attach_reader marks runtime Exited before this read.
+    let runtime = boot
+        .repo
+        .runtime_get_projectable_for_card(&card_id.to_string())
+        .await
+        .unwrap()
+        .expect("runtime row");
+    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
 }
 
 #[tokio::test]

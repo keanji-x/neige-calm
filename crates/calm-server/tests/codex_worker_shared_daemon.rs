@@ -345,9 +345,12 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
             .unwrap()
             .is_none()
     );
+    // Use projectable (broadened to include terminal-status rows) so the
+    // assertion is robust to CI-only timing where the codex TUI fixture
+    // exits quickly → attach_reader marks runtime Exited before this read.
     let runtime = boot
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .runtime_get_projectable_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("runtime");
