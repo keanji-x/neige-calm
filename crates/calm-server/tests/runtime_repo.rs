@@ -905,3 +905,165 @@ async fn runtime_get_active_for_card_returns_none_when_only_superseded() {
     );
     tx.commit().await.unwrap();
 }
+
+#[tokio::test]
+async fn runtime_get_active_by_thread_finds_active() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    init.thread_id = Some("thread-active".into());
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(&mut tx, init).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let found = repo
+        .runtime_get_active_by_thread(AgentProvider::Codex, "thread-active")
+        .await
+        .unwrap()
+        .expect("active runtime by thread");
+    assert_eq!(found.id, runtime.id);
+    assert_eq!(found.card_id, card.id.to_string());
+}
+
+#[tokio::test]
+async fn runtime_get_active_by_thread_skips_terminal_status() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    init.thread_id = Some("thread-complete".into());
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(&mut tx, init).await.unwrap();
+    runtime_complete_tx(&mut tx, &runtime.id, RunStatus::Exited)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(
+        repo.runtime_get_active_by_thread(AgentProvider::Codex, "thread-complete")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn runtime_active_shared_thread_attribution_returns_shared_and_codex_with_thread() {
+    let repo = fresh_repo().await;
+    let shared = make_card(&repo, "codex").await;
+    let codex = make_card(&repo, "codex").await;
+    let no_thread = make_card(&repo, "codex").await;
+    let claude = make_card(&repo, "claude").await;
+
+    let mut shared_init = runtime_init(
+        shared.id.to_string(),
+        RuntimeKind::SharedSpec,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    shared_init.thread_id = Some("thread-shared".into());
+    let mut codex_init = runtime_init(
+        codex.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    codex_init.thread_id = Some("thread-codex".into());
+    let no_thread_init = runtime_init(
+        no_thread.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    let mut claude_init = runtime_init(
+        claude.id.to_string(),
+        RuntimeKind::ClaudeCard,
+        Some(AgentProvider::Claude),
+        RunStatus::Running,
+    );
+    claude_init.thread_id = Some("thread-claude".into());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(&mut tx, shared_init).await.unwrap();
+    runtime_start_tx(&mut tx, codex_init).await.unwrap();
+    runtime_start_tx(&mut tx, no_thread_init).await.unwrap();
+    runtime_start_tx(&mut tx, claude_init).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut rows = repo
+        .runtime_active_shared_thread_attribution()
+        .await
+        .unwrap();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            ("thread-codex".to_string(), codex.id.to_string()),
+            ("thread-shared".to_string(), shared.id.to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn runtimes_active_for_kind_filters() {
+    let repo = fresh_repo().await;
+    let active_shared = make_card(&repo, "codex").await;
+    let active_codex = make_card(&repo, "codex").await;
+    let completed_shared = make_card(&repo, "codex").await;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let active_shared_runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            active_shared.id.to_string(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+            RunStatus::Running,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            active_codex.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Running,
+        ),
+    )
+    .await
+    .unwrap();
+    let completed = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            completed_shared.id.to_string(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+            RunStatus::Running,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_complete_tx(&mut tx, &completed.id, RunStatus::Failed)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let rows = repo
+        .runtimes_active_for_kind(RuntimeKind::SharedSpec)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, active_shared_runtime.id);
+    assert_eq!(rows[0].kind, RuntimeKind::SharedSpec);
+}

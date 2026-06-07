@@ -32,7 +32,7 @@ pub mod actor;
 pub mod aspect;
 pub mod auth;
 pub mod card_kind;
-use crate::runtime_repo::RunStatus;
+use crate::runtime_repo::{RunStatus, RuntimeKind};
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
@@ -139,25 +139,23 @@ pub(crate) async fn probe_supervisor_for_terminal(
 }
 
 #[allow(dead_code)]
-fn boot_revive_program_for_terminal(
+async fn boot_revive_program_for_terminal(
+    repo: &dyn db::RouteRepo,
     term: &model::Terminal,
     card: Option<&model::Card>,
     claude_bin: &str,
-) -> String {
+) -> crate::error::Result<String> {
     let Some(card) = card else {
-        return term.program.clone();
+        return Ok(term.program.clone());
     };
     if card.kind != "claude" {
-        return term.program.clone();
+        return Ok(term.program.clone());
     }
     let payload = &card.payload;
-    let Some(claude_session_id) = payload
-        .get("claude_session_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+    let Some(claude_session_id) =
+        runtime_lookup::resolve_claude_session_for_card(repo, card.id.as_str()).await?
     else {
-        return term.program.clone();
+        return Ok(term.program.clone());
     };
     let Some(settings_path) = payload
         .get("settings_path")
@@ -165,20 +163,24 @@ fn boot_revive_program_for_terminal(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        return term.program.clone();
+        return Ok(term.program.clone());
     };
 
-    format!(
+    Ok(format!(
         "{} --settings {} --resume {}",
         routes::codex_cards::shell_single_quote(claude_bin),
         routes::codex_cards::shell_single_quote(settings_path),
-        routes::codex_cards::shell_single_quote(claude_session_id),
-    )
+        routes::codex_cards::shell_single_quote(&claude_session_id),
+    ))
 }
 
 #[cfg(test)]
 mod claude_boot_revive_tests {
     use super::*;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::{SqlxRepo, runtime_start_tx};
+    use crate::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+    use crate::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind};
     use serde_json::json;
 
     fn terminal(program: &str, cwd: &str) -> model::Terminal {
@@ -197,26 +199,49 @@ mod claude_boot_revive_tests {
         }
     }
 
-    fn card(kind: &str, payload: serde_json::Value) -> model::Card {
-        model::Card {
-            id: "card-1".into(),
-            wave_id: "wave-1".into(),
-            kind: kind.into(),
-            sort: 0.0,
-            payload,
-            deletable: true,
-            created_at: 0,
-            updated_at: 0,
-        }
+    async fn fresh_repo() -> SqlxRepo {
+        SqlxRepo::open("sqlite::memory:").await.unwrap()
     }
 
-    #[test]
-    fn claude_boot_revive_rebuilds_resume_command_from_payload() {
+    async fn card(repo: &SqlxRepo, kind: &str, payload: serde_json::Value) -> model::Card {
+        let cove = repo
+            .cove_create(NewCove {
+                name: "claude revive".into(),
+                color: "#101010".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "claude revive".into(),
+                sort: None,
+                cwd: "/workspace".into(),
+                attach_folder: false,
+                theme: routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        repo.card_create(NewCard {
+            wave_id: wave.id,
+            kind: kind.into(),
+            sort: None,
+            payload,
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn claude_boot_revive_rebuilds_resume_command_from_runtime() {
+        let repo = fresh_repo().await;
         let term = terminal(
             "'/opt/claude' --settings '/tmp/settings.json' --session-id '11111111-1111-4111-8111-111111111111' -- 'first prompt'",
             "/workspace",
         );
         let claude = card(
+            &repo,
             "claude",
             json!({
                 "schemaVersion": 1,
@@ -224,11 +249,36 @@ mod claude_boot_revive_tests {
                 "settings_path": "/tmp/settings.json",
                 "cwd": "/workspace",
                 "prompt": "first prompt",
-                "claude_session_id": "22222222-2222-4222-8222-222222222222"
+                "claude_session_id": "33333333-3333-4333-8333-333333333333"
             }),
-        );
+        )
+        .await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: new_id(),
+                card_id: claude.id.to_string(),
+                kind: RuntimeKind::ClaudeCard,
+                agent_provider: Some(AgentProvider::Claude),
+                status: RunStatus::Running,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: Some("22222222-2222-4222-8222-222222222222".into()),
+                active_turn_id: None,
+                handle_state_json: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
 
-        let program = boot_revive_program_for_terminal(&term, Some(&claude), "/opt/claude");
+        let program = boot_revive_program_for_terminal(&repo, &term, Some(&claude), "/opt/claude")
+            .await
+            .unwrap();
 
         assert_eq!(
             program,
@@ -240,11 +290,44 @@ mod claude_boot_revive_tests {
         assert_eq!(term.cwd, "/workspace");
     }
 
-    #[test]
-    fn claude_boot_revive_without_session_id_keeps_legacy_fresh_spawn_program() {
+    #[tokio::test]
+    async fn claude_boot_revive_falls_back_to_payload_session_id() {
+        let repo = fresh_repo().await;
+        let term = terminal(
+            "'/opt/claude' --settings '/tmp/settings.json' --session-id '11111111-1111-4111-8111-111111111111' -- 'first prompt'",
+            "/workspace",
+        );
+        let claude = card(
+            &repo,
+            "claude",
+            json!({
+                "schemaVersion": 1,
+                "terminal_id": "term-1",
+                "settings_path": "/tmp/settings.json",
+                "cwd": "/workspace",
+                "prompt": "first prompt",
+                "claude_session_id": "22222222-2222-4222-8222-222222222222"
+            }),
+        )
+        .await;
+
+        let program = boot_revive_program_for_terminal(&repo, &term, Some(&claude), "/opt/claude")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            program,
+            "'/opt/claude' --settings '/tmp/settings.json' --resume '22222222-2222-4222-8222-222222222222'"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_boot_revive_without_session_id_keeps_legacy_fresh_spawn_program() {
+        let repo = fresh_repo().await;
         let original = "'/opt/claude' --settings '/tmp/settings.json' -- 'first prompt'";
         let term = terminal(original, "/workspace");
         let legacy = card(
+            &repo,
             "claude",
             json!({
                 "schemaVersion": 1,
@@ -253,9 +336,12 @@ mod claude_boot_revive_tests {
                 "cwd": "/workspace",
                 "prompt": "first prompt"
             }),
-        );
+        )
+        .await;
 
-        let program = boot_revive_program_for_terminal(&term, Some(&legacy), "/opt/claude");
+        let program = boot_revive_program_for_terminal(&repo, &term, Some(&legacy), "/opt/claude")
+            .await
+            .unwrap();
 
         assert_eq!(program, original);
         assert!(!program.contains("--resume"));
@@ -281,7 +367,11 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
             Vec::new()
         }
     };
-    let mappings = match state.repo.card_codex_threads_active().await {
+    let runtimes = match state
+        .repo
+        .runtimes_active_for_kind(RuntimeKind::SharedSpec)
+        .await
+    {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(
@@ -294,19 +384,36 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
     };
     let mut resumed = 0usize;
     let mut pending_reparked = 0usize;
-    for mapping in mappings {
-        if mapping.role != crate::model::CardRole::Spec {
-            continue;
-        }
-        let Some(wave_id) = mapping.wave_id.clone() else {
+    for runtime in runtimes {
+        let Some(thread_id) = runtime.thread_id.clone() else {
             continue;
         };
-        let Some(card) = (match state.repo.card_get(&mapping.card_id).await {
+        let card_key: crate::ids::CardId = runtime.card_id.clone().into();
+        let role = if let Some(role) = state.write().verify_role(&card_key) {
+            Some(role)
+        } else {
+            match state.repo.card_role_get(&runtime.card_id).await {
+                Ok(role) => role,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::spec_card",
+                        card_id = %runtime.card_id,
+                        error = %e,
+                        "shared spec boot takeover role lookup failed"
+                    );
+                    continue;
+                }
+            }
+        };
+        if role != Some(crate::model::CardRole::Spec) {
+            continue;
+        }
+        let Some(card) = (match state.repo.card_get(&runtime.card_id).await {
             Ok(card) => card,
             Err(e) => {
                 tracing::warn!(
                     target: "shared_codex_daemon::spec_card",
-                    card_id = %mapping.card_id,
+                    card_id = %runtime.card_id,
                     error = %e,
                     "shared spec boot takeover card lookup failed"
                 );
@@ -315,9 +422,7 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         }) else {
             continue;
         };
-        if !payload_codex_source_is_shared(&card.payload) {
-            continue;
-        }
+        let wave_id = card.wave_id.to_string();
         let Some(wave) = (match state.repo.wave_get(&wave_id).await {
             Ok(wave) => wave,
             Err(e) => {
@@ -345,12 +450,12 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         let status: spec_push::SharedStatus =
             std::sync::Arc::new(tokio::sync::Mutex::new(spec_push::SpecPushStatus {
                 phase: spec_push::SpecPushPhase::Resumed,
-                last_thread_id: Some(mapping.thread_id.clone()),
+                last_thread_id: Some(thread_id.clone()),
                 last_turn_id: None,
             }));
         let mut handle = spec_push::park_shared_handle(
             state.shared_codex_appserver.clone(),
-            Some(mapping.thread_id.clone()),
+            Some(thread_id.clone()),
             state.shared_codex_appserver.subscribe_notifications(),
             status.clone(),
             None,
@@ -358,19 +463,19 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         );
         handle.resume_reconciler = Some(tokio::spawn(spec_push::resume_reconcile_task(
             spec_push::RESUMED_RECONCILE_BUDGET,
-            mapping.thread_id.clone(),
+            thread_id.clone(),
             status,
             handle.pusher().source,
             handle.queue.clone(),
             handle.watermark_sink.clone(),
             handle.queue_persist.clone(),
         )));
-        register_and_catch_up(state, &mapping.card_id, &wave_key, watermark, handle, true).await;
+        register_and_catch_up(state, &runtime.card_id, &wave_key, watermark, handle, true).await;
         tracing::info!(
             target: "shared_codex_daemon::spec_card",
-            card_id = %mapping.card_id,
+            card_id = %runtime.card_id,
             wave_id = %wave_id,
-            thread_id = %mapping.thread_id,
+            thread_id = %thread_id,
             "shared spec boot takeover re-parked handle"
         );
         resumed += 1;
@@ -680,13 +785,6 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
 /// Mirrors the private terminal/shared-daemon grace window before forcing a
 /// process group down after SIGTERM.
 const GROUP_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
-
-fn payload_codex_source_is_shared(payload: &serde_json::Value) -> bool {
-    payload
-        .get("codex_source")
-        .and_then(serde_json::Value::as_str)
-        == Some("shared")
-}
 
 fn boot_takeover_watermark(payload: &serde_json::Value) -> i64 {
     payload
@@ -1039,6 +1137,7 @@ pub(crate) mod proc_supervisor;
 pub mod replay;
 pub mod role_gate;
 pub mod routes;
+pub mod runtime_lookup;
 pub mod runtime_repo;
 pub mod shared_codex_appserver;
 pub mod shared_codex_home;

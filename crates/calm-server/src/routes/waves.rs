@@ -1478,7 +1478,7 @@ pub(crate) async fn delete_wave(
     let mut terminal_ids: Vec<String> = Vec::new();
     let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
     for card in &cards {
-        interrupt_shared_card_active_turn(&cs, card).await;
+        interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, card).await;
         if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
             reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t).await;
             terminal_ids.push(t.id);

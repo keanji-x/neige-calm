@@ -2,6 +2,8 @@
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::CardRole;
+use crate::runtime_lookup::resolve_card_for_thread as resolve_card_for_thread_runtime;
+use crate::runtime_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
@@ -37,16 +39,25 @@ pub async fn resolve_card_for_thread(
     State(s): State<RouteState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadCardResolution>> {
-    let row = s
+    let card_id =
+        resolve_card_for_thread_runtime(s.repo.as_ref(), AgentProvider::Codex, &thread_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("thread {thread_id}")))?;
+    let card = s
         .repo
-        .card_codex_thread_get_by_thread(&thread_id)
+        .card_get(&card_id)
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("thread {thread_id}")))?;
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let role = s
+        .repo
+        .card_role_get(&card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
     Ok(Json(ThreadCardResolution {
-        thread_id: row.thread_id,
-        card_id: row.card_id,
-        role: row.role,
-        wave_id: row.wave_id,
+        thread_id,
+        card_id,
+        role,
+        wave_id: Some(card.wave_id.to_string()),
     }))
 }
 

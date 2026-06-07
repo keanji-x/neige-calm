@@ -30,6 +30,8 @@ use crate::error::{CalmError, Result};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::routes::settings::load_settings;
+use crate::runtime_lookup::{resolve_active_thread_for_card, resolve_card_for_thread};
+use crate::runtime_repo::AgentProvider;
 use crate::shared_codex_home::SharedCodexHome;
 use crate::spec_appserver::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
@@ -463,10 +465,11 @@ impl SharedCodexAppServer {
     }
 
     pub async fn interrupt_active_turn_for_card(&self, card_id: &str) -> Result<()> {
-        let Some(row) = self.repo.card_codex_thread_get_by_card(card_id).await? else {
+        let Some(thread_id) = resolve_active_thread_for_card(self.repo.as_ref(), card_id).await?
+        else {
             return Ok(());
         };
-        self.interrupt_active_turn(&row.thread_id).await
+        self.interrupt_active_turn(&thread_id).await
     }
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
@@ -474,11 +477,7 @@ impl SharedCodexAppServer {
     }
 
     pub(crate) async fn thread_id_bound_to_card(&self, card_id: &str) -> Result<Option<String>> {
-        Ok(self
-            .repo
-            .card_codex_thread_get_by_card(card_id)
-            .await?
-            .map(|row| row.thread_id))
+        resolve_active_thread_for_card(self.repo.as_ref(), card_id).await
     }
 
     pub fn is_running(&self) -> bool {
@@ -1024,10 +1023,32 @@ impl SharedCodexAppServer {
     }
 
     async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
+        use std::collections::HashSet;
+
         self.thread_cache.clear();
         self.active_turns.clear();
-        for row in self.repo.card_codex_threads_active_shared_only().await? {
+        let runtime_rows = self.repo.runtime_active_shared_thread_attribution().await?;
+        let mut runtime_cards = HashSet::new();
+        for (thread_id, card_id) in runtime_rows {
+            runtime_cards.insert(card_id.clone());
+            self.thread_cache.insert(thread_id, card_id);
+        }
+
+        let legacy_rows = self.repo.card_codex_threads_active_shared_only().await?;
+        let mut legacy_fallbacks = 0usize;
+        for row in legacy_rows {
+            if runtime_cards.contains(&row.card_id) {
+                continue;
+            }
             self.thread_cache.insert(row.thread_id, row.card_id);
+            legacy_fallbacks += 1;
+        }
+        if legacy_fallbacks > 0 {
+            tracing::warn!(
+                target: "runtime_lookup::fallback",
+                count = legacy_fallbacks,
+                "runtime thread_cache rebuild missed rows; merged legacy card_codex_threads fallback"
+            );
         }
         Ok(())
     }
@@ -1374,8 +1395,10 @@ async fn handle_thread_started_notification(
     };
     let already_mapped = if thread_cache.contains_key(thread_id) {
         true
-    } else if let Some(row) = repo.card_codex_thread_get_by_thread(thread_id).await? {
-        thread_cache.insert(thread_id.to_string(), row.card_id);
+    } else if let Some(card_id) =
+        resolve_card_for_thread(repo.as_ref(), AgentProvider::Codex, thread_id).await?
+    {
+        thread_cache.insert(thread_id.to_string(), card_id);
         true
     } else {
         false
