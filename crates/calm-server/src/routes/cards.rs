@@ -577,13 +577,14 @@ async fn reset_spec_card_shared(
     let terminal = match s.repo.terminal_get_by_card(card.id.as_str()).await? {
         Some(terminal) => terminal,
         None => {
-            if let Some(runtime) = s
+            let active_runtime = s
                 .repo
                 .runtime_get_active_for_card(&card.id.to_string())
-                .await?
-                && is_harness_runtime(&runtime)
+                .await?;
+            if card_payload_marks_spec_harness(&card)
+                || active_runtime.as_ref().is_some_and(is_harness_runtime)
             {
-                return reset_spec_harness_card(s, actor, card, runtime).await;
+                return reset_spec_harness_card(s, actor, card, active_runtime).await;
             }
             return Err(CalmError::Internal(format!(
                 "spec terminal row missing for card {}",
@@ -756,11 +757,18 @@ fn is_harness_runtime(runtime: &CardRuntime) -> bool {
             .is_some_and(is_harness_snapshot_value)
 }
 
+fn card_payload_marks_spec_harness(card: &Card) -> bool {
+    card.payload
+        .get("spec_harness")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 async fn reset_spec_harness_card(
     s: RouteState,
     actor: Actor,
     card: Card,
-    runtime: CardRuntime,
+    runtime: Option<CardRuntime>,
 ) -> Result<ResetSpecCardResponse> {
     let wave = s
         .repo
@@ -768,10 +776,12 @@ async fn reset_spec_harness_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
 
-    let shutdown_payload = serde_json::to_value(SpecHarnessShutdownOperationPayload {
-        runtime_id: runtime.id.clone(),
-    })?;
-    run_reset_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
+    if let Some(runtime) = runtime {
+        let shutdown_payload = serde_json::to_value(SpecHarnessShutdownOperationPayload {
+            runtime_id: runtime.id.clone(),
+        })?;
+        run_reset_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
+    }
     s.repo
         .card_codex_thread_delete_by_card(card.id.as_str())
         .await?;

@@ -349,6 +349,15 @@ impl AppState {
         self.raw.as_ref()
     }
 
+    pub async fn recover_harnesses_on_boot(&self) -> crate::error::Result<usize> {
+        crate::harness::recover_harnesses_on_boot(
+            self.raw.clone(),
+            self.shared_codex_appserver.clone(),
+            &self.harness,
+        )
+        .await
+    }
+
     /// Test / replay-lib hatch: build an `AppState` from already-constructed
     /// pieces, skipping the boot-time plugin registry load + background
     /// task spawn that `new` does. Public so `replay::boot_in_memory` and
@@ -878,19 +887,6 @@ impl AppState {
             operation_runtime,
         };
         let state = state.into_app_state();
-
-        if let Err(e) = crate::harness::recover_harnesses_on_boot(
-            state.raw.clone(),
-            state.shared_codex_appserver.clone(),
-            &state.harness,
-        )
-        .await
-        {
-            tracing::warn!(
-                error = %e,
-                "spec harness boot recovery failed; continuing without recovered harness tasks"
-            );
-        }
 
         // Orphan-terminal sweeper (Scope C). Ticks every 30s, reaps
         // terminal rows that no active runtime references via

@@ -63,6 +63,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    if let Err(e) = state.recover_harnesses_on_boot().await {
+        tracing::warn!(
+            error = %e,
+            "spec harness boot recovery failed; continuing without recovered harness tasks"
+        );
+    }
+
     // #388 Phase 3b — reconcile non-exited terminal rows with the
     // supervisor PTY registry. No daemon binary respawn happens here.
     calm_server::reconcile_supervisor_on_boot(&state).await;

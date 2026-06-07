@@ -1220,6 +1220,12 @@ mod boot_order_tests {
     #[test]
     fn main_boot_order_supervisor_runtimes_operations_takeover() {
         let main_rs = include_str!("main.rs");
+        let daemon_start = main_rs
+            .find("shared_codex_appserver.start_or_takeover().await")
+            .expect("main boot starts shared codex app-server");
+        let harness_recover = main_rs
+            .find("recover_harnesses_on_boot")
+            .expect("main boot recovers spec harnesses");
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
             .expect("main boot calls reconcile_supervisor_on_boot");
@@ -1232,6 +1238,8 @@ mod boot_order_tests {
         let takeover = main_rs
             .find("takeover_shared_spec_cards_on_boot(&state).await")
             .expect("main boot calls takeover_shared_spec_cards_on_boot");
+        assert!(daemon_start < harness_recover);
+        assert!(harness_recover < reconcile);
         assert!(reconcile < runtimes);
         assert!(runtimes < recover);
         assert!(recover < takeover);

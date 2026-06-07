@@ -699,6 +699,68 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
 }
 
 #[tokio::test]
+async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "spec_harness": true,
+                "push_watermark": 0
+            }),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    assert!(
+        boot.repo
+            .runtime_get_active_for_card(&card.id.to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["terminal_id"], json!(""));
+    assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
+    assert_eq!(body["wave"]["id"], json!(boot.wave_id));
+    assert!(
+        boot.repo
+            .terminal_get_by_card(card.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let active = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("new active runtime");
+    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert!(boot.state.harness.get(&active.id).is_some());
+    if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn shared_reset_writes_runtime_and_projects_new_thread_id() {
     let _guard = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();
