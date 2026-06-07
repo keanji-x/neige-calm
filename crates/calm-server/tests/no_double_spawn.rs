@@ -9,12 +9,17 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx, card_with_terminal_create_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
+};
 use calm_server::db::write_in_tx_typed;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{BroadcastEnvelope, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::{Card, CardPatch, CardRole, NewCove, NewWave, new_id, now_ms};
+use calm_server::operation::claude_adapter::{
+    ClaudeAdapter, ClaudeCreateOperationPayload, PreparedClaudeCreateRequest,
+};
 use calm_server::operation::codex_adapter::{
     CodexAdapter, CodexCreateOperationPayload, NormalizedCodexCreateRequest,
 };
@@ -541,6 +546,116 @@ async fn boot_codex_with_counted_spawn() -> Boot {
     }
 }
 
+async fn boot_claude_with_counted_spawn() -> Boot {
+    let tmp = TempDir::new().expect("tempdir for daemon sockets");
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let cove = repo_dyn
+        .cove_create(NewCove {
+            name: "claude-operations-test".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo_dyn
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "claude-operations-test".into(),
+            sort: None,
+            cwd: "/workspace".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let daemon = Arc::new(DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        proc_supervisor_sock: None,
+    });
+    let events = EventBus::new();
+    let mut codex = CodexClient::new_stub();
+    codex.claude_bin = "/bin/true".into();
+    codex.ingest_url = "http://127.0.0.1:4040".into();
+    let codex = Arc::new(codex);
+    let state = AppState::from_parts(
+        repo_dyn.clone(),
+        events.clone(),
+        daemon,
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo_dyn.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
+        )),
+        codex.clone(),
+        None,
+        None,
+    );
+
+    let spawn_count = Arc::new(AtomicUsize::new(0));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo_dyn.clone();
+    let count_for_hook = spawn_count.clone();
+    let repo_for_hook = route_repo.clone();
+    let hook = Arc::new(
+        move |terminal_id: String,
+              _program: String,
+              _cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let count = count_for_hook.clone();
+            let repo = repo_for_hook.clone();
+            Box::pin(async move {
+                let spawn_index = count.fetch_add(1, Ordering::SeqCst);
+                repo.terminal_set_pid(&terminal_id, Some(78_100 + spawn_index as u32))
+                    .await?;
+                Ok(SpawnHandle {
+                    renderer_id: terminal_id.clone(),
+                    terminal_id,
+                })
+            })
+        },
+    );
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let claude_adapter = Arc::new(ClaudeAdapter::new_with_spawn_hook(
+        route_repo.clone(),
+        codex,
+        state.card_role_cache.clone(),
+        state.wave_cove_cache.clone(),
+        hook,
+    ));
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![claude_adapter],
+        events.clone(),
+        SpawnCtx::new(
+            route_repo,
+            state.daemon.clone(),
+            state.terminal_renderer.clone(),
+            events,
+        ),
+    ));
+    let state = state.with_operation_runtime(runtime);
+
+    Boot {
+        state,
+        repo,
+        wave_id: wave.id.to_string(),
+        spawn_count,
+        _tmp: tmp,
+    }
+}
+
 async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boot {
     let mut boot = boot_codex_with_counted_spawn().await;
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
@@ -707,6 +822,59 @@ async fn test_codex_create_no_double_spawn() {
             .dispatcher
             .recently_seen_contains("codex-create-same-key"),
         "OperationRuntime codex-create must not install dispatcher recently_seen"
+    );
+}
+
+#[tokio::test]
+async fn test_claude_create_no_double_spawn() {
+    let boot = boot_claude_with_counted_spawn().await;
+    let payload = claude_payload(&boot, &boot.wave_id, None);
+    let key = OperationKey {
+        operation_key: "op-claude-create".into(),
+        idempotency_key: Some("claude-create-same-key".into()),
+        payload_hash: "same-claude-payload-hash".into(),
+    };
+
+    let rt_a = boot.state.operation_runtime.clone();
+    let rt_b = boot.state.operation_runtime.clone();
+    let payload_a = payload.clone();
+    let payload_b = payload;
+    let key_a = key.clone();
+    let key_b = key;
+    let a = tokio::spawn(async move {
+        let op_id = rt_a
+            .submit("claude-create", key_a, payload_a)
+            .await
+            .unwrap();
+        rt_a.wait(&op_id).await.unwrap()
+    });
+    let b = tokio::spawn(async move {
+        let op_id = rt_b
+            .submit("claude-create", key_b, payload_b)
+            .await
+            .unwrap();
+        rt_b.wait(&op_id).await.unwrap()
+    });
+    let (a, b) = tokio::join!(a, b);
+    let a = a.unwrap();
+    let b = b.unwrap();
+    let card_a = result_card_id(&a.outcome);
+    let card_b = result_card_id(&b.outcome);
+
+    assert_eq!(card_a, card_b);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+    let row = sqlx::query("SELECT COUNT(*) AS n FROM operations WHERE kind = 'claude-create'")
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    let count: i64 = row.try_get("n").unwrap();
+    assert_eq!(count, 1);
+    assert!(
+        !boot
+            .state
+            .dispatcher
+            .recently_seen_contains("claude-create-same-key"),
+        "OperationRuntime claude-create must not install dispatcher recently_seen"
     );
 }
 
@@ -1088,6 +1256,145 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
     assert_eq!(phase, PhaseTag::Succeeded);
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_writes_settings() {
+    let boot = boot_claude_with_counted_spawn().await;
+    let card_id = new_id();
+    let wave_id = boot.wave_id.clone();
+    let cache = boot.state.card_role_cache.clone();
+    let claude_session_id = uuid::Uuid::new_v4().to_string();
+    let settings_path = boot
+        .state
+        .codex
+        .claude_settings_dir
+        .join(&card_id)
+        .join("settings.json")
+        .to_string_lossy()
+        .to_string();
+    let command_line = format!(
+        "/bin/true --settings {} --session-id {}",
+        settings_path, claude_session_id
+    );
+    let env = json!({
+        "NEIGE_CARD_ID": card_id.clone(),
+        "NEIGE_CALM_BASE_URL": boot.state.codex.ingest_url,
+        "NEIGE_HOOK_PROVIDER": "claude",
+    });
+    let env_for_output = env.clone();
+    let settings_path_for_tx = settings_path.clone();
+    let claude_session_id_for_tx = claude_session_id.clone();
+    let command_line_for_tx = command_line.clone();
+    let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            card_with_claude_create_tx(
+                tx,
+                card_id,
+                wave_id.into(),
+                None,
+                command_line_for_tx,
+                "/workspace".into(),
+                env,
+                None,
+                None,
+                None,
+                settings_path_for_tx,
+                claude_session_id_for_tx,
+                CardRole::Worker,
+                true,
+                &cache,
+                calm_server::routes::theme::RequestTheme::default_dark(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    assert!(
+        !std::path::Path::new(&settings_path).exists(),
+        "seeded TxCommitted row should not pre-create settings.json"
+    );
+    let mut output = TxOutput::new(
+        "card",
+        Some(card.id.to_string()),
+        serde_json::to_value(&card).unwrap(),
+    );
+    output.data = json!({
+        "card_id": card.id,
+        "wave_id": boot.wave_id.clone(),
+        "terminal_id": term.id,
+        "settings_path": settings_path,
+        "claude_session_id": claude_session_id,
+        "command_line": command_line,
+        "cwd": "/workspace",
+        "env": env_for_output,
+    });
+    let op_id = new_id();
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, 'claude-create', ?3, ?4, 'wave', ?5, ?6, ?7, ?8, 'tx_committed', ?9, ?10, ?11, ?11)"#,
+    )
+    .bind(&op_id)
+    .bind("claude-recovery-op")
+    .bind("claude-recovery-key")
+    .bind("claude-recovery-hash")
+    .bind(&boot.wave_id)
+    .bind(serde_json::to_string(&json!({ "type": "wave", "id": boot.wave_id })).unwrap())
+    .bind(serde_json::to_string(&claude_payload(&boot, &boot.wave_id, None)).unwrap())
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind("dead-process")
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let plan = boot
+        .state
+        .operation_runtime
+        .recover_on_boot()
+        .await
+        .unwrap();
+    assert_eq!(plan.items.len(), 1);
+    assert!(matches!(
+        &plan.items[0],
+        RecoveryItem::Recover {
+            op_id: planned,
+            from_phase: Phase::TxCommitted,
+            ..
+        } if planned == &op_id
+    ));
+    boot.state
+        .operation_runtime
+        .apply_recovery(plan)
+        .await
+        .unwrap();
+
+    let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
+    assert_eq!(phase, PhaseTag::Succeeded);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+    let output = SqlxOperationRepo::new(boot.repo.pool().clone())
+        .get_operation(&op_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .tx_output
+        .unwrap();
+    let settings_path = output
+        .data
+        .get("settings_path")
+        .and_then(Value::as_str)
+        .unwrap();
+    assert!(
+        std::path::Path::new(settings_path).exists(),
+        "recovery spawn must write settings.json"
+    );
 }
 
 #[tokio::test]
@@ -2112,6 +2419,49 @@ fn codex_payload(wave_id: &str, prompt: Option<&str>) -> Value {
             icon_bg: None,
             icon_fg: None,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        },
+    })
+    .unwrap()
+}
+
+fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
+    let card_id = new_id();
+    let claude_session_id = uuid::Uuid::new_v4().to_string();
+    let settings_path = boot
+        .state
+        .codex
+        .claude_settings_dir
+        .join(&card_id)
+        .join("settings.json")
+        .to_string_lossy()
+        .to_string();
+    let mut command_line = format!(
+        "/bin/true --settings {} --session-id {}",
+        settings_path, claude_session_id
+    );
+    if let Some(prompt) = prompt {
+        command_line.push_str(" -- ");
+        command_line.push_str(prompt);
+    }
+    serde_json::to_value(ClaudeCreateOperationPayload {
+        actor: ActorId::User,
+        request: PreparedClaudeCreateRequest {
+            wave_id: wave_id.to_string(),
+            sort: Some(1.0),
+            cwd: "/workspace".into(),
+            prompt: prompt.map(ToOwned::to_owned),
+            icon_bg: None,
+            icon_fg: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            card_id: card_id.clone(),
+            claude_session_id,
+            settings_path,
+            command_line,
+            env: json!({
+                "NEIGE_CARD_ID": card_id,
+                "NEIGE_CALM_BASE_URL": boot.state.codex.ingest_url,
+                "NEIGE_HOOK_PROVIDER": "claude",
+            }),
         },
     })
     .unwrap()

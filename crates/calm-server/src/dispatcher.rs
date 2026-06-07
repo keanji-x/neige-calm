@@ -962,6 +962,10 @@ impl Inner {
             // is only for spec/worker terminal jobs. If a future framework
             // emitter adds an origin field, framework-owned terminal-create
             // envelopes must short-circuit before `recently_seen` install.
+            // #481 PR3 N4 guard marker: route-origin `claude-create` is also
+            // framework-owned by OperationRuntime/ClaudeAdapter. It writes
+            // Claude settings and spawns directly in the saga spawn phase;
+            // it must not be represented as a `TerminalJobRequested` event.
             Event::TerminalJobRequested {
                 idempotency_key,
                 cmd,

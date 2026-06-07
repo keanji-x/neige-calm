@@ -13,6 +13,7 @@ use crate::event::EventBus;
 use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
 use crate::model::CardRole;
+use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::codex_adapter::CodexAdapter;
 use crate::operation::terminal_adapter::TerminalAdapter;
 use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
@@ -396,9 +397,15 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let claude_adapter = Arc::new(ClaudeAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
-            vec![terminal_adapter, codex_adapter],
+            vec![terminal_adapter, codex_adapter, claude_adapter],
             events.clone(),
             SpawnCtx::new(
                 route_repo.clone(),
@@ -515,9 +522,15 @@ impl AppState {
             self.card_role_cache.clone(),
             self.wave_cove_cache.clone(),
         ));
+        let claude_adapter = Arc::new(ClaudeAdapter::new(
+            route_repo.clone(),
+            self.codex.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
         let runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
-            vec![terminal_adapter, codex_adapter],
+            vec![terminal_adapter, codex_adapter, claude_adapter],
             self.events.clone(),
             SpawnCtx::new(
                 route_repo,
@@ -699,10 +712,16 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let claude_adapter = Arc::new(ClaudeAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let operation_runtime = Arc::new(
             OperationRuntime::new(
                 operation_repo,
-                vec![terminal_adapter, codex_adapter],
+                vec![terminal_adapter, codex_adapter, claude_adapter],
                 events.clone(),
                 SpawnCtx::new(
                     route_repo.clone(),
