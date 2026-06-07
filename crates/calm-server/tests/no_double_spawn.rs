@@ -34,7 +34,7 @@ use calm_server::operation::{
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::RuntimeKind;
+use calm_server::runtime_repo::{RuntimeKind, RuntimeRepo};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use futures::future::BoxFuture;
@@ -2489,10 +2489,80 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn pre_pr4_operation_payload_deserializes_with_missing_runtime_id() {
+    let terminal: TerminalCreateOperationPayload =
+        serde_json::from_value(without_runtime_id(terminal_payload("wave-pre-pr4")))
+            .expect("terminal payload without runtime_id");
+    assert!(terminal.runtime_id.is_none());
+
+    let codex: CodexCreateOperationPayload =
+        serde_json::from_value(without_runtime_id(codex_payload("wave-pre-pr4", None)))
+            .expect("codex payload without runtime_id");
+    assert!(codex.runtime_id.is_none());
+
+    let boot = boot_claude_with_counted_spawn().await;
+    let claude: ClaudeCreateOperationPayload = serde_json::from_value(without_runtime_id(
+        claude_payload(&boot, "wave-pre-pr4", None),
+    ))
+    .expect("claude payload without runtime_id");
+    assert!(claude.runtime_id.is_none());
+}
+
+#[tokio::test]
+async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
+    let boot = boot_with_counted_spawn().await;
+    let payload = without_runtime_id(terminal_payload(&boot.wave_id));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let adapter = TerminalAdapter::new(
+        route_repo,
+        boot.state.card_role_cache.clone(),
+        boot.state.wave_cove_cache.clone(),
+    );
+    let op = pending_operation("terminal-create", &boot.wave_id, payload.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_minted_runtime(&boot.repo, output, RuntimeKind::Terminal).await;
+
+    let boot = boot_codex_with_counted_spawn().await;
+    let payload = without_runtime_id(codex_payload(&boot.wave_id, None));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let adapter = CodexAdapter::new(
+        route_repo,
+        boot.state.codex.clone(),
+        boot.state.shared_codex_appserver.clone(),
+        boot.state.pending_codex_threads.clone(),
+        boot.state.pending_codex_threads_spawn_serial.clone(),
+        boot.state.card_role_cache.clone(),
+        boot.state.wave_cove_cache.clone(),
+    );
+    let op = pending_operation("codex-create", &boot.wave_id, payload.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_minted_runtime(&boot.repo, output, RuntimeKind::CodexCard).await;
+
+    let boot = boot_claude_with_counted_spawn().await;
+    let payload = without_runtime_id(claude_payload(&boot, &boot.wave_id, None));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let adapter = ClaudeAdapter::new(
+        route_repo,
+        boot.state.codex.clone(),
+        boot.state.card_role_cache.clone(),
+        boot.state.wave_cove_cache.clone(),
+    );
+    let op = pending_operation("claude-create", &boot.wave_id, payload.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_minted_runtime(&boot.repo, output, RuntimeKind::ClaudeCard).await;
+}
+
 fn terminal_payload(wave_id: &str) -> Value {
     serde_json::to_value(TerminalCreateOperationPayload {
         actor: ActorId::User,
-        runtime_id: new_id(),
+        runtime_id: Some(new_id()),
         request: TerminalCreateRequestPayload {
             wave_id: wave_id.to_string(),
             sort: Some(1.0),
@@ -2508,7 +2578,7 @@ fn terminal_payload(wave_id: &str) -> Value {
 fn codex_payload(wave_id: &str, prompt: Option<&str>) -> Value {
     serde_json::to_value(CodexCreateOperationPayload {
         actor: ActorId::User,
-        runtime_id: new_id(),
+        runtime_id: Some(new_id()),
         request: NormalizedCodexCreateRequest {
             wave_id: wave_id.to_string(),
             sort: Some(1.0),
@@ -2543,7 +2613,7 @@ fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
     }
     serde_json::to_value(ClaudeCreateOperationPayload {
         actor: ActorId::User,
-        runtime_id: new_id(),
+        runtime_id: Some(new_id()),
         request: PreparedClaudeCreateRequest {
             wave_id: wave_id.to_string(),
             sort: Some(1.0),
@@ -2564,6 +2634,59 @@ fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
         },
     })
     .unwrap()
+}
+
+fn without_runtime_id(mut payload: Value) -> Value {
+    payload
+        .as_object_mut()
+        .expect("operation payload object")
+        .remove("runtime_id")
+        .expect("payload includes runtime_id");
+    payload
+}
+
+fn pending_operation(kind: &str, target_id: &str, payload: Value) -> Operation {
+    Operation {
+        id: new_id(),
+        operation_key: new_id(),
+        kind: kind.into(),
+        idempotency_key: None,
+        payload_hash: "payload-hash".into(),
+        target_type: "wave".into(),
+        target_id: Some(target_id.into()),
+        target: json!({ "type": "wave", "id": target_id }),
+        payload,
+        tx_output: None,
+        phase: Phase::Pending,
+        phase_detail: None,
+        attempt: 0,
+        last_error: None,
+        compensation_state: None,
+        lease_owner: None,
+        lease_until_ms: None,
+    }
+}
+
+async fn assert_minted_runtime(repo: &SqlxRepo, output: TxOutput, kind: RuntimeKind) {
+    let runtime_id = output
+        .target_id
+        .as_deref()
+        .expect("runtime target id")
+        .to_string();
+    assert!(!runtime_id.is_empty());
+    assert_eq!(output.target_type, "runtime");
+    assert_eq!(
+        output.data["runtime_id"].as_str(),
+        Some(runtime_id.as_str())
+    );
+
+    let runtime = repo
+        .runtime_get_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .expect("minted runtime row");
+    assert_eq!(runtime.id, runtime_id);
+    assert_eq!(runtime.kind, kind);
 }
 
 async fn wait_for_notification_receivers(shared: &SharedCodexAppServer, min: usize) {

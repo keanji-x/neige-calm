@@ -3223,9 +3223,11 @@ impl RuntimeRepo for SqlxRepo {
         runtime_complete_for_terminal_tx(tx, terminal_id, terminal_status).await
     }
 
+    /// Returns runtimes with an expired lease (lease_owner set,
+    /// lease_until_ms in the past). Non-leased runtimes have no orphan signal
+    /// without a heartbeat; they are out of scope for now.
     async fn runtimes_recover_orphans_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
         let now = now_ms();
-        let stale_before = now - 60_000;
         let rows = sqlx::query(
             r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
                       thread_id, session_id, active_turn_id, handle_state_json,
@@ -3233,12 +3235,12 @@ impl RuntimeRepo for SqlxRepo {
                       completed_at_ms
                FROM runtimes
                WHERE status IN ('starting', 'running', 'idle', 'turn_pending')
-                 AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
-                 AND updated_at_ms < ?2
-               ORDER BY updated_at_ms ASC, created_at_ms ASC, id ASC"#,
+                 AND lease_owner IS NOT NULL
+                 AND lease_until_ms IS NOT NULL
+                 AND lease_until_ms < ?1
+               ORDER BY updated_at_ms ASC"#,
         )
         .bind(now)
-        .bind(stale_before)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(card_runtime_from_row).collect()

@@ -103,7 +103,7 @@ pub(crate) async fn create_claude_card(
     let actor = actor.to_actor_id();
     let payload = serde_json::to_value(ClaudeCreateOperationPayload {
         actor,
-        runtime_id,
+        runtime_id: Some(runtime_id),
         request: prepared,
     })?;
     let op_id = s

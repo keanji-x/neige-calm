@@ -110,7 +110,7 @@ pub(crate) async fn create_terminal_card(
     let actor = actor.to_actor_id();
     let payload = serde_json::to_value(TerminalCreateOperationPayload {
         actor,
-        runtime_id,
+        runtime_id: Some(runtime_id),
         request,
     })?;
     let op_id = s

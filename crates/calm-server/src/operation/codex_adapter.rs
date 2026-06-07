@@ -118,7 +118,8 @@ impl CodexAdapter {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CodexCreateOperationPayload {
     pub actor: ActorId,
-    pub runtime_id: String,
+    #[serde(default)]
+    pub runtime_id: Option<String>,
     pub request: NormalizedCodexCreateRequest,
 }
 
@@ -243,7 +244,7 @@ impl ProviderAdapter for CodexAdapter {
     ) -> Result<TxOutput> {
         let payload: CodexCreateOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
-        let runtime_id = payload.runtime_id.clone();
+        let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         let wave_id = payload.request.wave_id.clone();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let scope = card_scope(

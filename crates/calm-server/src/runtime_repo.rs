@@ -258,6 +258,9 @@ pub trait RuntimeRepo {
         terminal_status: RunStatus,
     ) -> Result<()>;
 
+    /// Returns runtimes with an expired lease (lease_owner set,
+    /// lease_until_ms in the past). Non-leased runtimes have no orphan signal
+    /// without a heartbeat; they are out of scope for now.
     async fn runtimes_recover_orphans_on_boot(&self) -> Result<Vec<CardRuntime>>;
 }
 

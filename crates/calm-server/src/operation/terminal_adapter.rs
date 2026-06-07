@@ -103,7 +103,8 @@ impl TerminalAdapter {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalCreateOperationPayload {
     pub actor: ActorId,
-    pub runtime_id: String,
+    #[serde(default)]
+    pub runtime_id: Option<String>,
     #[serde(flatten)]
     pub request: TerminalCreateRequestPayload,
 }
@@ -168,7 +169,7 @@ impl ProviderAdapter for TerminalAdapter {
         let cwd = payload.request.cwd.clone();
         let env = payload.request.env.clone();
         let card_id = new_id();
-        let runtime_id = payload.runtime_id.clone();
+        let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         let wave_id = payload.request.wave_id.clone();
         let scope = card_scope(
             self.repo.as_ref(),
