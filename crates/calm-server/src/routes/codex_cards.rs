@@ -32,6 +32,7 @@ use crate::db::sqlite::{
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
+use crate::ids::ActorId;
 use crate::model::{Card, CardPatch, CardRole, new_id};
 use crate::pending_codex_threads::{PendingEntry, card_payload_clear_pending_status};
 use crate::routes::cards::card_scope;
@@ -382,7 +383,7 @@ pub(crate) async fn create_codex_card(
         let thread_id_for_tx = thread_id.clone();
         let wave_id_for_tx = wave_id.clone();
         let payload_for_tx = payload;
-        let (updated, _id) = write_with_event_typed(
+        let persist_result = write_with_event_typed(
             s.repo.as_ref(),
             actor.to_actor_id(),
             scope,
@@ -434,7 +435,39 @@ pub(crate) async fn create_codex_card(
                 })
             },
         )
-        .await?;
+        .await;
+        let (updated, _id) = match persist_result {
+            Ok(updated) => updated,
+            Err(e) => {
+                if let Err(mark_err) = w
+                    .repo
+                    .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+                    .await
+                {
+                    tracing::warn!(
+                        card_id = %card.id,
+                        terminal_id = %term.id,
+                        thread_id = %thread_id,
+                        error = %mark_err,
+                        "failed to mark prompt codex runtime failed after thread persist error"
+                    );
+                }
+                if let Err(rollback_err) = s
+                    .repo
+                    .card_codex_thread_delete_by_card(card.id.as_ref())
+                    .await
+                {
+                    tracing::warn!(
+                        card_id = %card.id,
+                        terminal_id = %term.id,
+                        thread_id = %thread_id,
+                        rollback_error = %rollback_err,
+                        "card_codex_thread delete failed during prompt thread persist rollback"
+                    );
+                }
+                return Err(e);
+            }
+        };
         card = updated;
 
         if let Err(e) = cs
@@ -455,6 +488,30 @@ pub(crate) async fn create_codex_card(
                     "failed to mark prompt codex runtime failed after turn/start error"
                 );
             }
+            if let Err(rollback_err) = s
+                .repo
+                .card_codex_thread_delete_by_card(card.id.as_ref())
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "card_codex_thread delete failed during prompt turn/start rollback"
+                );
+            }
+            if let Err(rollback_err) =
+                clear_prompt_thread_stamp(&s, actor.to_actor_id(), &card).await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "payload clear failed during prompt turn/start rollback"
+                );
+            }
             return Err(e);
         }
         if let Err(e) = await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await {
@@ -469,6 +526,30 @@ pub(crate) async fn create_codex_card(
                     thread_id = %thread_id,
                     error = %mark_err,
                     "failed to mark prompt codex runtime failed after lifecycle wait error"
+                );
+            }
+            if let Err(rollback_err) = s
+                .repo
+                .card_codex_thread_delete_by_card(card.id.as_ref())
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "card_codex_thread delete failed during prompt lifecycle rollback"
+                );
+            }
+            if let Err(rollback_err) =
+                clear_prompt_thread_stamp(&s, actor.to_actor_id(), &card).await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "payload clear failed during prompt lifecycle rollback"
                 );
             }
             return Err(e);
@@ -687,6 +768,62 @@ async fn await_shared_initial_turn_lifecycle(
             }
         }
     }
+}
+
+async fn clear_prompt_thread_stamp(s: &RouteState, actor: ActorId, card: &Card) -> Result<()> {
+    let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+    let card_id_for_tx = card.id.to_string();
+    let (_card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor,
+        scope,
+        None,
+        &s.events,
+        &s.write,
+        move |tx| {
+            Box::pin(async move {
+                // Fetch the live payload inside the tx so a concurrent
+                // patch (e.g. a plugin reacting to the CardUpdated event
+                // emitted by the forward path) is not clobbered by a
+                // stale snapshot captured before rollback started.
+                // Mirrors clear_shared_spec_runtime_fields in waves.rs.
+                let row: Option<(String,)> =
+                    sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
+                        .bind(&card_id_for_tx)
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                let payload_text = row
+                    .ok_or_else(|| CalmError::NotFound(format!("card {card_id_for_tx}")))?
+                    .0;
+                let mut payload: serde_json::Value = serde_json::from_str(&payload_text)
+                    .map_err(|e| {
+                        CalmError::Internal(format!(
+                            "card {card_id_for_tx} payload is not valid JSON: {e}"
+                        ))
+                    })?;
+                let Some(map) = payload.as_object_mut() else {
+                    return Err(CalmError::Internal(format!(
+                        "codex card {card_id_for_tx} payload is not a JSON object; cannot clear codex_thread_id"
+                    )));
+                };
+                map.remove("codex_thread_id");
+                let card = card_update_tx(
+                    tx,
+                    &card_id_for_tx,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                        deletable: None,
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 /// Wrap a string in POSIX-shell single quotes, escaping any embedded

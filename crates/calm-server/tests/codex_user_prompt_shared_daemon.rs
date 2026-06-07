@@ -499,6 +499,14 @@ async fn prompt_card_turn_start_failure_marks_runtime_failed() {
         runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
         "failed"
     );
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(cards[0].id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(cards[0].payload.get("codex_thread_id").is_none());
 }
 
 #[tokio::test]
