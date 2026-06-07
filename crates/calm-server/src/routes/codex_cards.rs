@@ -773,14 +773,6 @@ async fn await_shared_initial_turn_lifecycle(
 async fn clear_prompt_thread_stamp(s: &RouteState, actor: ActorId, card: &Card) -> Result<()> {
     let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
     let card_id_for_tx = card.id.to_string();
-    let mut payload = card.payload.clone();
-    let Some(map) = payload.as_object_mut() else {
-        return Err(CalmError::Internal(format!(
-            "codex card {} payload is not a JSON object; cannot clear codex_thread_id",
-            card.id
-        )));
-    };
-    map.remove("codex_thread_id");
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor,
@@ -790,6 +782,31 @@ async fn clear_prompt_thread_stamp(s: &RouteState, actor: ActorId, card: &Card) 
         &s.write,
         move |tx| {
             Box::pin(async move {
+                // Fetch the live payload inside the tx so a concurrent
+                // patch (e.g. a plugin reacting to the CardUpdated event
+                // emitted by the forward path) is not clobbered by a
+                // stale snapshot captured before rollback started.
+                // Mirrors clear_shared_spec_runtime_fields in waves.rs.
+                let row: Option<(String,)> =
+                    sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
+                        .bind(&card_id_for_tx)
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                let payload_text = row
+                    .ok_or_else(|| CalmError::NotFound(format!("card {card_id_for_tx}")))?
+                    .0;
+                let mut payload: serde_json::Value = serde_json::from_str(&payload_text)
+                    .map_err(|e| {
+                        CalmError::Internal(format!(
+                            "card {card_id_for_tx} payload is not valid JSON: {e}"
+                        ))
+                    })?;
+                let Some(map) = payload.as_object_mut() else {
+                    return Err(CalmError::Internal(format!(
+                        "codex card {card_id_for_tx} payload is not a JSON object; cannot clear codex_thread_id"
+                    )));
+                };
+                map.remove("codex_thread_id");
                 let card = card_update_tx(
                     tx,
                     &card_id_for_tx,
