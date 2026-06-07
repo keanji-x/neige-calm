@@ -188,6 +188,14 @@ fn request<'a>(rows: &'a [Value], method: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing {method} in captured requests: {rows:?}"))
 }
 
+fn has_interrupt(rows: &[Value], thread_id: &str, turn_id: &str) -> bool {
+    rows.iter().any(|row| {
+        row.get("method").and_then(Value::as_str) == Some("turn/interrupt")
+            && row.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
+            && row.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id)
+    })
+}
+
 fn theme() -> Value {
     json!({"fg": [216,219,226], "bg": [15,20,24]})
 }
@@ -493,6 +501,67 @@ async fn prompt_card_turn_start_failure_marks_runtime_failed() {
     }
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
+    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(
+        runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
+        "failed"
+    );
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(cards[0].id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(cards[0].payload.get("codex_thread_id").is_none());
+}
+
+#[tokio::test]
+async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+        std::env::set_var("FAKE_CODEX_SKIP_TURN_STARTED", "1");
+    }
+    let boot = boot().await;
+
+    let app = boot.app.clone();
+    let wave_id = boot.wave_id.clone();
+    let post_task = tokio::spawn(async move {
+        post(
+            app,
+            &wave_id,
+            json!({ "cwd": "/workspace", "prompt": "lifecycle should fail", "theme": theme() }),
+        )
+        .await
+    });
+
+    let rows = wait_for_requests(&capture_file, 3).await;
+    assert!(
+        rows.iter()
+            .any(|row| row.get("method").and_then(Value::as_str) == Some("turn/start")),
+        "lifecycle rollback test must reach turn/start before advancing time: {rows:?}"
+    );
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::resume();
+
+    let (status, body) = post_task.await.unwrap();
+    let rows = wait_for_requests(&capture_file, 4).await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+        std::env::remove_var("FAKE_CODEX_SKIP_TURN_STARTED");
+    }
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
+    assert!(
+        has_interrupt(&rows, "fake-thread-0001", "fake-turn-0001"),
+        "prompt lifecycle rollback must interrupt the in-flight shared turn: {rows:?}"
+    );
     let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
     assert_eq!(cards.len(), 1);
     assert_eq!(

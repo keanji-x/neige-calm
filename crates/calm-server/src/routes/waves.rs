@@ -990,6 +990,19 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             // Rollback: the goal never reached the thread. Boot takeover
             // would otherwise treat this card as resumable with no record
             // that the wave title was lost.
+            if let Err(interrupt_err) = cs
+                .shared_codex_appserver
+                .interrupt_active_turn(&thread_id)
+                .await
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %spec_card_id,
+                    thread_id = %thread_id,
+                    error = %interrupt_err,
+                    "failed to interrupt active spec turn during initial turn rollback"
+                );
+            }
             if let Err(rollback_err) = s.repo.card_codex_thread_delete_by_card(spec_card_id).await {
                 tracing::warn!(
                     target: "shared_codex_daemon::spec_card",

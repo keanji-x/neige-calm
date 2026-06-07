@@ -528,6 +528,19 @@ pub(crate) async fn create_codex_card(
                     "failed to mark prompt codex runtime failed after lifecycle wait error"
                 );
             }
+            if let Err(interrupt_err) = cs
+                .shared_codex_appserver
+                .interrupt_active_turn(&thread_id)
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    thread_id = %thread_id,
+                    error = %interrupt_err,
+                    "failed to interrupt active prompt codex turn during lifecycle rollback"
+                );
+            }
             if let Err(rollback_err) = s
                 .repo
                 .card_codex_thread_delete_by_card(card.id.as_ref())
