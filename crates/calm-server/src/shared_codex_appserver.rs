@@ -421,6 +421,26 @@ impl SharedCodexAppServer {
         wave_id: Option<&str>,
         params: SharedThreadStartParams,
     ) -> Result<String> {
+        let thread_id = self.thread_start_mint_for_card(card_id, params).await?;
+        self.repo
+            .card_codex_thread_upsert(card_id, &thread_id, role, wave_id)
+            .await?;
+        tracing::info!(
+            target = "shared_codex_daemon::thread_start",
+            %card_id,
+            ?role,
+            thread_id = %thread_id,
+            wave_id,
+            "shared codex app-server thread started"
+        );
+        Ok(thread_id)
+    }
+
+    pub async fn thread_start_mint_for_card(
+        self: &Arc<Self>,
+        card_id: &str,
+        params: SharedThreadStartParams,
+    ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
@@ -430,20 +450,8 @@ impl SharedCodexAppServer {
                 .lock()
                 .await
                 .insert(thread_id.clone());
-            self.repo
-                .card_codex_thread_upsert(card_id, &thread_id, role, wave_id)
-                .await?;
             self.thread_cache
                 .insert(thread_id.clone(), card_id.to_string());
-            tracing::info!(
-                target = "shared_codex_daemon::thread_start",
-                %card_id,
-                ?role,
-                thread_id = %thread_id,
-                wave_id,
-                cwd = %params.cwd,
-                "fixture shared codex app-server thread started"
-            );
             return Ok(thread_id);
         }
         self.reap_and_respawn_with_current_settings().await?;
@@ -464,19 +472,8 @@ impl SharedCodexAppServer {
             .lock()
             .await
             .insert(thread_id.clone());
-        self.repo
-            .card_codex_thread_upsert(card_id, &thread_id, role, wave_id)
-            .await?;
         self.thread_cache
             .insert(thread_id.clone(), card_id.to_string());
-        tracing::info!(
-            target = "shared_codex_daemon::thread_start",
-            %card_id,
-            ?role,
-            thread_id = %thread_id,
-            wave_id,
-            "shared codex app-server thread started"
-        );
         Ok(thread_id)
     }
 
