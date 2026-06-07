@@ -171,6 +171,74 @@ async fn runtime_status_and_completed(pool: &SqlitePool, card_id: &str) -> (Stri
     )
 }
 
+async fn seed_shared_spec_card_with_terminal(
+    pool: &SqlitePool,
+    card_id: &str,
+    terminal_id: &str,
+    payload_terminal_id: Option<&str>,
+    thread_id: Option<&str>,
+) {
+    let wave_id = format!("wave-{card_id}");
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO coves (id, name, color, sort, kind, created_at, updated_at)
+           VALUES ('cove-shared', 'c', '#000000', 0.0, 'user', 1000, 1000)"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO waves
+              (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at)
+           VALUES (?1, 'cove-shared', 'w', 0.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000)"#,
+    )
+    .bind(&wave_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let payload = match payload_terminal_id {
+        Some(payload_terminal_id) => {
+            format!(r#"{{"codex_source":"shared","terminal_id":"{payload_terminal_id}"}}"#)
+        }
+        None => r#"{"codex_source":"shared"}"#.to_string(),
+    };
+    sqlx::query(
+        r#"INSERT INTO cards
+              (id, wave_id, kind, sort, payload, created_at, updated_at, role, deletable)
+           VALUES (?1, ?2, 'codex', 0.0, ?3, 1100, 1100, 'spec', 0)"#,
+    )
+    .bind(card_id)
+    .bind(&wave_id)
+    .bind(payload)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO terminals
+              (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at, exit_code, signal_killed)
+           VALUES (?1, ?2, 'codex', '/tmp', '{}', NULL, '216,219,226', '15,20,24', 1200, NULL, 0)"#,
+    )
+    .bind(terminal_id)
+    .bind(card_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    if let Some(thread_id) = thread_id {
+        sqlx::query(
+            r#"INSERT INTO card_codex_threads
+                  (thread_id, card_id, role, wave_id, created_at, updated_at)
+               VALUES (?1, ?2, 'spec', ?3, 1300, 1300)"#,
+        )
+        .bind(thread_id)
+        .bind(card_id)
+        .bind(&wave_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 async fn pool_staged_at_0027() -> SqlitePool {
     let unique = format!(
         "file:mig0029_{}?mode=memory&cache=shared",
@@ -214,7 +282,7 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('card-codex', 'wave-1', 'codex', 1.0, '{"terminal_id":"term-codex"}', 1200, 1200, 'plain', 1),
               ('card-claude', 'wave-1', 'claude', 2.0, '{"terminal_id":"term-claude","claude_session_id":"session-claude"}', 1300, 1300, 'worker', 1),
               ('card-shared-thread', 'wave-1', 'codex', 3.0, '{"codex_source":"shared"}', 1400, 1400, 'spec', 0),
-              ('card-shared-pending', 'wave-2', 'codex', 4.0, '{"codex_source":"shared"}', 1500, 1500, 'spec', 0),
+              ('card-shared-pending', 'wave-2', 'codex', 4.0, '{"codex_source":"shared","terminal_id":"term-shared-pending"}', 1500, 1500, 'spec', 0),
               ('card-preexisting', 'wave-1', 'terminal', 5.0, '{"terminal_id":"term-preexisting"}', 1600, 1600, 'plain', 1),
               ('card-codex-threadless', 'wave-1', 'codex', 6.0, '{"terminal_id":"term-codex-threadless"}', 1700, 1700, 'plain', 1),
               ('card-legacy-spec', 'wave-3', 'codex', 7.0, '{"terminal_id":"term-legacy-spec","codex_source":"legacy"}', 1800, 1800, 'spec', 0),
@@ -223,7 +291,7 @@ async fn seed_legacy_live_cards(pool: &SqlitePool) {
               ('card-claude-sessionless', 'wave-2', 'claude', 10.0, '{"terminal_id":"term-claude-sessionless"}', 2100, 2100, 'worker', 1),
               ('card-stale-clean-exit', 'wave-2', 'terminal', 11.0, '{"terminal_id":"term-stale-clean-exit"}', 2200, 2200, 'plain', 1),
               ('card-stale-signal', 'wave-2', 'terminal', 12.0, '{"terminal_id":"term-stale-signal"}', 2300, 2300, 'plain', 1),
-              ('card-shared-dead-tui', 'wave-4', 'codex', 13.0, '{"codex_source":"shared"}', 2400, 2400, 'spec', 0)"#,
+              ('card-shared-dead-tui', 'wave-4', 'codex', 13.0, '{"codex_source":"shared","terminal_id":"term-shared-dead-tui"}', 2400, 2400, 'spec', 0)"#,
     )
     .execute(pool)
     .await
@@ -483,11 +551,12 @@ async fn migration_0030_backfills_runtimes_and_is_idempotent() {
             .unwrap()
             .is_none()
     );
-    assert!(
+    assert_eq!(
         shared_pending
             .try_get::<Option<String>, _>("terminal_run_id")
             .unwrap()
-            .is_none()
+            .as_deref(),
+        Some("term-shared-pending")
     );
     assert!(
         !by_card.contains_key("card-shared-dead-tui"),
@@ -625,6 +694,122 @@ async fn migration_0030_completes_stale_runtimes_created_with_subsecond_precisio
             >= created_at_ms,
         "stale runtime completion timestamp must preserve runtimes CHECK"
     );
+}
+
+#[tokio::test]
+async fn migration_0030_shared_spec_pending_keeps_terminal_run_id() {
+    let pool = pool_staged_at_0027().await;
+    seed_shared_spec_card_with_terminal(
+        &pool,
+        "card-shared-pending-only",
+        "term-shared-pending-only",
+        Some("term-shared-pending-only"),
+        None,
+    )
+    .await;
+
+    apply_sql(&pool, "0028_runtimes", MIGRATION_0028_SQL).await;
+    apply_sql(&pool, "0030_runtimes_backfill", MIGRATION_0030_SQL).await;
+
+    let row = sqlx::query(
+        r#"SELECT kind, status, terminal_run_id, thread_id
+           FROM runtimes
+           WHERE card_id = ?1"#,
+    )
+    .bind("card-shared-pending-only")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.try_get::<String, _>("kind").unwrap(), "shared-spec");
+    assert_eq!(row.try_get::<String, _>("status").unwrap(), "turn_pending");
+    assert_eq!(
+        row.try_get::<Option<String>, _>("terminal_run_id")
+            .unwrap()
+            .as_deref(),
+        Some("term-shared-pending-only")
+    );
+    assert!(
+        row.try_get::<Option<String>, _>("thread_id")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn migration_0030_shared_spec_running_keeps_terminal_run_id_null() {
+    let pool = pool_staged_at_0027().await;
+    seed_shared_spec_card_with_terminal(
+        &pool,
+        "card-shared-running",
+        "term-shared-running",
+        Some("term-shared-running"),
+        Some("thread-shared-running"),
+    )
+    .await;
+
+    apply_sql(&pool, "0028_runtimes", MIGRATION_0028_SQL).await;
+    apply_sql(&pool, "0030_runtimes_backfill", MIGRATION_0030_SQL).await;
+
+    let row = sqlx::query(
+        r#"SELECT kind, status, terminal_run_id, thread_id
+           FROM runtimes
+           WHERE card_id = ?1"#,
+    )
+    .bind("card-shared-running")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.try_get::<String, _>("kind").unwrap(), "shared-spec");
+    assert_eq!(row.try_get::<String, _>("status").unwrap(), "running");
+    assert!(
+        row.try_get::<Option<String>, _>("terminal_run_id")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("thread_id")
+            .unwrap()
+            .as_deref(),
+        Some("thread-shared-running")
+    );
+}
+
+#[tokio::test]
+async fn migration_0030_shared_spec_orphan_payload_skipped() {
+    let pool = pool_staged_at_0027().await;
+    seed_shared_spec_card_with_terminal(
+        &pool,
+        "card-shared-missing-payload-terminal",
+        "term-shared-missing-payload-terminal",
+        None,
+        None,
+    )
+    .await;
+    seed_shared_spec_card_with_terminal(
+        &pool,
+        "card-shared-wrong-payload-terminal",
+        "term-shared-wrong-payload-terminal",
+        Some("term-other"),
+        None,
+    )
+    .await;
+
+    apply_sql(&pool, "0028_runtimes", MIGRATION_0028_SQL).await;
+    apply_sql(&pool, "0030_runtimes_backfill", MIGRATION_0030_SQL).await;
+
+    let count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM runtimes
+           WHERE card_id IN (
+             'card-shared-missing-payload-terminal',
+             'card-shared-wrong-payload-terminal'
+           )"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 0, "orphan-payload shared specs must be skipped");
 }
 
 #[tokio::test]

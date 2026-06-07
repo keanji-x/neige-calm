@@ -15,15 +15,16 @@ use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_update_tx, runtime_bind_attribution_tx, runtime_complete_tx,
-    runtime_get_active_for_card_tx, runtime_set_status_tx,
+    card_codex_thread_upsert_tx, card_update_tx, runtime_bind_attribution_tx,
+    runtime_clear_terminal_run_id_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
+    runtime_set_status_tx,
 };
 use crate::db::{Repo, RepoEventWrite, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
 use crate::model::{CardPatch, CardRole};
-use crate::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -366,6 +367,10 @@ impl PendingThreadStartRegistry {
                         )
                         .await?;
                         runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                        // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
+                        if runtime.kind == RuntimeKind::SharedSpec {
+                            runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
+                        }
                     }
                     let card = card_update_tx(
                         tx,
