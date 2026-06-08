@@ -26,6 +26,7 @@ pub enum Observation {
         wave_id: WaveId,
         card_id: CardId,
         kind: HookKind,
+        #[serde(default)]
         idempotency_key: String,
     },
 }
