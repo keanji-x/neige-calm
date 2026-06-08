@@ -10,12 +10,12 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -99,39 +99,69 @@ async fn codex_ingest_session_end_hook() {
     .await;
 }
 
+#[tokio::test]
+async fn codex_hook_rejects_session_id_that_maps_to_different_card() {
+    let (app, repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+    let other_card = create_codex_card(repo.as_ref()).await;
+    repo.card_codex_thread_upsert(
+        other_card.id.as_str(),
+        "session-mismatch",
+        CardRole::Plain,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "session-mismatch",
+    });
+
+    let resp = post_hook(&app, card_id.as_str(), payload).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(event_count, 0);
+}
+
+#[tokio::test]
+async fn codex_hook_accepts_session_id_that_maps_to_query_card() {
+    let (app, repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+    repo.card_codex_thread_upsert(card_id.as_str(), "session-match", CardRole::Plain, None)
+        .await
+        .unwrap();
+
+    let payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "session-match",
+    });
+
+    post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+}
+
+#[tokio::test]
+async fn codex_hook_accepts_missing_session_id_fallback() {
+    let (app, _repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let payload = json!({
+        "hook_event_name": "Stop",
+    });
+
+    post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+}
+
 async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    // PR3 (#136) — the ingest path stamps `ActorId::AiCodex(card_id)` and
-    // the role gate refuses unknown cards. Seed a real card so the gate
-    // lets the write through.
-    let cove = repo
-        .cove_create(NewCove {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
-            cove_id: cove.id.clone(),
-            title: "w".into(),
-            sort: None,
-            cwd: String::new(),
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            wave_id: wave.id.clone(),
-            kind: "codex".into(),
-            sort: None,
-            payload: serde_json::json!({}),
-        })
-        .await
-        .unwrap();
+    let card = create_codex_card(repo.as_ref()).await;
     let cache = calm_server::card_role_cache::CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
 
@@ -168,6 +198,39 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     (app, repo, events, card.id.to_string())
 }
 
+async fn create_codex_card(repo: &SqlxRepo) -> Card {
+    // PR3 (#136) — the ingest path stamps `ActorId::AiCodex(card_id)` and
+    // the role gate refuses unknown cards. Seed a real card so the gate
+    // lets the write through.
+    let cove = repo
+        .cove_create(NewCove {
+            name: "c".into(),
+            color: "#fff".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "w".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    repo.card_create(NewCard {
+        wave_id: wave.id.clone(),
+        kind: "codex".into(),
+        sort: None,
+        payload: serde_json::json!({}),
+    })
+    .await
+    .unwrap()
+}
+
 async fn post_and_assert(
     app: &axum::Router,
     rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
@@ -175,20 +238,8 @@ async fn post_and_assert(
     payload: Value,
     expected_kind: &str,
 ) {
-    let uri = format!("/internal/codex/hook?card_id={card_id}");
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 204);
+    let resp = post_hook(app, card_id, payload.clone()).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let env = rx.recv().await.expect("event emitted");
     assert!(env.id > 0, "expected real events.id, got {}", env.id);
@@ -206,4 +257,19 @@ async fn post_and_assert(
         }
         other => panic!("expected CodexHook, got {other:?}"),
     }
+}
+
+async fn post_hook(app: &axum::Router, card_id: &str, payload: Value) -> axum::response::Response {
+    let uri = format!("/internal/codex/hook?card_id={card_id}");
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
