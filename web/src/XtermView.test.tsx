@@ -334,6 +334,54 @@ function renderSnapshot(over: Record<string, unknown> = {}): unknown {
   };
 }
 
+interface ResizeCommitFrame {
+  ResizeCommit: { epoch: number; cols: number; rows: number };
+}
+
+function resizeCommitFrames(ws: FakeWS): ResizeCommitFrame[] {
+  return ws.sentFrames
+    .map((frame) => JSON.parse(frame) as unknown)
+    .filter(
+      (frame): frame is ResizeCommitFrame =>
+        !!frame &&
+        typeof frame === 'object' &&
+        'ResizeCommit' in frame,
+    );
+}
+
+function connectOwnerTerminalAtSize(cols: number, rows: number): FakeWS {
+  mockFitSize = { cols, rows };
+  render(<XtermView terminalId="t-a" />);
+  const ws = currentWs();
+  act(() => {
+    ws.fireOpen();
+  });
+  act(() => {
+    ws.push(
+      serverHello({
+        terminal_id: 't-a',
+        pty_size: {
+          cols,
+          rows,
+          pixel_width: null,
+          pixel_height: null,
+        },
+        snapshot: {
+          render_rev: 1,
+          pty_seq: 0,
+          cols,
+          rows,
+          encoding: 'Vt',
+          data: [104, 105],
+          scrollback: null,
+        },
+      }),
+    );
+  });
+  ws.sentFrames.length = 0;
+  return ws;
+}
+
 function writeArgToString(arg: Uint8Array | string): string {
   return typeof arg === 'string'
     ? arg
@@ -567,6 +615,109 @@ describe('XtermView v4 handshake', () => {
     expect(Array.from(firstWriteArg)).toEqual([104, 105]);
     // The 'connected' state hides the handshaking overlay.
     expect(screen.queryByText(/handshaking/i)).not.toBeInTheDocument();
+  });
+
+  it('does not mutate local xterm while container is degenerate (wave-switch transient)', () => {
+    const ws = connectOwnerTerminalAtSize(100, 30);
+    const rafSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+    try {
+      mockFitSize = { cols: 2, rows: 1 };
+      setMockLayout(0, 0);
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+
+      expect(mockTerm.cols).toBe(100);
+      expect(mockTerm.rows).toBe(30);
+      expect(resizeCommitFrames(ws)).toHaveLength(0);
+
+      mockFitSize = { cols: 120, rows: 32 };
+      setMockLayout(1200, 480);
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+    } finally {
+      rafSpy.mockRestore();
+    }
+
+    const commits = resizeCommitFrames(ws);
+    expect(commits).toHaveLength(1);
+    expect(commits.at(-1)?.ResizeCommit).toMatchObject({
+      cols: 120,
+      rows: 32,
+    });
+    expect(commits.at(-1)?.ResizeCommit.epoch).toBeGreaterThanOrEqual(1);
+  });
+
+  it('silently recovers when container restores to same size', () => {
+    const ws = connectOwnerTerminalAtSize(100, 30);
+    const rafSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+    try {
+      mockFitSize = { cols: 2, rows: 1 };
+      setMockLayout(0, 0);
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+
+      expect(mockTerm.cols).toBe(100);
+      expect(mockTerm.rows).toBe(30);
+
+      mockFitSize = { cols: 100, rows: 30 };
+      setMockLayout(960, 420);
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+    } finally {
+      rafSpy.mockRestore();
+    }
+
+    expect(resizeCommitFrames(ws)).toHaveLength(0);
+  });
+
+  it('restores local xterm when fit() lands on a marginal grid (pixel gate passes, cols/rows below floor)', () => {
+    const ws = connectOwnerTerminalAtSize(100, 30);
+    const rafSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+    try {
+      mockFitSize = { cols: 9, rows: 1 };
+      setMockLayout(80, 24);
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+
+      expect(mockTerm.cols).toBe(100);
+      expect(mockTerm.rows).toBe(30);
+      expect(resizeCommitFrames(ws)).toHaveLength(0);
+
+      mockFitSize = { cols: 120, rows: 32 };
+      setMockLayout(1200, 480);
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+    } finally {
+      rafSpy.mockRestore();
+    }
+
+    const commits = resizeCommitFrames(ws);
+    expect(commits).toHaveLength(1);
+    expect(commits.at(-1)?.ResizeCommit).toMatchObject({
+      cols: 120,
+      rows: 32,
+    });
   });
 
   it('writes snapshot.scrollback before snapshot.data on ServerHello (#457)', () => {

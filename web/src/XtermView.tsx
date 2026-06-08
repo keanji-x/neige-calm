@@ -876,9 +876,42 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       pending = true;
       requestAnimationFrame(() => {
         pending = false;
+        // Don't fit() against a collapsed container — fit() mutates the local
+        // xterm in-place, so even if we suppress the daemon ResizeCommit the
+        // local buffer would be left at e.g. 2x1 and interpret incoming
+        // RenderPatch bytes at the wrong geometry until the next observer fire.
+        // Mirrors the mount-path MIN_MOUNT_WIDTH_PX / MIN_MOUNT_HEIGHT_PX floor.
+        if (
+          !isNonDegenerateMountSize(container.offsetWidth, container.offsetHeight)
+        ) {
+          dlog('XtermView', 'resize → skip fit (container degenerate)', {
+            containerW: container.offsetWidth,
+            containerH: container.offsetHeight,
+            lastCols,
+            lastRows,
+          });
+          return;
+        }
         try {
           fit.fit();
         } catch {
+          return;
+        }
+        // Belt-and-suspenders: even with the pixel-floor pre-gate, fit() can
+        // land on a marginal grid (e.g. very narrow column or 1-row card).
+        // fit() has already mutated the local xterm in-place; restore it to
+        // last-known-good so RenderPatch bytes don't render against a degenerate
+        // grid until the next observer fire. Mirrors the mount-path floor.
+        if (term.cols < MIN_COMMIT_COLS || term.rows < MIN_COMMIT_ROWS) {
+          dlog('XtermView', 'resize → fit DEGENERATE — restore last good', {
+            cols: term.cols,
+            rows: term.rows,
+            lastCols,
+            lastRows,
+          });
+          if (term.cols !== lastCols || term.rows !== lastRows) {
+            term.resize(lastCols, lastRows);
+          }
           return;
         }
         if (term.cols !== lastCols || term.rows !== lastRows) {
