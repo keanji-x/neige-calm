@@ -119,8 +119,13 @@ function renderSpecCard(rows: HarnessItem[]) {
   return fetchMock;
 }
 
-function renderSpecCardWithProvider(rows: HarnessItem[]) {
-  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(rows)));
+function renderSpecCardWithProvider(rows: HarnessItem[] | HarnessItem[][]) {
+  const fetchMock = Array.isArray(rows[0])
+    ? vi.fn().mockImplementation(() => {
+        const nextRows = (rows as HarnessItem[][]).shift() ?? [];
+        return Promise.resolve(response(nextRows));
+      })
+    : vi.fn().mockImplementation(() => Promise.resolve(response(rows as HarnessItem[])));
   vi.stubGlobal('fetch', fetchMock);
   const Component = SpecEntry.Component;
   const card = {
@@ -240,6 +245,7 @@ describe('SpecCard chat timeline', () => {
     ]);
 
     expect(await screen.findByText('please update the PR UI')).toBeInTheDocument();
+    expect(screen.queryByText('[userMessage]')).not.toBeInTheDocument();
     expect(screen.getByText('user')).toBeInTheDocument();
     expect(await screen.findByText('assistant hello')).toBeInTheDocument();
     expect(screen.getByText('Reasoning')).toBeInTheDocument();
@@ -424,6 +430,77 @@ describe('SpecCard chat timeline', () => {
     expect(screen.getByText('final assistant answer')).toBeInTheDocument();
   });
 
+  it('keeps only the completed row when live events arrive completed before started', async () => {
+    const completed = harnessRow(
+      2,
+      'agent_message',
+      { id: 'agent_live_same', text: 'completed over websocket' },
+      { method: 'item/completed', item_uuid: 'agent_live_same' },
+    );
+    const lateStarted = harnessRow(
+      1,
+      'agent_message',
+      { id: 'agent_live_same' },
+      { method: 'item/started', item_uuid: 'agent_live_same' },
+    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([completed]))
+      .mockResolvedValueOnce(response([lateStarted]));
+    vi.stubGlobal('fetch', fetchMock);
+    const Component = SpecEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'spec',
+          id: 'card_spec_1',
+          goal: 'Ship the spec UI',
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('No conversation items yet.')).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.fakeStream.emit({
+        ev: 'harness.item.added',
+        data: {
+          runtime_id: 'runtime_1',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+          item_db_id: 2,
+          item_uuid: 'agent_live_same',
+          item_type: 'agent_message',
+          turn_id: 'turn_1',
+          method: 'item/completed',
+        },
+      });
+    });
+
+    expect(await screen.findByText('completed over websocket')).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.fakeStream.emit({
+        ev: 'harness.item.added',
+        data: {
+          runtime_id: 'runtime_1',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+          item_db_id: 1,
+          item_uuid: 'agent_live_same',
+          item_type: 'agent_message',
+          turn_id: 'turn_1',
+          method: 'item/started',
+        },
+      });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(screen.queryByText('Thinking...')).not.toBeInTheDocument();
+    expect(screen.getAllByText('completed over websocket')).toHaveLength(1);
+  });
+
   it('clears and refetches rows when the transcript is cleared', async () => {
     const before = harnessRow(1, 'agent_message', {
       id: 'agent_before_clear',
@@ -480,10 +557,13 @@ describe('SpecCard chat timeline', () => {
       new_thread_id: 'thread_reset',
     });
     const fetchMock = renderSpecCardWithProvider([
-      harnessRow(1, 'agent_message', {
-        id: 'agent_before_reset',
-        text: 'before reset',
-      }),
+      [
+        harnessRow(1, 'agent_message', {
+          id: 'agent_before_reset',
+          text: 'before reset',
+        }),
+      ],
+      [],
     ]);
 
     expect(await screen.findByText('before reset')).toBeInTheDocument();
@@ -513,6 +593,10 @@ describe('SpecCard chat timeline', () => {
     await waitFor(() =>
       expect(screen.getByTestId('spec-chat-timeline')).not.toBe(timelineBefore),
     );
+    await waitFor(() =>
+      expect(screen.queryByText('before reset')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText('No conversation items yet.')).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByText('Turn Running')).not.toBeInTheDocument(),
     );
