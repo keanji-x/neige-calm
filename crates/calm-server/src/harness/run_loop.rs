@@ -23,6 +23,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
 
 const OBSERVATION_BUFFER: usize = 256;
+const MAX_PENDING_QUEUE_LEN: usize = 256;
 const RECENT_HOOK_KEY_CACHE_LEN: usize = 256;
 
 #[derive(Clone)]
@@ -193,6 +194,22 @@ impl SpecHarness {
         self.inner.pending_queue.lock().await.len()
     }
 
+    #[cfg(feature = "fixtures")]
+    pub async fn pending_queue_for_test(&self) -> Vec<Observation> {
+        self.inner
+            .pending_queue
+            .lock()
+            .await
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn observe_for_test(&self, obs: Observation, envelope_id: Option<i64>) {
+        on_observation(&self.inner, obs, envelope_id).await;
+    }
+
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
     }
@@ -205,6 +222,7 @@ fn inner_from_params(
 ) -> Arc<Inner> {
     let mut snapshot = params.snapshot;
     snapshot.align_pending_envelope_ids();
+    truncate_snapshot_pending_queue(&mut snapshot);
     let debounce = debounce_from_initial_queue(&snapshot.pending_queue);
     let state = state_from_snapshot(&snapshot);
     let last_phase = snapshot.phase;
@@ -312,9 +330,6 @@ async fn run_loop(
 }
 
 async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Option<i64>) {
-    if let Some(hash) = obs.report_sha256() {
-        *inner.last_report_body_sha256.lock().await = Some(hash.to_string());
-    }
     if let Some(envelope_id) = envelope_id {
         let mut watermark = inner.push_watermark.lock().await;
         *watermark = (*watermark).max(envelope_id);
@@ -323,12 +338,12 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
         return;
     }
     let hard_fire = obs.is_hard_fire();
-    inner.pending_queue.lock().await.push_back(obs);
-    inner
-        .pending_envelope_ids
-        .lock()
-        .await
-        .push_back(envelope_id);
+    if !enqueue_pending_observation(inner, obs.clone(), envelope_id).await {
+        return;
+    }
+    if let Some(hash) = obs.report_sha256() {
+        *inner.last_report_body_sha256.lock().await = Some(hash.to_string());
+    }
     let now = Instant::now();
     let mut debounce = inner.debounce.lock().await;
     if debounce.first_pending_at.is_none() {
@@ -336,6 +351,91 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
     }
     debounce.last_pending_at = Some(now);
     debounce.hard_fire |= hard_fire;
+}
+
+fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
+    let len = snapshot.pending_queue.len();
+    if len <= MAX_PENDING_QUEUE_LEN {
+        return;
+    }
+    let drop_count = len - MAX_PENDING_QUEUE_LEN;
+    snapshot.pending_queue.drain(..drop_count);
+    snapshot.pending_envelope_ids.drain(..drop_count);
+    tracing::warn!(
+        target: "spec.harness.backpressure",
+        original_len = len,
+        retained_len = snapshot.pending_queue.len(),
+        "snapshot pending_queue truncated to newest observations"
+    );
+}
+
+async fn enqueue_pending_observation(
+    inner: &Arc<Inner>,
+    obs: Observation,
+    envelope_id: Option<i64>,
+) -> bool {
+    let mut queue = inner.pending_queue.lock().await;
+    let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+    if queue.len() >= MAX_PENDING_QUEUE_LEN {
+        if try_fold_pending_tail(&mut queue, &mut envelope_ids, &obs, envelope_id) {
+            return true;
+        }
+        if !obs.is_hard_fire()
+            && let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire())
+        {
+            queue.remove(drop_idx);
+            envelope_ids.remove(drop_idx);
+        } else {
+            tracing::warn!(
+                target: "spec.harness.backpressure",
+                queue_len = queue.len(),
+                variant = ?obs,
+                "pending_queue full, hard obs dropped"
+            );
+            return false;
+        }
+    }
+    queue.push_back(obs);
+    envelope_ids.push_back(envelope_id);
+    true
+}
+
+fn try_fold_pending_tail(
+    queue: &mut VecDeque<Observation>,
+    envelope_ids: &mut VecDeque<Option<i64>>,
+    obs: &Observation,
+    envelope_id: Option<i64>,
+) -> bool {
+    let Some(last) = queue.back_mut() else {
+        return false;
+    };
+    let folded = match (last, obs) {
+        (Observation::WaveGoal { text }, Observation::WaveGoal { text: new_text }) => {
+            *text = new_text.clone();
+            true
+        }
+        (
+            Observation::ReportEdited {
+                wave_id,
+                body_sha256,
+                body,
+            },
+            Observation::ReportEdited {
+                wave_id: new_wave_id,
+                body_sha256: new_body_sha256,
+                body: new_body,
+            },
+        ) if wave_id == new_wave_id => {
+            *body_sha256 = new_body_sha256.clone();
+            *body = new_body.clone();
+            true
+        }
+        _ => false,
+    };
+    if folded && let Some(last_envelope_id) = envelope_ids.back_mut() {
+        *last_envelope_id = envelope_id;
+    }
+    folded
 }
 
 async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, obs: &Observation) -> bool {
