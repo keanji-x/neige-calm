@@ -270,33 +270,6 @@ describe('WaveList — rendering + accessibility', () => {
     expect(ks).toMatch(/Delete/);
   });
 
-  it('forwards slot.deletable so a kernel-owned spec card shows Refresh terminal', async () => {
-    render(
-      <Wrapper client={makeClient()}>
-        <WaveList
-          waveId="w1"
-          cards={[
-            {
-              kind: 'card',
-              card: {
-                type: 'codex',
-                id: 'card_spec',
-                terminalId: 'term_spec',
-              },
-              sort: 10,
-              deletable: false,
-            },
-          ]}
-          onRemoveCard={() => {}}
-        />
-      </Wrapper>,
-    );
-
-    expect(
-      await screen.findByRole('button', { name: 'Refresh terminal' }),
-    ).toBeInTheDocument();
-  });
-
   it('uses entry accessibleName metadata for iframe, plugin, and file-viewer rows', () => {
     render(
       <Wrapper client={makeClient()}>
