@@ -15,7 +15,6 @@ use calm_server::ids::ActorId;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::spec_push::SpecPushRegistry;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -227,7 +226,6 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         }),
         TerminalRendererRegistry::new_with_repo(route_repo),
         None,
-        SpecPushRegistry::new(),
         registry.clone(),
         daemon,
         4,
@@ -286,7 +284,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
 }
 
 #[tokio::test]
-async fn dispatcher_harness_full_queue_persists_inbox_and_advances_cursor() {
+async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let cove = repo
         .cove_create(NewCove {
@@ -394,7 +392,6 @@ async fn dispatcher_harness_full_queue_persists_inbox_and_advances_cursor() {
         }),
         TerminalRendererRegistry::new_with_repo(route_repo),
         None,
-        SpecPushRegistry::new(),
         registry,
         daemon,
         4,
@@ -432,15 +429,17 @@ async fn dispatcher_harness_full_queue_persists_inbox_and_advances_cursor() {
         .await;
     assert_eq!(
         dispatcher.push_cursor_for_test(&card.id),
-        envelope_id,
-        "durable harness inbox acceptance advances the push cursor even if live wake fails"
+        0,
+        "full live harness queue must not advance the push cursor before retry"
     );
     let queued = repo
         .spec_card_queued_observations(card.id.as_str())
         .await
         .unwrap();
-    assert_eq!(queued.len(), 1);
-    assert_eq!(queued[0].1, envelope_id);
+    assert!(
+        queued.is_empty(),
+        "failed live harness wake should leave replay responsibility with the cursor"
+    );
     assert!(matches!(
         observations.recv().await.unwrap().observation,
         Observation::WaveGoal { .. }

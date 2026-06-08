@@ -21,7 +21,6 @@ import {
   Suspense,
   useCallback,
   useEffect,
-  useRef,
   type CSSProperties,
 } from 'react';
 import { useState } from '../../shared/state';
@@ -36,18 +35,13 @@ import {
   createClaudeCard,
   createCodexCard,
   getTerminalForCard,
-  resetSpecCard,
 } from '../../api/calm';
 import { useTheme } from '../../app/theme';
-import { Icon } from '../../Icon';
-import { IconButton } from '../../pages/_shared';
-import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { dlog } from '../../util/debug';
 import { CardHead } from '../CardHead';
 import { useCardStatusOverlay } from '../overlayRegistry';
 import {
   useCardInstanceCtx,
-  useOptionalCardInstanceCtx,
   type CardEntry,
   type CardInstanceCtx,
 } from '../registry';
@@ -249,30 +243,6 @@ function CodexCardImpl({
     },
     [xtermRefSlot],
   );
-  const instanceCtx = useOptionalCardInstanceCtx();
-  // `card.id` is typed `string | undefined` in the kernel wire model, but a
-  // mounted card always has one — gate the Reset button on its presence so
-  // TS knows the API call site is safe, matching the `if (!cardId) return`
-  // pattern the rest of this component already uses (see line ~200).
-  // Fallback for tests that mount CodexCard outside CardInstanceProvider; production always has a provider.
-  const [localResetOpen, setLocalResetOpen] = useState(false);
-  const [resetOpen, setResetOpen] =
-    instanceCtx?.useCardSlot<boolean>('resetOpen', false) ?? [
-      localResetOpen,
-      setLocalResetOpen,
-    ];
-  const resetOpenRef = useRef(resetOpen);
-  const [resetPending, setResetPending] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
-  useEffect(() => {
-    resetOpenRef.current = resetOpen;
-    if (resetOpen) {
-      setResetError(null);
-    } else {
-      setResetPending(false);
-      setResetError(null);
-    }
-  }, [resetOpen]);
   // #306 — exit info for the header badge. Codex cards arguably need this
   // MORE than terminal cards (codex shouldn't ever exit cleanly during a
   // session; an unexpected exit is the kind of thing the user needs to
@@ -343,23 +313,6 @@ function CodexCardImpl({
     };
   }, [cardId, provider]);
 
-  const onConfirmReset = async () => {
-    if (!cardId) return; // gated by canResetSpecSession above; defensive
-    setResetPending(true);
-    setResetError(null);
-    try {
-      await resetSpecCard(cardId);
-      ctx.emit({ type: 'refresh' });
-      setResetOpen(false);
-    } catch (err) {
-      if (resetOpenRef.current) {
-        setResetError(err instanceof Error ? err.message : 'Reset failed');
-      }
-    } finally {
-      setResetPending(false);
-    }
-  };
-
   return (
     <div className="codex-card">
       <CardHead
@@ -417,42 +370,8 @@ function CodexCardImpl({
           </div>
         )}
       </div>
-      <ConfirmDialog
-        open={resetOpen}
-        title="Reset spec session?"
-        description={
-          <>
-            <p>
-              This kills the current codex daemon and starts a new conversation. The wave&apos;s
-              report and observation history are preserved, but the codex conversation transcript
-              will be discarded. This cannot be undone.
-            </p>
-            {resetError && (
-              <p role="alert" style={{ color: 'var(--warn)', marginTop: 8 }}>
-                {resetError}
-              </p>
-            )}
-          </>
-        }
-        confirmLabel="Reset session"
-        cancelLabel="Cancel"
-        destructive
-        confirmDisabled={resetPending}
-        onConfirm={onConfirmReset}
-        onCancel={() => {
-          setResetOpen(false);
-          setResetError(null);
-        }}
-      />
     </div>
   );
-}
-
-function canShowSpecSessionActions(
-  card: CodexCardData | ClaudeCardData,
-  deletable?: boolean,
-): boolean {
-  return card.type === 'codex' && deletable === false && !!card.id;
 }
 
 function isFsmState(s: string): s is FsmState {
@@ -508,48 +427,6 @@ function xtermRefSlotFor(
   )[0];
 }
 
-function specSessionActions(
-  card: CodexCardData | ClaudeCardData,
-  ctx: CardInstanceCtx,
-) {
-  if (!canShowSpecSessionActions(card, ctx.deletable)) return [];
-  const [, setResetOpen] = ctx.useCardSlot<boolean>('resetOpen', false);
-  return [
-    {
-      kind: 'imperative' as const,
-      id: 'refresh-terminal',
-      placement: 'head' as const,
-      render() {
-        return (
-          <IconButton
-            glyph={<Icon n="refresh" s={14} />}
-            label="Refresh terminal"
-            title="Refresh terminal (reconnect)"
-            tone="neutral"
-            onClick={() => ctx.emit({ type: 'refresh' })}
-          />
-        );
-      },
-    },
-    {
-      kind: 'imperative' as const,
-      id: 'reset-spec-session',
-      placement: 'head' as const,
-      render() {
-        return (
-          <IconButton
-            glyph={<Icon n="reset" s={14} />}
-            label="Reset spec session"
-            title="Reset spec session (kill daemon, new thread)"
-            tone="danger"
-            onClick={() => setResetOpen(true)}
-          />
-        );
-      },
-    },
-  ];
-}
-
 export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
   type: 'codex',
   Component: CodexCard,
@@ -584,7 +461,6 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
       return { cardId: card.id, raw: card };
     },
   },
-  actions: specSessionActions,
   fromKernel: (k) => {
     if (k.kind !== 'codex') return null;
     if ((k.payload as Record<string, unknown> | undefined)?.spec_harness === true) {
@@ -658,7 +534,6 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
       return { cardId: card.id, raw: card };
     },
   },
-  actions: specSessionActions,
   fromKernel: (k) => {
     if (k.kind !== 'claude') return null;
     const candidate = k.payload ?? {};

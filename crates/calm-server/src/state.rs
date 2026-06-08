@@ -3,7 +3,7 @@
 //! `Clone` is cheap — everything inside is wrapped in `Arc` or already
 //! reference-counted internally.
 
-use crate::aspect::{AspectRegistry, WatermarkSinkInstalledAspect};
+use crate::aspect::AspectRegistry;
 use crate::card_kind::CardKindRegistry;
 use crate::card_role_cache::CardRoleCache;
 use crate::config::Config;
@@ -25,7 +25,6 @@ use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_ex
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::shared_codex_home::SharedCodexHome;
-use crate::spec_push::SpecPushRegistry;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
 use axum::extract::FromRef;
@@ -97,7 +96,6 @@ pub struct WorkerState {
     pub daemon: Arc<DaemonClient>,
     pub dispatcher: Arc<Dispatcher>,
     pub mcp_server: Option<Arc<McpServer>>,
-    pub spec_push: SpecPushRegistry,
     pub harness: HarnessRegistry,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub write: WriteContext,
@@ -132,7 +130,6 @@ pub struct BootState {
     pub card_kind_registry: Arc<CardKindRegistry>,
     pub dispatcher: Arc<Dispatcher>,
     pub mcp_server: Option<Arc<McpServer>>,
-    pub spec_push: SpecPushRegistry,
     pub harness: HarnessRegistry,
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
@@ -158,7 +155,6 @@ impl BootState {
             daemon: self.daemon.clone(),
             dispatcher: self.dispatcher.clone(),
             mcp_server: self.mcp_server.clone(),
-            spec_push: self.spec_push.clone(),
             harness: self.harness.clone(),
             terminal_renderer: self.terminal_renderer.clone(),
             write,
@@ -184,7 +180,6 @@ impl BootState {
             card_kind_registry: self.card_kind_registry,
             dispatcher: self.dispatcher,
             mcp_server: self.mcp_server,
-            spec_push: self.spec_push,
             harness: self.harness,
             shared_codex_appserver: self.shared_codex_appserver,
             pending_codex_threads: self.pending_codex_threads,
@@ -274,16 +269,6 @@ pub struct AppState {
     /// tests need a live MCP server. The production `AppState::new`
     /// path always populates this.
     pub mcp_server: Option<Arc<McpServer>>,
-    /// #293 — per-wave codex `app-server` push handles. Each entry owns the
-    /// kernel-spawned `codex app-server` child + its programmatic
-    /// [`crate::codex_appserver::CodexAppServer`] client + the thread id
-    /// turn #1 ran on (one spec card per wave → keyed by `WaveId`).
-    /// Populated by `routes::waves::create_wave` for every wave (push is the
-    /// only path now). Removed (→ child killed via `kill_on_drop`) by the
-    /// wave-delete teardown + `terminal_sweeper`. Clone-cheap
-    /// (`Arc<DashMap<…>>` inside); the dispatcher push path resolves a wave's
-    /// client through this registry.
-    pub spec_push: SpecPushRegistry,
     pub harness: HarnessRegistry,
     /// PR4 (#410) — one server-wide codex app-server supervisor.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
@@ -293,16 +278,10 @@ pub struct AppState {
     /// Serializes the shared empty-card `(pending register, PTY spawn)` pair
     /// so FIFO pending attribution matches actual TUI fresh-start order.
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
-    /// #322 — aspect / join-point framework registry. Holds the boot-
-    /// installed aspects (today: [`WatermarkSinkInstalledAspect`] on
-    /// `BeforeHandleParkInRegistry`). Threaded into
-    /// [`SpecPushRegistry::park`](crate::spec_push::SpecPushRegistry::park)
-    /// at each production registration site. `Arc` so route handlers,
-    /// the dispatcher, and any future aspect-enforcing callsite share
-    /// one registry without re-installing aspects per request. The set
-    /// of aspects is fixed at boot — no runtime mutation, no per-test
-    /// override surface (test paths bypass via the bare
-    /// [`SpecPushRegistry::insert`](crate::spec_push::SpecPushRegistry::insert)).
+    /// #322 — aspect / join-point framework registry. `Arc` so route
+    /// handlers, the dispatcher, and any future aspect-enforcing callsite
+    /// share one registry without re-installing aspects per request. The set
+    /// of aspects is fixed at boot — no runtime mutation.
     pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
     /// Full-capability handle. Held separately from `repo` so the gate at
@@ -324,14 +303,8 @@ pub struct AppState {
 /// "which aspects ship in the kernel" — both [`AppState::new`] (production)
 /// and [`AppState::from_parts`] (tests / replay lib) go through this so a
 /// new aspect lands on every code path that constructs an `AppState`.
-/// Returns an `Arc` because [`AppState::aspects`] is `Arc<AspectRegistry>`
-/// (shared across handler dispatches without re-registering).
 fn build_aspect_registry() -> Arc<AspectRegistry> {
-    let mut reg = AspectRegistry::new();
-    // INV-6 — every `SpecPushHandle` parked in `SpecPushRegistry` must have
-    // a `WatermarkSink` installed (#322 minimum landing; #318 INV table).
-    reg.register_before_handle_park(Arc::new(WatermarkSinkInstalledAspect));
-    Arc::new(reg)
+    Arc::new(AspectRegistry::new())
 }
 
 impl AppState {
@@ -393,7 +366,6 @@ impl AppState {
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
         let wave_cove_cache = wave_cove_cache.unwrap_or_default();
-        let spec_push = SpecPushRegistry::new();
         let harness = HarnessRegistry::new();
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
@@ -463,9 +435,6 @@ impl AppState {
         // event. Permit count honors `NEIGE_DISPATCHER_PERMITS` for
         // the rare test that twiddles the env var; the default 8 is
         // the value tests will see otherwise.
-        // #293 — the push registry, shared with the dispatcher. Clone-cheap
-        // (`Arc<DashMap>` inside); the dispatcher takes a clone so its push
-        // path resolves the same handles `create_wave` parks here.
         let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer_and_harness(
             repo.clone(),
             events.clone(),
@@ -476,8 +445,6 @@ impl AppState {
             // `from_parts` is the test / replay hatch — no live MCP
             // server. PR7a.1 (#136 followup) added this slot.
             None,
-            // #293 — share the push registry (push is the only path now).
-            spec_push.clone(),
             harness.clone(),
             shared_codex_appserver.clone(),
             Dispatcher::permits_from_env(8),
@@ -501,19 +468,10 @@ impl AppState {
             // `from_parts` is the test / replay-lib hatch — no live MCP
             // server. Production goes through `new` below.
             mcp_server: None,
-            // #293 — push registry. Tests that exercise the push path build
-            // their own handles or drive the gated e2e; the default is empty.
-            // Same instance the dispatcher above holds a clone of.
-            spec_push,
             harness,
             shared_codex_appserver,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
-            // #322 — aspect registry. Identical set in test/replay and
-            // production (see `build_aspect_registry` doc) so a test
-            // exercising the production register path (e.g.
-            // `SpecPushRegistry::park`) trips the same aspects production
-            // would.
             aspects: build_aspect_registry(),
             operation_runtime,
         }
@@ -737,7 +695,6 @@ impl AppState {
 
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-        let spec_push = SpecPushRegistry::new();
         let harness = HarnessRegistry::new();
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
@@ -820,10 +777,6 @@ impl AppState {
         // before plugins start emitting; the role cache is already
         // seeded so the dispatcher's `card_create_with_id_tx` write-
         // through into the cache sees the seeded state.
-        // #293 — the push registry, shared with the dispatcher and filled by
-        // `create_wave` (push is the only path now). Construct it before the
-        // dispatcher spawn so the dispatcher's push path and the route both
-        // touch the same `Arc<DashMap>`.
         let dispatcher = Arc::new(
             crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness(
                 repo.clone(),
@@ -836,8 +789,6 @@ impl AppState {
                 // worker codex spawns can join the same MCP wire the spec
                 // card uses.
                 Some(mcp_server.clone()),
-                // #293 — share the push registry (push is the only path now).
-                spec_push.clone(),
                 harness.clone(),
                 shared_codex_appserver.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
@@ -876,16 +827,10 @@ impl AppState {
             card_kind_registry,
             dispatcher,
             mcp_server: Some(mcp_server),
-            // #293 — push registry, filled by `create_wave` (push is the only
-            // path now). The dispatcher above holds a clone of this same
-            // instance for its push path.
-            spec_push,
             harness,
             shared_codex_appserver,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
-            // #322 — aspect registry, boot-installed once and shared via
-            // `Arc` to every handler / actor that needs it.
             aspects: build_aspect_registry(),
             operation_runtime,
         };

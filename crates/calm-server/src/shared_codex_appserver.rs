@@ -442,11 +442,10 @@ impl SharedCodexAppServer {
         Ok(thread_id)
     }
 
-    /// Issue #524 — kernel-only mint for the shared-spec reset path. Performs
-    /// the codex `thread/start` RPC and populates in-memory caches without
-    /// touching `card_codex_threads`. The reset route writes the legacy row
-    /// atomically alongside the runtime supersede in
-    /// `persist_shared_reset_runtime_fields`.
+    /// Kernel-only thread mint. Performs the codex `thread/start` RPC and
+    /// populates in-memory caches without touching `card_codex_threads`;
+    /// callers that need a durable card/thread row persist it in their own
+    /// transaction boundary.
     pub async fn thread_start_mint_for_card(
         self: &Arc<Self>,
         card_id: &str,
@@ -583,10 +582,6 @@ impl SharedCodexAppServer {
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
         self.notifications.subscribe()
-    }
-
-    pub(crate) async fn thread_id_bound_to_card(&self, card_id: &str) -> Result<Option<String>> {
-        resolve_active_thread_for_card(self.repo.as_ref(), card_id).await
     }
 
     pub fn is_running(&self) -> bool {

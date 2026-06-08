@@ -123,6 +123,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         cwd: wave.cwd.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
+        force_new_thread: false,
     })
     .unwrap();
     let op_id = state
@@ -217,6 +218,7 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
         cwd: wave.cwd.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
+        force_new_thread: false,
     })
     .unwrap();
     let op_id = state
@@ -293,6 +295,7 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
         cwd: wave.cwd.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
+        force_new_thread: false,
     })
     .unwrap();
     let op_id = state
@@ -384,6 +387,7 @@ async fn start_adapter_falls_back_to_legacy_thread_mapping_when_runtime_lacks_th
         cwd: wave.cwd.clone(),
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
+        force_new_thread: false,
     })
     .unwrap();
     let op_id = state

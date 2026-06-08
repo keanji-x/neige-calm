@@ -78,18 +78,6 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::recover_operations_on_boot(&state).await?;
 
-    // #313/#410 - boot-time **takeover** of in-flight shared spec waves.
-    // Legacy per-card spec rows were cleaned above before the shared daemon
-    // rebuilt its thread cache. For every remaining shared spec card whose
-    // `card_codex_threads` mapping exists and whose wave is not in a terminal
-    // lifecycle state: reuse the shared daemon thread, register a fresh
-    // `SpecPushHandle`, then replay persisted events after `push_watermark`
-    // through the dispatcher's push path so the spec thread catches up on what
-    // happened while the kernel was down. Failures are non-fatal per wave; the
-    // kernel boot proceeds regardless. Runs before the listener binds so a
-    // request landing mid-takeover can't race a half-registered handle.
-    calm_server::takeover_shared_spec_cards_on_boot(&state).await;
-
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as
     // line-delimited JSON in the replay-fixture per-event shape. The

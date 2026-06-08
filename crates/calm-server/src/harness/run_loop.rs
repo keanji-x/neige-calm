@@ -72,7 +72,6 @@ struct Inner {
 #[derive(Clone, Debug)]
 pub struct HarnessObservationDelivery {
     pub observation: Observation,
-    pub durable_queue_id: Option<i64>,
     pub envelope_id: Option<i64>,
 }
 
@@ -121,20 +120,13 @@ impl SpecHarness {
     pub fn observe(&self, obs: Observation) -> Result<()> {
         self.observe_delivery(HarnessObservationDelivery {
             observation: obs,
-            durable_queue_id: None,
             envelope_id: None,
         })
     }
 
-    pub fn observe_durable(
-        &self,
-        obs: Observation,
-        durable_queue_id: i64,
-        envelope_id: i64,
-    ) -> Result<()> {
+    pub fn observe_envelope(&self, obs: Observation, envelope_id: i64) -> Result<()> {
         self.observe_delivery(HarnessObservationDelivery {
             observation: obs,
-            durable_queue_id: Some(durable_queue_id),
             envelope_id: Some(envelope_id),
         })
     }
@@ -281,23 +273,9 @@ async fn run_loop(
         tokio::select! {
             delivery = observations.recv() => {
                 let Some(delivery) = delivery else { break };
-                let durable_queue_id = delivery.durable_queue_id;
                 on_observation(&inner, delivery.observation, delivery.envelope_id).await;
-                match persist_snapshot(&inner).await {
-                    Ok(()) => {
-                        if let Some(id) = durable_queue_id
-                            && let Err(e) = inner.repo.spec_card_dequeue_observations(&[id]).await
-                        {
-                            tracing::warn!(
-                                spec_push_queue_id = id,
-                                error = %e,
-                                "spec harness durable inbox dequeue failed after snapshot persist"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "spec harness snapshot persist failed after observation");
-                    }
+                if let Err(e) = persist_snapshot(&inner).await {
+                    tracing::warn!(error = %e, "spec harness snapshot persist failed after observation");
                 }
             }
             notif = notifications.recv() => {
@@ -857,7 +835,6 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
     }
     let snapshot = snapshot_for(inner).await;
     let runtime_id = inner.runtime_id.clone();
-    let card_id = inner.card_id.to_string();
     let thread_id = snapshot.last_thread_id.clone();
     let active_turn_id = match snapshot.phase {
         HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingInterrupt => {
@@ -869,7 +846,6 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
     let state_for_status = inner.state.lock().await.clone();
     let status = run_status_for(&state_for_status);
     let status_db = run_status_to_db(&status);
-    let watermark = snapshot.push_watermark;
     let new_phase = snapshot.phase;
     let event_runtime_id = runtime_id.clone();
     let event_card_id = inner.card_id.clone();
@@ -879,12 +855,8 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
 
     write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            crate::db::sqlite::runtime_set_handle_state_tx(
-                tx,
-                &runtime_id,
-                Some(snapshot_value),
-            )
-            .await?;
+            crate::db::sqlite::runtime_set_handle_state_tx(tx, &runtime_id, Some(snapshot_value))
+                .await?;
             sqlx::query(
                 r#"UPDATE runtimes
                       SET status = ?1,
@@ -898,25 +870,6 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
             .bind(active_turn_id)
             .bind(now_ms())
             .bind(&runtime_id)
-            .execute(&mut **tx)
-            .await?;
-            sqlx::query(
-                r#"UPDATE cards
-                      SET payload = json_set(
-                                      COALESCE(payload, '{}'),
-                                      '$.push_watermark',
-                                      CASE
-                                          WHEN COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1
-                                          THEN ?1
-                                          ELSE COALESCE(json_extract(payload, '$.push_watermark'), 0)
-                                      END
-                                   ),
-                          updated_at = ?2
-                    WHERE id = ?3"#,
-            )
-            .bind(watermark)
-            .bind(now_ms())
-            .bind(card_id)
             .execute(&mut **tx)
             .await?;
             Ok(())

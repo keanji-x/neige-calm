@@ -59,16 +59,14 @@
 //! the card and emits `Event::CardDeleted` (or `WaveDeleted` /
 //! `CoveDeleted`) as the audit signal.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::db::sqlite::terminal_delete_tx;
 use crate::db::write_with_event_typed;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, WaveId};
+use crate::ids::ActorId;
 use crate::model::Terminal;
-use crate::spec_push::SpecPushRegistry;
 use crate::state::AppState;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use calm_session::control::ProcSignal;
@@ -159,19 +157,11 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     let card_id = term.card_id.clone();
     let scope = match state.repo.card_get(card_id.as_str()).await? {
         Some(c) => match state.repo.wave_get(c.wave_id.as_str()).await? {
-            Some(w) => {
-                // PR3a (#293) — defensively reap any spec-push handle for
-                // this wave on the crash-recovery path too. The eager
-                // wave/spec-card delete already reaps it; this catches the
-                // residual shape where a spec terminal was orphaned but
-                // the handle is still parked in the registry.
-                reap_spec_push(state, &w.id).await;
-                EventScope::Card {
-                    card: c.id,
-                    wave: w.id,
-                    cove: w.cove_id,
-                }
-            }
+            Some(w) => EventScope::Card {
+                card: c.id,
+                wave: w.id,
+                cove: w.cove_id,
+            },
             None => EventScope::System,
         },
         None => EventScope::System,
@@ -299,92 +289,6 @@ pub enum WaitForPidExit {
 pub async fn wait_for_pid_exit(pid: i64, timeout: Duration) -> WaitForPidExit {
     wait_for_pid_exit_with_poll(pid, timeout, Duration::from_millis(50)).await
 }
-
-/// PR3a (#293) — reap a wave's `codex app-server` push channel, if any.
-///
-/// This is the spec-push parallel to [`reap_terminal_artifacts`] for the
-/// PTY daemon: the wave-delete eager-teardown path calls it before dropping
-/// rows, and the orphan sweeper calls it (best-effort, by resolved wave)
-/// for crash-recovery residue. No-op when the registry has no entry for the
-/// wave (e.g. a prior teardown / sweep already removed it, or the kernel
-/// restarted and lost the in-memory handle).
-///
-/// ## Why this kills the process GROUP, not just the pid (B1)
-///
-/// The spawned PID is a `node` launcher (`codex.js`) that forks a **native
-/// `codex app-server` child** holding the listening socket FDs. A pid-only
-/// kill — including `kill_on_drop` — SIGKILLs only the launcher; the native
-/// child survives, is reparented under `systemd --user`, and keeps serving.
-/// So the reap escalates over the child's **process group**
-/// (`kill(-pgid, …)`; the launcher is spawned as a group leader so the
-/// native child shares its pgid):
-///
-///   1. `SIGTERM` the group, give it [`GROUP_KILL_GRACE`] to exit, then
-///   2. `SIGKILL` the group if anything's left,
-///   3. remove the listen socket + the now-empty per-card dir (B2 —
-///      mirrors the PTY `remove_file(sock)` in [`reap_terminal_artifacts`];
-///      otherwise `<data_dir>/appserver/<card_id>/` accumulates forever),
-///   4. drop the handle (the [`SpecPushHandle::drop`] safety-net group
-///      SIGTERM is a no-op by now, plus consumer/reader task aborts).
-///
-/// ## Hard-crash orphan gap
-///
-/// If the kernel is `SIGKILL`ed (or the box loses power) the in-process reap
-/// never runs. PR7c removed the legacy per-card appserver takeover path, so
-/// shared spec-card recovery is now handled by the shared appserver supervisor
-/// and thread-mapping takeover.
-pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
-    reap_spec_push_from_registry(&state.spec_push, wave_id).await;
-}
-
-pub async fn reap_spec_push_from_registry(spec_push: &SpecPushRegistry, wave_id: &WaveId) {
-    let Some(handle) = spec_push.remove(wave_id) else {
-        return;
-    };
-    if handle.is_shared() {
-        tracing::info!(
-            wave_id = %wave_id,
-            thread_id = %handle.thread_id.as_deref().unwrap_or("<pending-thread-start>"),
-            "spec push: dropping shared-daemon handle on wave/spec-card delete (daemon lifecycle is shared)"
-        );
-        drop(handle);
-        return;
-    }
-    let Some(pgid) = handle.legacy_pgid() else {
-        drop(handle);
-        return;
-    };
-    let Some(sock) = handle.legacy_sock().map(PathBuf::from) else {
-        drop(handle);
-        return;
-    };
-    tracing::info!(
-        wave_id = %wave_id,
-        thread_id = %handle.thread_id.as_deref().unwrap_or("<pending-thread-start>"),
-        pgid,
-        sock = %sock.display(),
-        "spec push: reaping app-server handle on wave/spec-card delete (group SIGTERM→SIGKILL)",
-    );
-    // Load-bearing reap: SIGTERM the whole group, then SIGKILL after a
-    // short grace. `signal_process_group` returns false on ESRCH (group
-    // already gone), so we skip the grace+SIGKILL when SIGTERM found
-    // nothing.
-    if crate::spec_appserver::signal_process_group(pgid, libc::SIGTERM) {
-        tokio::time::sleep(GROUP_KILL_GRACE).await;
-        crate::spec_appserver::signal_process_group(pgid, libc::SIGKILL);
-    }
-    // B2: remove the stale socket + the now-empty per-card dir.
-    let _ = crate::spec_appserver::cleanup_sock_dir(&sock);
-    // Drop the handle last: aborts the consumer + client reader tasks. The
-    // handle's Drop also fires a best-effort group SIGTERM, a no-op here.
-    drop(handle);
-}
-
-/// Grace window between the group `SIGTERM` and the follow-up `SIGKILL` in
-/// [`reap_spec_push`]. Short — a healthy `codex app-server` exits on
-/// SIGTERM in well under a second; we don't want to block a wave-delete
-/// handler (or the sweep tick) any longer than necessary before forcing it.
-const GROUP_KILL_GRACE: Duration = Duration::from_millis(500);
 
 /// SIGTERM a known pid for a partial spawn that wrote `pid` to the
 /// terminal row but never reached the `renderer entry` write. The

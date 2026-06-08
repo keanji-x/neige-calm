@@ -9,11 +9,8 @@
 //!   * The card_role_cache carries `Spec` for the auto-minted card.
 //!   * `enforce_role` permits the spec card to emit `WaveUpdated`
 //!     (via direct CardRoleCache lookup + `enforce_role` call).
-//!   * Issue #236: the daemon spawn is now **synchronous** with the
-//!     201 response. With a stubbed-bin daemon the spawn fails and
-//!     the route returns 500 (wave + card + terminal rows persist;
-//!     both events still broadcast since they emit at commit-time,
-//!     before the spawn attempt).
+//!   * With a broken shared codex daemon, wave create still returns
+//!     201 and commits an inert spec card with no terminal row.
 //!
 //! Strategy mirrors `tests/codex_card_endpoint.rs`: build a real Axum
 //! router with `AppState::from_parts`, hit it with `tower::ServiceExt`,
@@ -51,12 +48,9 @@ struct Boot {
     _tmp: TempDir,
 }
 
-/// Boot a router pointing at a non-existent daemon bin. The daemon
-/// spawn will fail synchronously on `POST /api/waves` (issue #236),
-/// so the route returns 500 — but the spec card row + terminal row
-/// plus both events still land, since the events emit at tx commit
-/// before the spawn attempt and the row writes are not rolled back
-/// (we'd lose the user's typed title for a recoverable spawn issue).
+/// Boot a router pointing at a non-existent codex bin. The shared daemon
+/// start fails, but `POST /api/waves` still commits the wave/spec/report
+/// rows and returns 201 with an inert spec card.
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -282,7 +276,7 @@ async fn post_api_waves_mints_spec_card_atomically() {
     );
 
     // DB invariants: spec + wave-report cards under the wave, kind=codex
-    // for the spec, backing terminal row exists.
+    // for the spec, and no terminal row for the inert spec card.
     let wave_id = match &envelopes[0].event {
         Event::WaveUpdated(w) => w.id.clone(),
         _ => unreachable!(),
@@ -302,9 +296,11 @@ async fn post_api_waves_mints_spec_card_atomically() {
         .repo
         .terminal_get_by_card(spec_card_id.as_str())
         .await
-        .unwrap()
-        .expect("spec terminal row exists");
-    assert_eq!(term.program, "codex");
+        .unwrap();
+    assert!(
+        term.is_none(),
+        "inert spec card should not have a terminal row"
+    );
 }
 
 #[tokio::test]
