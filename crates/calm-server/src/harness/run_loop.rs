@@ -45,7 +45,7 @@ pub struct SpecHarnessParams {
     pub snapshot: HarnessSnapshot,
 }
 
-struct Inner {
+pub(super) struct Inner {
     runtime_id: RuntimeId,
     wave_id: WaveId,
     card_id: CardId,
@@ -71,6 +71,22 @@ struct Inner {
     shutting_down: Arc<AtomicBool>,
     abort_handle: StdMutex<Option<AbortHandle>>,
     config: HarnessConfig,
+}
+
+pub(super) struct IssueTurnHandle<'a> {
+    daemon: &'a Arc<SharedCodexAppServer>,
+}
+
+impl<'a> IssueTurnHandle<'a> {
+    pub(super) fn from_reconciliation(inner: &'a Inner) -> Self {
+        Self {
+            daemon: &inner.daemon,
+        }
+    }
+
+    pub(super) async fn issue(&self, thread_id: &str, input: Vec<InputItem>) -> Result<String> {
+        self.daemon.turn_start(thread_id, input).await
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -764,9 +780,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     };
 
-    match inner
-        .daemon
-        .turn_start(&thread_id, vec![InputItem::text(text)])
+    match IssueTurnHandle::from_reconciliation(inner)
+        .issue(&thread_id, vec![InputItem::text(text)])
         .await
     {
         Ok(turn_id) => {

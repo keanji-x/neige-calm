@@ -509,6 +509,9 @@ impl SharedCodexAppServer {
         self.reap_and_respawn_with_current_settings().await
     }
 
+    /// ARCH INVARIANT (#550 F3): spec-harness reconciliation turn issuance
+    /// goes through `harness::run_loop::IssueTurnHandle`; direct callers here
+    /// are non-harness boot/operation paths or lower-level tests.
     pub async fn turn_start(&self, thread_id: &str, items: Vec<InputItem>) -> Result<TurnId> {
         if !self.thread_cache.contains_key(thread_id) {
             tracing::warn!(
