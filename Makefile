@@ -50,6 +50,24 @@ COMPOSE_PROJECT_NAME ?= neige-calm-$(DEV_ID)
 export DEV_ID
 export COMPOSE_PROJECT_NAME
 
+# Optional local overrides (.gitignored — see .gitignore). Docker compose
+# reads this automatically for service env interpolation; we `-include` it
+# here so the proxy-forwarder target sees the same vars.
+-include .env
+
+# Proxy forwarder — alpine/socat container bridging docker0 to a host-bound
+# upstream proxy. Linux loopback (127.0.0.1) is in the host net namespace
+# and unreachable from bridge containers; the forwarder listens on the
+# docker0 gateway IP, runs in --network host so its 127.0.0.1 = host's,
+# and forwards to the upstream. Leave CALM_HOST_PROXY_PORT empty in .env
+# to skip (no proxy needed).
+CALM_HOST_PROXY_HOST ?= 127.0.0.1
+CALM_FORWARDER_PORT  ?= 2081
+PROXY_FORWARDER_NAME ?= calm-proxy-forwarder
+PROXY_FORWARDER_IMAGE ?= alpine/socat
+DOCKER_BRIDGE_IP     ?= 172.17.0.1
+export CALM_FORWARDER_PORT
+
 CALM_CONTAINER_STATE_DIR ?= /var/lib/neige-calm
 CALM_DATA_DIR ?= $(CALM_CONTAINER_STATE_DIR)/data
 CALM_DB_URL ?= sqlite://$(CALM_CONTAINER_STATE_DIR)/calm.db?mode=rwc
@@ -195,8 +213,43 @@ $(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/p
 
 # ---- docker lifecycle ---------------------------------------------------
 
+.PHONY: proxy-forwarder-up
+proxy-forwarder-up: ## Ensure the host-loopback → docker0 proxy forwarder container is running.
+	@if [ -z "$(CALM_HOST_PROXY_PORT)" ]; then \
+	    echo "  Proxy forwarder skipped (CALM_HOST_PROXY_PORT not set in .env)"; \
+	    exit 0; \
+	fi; \
+	spec="$(CALM_HOST_PROXY_HOST):$(CALM_HOST_PROXY_PORT)->$(DOCKER_BRIDGE_IP):$(CALM_FORWARDER_PORT)"; \
+	if docker inspect $(PROXY_FORWARDER_NAME) >/dev/null 2>&1; then \
+	    existing=$$(docker inspect -f '{{index .Config.Labels "calm.proxy.spec"}}' $(PROXY_FORWARDER_NAME) 2>/dev/null || echo ""); \
+	    running=$$(docker inspect -f '{{.State.Running}}' $(PROXY_FORWARDER_NAME) 2>/dev/null || echo "false"); \
+	    if [ "$$existing" != "$$spec" ]; then \
+	        echo "  Forwarder spec changed ($$existing → $$spec); recreating"; \
+	        docker rm -f $(PROXY_FORWARDER_NAME) >/dev/null; \
+	    elif [ "$$running" != "true" ]; then \
+	        docker start $(PROXY_FORWARDER_NAME) >/dev/null; \
+	        echo "  Forwarder restarted: $$spec"; \
+	        exit 0; \
+	    else \
+	        echo "  Forwarder already up: $$spec"; \
+	        exit 0; \
+	    fi; \
+	fi; \
+	docker run -d --network host \
+	    --name $(PROXY_FORWARDER_NAME) \
+	    --label "calm.proxy.spec=$$spec" \
+	    --restart unless-stopped \
+	    $(PROXY_FORWARDER_IMAGE) \
+	    tcp-listen:$(CALM_FORWARDER_PORT),bind=$(DOCKER_BRIDGE_IP),fork,reuseaddr \
+	    tcp:$(CALM_HOST_PROXY_HOST):$(CALM_HOST_PROXY_PORT) >/dev/null; \
+	echo "  Forwarder created: $$spec"
+
+.PHONY: proxy-forwarder-down
+proxy-forwarder-down: ## Remove the proxy forwarder container.
+	-@docker rm -f $(PROXY_FORWARDER_NAME) >/dev/null 2>&1 && echo "  Forwarder removed" || echo "  Forwarder not present"
+
 .PHONY: dev
-dev: build dirs ## Build, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
+dev: proxy-forwarder-up build dirs ## Build, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
 ifeq ($(FRESH),1)
 	@echo "  FRESH=1 — stopping stack, removing container state, then bringing up"
 	-$(COMPOSE) down -v --remove-orphans
@@ -216,7 +269,7 @@ endif
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: dev-fresh
-dev-fresh: build ## Remove this DEV_ID's containers/state, then start a fresh stack.
+dev-fresh: proxy-forwarder-up build ## Remove this DEV_ID's containers/state, then start a fresh stack.
 	-$(COMPOSE) down -v --remove-orphans
 	$(MAKE) dirs
 	$(COMPOSE) up -d --build
@@ -229,7 +282,7 @@ dev-fresh: build ## Remove this DEV_ID's containers/state, then start a fresh st
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: up
-up: dirs ## Bring the stack up without rebuilding.
+up: proxy-forwarder-up dirs ## Bring the stack up without rebuilding.
 	$(COMPOSE) up -d
 
 .PHONY: stop
