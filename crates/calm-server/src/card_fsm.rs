@@ -415,6 +415,7 @@ impl Inner {
                 card_id,
                 kind,
                 payload,
+                ..
             } => {
                 let Some(target) = claude_kind_to_state(&kind, &payload) else {
                     return;
@@ -930,6 +931,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -978,6 +980,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -987,6 +990,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.permission_request".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1022,6 +1026,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1031,6 +1036,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.post_tool_use".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1047,6 +1053,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.stop".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1076,6 +1083,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.permission_request".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1109,6 +1117,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.permission_request".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1133,6 +1142,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1172,6 +1182,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.permission_request".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1185,6 +1196,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.permission_request".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1268,6 +1280,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_a.id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1276,6 +1289,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_b.id.clone(),
                 kind: "hook.codex.permission_request".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );
@@ -1297,6 +1311,7 @@ mod tests {
             Event::CodexHook {
                 card_id: card_b.id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
+                hook_idempotency_key: "hook-key".into(),
                 payload: Value::Null,
             },
         );

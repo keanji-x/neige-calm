@@ -39,6 +39,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -78,17 +79,25 @@ impl HookProvider {
         }
     }
 
-    fn event(self, card_id: CardId, kind: String, payload: Value) -> Event {
+    fn event(
+        self,
+        card_id: CardId,
+        kind: String,
+        payload: Value,
+        hook_idempotency_key: String,
+    ) -> Event {
         match self {
             Self::Codex => Event::CodexHook {
                 card_id,
                 kind,
                 payload,
+                hook_idempotency_key,
             },
             Self::Claude => Event::ClaudeHook {
                 card_id,
                 kind,
                 payload,
+                hook_idempotency_key,
             },
         }
     }
@@ -140,6 +149,24 @@ pub(crate) async fn ingest_provider_hook(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
     let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
+    let hook_idempotency_key =
+        hook_idempotency_key(provider, &card_id_str, &payload, crate::model::now_ms());
+    {
+        let mut cache = s
+            .hook_ingest_cache
+            .lock()
+            .expect("hook ingest cache mutex poisoned");
+        if cache.contains(&hook_idempotency_key) {
+            tracing::warn!(
+                target: "hook.ingest.dedupe",
+                provider = ?provider,
+                key = %hook_idempotency_key,
+                "duplicate hook ingest suppressed"
+            );
+            return Ok(());
+        }
+        cache.insert(hook_idempotency_key.clone());
+    }
 
     // PR3 (#136) — reattribute the hook to the codex card that produced
     // it. PR2's stopgap stamped `ActorId::Kernel` because there was no
@@ -176,10 +203,56 @@ pub(crate) async fn ingest_provider_hook(
             &s.events,
             s.write.role_cache(),
             s.write.cove_cache(),
-            provider.event(card_id_typed, kind, payload),
+            provider.event(card_id_typed, kind, payload, hook_idempotency_key),
         )
         .await?;
     Ok(())
+}
+
+fn hook_idempotency_key(
+    provider: HookProvider,
+    card_id: &str,
+    payload: &Value,
+    now_ms: i64,
+) -> String {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let transcript_path = payload
+        .get("transcript_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let transcript_size = payload
+        .get("transcript_size_bytes")
+        .and_then(Value::as_i64)
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let primary = format!(
+        "{prov}|{card}|{session_id}|{transcript_path}|{transcript_size}",
+        prov = provider.kind_prefix(),
+        card = card_id
+    );
+    if !session_id.is_empty() && (!transcript_path.is_empty() || !transcript_size.is_empty()) {
+        return sha256_hex(&primary);
+    }
+
+    let hook_event = payload
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let now_sec = now_ms / 1000;
+    sha256_hex(&format!(
+        "{prov}|{card}|{session_id}|{hook_event}|{now_sec}",
+        prov = provider.kind_prefix(),
+        card = card_id
+    ))
+}
+
+fn sha256_hex(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Convert codex's `PascalCase` event names (`PreToolUse`) to snake.
@@ -212,5 +285,34 @@ mod tests {
         assert_eq!(to_snake_case("Stop"), "stop");
         assert_eq!(to_snake_case("SessionStart"), "session_start");
         assert_eq!(to_snake_case("unknown"), "unknown");
+    }
+
+    #[test]
+    fn hook_key_uses_transcript_primary_when_available() {
+        let payload = serde_json::json!({
+            "hook_event_name": "Stop",
+            "session_id": "s1",
+            "transcript_path": "/tmp/t.jsonl",
+            "transcript_size_bytes": 42,
+        });
+
+        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1000);
+        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 2999);
+        assert_eq!(first, second);
+        assert!(!first.is_empty());
+    }
+
+    #[test]
+    fn hook_key_fallback_is_second_bucketed() {
+        let payload = serde_json::json!({
+            "hook_event_name": "Stop",
+            "session_id": "s1",
+        });
+
+        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1999);
+        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1000);
+        let third = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 2000);
+        assert_eq!(first, second);
+        assert_ne!(first, third);
     }
 }

@@ -182,10 +182,12 @@ async fn post_and_assert(
         Event::ClaudeHook {
             card_id: event_card_id,
             kind,
+            hook_idempotency_key,
             payload: event_payload,
         } => {
             assert_eq!(event_card_id.as_str(), card_id);
             assert_eq!(kind, expected_kind);
+            assert!(!hook_idempotency_key.is_empty());
             assert_eq!(event_payload, &payload);
         }
         other => panic!("expected ClaudeHook, got {other:?}"),

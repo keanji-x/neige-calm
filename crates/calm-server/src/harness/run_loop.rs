@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -23,6 +23,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
 
 const OBSERVATION_BUFFER: usize = 256;
+const RECENT_HOOK_KEY_CACHE_LEN: usize = 256;
 
 #[derive(Clone)]
 pub struct SpecHarness {
@@ -58,6 +59,8 @@ struct Inner {
     last_phase: Mutex<HarnessPhaseTag>,
     pending_queue: Mutex<VecDeque<Observation>>,
     pending_envelope_ids: Mutex<VecDeque<Option<i64>>>,
+    recent_hook_keys: Mutex<VecDeque<String>>,
+    recent_hook_key_set: Mutex<HashSet<String>>,
     push_watermark: Mutex<i64>,
     last_turn_id: Mutex<Option<String>>,
     last_report_body_sha256: Mutex<Option<String>>,
@@ -220,6 +223,8 @@ fn inner_from_params(
         last_phase: Mutex::new(last_phase),
         pending_envelope_ids: Mutex::new(snapshot.pending_envelope_ids.into_iter().collect()),
         pending_queue: Mutex::new(snapshot.pending_queue.into_iter().collect()),
+        recent_hook_keys: Mutex::new(VecDeque::with_capacity(RECENT_HOOK_KEY_CACHE_LEN)),
+        recent_hook_key_set: Mutex::new(HashSet::with_capacity(RECENT_HOOK_KEY_CACHE_LEN)),
         push_watermark: Mutex::new(snapshot.push_watermark),
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
@@ -314,6 +319,9 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
         let mut watermark = inner.push_watermark.lock().await;
         *watermark = (*watermark).max(envelope_id);
     }
+    if suppress_duplicate_hook_stop(inner, &obs).await {
+        return;
+    }
     let hard_fire = obs.is_hard_fire();
     inner.pending_queue.lock().await.push_back(obs);
     inner
@@ -328,6 +336,36 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
     }
     debounce.last_pending_at = Some(now);
     debounce.hard_fire |= hard_fire;
+}
+
+async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, obs: &Observation) -> bool {
+    let Observation::WorkerHookStop {
+        idempotency_key, ..
+    } = obs
+    else {
+        return false;
+    };
+    if idempotency_key.is_empty() {
+        return false;
+    }
+    let mut set = inner.recent_hook_key_set.lock().await;
+    if set.contains(idempotency_key) {
+        tracing::warn!(
+            target: "spec.harness.dedupe",
+            key = %idempotency_key,
+            "duplicate WorkerHookStop suppressed"
+        );
+        return true;
+    }
+    set.insert(idempotency_key.clone());
+    let mut keys = inner.recent_hook_keys.lock().await;
+    keys.push_back(idempotency_key.clone());
+    while keys.len() > RECENT_HOOK_KEY_CACHE_LEN {
+        if let Some(evicted) = keys.pop_front() {
+            set.remove(&evicted);
+        }
+    }
+    false
 }
 
 async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> {
