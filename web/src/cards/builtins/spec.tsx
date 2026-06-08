@@ -1,5 +1,8 @@
-import { useEffect, useRef, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { z } from 'zod';
+import type { components, operations } from '../../api/generated';
 import { sharedEventStream } from '../../api/events';
 import { resetSpecCard } from '../../api/calm';
 import { Icon } from '../../Icon';
@@ -41,6 +44,10 @@ type SpecLogoStyle = CSSProperties & {
   '--agent-card-logo-bg'?: string;
   '--agent-card-logo-fg'?: string;
 };
+
+type HarnessItem = components['schemas']['HarnessItem'];
+type HarnessItemsQuery = operations['get_harness_items']['parameters']['query'];
+type JsonRecord = Record<string, unknown>;
 
 const specPayloadSchema = z.object({
   spec_harness: z.literal(true),
@@ -169,14 +176,451 @@ function GoalBanner({ goal }: { goal?: string }) {
   );
 }
 
-export function ChatTimeline({ cardId: _cardId }: { cardId?: string }) {
+function isRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringField(record: JsonRecord | null, key: string): string | null {
+  const value = record?.[key];
+  return typeof value === 'string' ? value : null;
+}
+
+function textFromContent(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return null;
+  const parts = value
+    .map((part) => {
+      if (typeof part === 'string') return part;
+      if (!isRecord(part)) return null;
+      const text = stringField(part, 'text');
+      if (text !== null) return text;
+      const content = part.content;
+      return typeof content === 'string' ? content : null;
+    })
+    .filter((part): part is string => part !== null && part.length > 0);
+  return parts.length > 0 ? parts.join('\n') : null;
+}
+
+function formatUnknown(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === undefined || value === null) return '';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function parseHarnessParams(raw: string): {
+  item: JsonRecord | null;
+  parseError: string | null;
+} {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const envelope = isRecord(parsed) ? parsed : null;
+    const item = envelope && isRecord(envelope.item) ? envelope.item : null;
+    return { item, parseError: null };
+  } catch (err) {
+    return {
+      item: null,
+      parseError: err instanceof Error ? err.message : 'Invalid JSON',
+    };
+  }
+}
+
+function itemText(item: JsonRecord | null): string | null {
+  if (!item) return null;
+  return (
+    stringField(item, 'text') ??
+    textFromContent(item.content) ??
+    textFromContent(item.message)
+  );
+}
+
+function itemOutput(item: JsonRecord | null): string {
+  if (!item) return '';
+  return (
+    stringField(item, 'output') ??
+    stringField(item, 'text') ??
+    textFromContent(item.content) ??
+    formatUnknown(item.output ?? item.content ?? item)
+  );
+}
+
+function itemQuery(item: JsonRecord | null): string {
+  if (!item) return '';
+  const action = isRecord(item.action) ? item.action : null;
+  return (
+    stringField(item, 'query') ??
+    stringField(action, 'query') ??
+    stringField(item, 'text') ??
+    ''
+  );
+}
+
+function itemCommand(item: JsonRecord | null): string {
+  if (!item) return '';
+  const action = isRecord(item.action) ? item.action : null;
+  return (
+    stringField(item, 'command') ??
+    stringField(item, 'cmd') ??
+    stringField(action, 'command') ??
+    stringField(action, 'cmd') ??
+    ''
+  );
+}
+
+function functionName(item: JsonRecord | null): string {
+  if (!item) return 'tool';
+  const fn = isRecord(item.function) ? item.function : null;
+  return stringField(item, 'name') ?? stringField(fn, 'name') ?? 'tool';
+}
+
+function functionArgs(item: JsonRecord | null): string {
+  if (!item) return '';
+  const fn = isRecord(item.function) ? item.function : null;
+  return formatUnknown(item.arguments ?? item.args ?? fn?.arguments ?? fn?.args);
+}
+
+function normalizedItemType(itemType: string | null | undefined): string {
+  switch (itemType) {
+    case 'agentMessage':
+      return 'agent_message';
+    case 'functionCall':
+      return 'function_call';
+    case 'functionCallOutput':
+      return 'function_call_output';
+    case 'webSearch':
+      return 'web_search';
+    case 'localShell':
+      return 'local_shell';
+    default:
+      return itemType ?? 'unknown';
+  }
+}
+
+function isAtBottom(node: HTMLDivElement | null): boolean {
+  if (!node) return true;
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= 32;
+}
+
+function mergeHarnessRows(
+  prev: Map<number, HarnessItem>,
+  rows: HarnessItem[],
+): { map: Map<number, HarnessItem>; changed: boolean } {
+  if (rows.length === 0) return { map: prev, changed: false };
+  let next: Map<number, HarnessItem> | null = null;
+
+  const ensureNext = () => {
+    if (!next) next = new Map(prev);
+    return next;
+  };
+
+  for (const row of rows.slice().sort((a, b) => a.id - b.id)) {
+    const target = ensureNext();
+    if (row.method === 'item/completed' && row.item_uuid) {
+      for (const [id, existing] of target) {
+        if (
+          id !== row.id &&
+          existing.item_uuid === row.item_uuid &&
+          existing.method === 'item/started' &&
+          existing.id < row.id
+        ) {
+          target.delete(id);
+        }
+      }
+    }
+    target.set(row.id, row);
+  }
+
+  return { map: next ?? prev, changed: next !== null };
+}
+
+async function fetchHarnessItems(
+  cardId: string,
+  query: HarnessItemsQuery,
+  signal?: AbortSignal,
+): Promise<HarnessItem[]> {
+  const qs = new URLSearchParams();
+  if (query?.after_id !== undefined && query.after_id !== null) {
+    qs.set('after_id', String(query.after_id));
+  }
+  if (query?.limit !== undefined && query.limit !== null) {
+    qs.set('limit', String(query.limit));
+  }
+  const suffix = qs.toString();
+  const res = await fetch(
+    `/api/cards/${encodeURIComponent(cardId)}/harness/items${
+      suffix ? `?${suffix}` : ''
+    }`,
+    { credentials: 'include', signal },
+  );
+  if (!res.ok) {
+    throw new Error(res.statusText || `HTTP ${res.status}`);
+  }
+  return (await res.json()) as HarnessItem[];
+}
+
+function TimelinePre({ children }: { children: string }) {
+  return (
+    <pre
+      style={{
+        margin: 0,
+        padding: 'var(--space-3)',
+        borderRadius: 'var(--radius-sm)',
+        background: 'var(--surface-chip)',
+        color: 'var(--text-1)',
+        fontFamily: 'var(--font-code)',
+        fontSize: 'var(--text-sm)',
+        lineHeight: 'var(--leading-loose)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        overflow: 'auto',
+      }}
+    >
+      {children}
+    </pre>
+  );
+}
+
+function SpecMarkdown({ children }: { children: string }) {
   return (
     <div
-      className="wave-report-empty"
+      className="wave-report-section-body"
+      style={{
+        color: 'var(--text-1)',
+        overflowWrap: 'anywhere',
+      }}
+    >
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+    </div>
+  );
+}
+
+function TimelineBubble({
+  children,
+  tone = 'default',
+}: {
+  children: ReactNode;
+  tone?: 'default' | 'muted';
+}) {
+  return (
+    <div
+      style={{
+        maxWidth: '100%',
+        padding: 'var(--space-3) var(--space-4)',
+        borderRadius: 'var(--radius-md)',
+        border: '1px solid var(--hairline)',
+        background: tone === 'muted' ? 'var(--paper-2)' : 'var(--paper)',
+        color: tone === 'muted' ? 'var(--text-3)' : 'var(--text-1)',
+        fontSize: 'var(--text-sm)',
+        lineHeight: 'var(--leading-loose)',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function HarnessItemView({ row }: { row: HarnessItem }) {
+  const { item, parseError } = parseHarnessParams(row.params);
+  const itemType = normalizedItemType(row.item_type);
+  if (parseError) {
+    return (
+      <TimelineBubble tone="muted">
+        [{itemType}] could not parse params: {parseError}
+      </TimelineBubble>
+    );
+  }
+
+  switch (itemType) {
+    case 'agent_message': {
+      const text = itemText(item);
+      return (
+        <TimelineBubble tone={text ? 'default' : 'muted'}>
+          {text ? <SpecMarkdown>{text}</SpecMarkdown> : <em>Thinking...</em>}
+        </TimelineBubble>
+      );
+    }
+    case 'reasoning': {
+      const text = itemText(item) ?? itemOutput(item);
+      return (
+        <details
+          style={{
+            border: '1px solid var(--hairline)',
+            borderRadius: 'var(--radius-md)',
+            background: 'var(--paper-2)',
+            padding: 'var(--space-3) var(--space-4)',
+          }}
+        >
+          <summary
+            style={{
+              cursor: 'pointer',
+              color: 'var(--text-2)',
+              fontSize: 'var(--text-sm)',
+              fontWeight: 600,
+              letterSpacing: 0,
+            }}
+          >
+            Reasoning
+          </summary>
+          {text ? (
+            <div style={{ marginTop: 'var(--space-3)' }}>
+              <SpecMarkdown>{text}</SpecMarkdown>
+            </div>
+          ) : null}
+        </details>
+      );
+    }
+    case 'function_call': {
+      return (
+        <TimelineBubble>
+          Called <strong>{functionName(item)}</strong>(
+          <code>{functionArgs(item)}</code>)
+        </TimelineBubble>
+      );
+    }
+    case 'function_call_output': {
+      return <TimelinePre>{itemOutput(item)}</TimelinePre>;
+    }
+    case 'web_search': {
+      return <TimelineBubble>Searched: {itemQuery(item) || '(empty query)'}</TimelineBubble>;
+    }
+    case 'local_shell': {
+      const command = itemCommand(item);
+      const output = itemOutput(item);
+      const body = `${command ? `$ ${command}` : '$'}${output ? `\n${output}` : ''}`;
+      return <TimelinePre>{body}</TimelinePre>;
+    }
+    default:
+      return (
+        <TimelineBubble tone="muted">
+          [{itemType}]
+        </TimelineBubble>
+      );
+  }
+}
+
+export function ChatTimeline({ cardId }: { cardId?: string }) {
+  const [items, setItems] = useState<Map<number, HarnessItem>>(() => new Map());
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollRef = useRef(false);
+  const rows = useMemo(
+    () => Array.from(items.values()).sort((a, b) => a.id - b.id),
+    [items],
+  );
+
+  useEffect(() => {
+    if (pendingScrollRef.current) {
+      const node = scrollRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+      pendingScrollRef.current = false;
+    }
+  }, [rows]);
+
+  useEffect(() => {
+    setItems(new Map());
+    setError(null);
+    if (!cardId) {
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setLoading(true);
+    fetchHarnessItems(cardId, { limit: 100 }, controller.signal)
+      .then((loaded) => {
+        if (cancelled) return;
+        pendingScrollRef.current = true;
+        setItems(mergeHarnessRows(new Map(), loaded).map);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled || controller.signal.aborted) return;
+        setError(err instanceof Error ? err.message : 'Failed to load conversation');
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [cardId]);
+
+  useEffect(() => {
+    if (!cardId) return;
+    const stream = sharedEventStream();
+    stream.addTopic(`card:${cardId}`);
+    const controller = new AbortController();
+    let cancelled = false;
+    const off = stream.on((ev) => {
+      if (ev.ev !== 'harness.item.added' || ev.data.card_id !== cardId) return;
+      const shouldScroll = isAtBottom(scrollRef.current);
+      void fetchHarnessItems(
+        cardId,
+        { after_id: ev.data.item_db_id - 1, limit: 1 },
+        controller.signal,
+      )
+        .then((loaded) => {
+          if (cancelled || loaded.length === 0) return;
+          if (shouldScroll) pendingScrollRef.current = true;
+          setItems((prev) => mergeHarnessRows(prev, loaded).map);
+        })
+        .catch(() => {
+          if (!cancelled && shouldScroll) pendingScrollRef.current = false;
+        });
+    });
+    return () => {
+      cancelled = true;
+      off();
+      controller.abort();
+    };
+  }, [cardId]);
+
+  const onScroll = () => {
+    if (isAtBottom(scrollRef.current)) {
+      pendingScrollRef.current = false;
+    }
+  };
+
+  return (
+    <div
       data-testid="spec-chat-timeline"
       aria-label="Spec chat timeline"
+      ref={scrollRef}
+      onScroll={onScroll}
+      style={{
+        height: '100%',
+        overflow: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-3)',
+        paddingBottom: 'var(--space-4)',
+      }}
     >
-      <em>No conversation items yet.</em>
+      {loading && rows.length === 0 && (
+        <div className="wave-report-empty" style={{ padding: 0 }}>
+          <em>Loading conversation...</em>
+        </div>
+      )}
+      {error && rows.length === 0 && (
+        <div className="wave-report-empty" role="alert" style={{ padding: 0 }}>
+          {error}
+        </div>
+      )}
+      {!loading && !error && rows.length === 0 && (
+        <div className="wave-report-empty" style={{ padding: 0 }}>
+          <em>No conversation items yet.</em>
+        </div>
+      )}
+      {rows.map((row) => (
+        <div key={row.id}>
+          <HarnessItemView row={row} />
+        </div>
+      ))}
     </div>
   );
 }
