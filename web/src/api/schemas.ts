@@ -251,6 +251,43 @@ export const runtimeSupersededSchema = z.object({
   }),
 });
 
+export const harnessPhaseTagSchema = z.enum([
+  'pending_thread_start',
+  'idle',
+  'issuing_turn',
+  'issuing_interrupt',
+  'turn_running',
+  'turn_completed',
+  'resumed',
+  'wedged',
+]);
+export type HarnessPhaseTag = z.infer<typeof harnessPhaseTagSchema>;
+
+export const harnessItemAddedSchema = z.object({
+  ev: z.literal('harness.item.added'),
+  data: z.object({
+    runtime_id: z.string(),
+    card_id: z.string(),
+    wave_id: z.string(),
+    item_db_id: z.number(),
+    item_uuid: z.string().nullable(),
+    item_type: z.string().nullable(),
+    turn_id: z.string().nullable(),
+    method: z.string(),
+  }),
+});
+
+export const harnessPhaseChangedSchema = z.object({
+  ev: z.literal('harness.phase.changed'),
+  data: z.object({
+    runtime_id: z.string(),
+    card_id: z.string(),
+    wave_id: z.string(),
+    old_phase: harnessPhaseTagSchema,
+    new_phase: harnessPhaseTagSchema,
+  }),
+});
+
 /**
  * Issue #247 PR2 — `Event::WaveReportEdited`. Structured edit-log
  * companion to `card.updated` emitted from every wave-report write.
@@ -509,6 +546,8 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   runtimeStartedSchema,
   runtimeStatusChangedSchema,
   runtimeSupersededSchema,
+  harnessItemAddedSchema,
+  harnessPhaseChangedSchema,
   waveReportEditedSchema,
   overlaySetSchema,
   overlayDeletedSchema,
@@ -544,6 +583,8 @@ export type CardDeletedEvent = z.infer<typeof cardDeletedSchema>;
 export type RuntimeStartedEvent = z.infer<typeof runtimeStartedSchema>;
 export type RuntimeStatusChangedEvent = z.infer<typeof runtimeStatusChangedSchema>;
 export type RuntimeSupersededEvent = z.infer<typeof runtimeSupersededSchema>;
+export type HarnessItemAddedEvent = z.infer<typeof harnessItemAddedSchema>;
+export type HarnessPhaseChangedEvent = z.infer<typeof harnessPhaseChangedSchema>;
 export type WaveReportEditedEvent = z.infer<typeof waveReportEditedSchema>;
 export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;

@@ -587,6 +587,9 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
   actions: specSessionActions,
   fromKernel: (k) => {
     if (k.kind !== 'codex') return null;
+    if ((k.payload as Record<string, unknown> | undefined)?.spec_harness === true) {
+      return null;
+    }
     const candidate = k.payload ?? {};
     // Tier A schemaVersion check; see TerminalEntry for the full rationale.
     const version = payloadSchemaVersion(candidate);

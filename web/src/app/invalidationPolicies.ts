@@ -123,6 +123,12 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     // No runtime-detail cache key exists yet; old runtime id removal is a
     // no-op for now. The registry can refine this when a consumer appears.
   },
+  'harness.item.added': noop(
+    'Spec ChatTimeline card-topic consumers handle harness item payloads directly.',
+  ),
+  'harness.phase.changed': noop(
+    'SpecCard card-topic consumers handle harness phase updates directly.',
+  ),
   'wave.report_edited': noop(
     'Companion card.updated invalidates the report card projection.',
   ),

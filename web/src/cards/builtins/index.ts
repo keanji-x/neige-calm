@@ -12,12 +12,13 @@
 import { registerCard } from '../registry';
 import { TerminalEntry } from './terminal';
 import { ClaudeEntry, CodexEntry } from './codex';
+import { SpecEntry } from './spec';
 import { WaveReportEntry } from './wave-report';
 import { FileViewerEntry } from './file-viewer';
 import { IframeEntry } from './iframe';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, CodexEntry, ClaudeEntry, WaveReportEntry, FileViewerEntry, IframeEntry, PluginIframeEntry };
+export { TerminalEntry, CodexEntry, SpecEntry, ClaudeEntry, WaveReportEntry, FileViewerEntry, IframeEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -29,6 +30,7 @@ export function registerBuiltins(): void {
   registered = true;
   registerCard(TerminalEntry);
   registerCard(CodexEntry);
+  registerCard(SpecEntry);
   registerCard(ClaudeEntry);
   // Issue #229 PR B — wave-report card. Kernel-minted (one per wave),
   // kind = "wave-report". No `addPanel` entry — users cannot add
