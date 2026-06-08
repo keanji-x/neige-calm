@@ -467,8 +467,10 @@ fn write_hook_fallback(
 ) -> Result<(), String> {
     let dir = hook_fallback_dir().join(provider.fallback_dir_name());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{idempotency_key}.json"));
-    let tmp = dir.join(format!(".{idempotency_key}.{}.tmp", std::process::id()));
+    let body_hash = sha256_hex(body);
+    let file_stem = format!("{idempotency_key}-{}", &body_hash[..16]);
+    let path = dir.join(format!("{file_stem}.json"));
+    let tmp = dir.join(format!(".{file_stem}.{}.tmp", std::process::id()));
     let body = serde_json::from_str::<Value>(body).unwrap_or_else(|_| Value::String(body.into()));
     let record = serde_json::json!({
         "card_id": card_id,

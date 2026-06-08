@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -77,6 +78,7 @@ fn request_body_bounds(request: &[u8]) -> Option<(usize, usize)> {
 fn spawn_bridge(
     base_url: &str,
     fallback_dir: &std::path::Path,
+    payload: serde_json::Value,
 ) -> (String, std::process::ExitStatus, String, Duration) {
     let bridge_bin = env!("CARGO_BIN_EXE_neige-codex-bridge");
     let mut child = std::process::Command::new(bridge_bin)
@@ -90,12 +92,6 @@ fn spawn_bridge(
         .spawn()
         .expect("spawn bridge binary");
 
-    let payload = serde_json::json!({
-        "hook_event_name": "Stop",
-        "session_id": "retry-session",
-        "transcript_path": "/tmp/retry.jsonl",
-        "transcript_size_bytes": 123,
-    });
     child
         .stdin
         .as_mut()
@@ -113,6 +109,15 @@ fn spawn_bridge(
         String::from_utf8_lossy(&output.stderr).to_string(),
         elapsed,
     )
+}
+
+fn retry_payload(hook_event_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hook_event_name": hook_event_name,
+        "session_id": "retry-session",
+        "transcript_path": "/tmp/retry.jsonl",
+        "transcript_size_bytes": 123,
+    })
 }
 
 fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> std::process::Output {
@@ -146,10 +151,11 @@ async fn post_hook_retries_until_success() {
     let base_clone = base.clone();
     let fallback_path = fallback.path().to_path_buf();
 
-    let (stdout, status, stderr, elapsed) =
-        tokio::task::spawn_blocking(move || spawn_bridge(&base_clone, &fallback_path))
-            .await
-            .expect("spawn_blocking join");
+    let (stdout, status, stderr, elapsed) = tokio::task::spawn_blocking(move || {
+        spawn_bridge(&base_clone, &fallback_path, retry_payload("Stop"))
+    })
+    .await
+    .expect("spawn_blocking join");
     let _ = tokio::time::timeout(Duration::from_secs(2), stub).await;
 
     assert!(
@@ -170,37 +176,104 @@ async fn post_hook_writes_fallback_after_all_retries_fail() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let stub = tokio::spawn(serve_statuses(
         listener,
-        vec![500, 500, 500],
+        vec![500, 500, 500, 500, 500, 500],
         attempts.clone(),
     ));
     let fallback = tempfile::tempdir().expect("tempdir");
     let base_clone = base.clone();
     let fallback_path = fallback.path().to_path_buf();
+    let first_payload = retry_payload("PreToolUse");
+    let second_payload = retry_payload("PostToolUse");
+    let first_body = first_payload.to_string();
+    let second_body = second_payload.to_string();
 
-    let (stdout, status, stderr, elapsed) =
-        tokio::task::spawn_blocking(move || spawn_bridge(&base_clone, &fallback_path))
-            .await
-            .expect("spawn_blocking join");
+    let (stdout, status, stderr, elapsed) = tokio::task::spawn_blocking(move || {
+        spawn_bridge(&base_clone, &fallback_path, first_payload)
+    })
+    .await
+    .expect("spawn_blocking join");
+    let base_clone = base.clone();
+    let fallback_path = fallback.path().to_path_buf();
+    let (second_stdout, second_status, second_stderr, second_elapsed) =
+        tokio::task::spawn_blocking(move || {
+            spawn_bridge(&base_clone, &fallback_path, second_payload)
+        })
+        .await
+        .expect("spawn_blocking join");
     let _ = tokio::time::timeout(Duration::from_secs(2), stub).await;
 
     assert!(
         status.success(),
         "bridge exit {status:?}; stderr:\n{stderr}"
     );
+    assert!(
+        second_status.success(),
+        "bridge exit {second_status:?}; stderr:\n{second_stderr}"
+    );
     assert_eq!(stdout.trim(), "{}");
-    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(second_stdout.trim(), "{}");
+    assert_eq!(attempts.load(Ordering::SeqCst), 6);
     assert!(elapsed < Duration::from_secs(2), "elapsed = {elapsed:?}");
+    assert!(
+        second_elapsed < Duration::from_secs(2),
+        "elapsed = {second_elapsed:?}"
+    );
 
     let codex_dir = fallback.path().join("codex");
     let files = std::fs::read_dir(&codex_dir)
         .unwrap_or_else(|e| panic!("read fallback dir {}: {e}", codex_dir.display()))
         .collect::<Result<Vec<_>, _>>()
         .expect("fallback entries");
-    assert_eq!(files.len(), 1, "files = {files:?}");
-    let record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(files[0].path()).expect("read fallback"))
-            .expect("fallback json");
-    assert_eq!(record["card_id"], "retry-card");
-    assert_eq!(record["body"]["hook_event_name"], "Stop");
-    assert_eq!(record["body"]["session_id"], "retry-session");
+    assert_eq!(files.len(), 2, "files = {files:?}");
+
+    let file_names = files
+        .iter()
+        .map(|file| file.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let first_hash = sha256_hex(&first_body);
+    let second_hash = sha256_hex(&second_body);
+    assert!(
+        file_names
+            .iter()
+            .any(|name| name.ends_with(&format!("-{}.json", &first_hash[..16]))),
+        "files = {file_names:?}"
+    );
+    assert!(
+        file_names
+            .iter()
+            .any(|name| name.ends_with(&format!("-{}.json", &second_hash[..16]))),
+        "files = {file_names:?}"
+    );
+
+    let records = files
+        .iter()
+        .map(|file| {
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(file.path()).expect("read fallback"),
+            )
+            .expect("fallback json")
+        })
+        .collect::<Vec<_>>();
+    let event_names = records
+        .iter()
+        .filter_map(|record| record["body"]["hook_event_name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(event_names.contains(&"PreToolUse"), "records = {records:?}");
+    assert!(
+        event_names.contains(&"PostToolUse"),
+        "records = {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["card_id"] == "retry-card"
+                && record["body"]["session_id"] == "retry-session"),
+        "records = {records:?}"
+    );
+}
+
+fn sha256_hex(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hex::encode(hasher.finalize())
 }
