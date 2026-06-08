@@ -10,39 +10,26 @@
 //! the direct-create fields).
 
 use crate::actor::Actor;
-use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx,
-    card_update_tx, harness_items_delete_by_card_tx, runtime_get_active_for_card_tx,
-    runtime_start_tx, runtime_supersede_tx, terminal_delete_tx,
+    card_create_with_id_tx, card_delete_tx, card_update_tx, terminal_delete_tx,
 };
+use crate::db::write_with_event_typed;
 use crate::db::{RepoRead, RouteRepo};
-use crate::db::{write_in_tx_typed, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::harness::is_harness_snapshot_value;
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id, now_ms};
+use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id};
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
-use crate::routes::waves::{
-    await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
-    spec_harness_enabled,
-};
 use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
-    resolve_active_thread_for_card,
 };
-use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
-use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
-use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
+use crate::runtime_repo::CardRuntime;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::terminal_sweeper::{
-    reap_spec_push_from_registry, reap_terminal_artifacts_with_renderer,
-};
+use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
 use axum::{
     Json, Router,
@@ -53,7 +40,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
 use utoipa::{IntoParams, ToSchema};
 
 /// Resolve the (wave, cove) ancestor pair for a wave id, returning a
@@ -592,8 +578,6 @@ pub struct ResetSpecCardResponse {
 )]
 pub(crate) async fn reset_spec_card(
     State(s): State<RouteState>,
-    State(w): State<WorkerState>,
-    State(cs): State<CodexShellState>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<ResetSpecCardResponse>> {
@@ -611,238 +595,20 @@ pub(crate) async fn reset_spec_card(
             "card {id} is not a spec codex card",
         )));
     }
-    let response = reset_spec_card_shared(s, w, cs, actor, card).await?;
+    let response = reset_spec_card_shared(s, actor, card).await?;
     Ok(Json(response))
-}
-
-fn push_watermark_from_payload(payload: &serde_json::Value) -> i64 {
-    payload
-        .get("push_watermark")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(0)
-}
-
-struct SharedResetStarted {
-    thread_id: String,
-    notifications: broadcast::Receiver<Notification>,
-    status: spec_push::SharedStatus,
-    push_args: SpecPushDaemonArgs,
 }
 
 async fn reset_spec_card_shared(
     s: RouteState,
-    w: WorkerState,
-    cs: CodexShellState,
     actor: Actor,
     card: Card,
 ) -> Result<ResetSpecCardResponse> {
-    if !cs.shared_codex_appserver.is_running() {
-        return Err(CalmError::Internal(format!(
-            "shared codex daemon is not running for spec card reset {}",
-            card.id
-        )));
-    }
-    let reset_harness_items = spec_harness_enabled() || card_payload_marks_spec_harness(&card);
-    let terminal = match s.repo.terminal_get_by_card(card.id.as_str()).await? {
-        Some(terminal) => terminal,
-        None => {
-            let active_runtime = s
-                .repo
-                .runtime_get_active_for_card(&card.id.to_string())
-                .await?;
-            if reset_harness_items || active_runtime.as_ref().is_some_and(is_harness_runtime) {
-                return reset_spec_harness_card(
-                    s,
-                    actor,
-                    card,
-                    active_runtime,
-                    reset_harness_items,
-                )
-                .await;
-            }
-            return Err(CalmError::Internal(format!(
-                "spec terminal row missing for card {}",
-                card.id
-            )));
-        }
-    };
-    let wave = s
+    let active_runtime = s
         .repo
-        .wave_get(card.wave_id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-    if wave.title.trim().is_empty() {
-        return Err(CalmError::Internal(
-            "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
-        ));
-    }
-
-    // Token rotation is DEFERRED until after spawn_reset_via_shared_daemon's
-    // lifecycle wait has succeeded — otherwise an early thread_start/turn_start
-    // failure would leave the still-running OLD TUI with an invalidated
-    // NEIGE_MCP_TOKEN (the new token hash is already in card_mcp_tokens, and
-    // the OLD TUI can no longer authenticate MCP calls). After the shared
-    // thread is committed, the OLD TUI is reaped a few lines later so
-    // invalidating its token is safe.
-
-    let card_id = card.id.clone();
-    let wave_id = card.wave_id.clone();
-    let terminal_id = terminal.id.clone();
-    let dispatcher = w.dispatcher.clone();
-    let reset = {
-        let guard = dispatcher.push_lock(&wave_id).await;
-        tracing::info!(
-            target: "shared_codex_daemon::spec_card_reset",
-            card_id = %card_id,
-            wave_id = %wave_id,
-            "reset_started"
-        );
-        let card_at_lock = s
-            .repo
-            .card_get(card_id.as_str())
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-        let watermark = push_watermark_from_payload(&card_at_lock.payload);
-
-        let started = spawn_reset_via_shared_daemon(&s, &cs, card_id.as_str(), &wave).await?;
-        // Rotate the per-card MCP token only AFTER the shared thread is
-        // committed (thread_start + turn_start + lifecycle all passed).
-        // From here on the OLD TUI is going to be reaped immediately, so
-        // invalidating its token is the safe ordering.
-        let mcp_token = crate::mcp_server::auth::CardMcpToken::generate().into_inner();
-        if w.mcp_server.is_some() {
-            let card_id_for_tx = card_id.to_string();
-            let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
-            write_in_tx_typed(s.repo.as_ref(), move |tx| {
-                Box::pin(async move {
-                    card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
-                    Ok(())
-                })
-            })
-            .await?;
-        }
-        let mut env_for_spawn = terminal.env.clone();
-        if let Some(map) = env_for_spawn.as_object_mut() {
-            map.insert(
-                "CODEX_HOME".into(),
-                serde_json::Value::String(cs.codex.codex_home_dir().to_string_lossy().to_string()),
-            );
-            if let Some(server) = w.mcp_server.as_ref() {
-                map.insert(
-                    "NEIGE_MCP_TOKEN".into(),
-                    serde_json::Value::String(mcp_token.clone()),
-                );
-                map.insert(
-                    "NEIGE_MCP_SOCKET".into(),
-                    serde_json::Value::String(
-                        server.shim_config.socket_path.to_string_lossy().to_string(),
-                    ),
-                );
-            }
-        }
-        reap_spec_push_from_registry(&w.spec_push, &wave_id).await;
-        reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &terminal).await;
-        s.repo.terminal_set_pid(&terminal.id, None).await?;
-        s.repo.terminal_set_exit(&terminal.id, None, false).await?;
-        persist_shared_reset_runtime_fields(
-            &s,
-            &cs,
-            card_id.as_str(),
-            &wave,
-            &started.thread_id,
-            reset_harness_items,
-        )
+        .runtime_get_active_for_card(&card.id.to_string())
         .await?;
-
-        let handle = spec_push::park_shared_handle(
-            cs.shared_codex_appserver.clone(),
-            Some(started.thread_id.clone()),
-            started.notifications,
-            started.status,
-            None,
-            spec_push::TurnWatchdogConfig::default(),
-        );
-        install_spec_push_sinks_and_park(&s, &w, card_id.as_str(), &wave, handle).await;
-        tracing::info!(
-            target: "shared_codex_daemon::spec_card_reset",
-            card_id = %card_id,
-            wave_id = %wave_id,
-            thread_id = %started.thread_id,
-            "handle_replaced"
-        );
-
-        crate::rehydrate_and_catch_up_parked_spec_push_under_lock_parts(
-            &guard,
-            &s,
-            &w,
-            card_id.as_str(),
-            &wave_id,
-            watermark,
-        )
-        .await;
-
-        if let Err(e) = seed_and_spawn_spec_daemon(
-            s.clone(),
-            w.clone(),
-            card_id.to_string(),
-            wave_id.to_string(),
-            wave.cwd.clone(),
-            env_for_spawn,
-            Some(mcp_token),
-            started.push_args.clone(),
-        )
-        .await
-        {
-            // TUI spawn failed but the shared thread + handle are healthy.
-            // KEEP the handle parked — without it, the new thread's
-            // notifications would have no consumer until a server restart
-            // re-parked it, stranding spec output and queue catch-up.
-            // The runtime row continues to point at the new thread; the user
-            // retries the reset (or reloads the card UI to remount the xterm
-            // onto the now-orphaned backend). The 5xx response signals the
-            // partial failure.
-            tracing::warn!(
-                target: "shared_codex_daemon::spec_card_reset",
-                card_id = %card_id,
-                wave_id = %wave_id,
-                thread_id = %started.thread_id,
-                error = %e,
-                "tui_spawn_failed_handle_kept_parked"
-            );
-            return Err(e);
-        }
-
-        tracing::info!(
-            target: "shared_codex_daemon::spec_card_reset",
-            card_id = %card_id,
-            wave_id = %wave_id,
-            thread_id = %started.thread_id,
-            "reset_completed"
-        );
-        Ok::<_, CalmError>(started.thread_id)
-    }?;
-
-    Ok(ResetSpecCardResponse {
-        card_id,
-        terminal_id,
-        new_thread_id: reset,
-        wave: None,
-    })
-}
-
-fn is_harness_runtime(runtime: &CardRuntime) -> bool {
-    runtime.kind == RuntimeKind::SharedSpec
-        && runtime
-            .handle_state_json
-            .as_ref()
-            .is_some_and(is_harness_snapshot_value)
-}
-
-fn card_payload_marks_spec_harness(card: &Card) -> bool {
-    card.payload
-        .get("spec_harness")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    reset_spec_harness_card(s, actor, card, active_runtime).await
 }
 
 async fn reset_spec_harness_card(
@@ -850,7 +616,6 @@ async fn reset_spec_harness_card(
     actor: Actor,
     card: Card,
     runtime: Option<CardRuntime>,
-    reset_harness_items: bool,
 ) -> Result<ResetSpecCardResponse> {
     let wave = s
         .repo
@@ -877,7 +642,7 @@ async fn reset_spec_harness_card(
         sort: None,
         cwd: wave.cwd.clone(),
         goal: (!goal.is_empty()).then_some(goal),
-        reset_harness_items,
+        reset_harness_items: true,
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_reset_operation(&s, "spec-harness-start", start_payload).await?;
@@ -939,269 +704,6 @@ async fn run_reset_operation(s: &RouteState, kind: &str, payload: Value) -> Resu
             Err(CalmError::Internal("operation stuck, see DB".to_string()))
         }
     }
-}
-
-async fn spawn_reset_via_shared_daemon(
-    s: &RouteState,
-    cs: &CodexShellState,
-    spec_card_id: &str,
-    wave: &crate::model::Wave,
-) -> Result<SharedResetStarted> {
-    if wave.title.trim().is_empty() {
-        return Err(CalmError::Internal(
-            "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
-        ));
-    }
-    let old_thread_id = resolve_active_thread_for_card(s.repo.as_ref(), spec_card_id).await?;
-    let mut notifications = cs.shared_codex_appserver.subscribe_notifications();
-    let status: spec_push::SharedStatus =
-        std::sync::Arc::new(tokio::sync::Mutex::new(SpecPushStatus::default()));
-    let developer_instructions = crate::spec_card::render_system_prompt(
-        crate::spec_card::SeededCardRole::Spec.prompt_template(),
-        wave.id.as_str(),
-    );
-    let thread_id = cs
-        .shared_codex_appserver
-        .thread_start_mint_for_card(
-            spec_card_id,
-            crate::shared_codex_appserver::SharedThreadStartParams {
-                cwd: wave.cwd.clone(),
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
-                developer_instructions: Some(developer_instructions),
-            },
-        )
-        .await?;
-    {
-        let mut g = status.lock().await;
-        g.phase = SpecPushPhase::Issuing;
-        g.last_thread_id = Some(thread_id.clone());
-    }
-    tracing::info!(
-        target: "shared_codex_daemon::spec_card_reset",
-        card_id = %spec_card_id,
-        wave_id = %wave.id,
-        thread_id = %thread_id,
-        "new_thread_started"
-    );
-
-    let turn_result = async {
-        cs.shared_codex_appserver
-            .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
-            .await?;
-        await_shared_spec_initial_turn_lifecycle(&mut notifications, &thread_id, &status).await?;
-        Ok::<(), CalmError>(())
-    }
-    .await;
-    if let Err(e) = turn_result {
-        tracing::warn!(
-            target: "shared_codex_daemon::spec_card_reset",
-            card_id = %spec_card_id,
-            wave_id = %wave.id,
-            thread_id = %thread_id,
-            error = %e,
-            "turn_start_failed"
-        );
-        return Err(e);
-    }
-
-    if let Some(old_thread_id) = old_thread_id.as_ref()
-        && old_thread_id != &thread_id
-        && let Err(e) = cs
-            .shared_codex_appserver
-            .interrupt_active_turn(old_thread_id)
-            .await
-    {
-        tracing::warn!(
-            target: "shared_codex_daemon::spec_card_reset",
-            card_id = %spec_card_id,
-            wave_id = %wave.id,
-            old_thread_id = %old_thread_id,
-            new_thread_id = %thread_id,
-            error = %e,
-            "failed to interrupt old active shared codex turn after reset"
-        );
-    }
-
-    Ok(SharedResetStarted {
-        thread_id: thread_id.clone(),
-        notifications,
-        status,
-        push_args: SpecPushDaemonArgs {
-            thread_id: Some(thread_id),
-            sock_uri: cs.shared_codex_appserver.remote_uri(),
-            developer_instructions: None,
-        },
-    })
-}
-
-async fn persist_shared_reset_runtime_fields(
-    s: &RouteState,
-    cs: &CodexShellState,
-    spec_card_id: &str,
-    wave: &crate::model::Wave,
-    thread_id: &str,
-    reset_harness_items: bool,
-) -> Result<()> {
-    let scope = EventScope::Card {
-        card: spec_card_id.into(),
-        wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
-    };
-    let card_id_for_tx = spec_card_id.to_string();
-    let thread_id_for_tx = thread_id.to_string();
-    let wave_id_for_tx = wave.id.to_string();
-    let remote_uri = cs.shared_codex_appserver.remote_uri();
-    let (_card, _ids) = write_with_events_typed(
-        s.repo.as_ref(),
-        ActorId::Kernel,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
-            Box::pin(async move {
-                let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
-                let Some(map) = payload.as_object_mut() else {
-                    return Err(CalmError::Internal(format!(
-                        "spec card {card_id_for_tx} payload is not a JSON object; cannot persist shared reset runtime fields"
-                    )));
-                };
-                map.insert("appserver_sock".into(), serde_json::Value::String(remote_uri));
-                map.remove("codex_source");
-                map.remove("codex_thread_id");
-                map.remove("appserver_pgid");
-                map.remove("appserver_start_time");
-                map.remove("appserver_boot_id");
-                map.remove("appserver_needs_initial_prompt");
-                let runtime_init = RuntimeInit {
-                    id: new_id(),
-                    card_id: card_id_for_tx.clone(),
-                    kind: RuntimeKind::SharedSpec,
-                    agent_provider: Some(AgentProvider::Codex),
-                    status: RunStatus::Running,
-                    terminal_run_id: None,
-                    thread_id: Some(thread_id_for_tx.clone()),
-                    session_id: None,
-                    active_turn_id: None,
-                    handle_state_json: None,
-                    lease_owner: None,
-                    lease_until_ms: None,
-                    now_ms: now_ms(),
-                };
-                let new_runtime_id = runtime_init.id.clone();
-                let new_runtime_kind = runtime_init.kind.clone();
-                let new_agent_provider = runtime_init.agent_provider.clone();
-                let new_status = runtime_init.status.clone();
-                // Issue #524 closed the reset rollback gap: legacy card/thread
-                // mapping and runtime supersede stay atomic, while payload
-                // identity stamps remain read-time projections.
-                card_codex_thread_upsert_tx(
-                    tx,
-                    &card_id_for_tx,
-                    &thread_id_for_tx,
-                    CardRole::Spec,
-                    Some(wave_id_for_tx.as_str()),
-                )
-                .await?;
-                let runtime_event =
-                    if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
-                    {
-                        let old_runtime_id = existing.id.clone();
-                        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
-                        Event::RuntimeSuperseded {
-                            old_runtime_id,
-                            new_runtime_id,
-                            card_id: card_id_for_tx.clone(),
-                        }
-                    } else {
-                        runtime_start_tx(tx, runtime_init).await?;
-                        Event::RuntimeStarted {
-                            runtime_id: new_runtime_id,
-                            card_id: card_id_for_tx.clone(),
-                            kind: new_runtime_kind,
-                            agent_provider: new_agent_provider,
-                            status: new_status,
-                        }
-                    };
-                if reset_harness_items {
-                    harness_items_delete_by_card_tx(tx, &card_id_for_tx).await?;
-                }
-                let card = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload),
-                        deletable: None,
-                    },
-                )
-                .await?;
-                Ok((
-                    card.clone(),
-                    vec![
-                        (scope.clone(), Event::CardUpdated(card)),
-                        (scope, runtime_event),
-                    ],
-                ))
-            })
-        },
-    )
-    .await?;
-    if reset_harness_items {
-        emit_harness_transcript_cleared_after_reset(s, spec_card_id).await?;
-    }
-    Ok(())
-}
-
-async fn emit_harness_transcript_cleared_after_reset(
-    s: &RouteState,
-    spec_card_id: &str,
-) -> Result<()> {
-    let spec_card_key = spec_card_id.to_string();
-    let card = s
-        .repo
-        .card_get(spec_card_id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {spec_card_id}")))?;
-    let runtime = s
-        .repo
-        .runtime_get_active_for_card(&spec_card_key)
-        .await?
-        .ok_or_else(|| CalmError::Internal(format!("runtime for card {spec_card_id} missing")))?;
-    let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
-    #[allow(deprecated)]
-    s.repo
-        .log_pure_event(
-            ActorId::Kernel,
-            scope,
-            None,
-            &s.events,
-            s.write.role_cache(),
-            s.write.cove_cache(),
-            Event::HarnessTranscriptCleared {
-                runtime_id: runtime.id,
-                card_id: card.id,
-                wave_id: card.wave_id,
-            },
-        )
-        .await?;
-    Ok(())
-}
-
-async fn s_repo_card_get(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    card_id: &str,
-) -> Result<serde_json::Value> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
-        .bind(card_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    let payload_text = row
-        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
-        .0;
-    serde_json::from_str(&payload_text)
-        .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
 }
 
 #[utoipa::path(

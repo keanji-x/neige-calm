@@ -1053,46 +1053,6 @@ async fn register_and_catch_up(
     }
 }
 
-/// Rehydrate durable queue rows and replay event-log rows for a reset-created,
-/// already-parked spec push handle. The caller must hold the per-wave push
-/// lock; this helper intentionally uses `catch_up_push_under_lock`.
-pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock_parts(
-    guard: &dispatcher::PushLockGuard,
-    route: &state::RouteState,
-    worker: &state::WorkerState,
-    card_id: &str,
-    wave_id: &crate::ids::WaveId,
-    watermark: i64,
-) {
-    let card_key: crate::ids::CardId = card_id.to_string().into();
-    let rehydrated_ids = worker
-        .spec_push
-        .rehydrate_queue_from_persist(wave_id, watermark)
-        .await;
-    let rehydrated_count = rehydrated_ids.len();
-    if rehydrated_count > 0 {
-        tracing::info!(
-            card_id,
-            wave_id = %wave_id,
-            count = rehydrated_count,
-            "reset: rehydrated spec push queue from durable rows",
-        );
-    }
-    worker
-        .dispatcher
-        .reset_push_cursor_to_watermark(card_key, watermark);
-    replay_spec_push_catch_up_under_lock_parts(
-        guard,
-        route,
-        worker,
-        card_id,
-        wave_id,
-        watermark,
-        rehydrated_ids,
-    )
-    .await;
-}
-
 async fn replay_spec_push_catch_up_under_lock(
     guard: &dispatcher::PushLockGuard,
     state: &state::AppState,
