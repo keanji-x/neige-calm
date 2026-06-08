@@ -37,7 +37,8 @@ use calm_server::event::{
     ArtifactRef, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms};
+use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -128,15 +129,14 @@ fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
 }
 
 #[tokio::test]
-async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_card_updated() {
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_updated() {
+    let (repo, events, _cache, _wcc, wave_id, _cove_id) = boot().await;
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave_id.clone(),
             kind: "codex".into(),
             sort: None,
             payload: serde_json::json!({
-                "appserver_needs_initial_prompt": true,
                 "push_watermark": 0,
             }),
         })
@@ -171,26 +171,37 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
     })
     .await
     .expect("seed shared-spec runtime");
-    let codex = stub_codex();
-    let dispatcher = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
-        codex,
-        stub_daemon(),
-        None,
-        calm_server::spec_push::SpecPushRegistry::new(),
-        stub_shared(&repo),
-        4,
-    );
+    let terminal = repo
+        .terminal_create(NewTerminal {
+            card_id: spec_card.id.clone(),
+            program: "codex".into(),
+            cwd: "/workspace".into(),
+            env: serde_json::json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("seed live terminal");
+    let pending = PendingThreadStartRegistry::new(repo.clone(), events.clone());
+    pending
+        .register(
+            PendingEntry::new(
+                spec_card.id.to_string(),
+                Some(wave_id.to_string()),
+                terminal.id.to_string(),
+            )
+            .with_role(calm_server::model::CardRole::Spec),
+        )
+        .await
+        .expect("register pending thread");
     let mut rx = events.subscribe();
-    let sink = dispatcher.initial_prompt_ready_sink_for(
-        spec_card.id.clone(),
-        wave_id.clone(),
-        cove_id.clone(),
-    );
 
-    sink("thread-tui-created".to_string()).await;
+    assert_eq!(
+        pending
+            .on_thread_started("thread-tui-created")
+            .await
+            .expect("bind pending thread"),
+        Some(spec_card.id.to_string())
+    );
 
     let updated = repo
         .card_get(spec_card.id.as_str())
@@ -204,13 +215,6 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
         .unwrap()
         .expect("active runtime");
     assert_eq!(runtime.thread_id.as_deref(), Some("thread-tui-created"));
-    assert!(
-        updated
-            .payload
-            .get("appserver_needs_initial_prompt")
-            .is_none(),
-        "initial prompt marker must be cleared after backfill"
-    );
 
     let envelope = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -232,8 +236,8 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
 }
 
 #[tokio::test]
-async fn dispatcher_initial_prompt_ready_sink_failure_does_not_broadcast_or_mutate() {
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+async fn dispatcher_pending_thread_bind_failure_does_not_broadcast_or_mutate() {
+    let (repo, events, _cache, _wcc, wave_id, _cove_id) = boot().await;
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave_id.clone(),
@@ -243,26 +247,38 @@ async fn dispatcher_initial_prompt_ready_sink_failure_does_not_broadcast_or_muta
         })
         .await
         .expect("create malformed spec card");
-    let codex = stub_codex();
-    let dispatcher = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
-        codex,
-        stub_daemon(),
-        None,
-        calm_server::spec_push::SpecPushRegistry::new(),
-        stub_shared(&repo),
-        4,
-    );
+    let terminal = repo
+        .terminal_create(NewTerminal {
+            card_id: spec_card.id.clone(),
+            program: "codex".into(),
+            cwd: "/workspace".into(),
+            env: serde_json::json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("seed live terminal");
+    let pending = PendingThreadStartRegistry::new(repo.clone(), events.clone());
+    pending
+        .register(
+            PendingEntry::new(
+                spec_card.id.to_string(),
+                Some(wave_id.to_string()),
+                terminal.id.to_string(),
+            )
+            .with_role(calm_server::model::CardRole::Spec),
+        )
+        .await
+        .expect("register pending thread");
     let mut rx = events.subscribe();
-    let sink = dispatcher.initial_prompt_ready_sink_for(
-        spec_card.id.clone(),
-        wave_id.clone(),
-        cove_id.clone(),
-    );
 
-    sink("thread-that-cannot-persist".to_string()).await;
+    assert_eq!(
+        pending
+            .on_thread_started("thread-that-cannot-persist")
+            .await
+            .expect("missing runtime re-parks pending entry"),
+        None
+    );
+    assert_eq!(pending.pending_count().await, 1);
 
     let unchanged = repo
         .card_get(spec_card.id.as_str())
@@ -447,7 +463,6 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
         4,
     );
@@ -591,7 +606,6 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
         daemon,
         terminal_renderer.clone(),
         None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
         4,
     );
@@ -710,7 +724,6 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         codex.clone(),
         stub_daemon(),
         None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
         4,
     );
@@ -795,7 +808,6 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         codex.clone(),
         daemon_ok,
         None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
         4,
     );
@@ -888,7 +900,6 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         daemon,
         terminal_renderer.clone(),
         None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
         4,
     );
@@ -1011,7 +1022,6 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         codex.clone(),
         daemon,
         None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
         4,
     );

@@ -129,7 +129,6 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
         boot.daemon.clone(),
         boot.renderer.clone(),
         None,
-        calm_server::spec_push::SpecPushRegistry::new(),
         boot.shared.clone(),
         permits,
     )

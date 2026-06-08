@@ -162,9 +162,9 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 /// Issue #293 / PR #311 — the spec-push app-server boot is NON-FATAL to
 /// wave creation. Every codex-free environment (CI's web a11y job, the
 /// chromium docker stack) has no working `codex`, so booting the
-/// kernel-owned app-server fails. This MUST NOT 500 the wave create:
+/// shared codex daemon fails. This MUST NOT 500 the wave create:
 /// the route logs a warning and returns **201** with an inert wave (the
-/// spec card has no `codex_thread_id` and no parked `spec_push` handle).
+/// spec card has no `codex_thread_id` or shared source marker).
 ///
 /// This test boots with a deterministically-broken `codex_bin` (an
 /// absolute path that does not exist, so the boot fails fast regardless
@@ -173,7 +173,7 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 ///   2. the wave + spec card rows are committed,
 ///   3. the spec card payload has NO `codex_thread_id` / `appserver_sock`
 ///      (the persist step is skipped on the failure path),
-///   4. the `spec_push` registry has NO handle for the wave (inert).
+///   4. no pending shared thread-start entry is registered for the inert wave.
 #[tokio::test]
 async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
@@ -199,11 +199,9 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
 
-    // Deterministically-broken codex bin: absolute, absent → the
-    // spec-push app-server `spawn` fails fast with
-    // "No such file or directory", which is exactly the codex-free CI
-    // shape. We capture the `AppState` here (the shared `boot()` helper
-    // doesn't expose `spec_push`) so we can probe the registry.
+    // Deterministically-broken codex bin: absolute, absent. The route must
+    // still commit an inert wave instead of surfacing the daemon failure as a
+    // 500.
     let mut codex = calm_server::state::CodexClient::new_stub();
     codex.codex_bin = "/nonexistent-codex-bin-tolerant-201-test".into();
 
@@ -224,7 +222,7 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
     );
-    let spec_push = state.spec_push.clone();
+    let pending_codex_threads = state.pending_codex_threads.clone();
 
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -281,16 +279,11 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
         spec_card.payload,
     );
 
-    // (4) No app-server handle parked in the registry for this wave.
-    assert!(
-        !spec_push.contains(&wave.id),
-        "inert wave must have NO parked spec_push handle (registry len = {})",
-        spec_push.len(),
-    );
-    assert!(
-        spec_push.is_empty(),
-        "no push channels should exist when every boot failed (len = {})",
-        spec_push.len(),
+    // (4) No pending shared thread registration exists for this inert wave.
+    assert_eq!(
+        pending_codex_threads.pending_count().await,
+        0,
+        "inert wave must not register a pending shared thread start",
     );
 }
 
@@ -411,28 +404,15 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
 // Issue #250 PR 2 — wave.cwd → spec-daemon cwd contract
 // ---------------------------------------------------------------------------
 
-/// PR 2 contract: the spec daemon spawn uses `wave.cwd` (the value
-/// the route validated + persisted), not the pre-#250
+/// PR 2 contract: wave create persists `wave.cwd` and uses the same
+/// path for the optional cove folder claim, not the pre-#250
 /// `routes::codex_cards::default_cwd()` fallback.
 ///
-/// Three rows must observe the same cwd at commit time:
-///   1. `waves.cwd`               — the wave row's column.
-///   2. `terminals.cwd`           — baked into the terminal row from
-///      `card_with_codex_create_tx`.
-///   3. `cards.payload.cwd`       — surfaced on the spec card so the
-///      frontend can render the path hint.
-///
-/// We can't directly observe the daemon child's `current_dir` because
-/// `spawn_terminal_for` passes cwd as a `--cwd` CLI arg to
-/// terminal renderer startup (not via `Command::current_dir`); capturing
-/// argv would require ptrace or instrumenting the spawner. The
-/// terminal-row cwd is the equivalent persisted contract — it's what
-/// the WS revive path would re-pass on respawn (see
-/// `ws::terminal::resolve_live_renderer`), so any cwd drift between
-/// `wave.cwd` and `terminal.cwd` would surface as a daemon spawned
-/// under the wrong directory after a revive.
+/// Two rows must observe the same cwd at commit time:
+///   1. `waves.cwd`        — the wave row's column.
+///   2. `cove_folders.path` — the attached folder claim.
 #[tokio::test]
-async fn post_api_waves_uses_wave_cwd_for_spec_daemon() {
+async fn post_api_waves_persists_wave_cwd_and_attach_folder() {
     let boot = boot().await;
 
     let cwd = "/tmp/issue-250-pr2-cwd-contract";
@@ -462,97 +442,10 @@ async fn post_api_waves_uses_wave_cwd_for_spec_daemon() {
     let wave = waves.into_iter().next().unwrap();
     assert_eq!(wave.cwd, cwd);
 
-    // Terminal row baked the same cwd. This is the value the WS
-    // revive path would re-pass to `spawn_terminal_for` on respawn,
-    // so drift here would surface as a daemon spawned under the
-    // wrong cwd after a daemon death.
-    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
-    let spec_card = cards
-        .iter()
-        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
-        .expect("exactly one Spec-role card per wave");
-    let term = boot
-        .repo
-        .terminal_get_by_card(spec_card.id.as_str())
-        .await
-        .unwrap()
-        .expect("spec terminal row");
-    assert_eq!(
-        term.cwd, cwd,
-        "spec card's terminal row must store the wave.cwd (not the \
-         pre-#250 default_cwd() = $HOME); got terminal row = {term:?}",
-    );
-
-    // Spec card payload.cwd echoes the wave.cwd. This is the field
-    // the frontend reads to render a path hint on the card head.
-    let payload_cwd = spec_card
-        .payload
-        .get("cwd")
-        .and_then(Value::as_str)
-        .expect("spec card payload.cwd carries wave.cwd");
-    assert_eq!(payload_cwd, cwd);
-
     // Folder claim landed inside the same tx (attach_folder = true).
     let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].path, cwd);
-}
-
-/// Combined coverage: wave.cwd plumbs to the spec daemon AND the
-/// wave.title still threads as codex's `[PROMPT]` arg (#251). Pins
-/// both contracts on one create call so a regression touching either
-/// surface fails here.
-#[tokio::test]
-async fn post_api_waves_threads_cwd_and_title_together() {
-    let boot = boot().await;
-
-    let cwd = "/tmp/issue-250-pr2-combined";
-    let title = "do the thing for issue #250";
-    let (status, body) = post(
-        boot.app.clone(),
-        "/api/waves",
-        json!({
-            "cove_id": boot.cove_id,
-            "title": title,
-            "cwd": cwd,
-            "attach_folder": true,
-            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body = {body}");
-
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
-    let wave = waves.into_iter().next().unwrap();
-    assert_eq!(wave.cwd, cwd);
-    assert_eq!(wave.title, title);
-    assert_eq!(
-        wave.terminal_at, None,
-        "fresh wave starts non-terminal (lifecycle=Draft) so terminal_at must be None"
-    );
-
-    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
-    let spec_card = cards
-        .iter()
-        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
-        .expect("exactly one Spec-role card per wave");
-
-    // #251 contract: title lands in payload.prompt.
-    let prompt = spec_card
-        .payload
-        .get("prompt")
-        .and_then(Value::as_str)
-        .expect("spec payload.prompt carries wave.title");
-    assert_eq!(prompt, title);
-
-    // #250 PR 2 contract: cwd lands on the spec card's terminal row.
-    let term = boot
-        .repo
-        .terminal_get_by_card(spec_card.id.as_str())
-        .await
-        .unwrap()
-        .expect("spec terminal row");
-    assert_eq!(term.cwd, cwd);
 }
 
 /// Lifecycle terminal-state E2E from the route: after `POST /api/waves`
