@@ -242,6 +242,9 @@ fn inner_from_params(
     let debounce = debounce_from_initial_queue(&snapshot.pending_queue);
     let state = state_from_snapshot(&snapshot);
     let last_phase = snapshot.phase;
+    let pending_queue: VecDeque<_> = snapshot.pending_queue.into_iter().collect();
+    let (recent_hook_keys, recent_hook_key_set) =
+        recent_hook_keys_from_pending_queue(&pending_queue);
     Arc::new(Inner {
         runtime_id: params.runtime_id,
         wave_id: params.wave_id,
@@ -256,9 +259,9 @@ fn inner_from_params(
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
         pending_envelope_ids: Mutex::new(snapshot.pending_envelope_ids.into_iter().collect()),
-        pending_queue: Mutex::new(snapshot.pending_queue.into_iter().collect()),
-        recent_hook_keys: Mutex::new(VecDeque::with_capacity(RECENT_HOOK_KEY_CACHE_LEN)),
-        recent_hook_key_set: Mutex::new(HashSet::with_capacity(RECENT_HOOK_KEY_CACHE_LEN)),
+        pending_queue: Mutex::new(pending_queue),
+        recent_hook_keys: Mutex::new(recent_hook_keys),
+        recent_hook_key_set: Mutex::new(recent_hook_key_set),
         push_watermark: Mutex::new(snapshot.push_watermark),
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
@@ -299,6 +302,37 @@ fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
         last_pending_at: Some(now),
         hard_fire: queue.iter().any(Observation::is_hard_fire),
     }
+}
+
+/// Seed hook-stop dedupe from the restored pending queue.
+///
+/// Snapshot recovery has already accepted these `WorkerHookStop` observations, so
+/// their non-empty `idempotency_key` values must populate the recent-key LRU
+/// before fallback replay or bridge retry can deliver the same hook again. Empty
+/// keys are skipped because old snapshot rows deserialize them from the default.
+fn recent_hook_keys_from_pending_queue(
+    pending_queue: &VecDeque<Observation>,
+) -> (VecDeque<String>, HashSet<String>) {
+    let mut keys = VecDeque::with_capacity(RECENT_HOOK_KEY_CACHE_LEN);
+    let mut set = HashSet::with_capacity(RECENT_HOOK_KEY_CACHE_LEN);
+    for obs in pending_queue {
+        let Observation::WorkerHookStop {
+            idempotency_key, ..
+        } = obs
+        else {
+            continue;
+        };
+        if idempotency_key.is_empty() || !set.insert(idempotency_key.clone()) {
+            continue;
+        }
+        keys.push_back(idempotency_key.clone());
+        while keys.len() > RECENT_HOOK_KEY_CACHE_LEN {
+            if let Some(evicted) = keys.pop_front() {
+                set.remove(&evicted);
+            }
+        }
+    }
+    (keys, set)
 }
 
 async fn run_loop(

@@ -165,6 +165,46 @@ async fn full_soft_queue_incoming_hard_preserves_hard_and_evicts_oldest_soft() {
 }
 
 #[tokio::test]
+async fn restored_worker_hook_stops_seed_recent_hook_dedupe_cache() {
+    let restored_key = "restored-hook";
+    let snapshot = HarnessSnapshot::initial(
+        0,
+        vec![worker_hook_stop(restored_key), worker_hook_stop("")],
+    );
+    let harness = harness_from_snapshot(snapshot).await;
+
+    harness
+        .observe_for_test(worker_hook_stop(restored_key), Some(1))
+        .await;
+    harness
+        .observe_for_test(worker_hook_stop(""), Some(2))
+        .await;
+
+    let pending = harness.pending_queue_for_test().await;
+    let restored_count = pending
+        .iter()
+        .filter(
+            |obs| matches!(obs, Observation::WorkerHookStop { idempotency_key, .. } if idempotency_key == restored_key),
+        )
+        .count();
+    let empty_count = pending
+        .iter()
+        .filter(
+            |obs| matches!(obs, Observation::WorkerHookStop { idempotency_key, .. } if idempotency_key.is_empty()),
+        )
+        .count();
+
+    assert_eq!(
+        restored_count, 1,
+        "restored non-empty hook key should suppress duplicate retry: {pending:?}"
+    );
+    assert_eq!(
+        empty_count, 2,
+        "legacy empty hook keys should not seed dedupe cache: {pending:?}"
+    );
+}
+
+#[tokio::test]
 async fn oversized_snapshot_keeps_newest_pending_queue_tail() {
     let observations = (0..300)
         .map(|i| Observation::WaveGoal {
