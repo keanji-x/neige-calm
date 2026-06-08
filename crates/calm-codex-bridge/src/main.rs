@@ -416,8 +416,9 @@ fn post_hook(provider: Provider, base: &str, card_id: &str, hook_url: Option<&st
         }
     }
 
-    let idempotency_key = hook_idempotency_key(provider, card_id, body, now_ms());
-    if let Err(e) = write_hook_fallback(provider, &idempotency_key, card_id, body) {
+    let captured_ms = now_ms();
+    let idempotency_key = hook_idempotency_key(provider, card_id, body, captured_ms);
+    if let Err(e) = write_hook_fallback(provider, &idempotency_key, card_id, body, captured_ms) {
         eprintln!(
             "neige-codex-bridge: fallback write failed after POST failures ({:?}): {e}",
             last_error
@@ -464,11 +465,12 @@ fn write_hook_fallback(
     idempotency_key: &str,
     card_id: &str,
     body: &str,
+    captured_ms: i64,
 ) -> Result<(), String> {
     let dir = hook_fallback_dir().join(provider.fallback_dir_name());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let body_hash = sha256_hex(body);
-    let file_stem = format!("{idempotency_key}-{}", &body_hash[..16]);
+    let file_stem = format!("{captured_ms:016}-{idempotency_key}-{}", &body_hash[..16]);
     let path = dir.join(format!("{file_stem}.json"));
     let tmp = dir.join(format!(".{file_stem}.{}.tmp", std::process::id()));
     let body = serde_json::from_str::<Value>(body).unwrap_or_else(|_| Value::String(body.into()));

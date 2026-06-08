@@ -11,6 +11,82 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 
+async fn collect_replay_order(
+    axum::extract::State(replayed): axum::extract::State<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::http::StatusCode {
+    let sequence = body
+        .get("sequence")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<missing>")
+        .to_owned();
+    replayed.lock().await.push(sequence);
+    axum::http::StatusCode::NO_CONTENT
+}
+
+#[tokio::test]
+async fn hook_fallback_replay_posts_files_in_timestamp_order() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+
+    let fallback = tempfile::Builder::new()
+        .prefix("calm-hook-fallback-order-")
+        .tempdir_in("/tmp")
+        .expect("tempdir in /tmp");
+    let codex_dir = fallback.path().join("codex");
+    std::fs::create_dir_all(&codex_dir).expect("fallback codex dir");
+
+    let files = [
+        ("0000000000001003-replay-third-3333333333333333.json", "t3"),
+        ("0000000000001001-replay-first-1111111111111111.json", "t1"),
+        ("0000000000001002-replay-second-2222222222222222.json", "t2"),
+    ];
+    for &(name, sequence) in &files {
+        std::fs::write(
+            codex_dir.join(name),
+            serde_json::to_vec(&serde_json::json!({
+                "card_id": "replay-order-card",
+                "body": {
+                    "sequence": sequence,
+                }
+            }))
+            .unwrap(),
+        )
+        .expect("write fallback");
+    }
+
+    let replayed = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let app = axum::Router::new()
+        .route(
+            "/internal/codex/hook",
+            axum::routing::post(collect_replay_order),
+        )
+        .with_state(replayed.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind replay collector");
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve replay collector");
+    });
+
+    let base_url = format!("http://{addr}");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        calm_server::replay_hook_fallback_dir_once(fallback.path(), &base_url),
+    )
+    .await
+    .expect("fallback replay timeout");
+
+    let replayed = replayed.lock().await.clone();
+    server.abort();
+    assert_eq!(replayed, ["t1", "t2", "t3"]);
+    for &(name, _) in &files {
+        assert!(!codex_dir.join(name).exists(), "{name} should be deleted");
+    }
+}
+
 #[tokio::test]
 async fn fallback_replay_posts_file_and_deletes_on_success() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();

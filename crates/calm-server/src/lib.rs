@@ -217,6 +217,7 @@ async fn replay_hook_fallback_provider(root: &Path, base_url: &str, provider: Ho
         }
     };
 
+    let mut paths = Vec::new();
     loop {
         let entry = match entries.next_entry().await {
             Ok(Some(entry)) => entry,
@@ -229,13 +230,18 @@ async fn replay_hook_fallback_provider(root: &Path, base_url: &str, provider: Ho
                     error = %e,
                     "hook fallback dir entry read failed"
                 );
-                break;
+                return;
             }
         };
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
+        paths.push(path);
+    }
+
+    paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    for path in paths {
         replay_hook_fallback_file(base_url, provider, &path).await;
     }
 }
