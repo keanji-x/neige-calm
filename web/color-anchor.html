@@ -3,6 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Mirrors web/src/app/theme.tsx readPersistedMode + readSystemPreference + resolveTheme so first paint uses the resolved theme. -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('calm.theme');
+          var mode = (raw === 'light' || raw === 'dark' || raw === 'system') ? raw : 'system';
+          var resolved = mode === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : mode;
+          document.documentElement.dataset.theme = resolved;
+        } catch (e) {
+          /* fall through; ThemeProvider will catch up post-mount */
+        }
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap" />
