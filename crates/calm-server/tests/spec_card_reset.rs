@@ -219,6 +219,24 @@ async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, body)
 }
 
+async fn post_json(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
 async fn delete_empty(app: axum::Router, uri: &str) -> StatusCode {
     app.oneshot(
         Request::builder()
@@ -487,6 +505,61 @@ async fn shared_wave_delete_interrupts_all_child_turns() {
             .await
             .unwrap()
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn wave_delete_shuts_down_active_spec_harness() {
+    let boot = boot_shared().await;
+    let cove = boot
+        .repo
+        .cove_create(NewCove {
+            name: "harness-wave-delete".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let (status, body) = post_json(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": cove.id,
+            "title": "delete harness",
+            "cwd": "/tmp/spec-card-reset-harness-delete",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let wave_id = body["id"].as_str().expect("wave id").to_string();
+    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|card| card.kind == "codex" && card.payload["spec_harness"] == json!(true))
+        .expect("spec harness card");
+    let runtime = boot
+        .repo
+        .runtime_get_active_for_card(&spec_card.id.to_string())
+        .await
+        .unwrap()
+        .expect("active spec harness runtime");
+    assert!(boot.state.harness.get(&runtime.id).is_some());
+    assert_eq!(boot.state.harness.len_active(), 1);
+
+    let status = delete_empty(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(boot.state.harness.len_active(), 0);
+    assert!(
+        boot.repo
+            .runtime_get_by_id(&runtime.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "runtime row must cascade with the deleted spec card"
     );
 }
 
