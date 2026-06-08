@@ -19,10 +19,87 @@ use calm_server::model::{NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 #[tokio::test]
 async fn ingest_emits_codex_hook_event() {
+    let (app, _repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": { "command": "ls -la" },
+    });
+
+    post_and_assert(
+        &app,
+        &mut rx,
+        card_id.as_str(),
+        payload,
+        "hook.codex.pre_tool_use",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn codex_ingest_stop_hook() {
+    let (app, _repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "session-stop",
+        "transcript_path": "/tmp/neige-stop.jsonl",
+        "transcript_size_bytes": 128,
+    });
+
+    post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+}
+
+#[tokio::test]
+async fn codex_ingest_stop_failure_hook() {
+    let (app, _repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let payload = json!({
+        "hook_event_name": "StopFailure",
+        "error": "rate_limit",
+        "error_details": "429 Too Many Requests",
+    });
+
+    post_and_assert(
+        &app,
+        &mut rx,
+        card_id.as_str(),
+        payload,
+        "hook.codex.stop_failure",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn codex_ingest_session_end_hook() {
+    let (app, _repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let payload = json!({
+        "hook_event_name": "SessionEnd",
+        "reason": "prompt_input_exit",
+    });
+
+    post_and_assert(
+        &app,
+        &mut rx,
+        card_id.as_str(),
+        payload,
+        "hook.codex.session_end",
+    )
+    .await;
+}
+
+async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     // PR3 (#136) — the ingest path stamps `ActorId::AiCodex(card_id)` and
     // the role gate refuses unknown cards. Seed a real card so the gate
@@ -87,16 +164,18 @@ async fn ingest_emits_codex_hook_event() {
         .merge(routes::router())
         .layer(axum::middleware::from_fn(actor_middleware))
         .with_state(state);
-    let mut rx = events.subscribe();
 
-    let body = serde_json::json!({
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": { "command": "ls -la" },
-    })
-    .to_string();
+    (app, repo, events, card.id.to_string())
+}
 
-    let uri = format!("/internal/codex/hook?card_id={}", card.id);
+async fn post_and_assert(
+    app: &axum::Router,
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+    card_id: &str,
+    payload: Value,
+    expected_kind: &str,
+) {
+    let uri = format!("/internal/codex/hook?card_id={card_id}");
     let resp = app
         .clone()
         .oneshot(
@@ -104,7 +183,7 @@ async fn ingest_emits_codex_hook_event() {
                 .method("POST")
                 .uri(uri)
                 .header("content-type", "application/json")
-                .body(Body::from(body))
+                .body(Body::from(payload.to_string()))
                 .unwrap(),
         )
         .await
@@ -112,59 +191,19 @@ async fn ingest_emits_codex_hook_event() {
     assert_eq!(resp.status(), 204);
 
     let env = rx.recv().await.expect("event emitted");
-    // Sync engine phase 1: bus carries `BroadcastEnvelope { id, event }`.
-    // CodexHook is persisted via `log_pure_event`, so `id` must be > 0.
     assert!(env.id > 0, "expected real events.id, got {}", env.id);
     match env.event {
         Event::CodexHook {
-            card_id,
+            card_id: event_card_id,
             kind,
             hook_idempotency_key,
-            payload,
+            payload: event_payload,
         } => {
-            assert_eq!(card_id.as_str(), card.id.as_str());
-            assert_eq!(kind, "hook.codex.pre_tool_use");
+            assert_eq!(event_card_id.as_str(), card_id);
+            assert_eq!(kind, expected_kind);
             assert!(!hook_idempotency_key.is_empty());
-            assert_eq!(payload["tool_name"], "Bash");
+            assert_eq!(event_payload, payload);
         }
         other => panic!("expected CodexHook, got {other:?}"),
-    }
-
-    let stop_body = serde_json::json!({
-        "hook_event_name": "Stop",
-        "session_id": "session-stop",
-        "transcript_path": "/tmp/neige-stop.jsonl",
-        "transcript_size_bytes": 128,
-    })
-    .to_string();
-    let stop_uri = format!("/internal/codex/hook?card_id={}", card.id);
-    let stop_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(stop_uri)
-                .header("content-type", "application/json")
-                .body(Body::from(stop_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(stop_resp.status(), 204);
-
-    let stop_env = rx.recv().await.expect("stop event emitted");
-    match stop_env.event {
-        Event::CodexHook {
-            card_id,
-            kind,
-            hook_idempotency_key,
-            payload,
-        } => {
-            assert_eq!(card_id.as_str(), card.id.as_str());
-            assert_eq!(kind, "hook.codex.stop");
-            assert!(!hook_idempotency_key.is_empty());
-            assert_eq!(payload["hook_event_name"], "Stop");
-        }
-        other => panic!("expected stop CodexHook, got {other:?}"),
     }
 }
