@@ -190,6 +190,27 @@ async fn harness_items_route_returns_rows_in_order_and_paginates() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, inserted[1]);
     assert_eq!(rows[0].item_uuid.as_deref(), Some("item-rest-2"));
+
+    let (status, body) = get(
+        boot.app.clone(),
+        format!(
+            "/api/cards/{}/harness/items?direction=desc&limit=2",
+            boot.spec_card.id.as_str()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![inserted[1], inserted[2]]
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.item_uuid.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("item-rest-2"), Some("item-rest-3")]
+    );
 }
 
 #[tokio::test]

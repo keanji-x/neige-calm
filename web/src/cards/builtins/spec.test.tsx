@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '../../api/generated';
 import type { KernelCard } from '../../api/wire';
@@ -45,6 +46,11 @@ vi.mock('../overlayRegistry', () => ({
 
 import { CodexEntry } from './codex';
 import { SpecEntry } from './spec';
+import {
+  __resetRegistryForTest,
+  CardInstanceProvider,
+  registerCard,
+} from '../registry';
 
 type HarnessItem = components['schemas']['HarnessItem'];
 
@@ -98,7 +104,7 @@ function response(rows: HarnessItem[]): Response {
 }
 
 function renderSpecCard(rows: HarnessItem[]) {
-  const fetchMock = vi.fn().mockResolvedValue(response(rows));
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(rows)));
   vi.stubGlobal('fetch', fetchMock);
   const Component = SpecEntry.Component;
   render(
@@ -113,7 +119,26 @@ function renderSpecCard(rows: HarnessItem[]) {
   return fetchMock;
 }
 
+function renderSpecCardWithProvider(rows: HarnessItem[]) {
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(rows)));
+  vi.stubGlobal('fetch', fetchMock);
+  const Component = SpecEntry.Component;
+  const card = {
+    type: 'spec' as const,
+    id: 'card_spec_1',
+    goal: 'Ship the spec UI',
+  };
+  render(
+    <CardInstanceProvider cardId="card_spec_1" deletable={false} card={card}>
+      <Component card={card} />
+    </CardInstanceProvider>,
+  );
+  return fetchMock;
+}
+
 beforeEach(() => {
+  __resetRegistryForTest();
+  registerCard(SpecEntry);
   mocks.fakeStream.reset();
   mocks.resetSpecCard.mockReset();
 });
@@ -222,6 +247,68 @@ describe('SpecCard chat timeline', () => {
     expect(screen.getByText('[mystery_item]')).toBeInTheDocument();
   });
 
+  it('merges a live item that arrives while the initial REST load is in flight', async () => {
+    const restRow = harnessRow(1, 'agent_message', {
+      id: 'agent_rest',
+      text: 'loaded from rest',
+    });
+    const liveRow = harnessRow(2, 'agent_message', {
+      id: 'agent_live',
+      text: 'arrived over websocket',
+    });
+    let resolveInitial!: (value: Response) => void;
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveInitial = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(response([liveRow]));
+    vi.stubGlobal('fetch', fetchMock);
+    const Component = SpecEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'spec',
+          id: 'card_spec_1',
+          goal: 'Ship the spec UI',
+        }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/cards/card_spec_1/harness/items?limit=100&direction=desc',
+        expect.objectContaining({ credentials: 'include' }),
+      ),
+    );
+
+    await act(async () => {
+      mocks.fakeStream.emit({
+        ev: 'harness.item.added',
+        data: {
+          runtime_id: 'runtime_1',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+          item_db_id: 2,
+          item_uuid: 'agent_live',
+          item_type: 'agent_message',
+          turn_id: 'turn_1',
+          method: 'item/completed',
+        },
+      });
+    });
+
+    expect(await screen.findByText('arrived over websocket')).toBeInTheDocument();
+    await act(async () => {
+      resolveInitial(response([restRow]));
+    });
+
+    expect(await screen.findByText('loaded from rest')).toBeInTheDocument();
+    expect(screen.getByText('arrived over websocket')).toBeInTheDocument();
+  });
+
   it('dedupes by item_uuid when a completed item replaces its started row', async () => {
     const started = harnessRow(
       1,
@@ -277,5 +364,36 @@ describe('SpecCard chat timeline', () => {
       '/api/cards/card_spec_1/harness/items?after_id=1&limit=1',
       expect.objectContaining({ credentials: 'include' }),
     );
+  });
+
+  it('remounts the chat timeline after a successful reset', async () => {
+    const user = userEvent.setup();
+    mocks.resetSpecCard.mockResolvedValueOnce({
+      card_id: 'card_spec_1',
+      terminal_id: '',
+      new_thread_id: 'thread_reset',
+    });
+    const fetchMock = renderSpecCardWithProvider([
+      harnessRow(1, 'agent_message', {
+        id: 'agent_before_reset',
+        text: 'before reset',
+      }),
+    ]);
+
+    expect(await screen.findByText('before reset')).toBeInTheDocument();
+    const timelineBefore = screen.getByTestId('spec-chat-timeline');
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Reset spec session' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Reset session' }));
+
+    await waitFor(() =>
+      expect(mocks.resetSpecCard).toHaveBeenCalledWith('card_spec_1'),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('spec-chat-timeline')).not.toBe(timelineBefore),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

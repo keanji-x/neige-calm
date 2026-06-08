@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, SpecHarness, SpecHarnessParams,
 };
@@ -142,7 +142,7 @@ async fn wait_for_notification_receiver(daemon: &SharedCodexAppServer) {
 
 async fn recv_item_event(
     rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
-) -> Event {
+) -> BroadcastEnvelope {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -156,7 +156,33 @@ async fn recv_item_event(
             .expect("event receive");
         if matches!(env.event, Event::HarnessItemAdded { .. }) {
             assert_eq!(env.actor, ActorId::Kernel);
-            return env.event;
+            assert_ne!(env.id, 0, "HarnessItemAdded must carry a durable events.id");
+            return env;
+        }
+    }
+}
+
+async fn recv_phase_event(
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+) -> BroadcastEnvelope {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for harness phase event"
+        );
+        let env = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("event timeout")
+            .expect("event receive");
+        if matches!(env.event, Event::HarnessPhaseChanged { .. }) {
+            assert_eq!(env.actor, ActorId::Kernel);
+            assert_ne!(
+                env.id, 0,
+                "HarnessPhaseChanged must carry a durable events.id"
+            );
+            return env;
         }
     }
 }
@@ -194,8 +220,9 @@ async fn item_notification_persists_row_and_emits_event() {
     let params: Value = serde_json::from_str(&row.params).unwrap();
     assert_eq!(params["item"]["text"], "persisted assistant text");
 
-    let event = recv_item_event(&mut rx).await;
-    match event {
+    let envelope = recv_item_event(&mut rx).await;
+    let event_id = envelope.id;
+    match envelope.event {
         Event::HarnessItemAdded {
             card_id: event_card_id,
             wave_id: event_wave_id,
@@ -216,6 +243,72 @@ async fn item_notification_persists_row_and_emits_event() {
         }
         other => panic!("expected HarnessItemAdded, got {other:?}"),
     }
+
+    let events = repo.events_since(0, None).await.unwrap();
+    let durable_item_event_id = events
+        .iter()
+        .find_map(|(id, _version, _scope, event)| match event {
+            Event::HarnessItemAdded { item_db_id, .. } if *item_db_id == row.id => Some(*id),
+            _ => None,
+        })
+        .expect("HarnessItemAdded row must exist in events_since");
+    assert_ne!(durable_item_event_id, 0);
+    assert_eq!(durable_item_event_id, event_id);
+
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn phase_transition_persists_row_and_emits_durable_event_id() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let (harness, daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: "thread-items-persist".into(),
+        turn: json!({ "id": "turn-phase-1" }),
+    });
+
+    let envelope = recv_phase_event(&mut rx).await;
+    let event_id = envelope.id;
+    match envelope.event {
+        Event::HarnessPhaseChanged {
+            card_id: event_card_id,
+            wave_id: event_wave_id,
+            old_phase,
+            new_phase,
+            ..
+        } => {
+            assert_eq!(event_card_id.as_str(), card_id);
+            assert_eq!(event_wave_id.as_str(), wave_id);
+            assert_eq!(old_phase, HarnessPhaseTag::Idle);
+            assert_eq!(new_phase, HarnessPhaseTag::TurnRunning);
+        }
+        other => panic!("expected HarnessPhaseChanged, got {other:?}"),
+    }
+
+    let events = repo.events_since(0, None).await.unwrap();
+    let durable_phase_event_id = events
+        .iter()
+        .find_map(|(id, _version, _scope, event)| match event {
+            Event::HarnessPhaseChanged {
+                card_id: event_card_id,
+                old_phase,
+                new_phase,
+                ..
+            } if event_card_id.as_str() == card_id
+                && *old_phase == HarnessPhaseTag::Idle
+                && *new_phase == HarnessPhaseTag::TurnRunning =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect("HarnessPhaseChanged row must exist in events_since");
+    assert_ne!(durable_phase_event_id, 0);
+    assert_eq!(durable_phase_event_id, event_id);
 
     harness.shutdown().await.unwrap();
 }
