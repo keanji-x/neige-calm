@@ -145,17 +145,12 @@ pub(crate) async fn list_cards_by_wave(
     Ok(Json(cards))
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, ToSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessItemsDirection {
+    #[default]
     Asc,
     Desc,
-}
-
-impl Default for HarnessItemsDirection {
-    fn default() -> Self {
-        Self::Asc
-    }
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
