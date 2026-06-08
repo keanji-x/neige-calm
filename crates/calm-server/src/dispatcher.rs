@@ -2888,8 +2888,7 @@ async fn await_shared_worker_initial_turn_started(
         }
         match tokio::time::timeout(deadline - now, rx.recv()).await {
             Ok(Ok(n)) => {
-                if crate::spec_push::notification_thread_id(&n) == Some(thread_id)
-                    && matches!(n, Notification::TurnStarted { .. })
+                if n.thread_id() == Some(thread_id) && matches!(n, Notification::TurnStarted { .. })
                 {
                     return Ok(());
                 }

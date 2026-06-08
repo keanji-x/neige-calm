@@ -1320,7 +1320,7 @@ pub(crate) async fn await_shared_spec_initial_turn_lifecycle(
         }
         match tokio::time::timeout(deadline - now, rx.recv()).await {
             Ok(Ok(n)) => {
-                if spec_push::notification_thread_id(&n) == Some(thread_id) {
+                if n.thread_id() == Some(thread_id) {
                     spec_push::record(status, &n).await;
                     if matches!(
                         n,

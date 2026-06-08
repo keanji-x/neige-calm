@@ -1669,7 +1669,7 @@ pub(crate) async fn consume_shared_notifications(
             }
             Err(broadcast::error::RecvError::Closed) => return,
         };
-        let Some(notification_thread_id) = notification_thread_id(&n) else {
+        let Some(notification_thread_id) = n.thread_id() else {
             continue;
         };
         let current_thread_id = thread_id_slot.lock().await.clone();
@@ -1745,27 +1745,6 @@ pub(crate) async fn consume_shared_notifications(
                 .await;
             }
             _ => {}
-        }
-    }
-}
-
-pub(crate) fn notification_thread_id(n: &Notification) -> Option<&str> {
-    match n {
-        Notification::ThreadStarted { params } => params
-            .get("thread")
-            .and_then(|thread| thread.get("id"))
-            .and_then(Value::as_str)
-            .or_else(|| params.get("threadId").and_then(Value::as_str)),
-        Notification::ThreadStatusChanged { thread_id, .. }
-        | Notification::TurnStarted { thread_id, .. }
-        | Notification::TurnCompleted { thread_id, .. } => Some(thread_id.as_str()),
-        Notification::Item { params, .. } | Notification::Other { params, .. } => {
-            params.get("threadId").and_then(Value::as_str).or_else(|| {
-                params
-                    .get("thread")
-                    .and_then(|thread| thread.get("id"))
-                    .and_then(Value::as_str)
-            })
         }
     }
 }
