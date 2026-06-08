@@ -152,7 +152,7 @@ pub(crate) async fn ingest_provider_hook(
     let hook_idempotency_key =
         hook_idempotency_key(provider, &card_id_str, &payload, crate::model::now_ms());
     {
-        let mut cache = s
+        let cache = s
             .hook_ingest_cache
             .lock()
             .expect("hook ingest cache mutex poisoned");
@@ -165,7 +165,6 @@ pub(crate) async fn ingest_provider_hook(
             );
             return Ok(());
         }
-        cache.insert(hook_idempotency_key.clone());
     }
 
     // PR3 (#136) — reattribute the hook to the codex card that produced
@@ -203,9 +202,14 @@ pub(crate) async fn ingest_provider_hook(
             &s.events,
             s.write.role_cache(),
             s.write.cove_cache(),
-            provider.event(card_id_typed, kind, payload, hook_idempotency_key),
+            provider.event(card_id_typed, kind, payload, hook_idempotency_key.clone()),
         )
         .await?;
+    // Concurrent duplicates during this log call may pass; dispatcher watermarks and harness LRU dedupe them.
+    s.hook_ingest_cache
+        .lock()
+        .expect("hook ingest cache mutex poisoned")
+        .insert(hook_idempotency_key);
     Ok(())
 }
 
