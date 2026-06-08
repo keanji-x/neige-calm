@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::db::{Repo, write_in_tx_typed};
 use crate::dispatcher;
 use crate::error::Result;
-use crate::event::Event;
+use crate::event::{Event, EventBus};
 use crate::ids::{CardId, WaveId};
 use crate::model::CardRole;
 use crate::runtime_repo::CardRuntime;
@@ -26,6 +26,7 @@ pub use state::{HarnessState, IssuingKind, run_status_for};
 
 pub async fn spawn_recovered_harness(
     repo: Arc<dyn Repo>,
+    events: EventBus,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
     runtime: CardRuntime,
@@ -68,6 +69,7 @@ pub async fn spawn_recovered_harness(
             .clone()
             .or(snapshot.last_thread_id.clone()),
         repo,
+        events,
         daemon,
         config: HarnessConfig::default(),
         snapshot,
@@ -209,15 +211,22 @@ async fn snapshot_runtime_id(repo: &dyn Repo, card_id: &str) -> Result<String> {
 
 pub async fn recover_harnesses_on_boot(
     repo: Arc<dyn Repo>,
+    events: EventBus,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
 ) -> Result<usize> {
     let runtimes = repo.runtimes_recover_harnesses_on_boot().await?;
     let mut recovered = 0usize;
     for runtime in runtimes {
-        if spawn_recovered_harness(repo.clone(), daemon.clone(), registry, runtime)
-            .await?
-            .is_some()
+        if spawn_recovered_harness(
+            repo.clone(),
+            events.clone(),
+            daemon.clone(),
+            registry,
+            runtime,
+        )
+        .await?
+        .is_some()
         {
             recovered += 1;
         }

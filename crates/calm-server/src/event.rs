@@ -46,6 +46,7 @@
 //! this enum and the frontend fails at the type-check step. See D7 /
 //! issue #5.
 
+use crate::harness::snapshot::HarnessPhaseTag;
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::{Card, Cove, Overlay, Wave, WaveLifecycle};
 use serde::{Deserialize, Serialize};
@@ -369,6 +370,25 @@ pub enum Event {
         old_runtime_id: String,
         new_runtime_id: String,
         card_id: String,
+    },
+    #[serde(rename = "harness.item.added")]
+    HarnessItemAdded {
+        runtime_id: String,
+        card_id: CardId,
+        wave_id: WaveId,
+        item_db_id: i64,
+        item_uuid: Option<String>,
+        item_type: Option<String>,
+        turn_id: Option<String>,
+        method: String,
+    },
+    #[serde(rename = "harness.phase.changed")]
+    HarnessPhaseChanged {
+        runtime_id: String,
+        card_id: CardId,
+        wave_id: WaveId,
+        old_phase: HarnessPhaseTag,
+        new_phase: HarnessPhaseTag,
     },
 
     /// Issue #247 PR2 — structured wave-report edit-log entry. Emitted
@@ -705,6 +725,13 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
+            Event::HarnessItemAdded { card_id, .. }
+            | Event::HarnessPhaseChanged { card_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("card".into()),
+                entity_id: Some(card_id.to_string()),
+            },
             Event::WaveReportEdited { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -802,6 +829,8 @@ impl Event {
             Event::RuntimeStarted { .. } => "runtime.started",
             Event::RuntimeStatusChanged { .. } => "runtime.status_changed",
             Event::RuntimeSuperseded { .. } => "runtime.superseded",
+            Event::HarnessItemAdded { .. } => "harness.item.added",
+            Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::WaveReportEdited { .. } => "wave.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
@@ -897,6 +926,16 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::RuntimeSuperseded { card_id, .. } => {
             vec![format!("card:{}", card_id), "*".into()]
         }
+        Event::HarnessItemAdded {
+            wave_id, card_id, ..
+        }
+        | Event::HarnessPhaseChanged {
+            wave_id, card_id, ..
+        } => vec![
+            format!("card:{}", card_id),
+            format!("wave:{}", wave_id),
+            "*".into(),
+        ],
 
         // Issue #247 PR2 — wave-report edit log. Card-scoped on the
         // events row; topic mapping mirrors `Card*` so a subscriber

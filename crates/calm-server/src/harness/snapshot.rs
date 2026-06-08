@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
+use utoipa::ToSchema;
 
 use crate::harness::Observation;
 use crate::harness::state::{HarnessState, IssuingKind};
@@ -36,8 +38,9 @@ pub struct HarnessSnapshot {
     pub wedged_reason: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum HarnessPhaseTag {
     PendingThreadStart,
     Idle,

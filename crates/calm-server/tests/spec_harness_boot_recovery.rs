@@ -79,7 +79,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo, daemon, &registry)
+    let recovered = recover_harnesses_on_boot(repo, EventBus::new(), daemon, &registry)
         .await
         .unwrap();
     assert_eq!(recovered, 1);
@@ -162,7 +162,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     assert!(registry.get(&runtime_id).is_none());
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let recovered = recover_harnesses_on_boot(repo, daemon.clone(), &registry)
+    let recovered = recover_harnesses_on_boot(repo, EventBus::new(), daemon.clone(), &registry)
         .await
         .unwrap();
     assert_eq!(recovered, 1);
@@ -305,7 +305,7 @@ async fn boot_recovery_replays_events_since_original_watermark_after_queue_rehyd
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo.clone(), daemon, &registry)
+    let recovered = recover_harnesses_on_boot(repo.clone(), EventBus::new(), daemon, &registry)
         .await
         .unwrap();
     assert_eq!(recovered, 1);
@@ -409,7 +409,7 @@ async fn boot_recovery_replays_durable_queue_rows_behind_watermark() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo.clone(), daemon, &registry)
+    let recovered = recover_harnesses_on_boot(repo.clone(), EventBus::new(), daemon, &registry)
         .await
         .unwrap();
     assert_eq!(recovered, 1);
@@ -502,7 +502,7 @@ async fn boot_recovery_skips_terminal_waves() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo, daemon, &registry)
+    let recovered = recover_harnesses_on_boot(repo, EventBus::new(), daemon, &registry)
         .await
         .unwrap();
     assert_eq!(recovered, 0);

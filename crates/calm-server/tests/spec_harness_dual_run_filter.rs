@@ -80,6 +80,7 @@ async fn harness_drops_foreign_thread_notifications() {
     .unwrap();
     tx.commit().await.unwrap();
 
+    let events = EventBus::new();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id,
@@ -87,6 +88,7 @@ async fn harness_drops_foreign_thread_notifications() {
         card_id: card.id,
         thread_id: Some(thread_b.clone()),
         repo,
+        events,
         daemon: daemon.clone(),
         config: HarnessConfig::default(),
         snapshot,
@@ -199,6 +201,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
         repo: repo_dyn.clone(),
+        events: events.clone(),
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -361,6 +364,7 @@ async fn dispatcher_harness_full_queue_persists_inbox_and_advances_cursor() {
             card_id: card.id.clone(),
             thread_id: Some(thread_id),
             repo: repo_dyn.clone(),
+            events: events.clone(),
             daemon: daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,

@@ -10,11 +10,12 @@ use tokio::task::AbortHandle;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
+use crate::event::{Event, EventBus};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
-use crate::ids::{CardId, WaveId};
+use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::now_ms;
 use crate::runtime_repo::{RunStatus, RuntimeId};
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -32,6 +33,7 @@ pub struct SpecHarnessParams {
     pub card_id: CardId,
     pub thread_id: Option<String>,
     pub repo: Arc<dyn Repo>,
+    pub events: EventBus,
     pub daemon: Arc<SharedCodexAppServer>,
     pub config: HarnessConfig,
     pub snapshot: HarnessSnapshot,
@@ -39,13 +41,15 @@ pub struct SpecHarnessParams {
 
 struct Inner {
     runtime_id: RuntimeId,
-    _wave_id: WaveId,
+    wave_id: WaveId,
     card_id: CardId,
     thread_id: RwLock<Option<String>>,
     repo: Arc<dyn Repo>,
+    events: EventBus,
     daemon: Arc<SharedCodexAppServer>,
     observations: mpsc::Sender<HarnessObservationDelivery>,
     state: Mutex<HarnessState>,
+    last_phase: Mutex<HarnessPhaseTag>,
     pending_queue: Mutex<VecDeque<Observation>>,
     pending_envelope_ids: Mutex<VecDeque<Option<i64>>>,
     push_watermark: Mutex<i64>,
@@ -202,15 +206,18 @@ fn inner_from_params(
     snapshot.align_pending_envelope_ids();
     let debounce = debounce_from_initial_queue(&snapshot.pending_queue);
     let state = state_from_snapshot(&snapshot);
+    let last_phase = snapshot.phase;
     Arc::new(Inner {
         runtime_id: params.runtime_id,
-        _wave_id: params.wave_id,
+        wave_id: params.wave_id,
         card_id: params.card_id,
         thread_id: RwLock::new(params.thread_id.or(snapshot.last_thread_id.clone())),
         repo: params.repo,
+        events: params.events,
         daemon: params.daemon,
         observations,
         state: Mutex::new(state),
+        last_phase: Mutex::new(last_phase),
         pending_envelope_ids: Mutex::new(snapshot.pending_envelope_ids.into_iter().collect()),
         pending_queue: Mutex::new(snapshot.pending_queue.into_iter().collect()),
         push_watermark: Mutex::new(snapshot.push_watermark),
@@ -452,6 +459,64 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             };
             *inner.interrupt_deadline.lock().await = None;
         }
+        Notification::Item { method, params }
+            if method == "item/started" || method == "item/completed" =>
+        {
+            let Some(item) = params.get("item") else {
+                tracing::debug!(
+                    method,
+                    "spec harness ignoring item notification without item"
+                );
+                return persist_snapshot(inner).await;
+            };
+            let Some(thread_id) = inner.thread_id.read().await.clone() else {
+                tracing::warn!(
+                    runtime_id = %inner.runtime_id,
+                    card_id = %inner.card_id,
+                    method,
+                    "spec harness item notification arrived before thread id was known"
+                );
+                return persist_snapshot(inner).await;
+            };
+
+            let item_uuid = item
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let item_type = item
+                .get("type")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
+            let params_json = serde_json::to_string(&params)?;
+            let item_db_id = inner
+                .repo
+                .harness_item_insert(
+                    &inner.runtime_id,
+                    inner.card_id.as_str(),
+                    inner.wave_id.as_str(),
+                    &thread_id,
+                    turn_id.as_deref(),
+                    item_uuid.as_deref(),
+                    item_type.as_deref(),
+                    &method,
+                    &params_json,
+                )
+                .await?;
+            inner.events.emit(
+                ActorId::Kernel,
+                Event::HarnessItemAdded {
+                    runtime_id: inner.runtime_id.clone(),
+                    card_id: inner.card_id.clone(),
+                    wave_id: inner.wave_id.clone(),
+                    item_db_id,
+                    item_uuid,
+                    item_type,
+                    turn_id,
+                    method,
+                },
+            );
+        }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }
     persist_snapshot(inner).await
@@ -462,6 +527,15 @@ fn other_turn_id(params: &Value) -> Option<&str> {
         .get("turn")
         .and_then(|turn| turn.get("id"))
         .and_then(Value::as_str)
+        .or_else(|| params.get("turnId").and_then(Value::as_str))
+}
+
+fn item_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| params.get("turn_id").and_then(Value::as_str))
         .or_else(|| params.get("turnId").and_then(Value::as_str))
 }
 
@@ -759,6 +833,10 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
     let status = run_status_for(&state_for_status);
     let status_db = run_status_to_db(&status);
     let watermark = snapshot.push_watermark;
+    let new_phase = snapshot.phase;
+    let event_runtime_id = runtime_id.clone();
+    let event_card_id = inner.card_id.clone();
+    let event_wave_id = inner.wave_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
 
@@ -807,7 +885,31 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
             Ok(())
         })
     })
-    .await
+    .await?;
+
+    let old_phase = {
+        let mut last_phase = inner.last_phase.lock().await;
+        if *last_phase == new_phase {
+            None
+        } else {
+            let old_phase = *last_phase;
+            *last_phase = new_phase;
+            Some(old_phase)
+        }
+    };
+    if let Some(old_phase) = old_phase {
+        inner.events.emit(
+            ActorId::Kernel,
+            Event::HarnessPhaseChanged {
+                runtime_id: event_runtime_id,
+                card_id: event_card_id,
+                wave_id: event_wave_id,
+                old_phase,
+                new_phase,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {

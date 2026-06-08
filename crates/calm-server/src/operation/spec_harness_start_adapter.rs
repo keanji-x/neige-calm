@@ -324,7 +324,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         &self,
         output: &TxOutput,
         _op: &Operation,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
     ) -> Result<SpawnHandle> {
         let runtime_id = output_string(output, "runtime_id")?;
         let card_id = output_string(output, "card_id")?;
@@ -340,6 +340,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             card_id: CardId::from(card_id),
             thread_id,
             repo: self.repo.clone(),
+            events: ctx.events.clone(),
             daemon: self.daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,
