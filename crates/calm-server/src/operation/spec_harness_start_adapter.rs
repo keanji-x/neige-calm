@@ -259,6 +259,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         map.remove("appserver_needs_initial_prompt");
 
         let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+        let transcript_scope = scope.clone();
+        let transcript_runtime_id = runtime_id.clone();
+        let transcript_card_id = CardId::from(card_id.clone());
+        let transcript_wave_id = WaveId::from(wave_id.clone());
         let write = WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
         let op_clone = op.clone();
         let output_clone = output.clone();
@@ -322,6 +326,23 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         )
         .await?;
         card = updated_card;
+        if reset_harness_items {
+            ctx.repo
+                .log_pure_event(
+                    ActorId::Kernel,
+                    transcript_scope,
+                    None,
+                    &ctx.events,
+                    &self.card_role_cache,
+                    &self.wave_cove_cache,
+                    Event::HarnessTranscriptCleared {
+                        runtime_id: transcript_runtime_id,
+                        card_id: transcript_card_id,
+                        wave_id: transcript_wave_id,
+                    },
+                )
+                .await?;
+        }
         output.result = serde_json::to_value(&card)?;
         output.target_id = Some(card.id.to_string());
 

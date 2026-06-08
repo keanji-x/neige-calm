@@ -214,6 +214,48 @@ async fn harness_items_route_returns_rows_in_order_and_paginates() {
 }
 
 #[tokio::test]
+async fn harness_items_desc_cursor_uses_less_than_after_id() {
+    let boot = boot().await;
+    let mut inserted = Vec::new();
+    for index in 1..=5 {
+        let uuid = format!("item-desc-{index}");
+        let id = boot
+            .repo
+            .harness_item_insert(
+                "runtime-desc",
+                boot.spec_card.id.as_str(),
+                boot.spec_card.wave_id.as_str(),
+                "thread-desc",
+                Some("turn-desc"),
+                Some(&uuid),
+                Some("agent_message"),
+                "item/completed",
+                &json!({ "item": { "id": uuid, "type": "agent_message" } }).to_string(),
+            )
+            .await
+            .unwrap();
+        inserted.push(id);
+    }
+
+    let (status, body) = get(
+        boot.app.clone(),
+        format!(
+            "/api/cards/{}/harness/items?direction=desc&limit=2&after_id={}",
+            boot.spec_card.id.as_str(),
+            inserted[2]
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![inserted[0], inserted[1]]
+    );
+}
+
+#[tokio::test]
 async fn harness_items_route_rejects_non_spec_card() {
     let boot = boot().await;
     let (status, body) = get(

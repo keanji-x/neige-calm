@@ -204,13 +204,10 @@ pub(crate) async fn get_harness_items(
     let after_id = q.after_id.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(100).clamp(0, 500);
     let descending = q.direction == HarnessItemsDirection::Desc;
-    let mut items = s
+    let items = s
         .repo
         .harness_item_list_by_card(card.id.as_str(), after_id, limit, descending)
         .await?;
-    if descending {
-        items.reverse();
-    }
     Ok(Json(items))
 }
 
@@ -1151,6 +1148,44 @@ async fn persist_shared_reset_runtime_fields(
         },
     )
     .await?;
+    if reset_harness_items {
+        emit_harness_transcript_cleared_after_reset(s, spec_card_id).await?;
+    }
+    Ok(())
+}
+
+async fn emit_harness_transcript_cleared_after_reset(
+    s: &RouteState,
+    spec_card_id: &str,
+) -> Result<()> {
+    let spec_card_key = spec_card_id.to_string();
+    let card = s
+        .repo
+        .card_get(spec_card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {spec_card_id}")))?;
+    let runtime = s
+        .repo
+        .runtime_get_active_for_card(&spec_card_key)
+        .await?
+        .ok_or_else(|| CalmError::Internal(format!("runtime for card {spec_card_id} missing")))?;
+    let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+    #[allow(deprecated)]
+    s.repo
+        .log_pure_event(
+            ActorId::Kernel,
+            scope,
+            None,
+            &s.events,
+            s.write.role_cache(),
+            s.write.cove_cache(),
+            Event::HarnessTranscriptCleared {
+                runtime_id: runtime.id,
+                card_id: card.id,
+                wave_id: card.wave_id,
+            },
+        )
+        .await?;
     Ok(())
 }
 

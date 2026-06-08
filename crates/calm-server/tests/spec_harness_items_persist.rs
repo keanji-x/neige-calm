@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
-use calm_server::event::{BroadcastEnvelope, Event, EventBus};
+use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::harness::{
-    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, SpecHarness, SpecHarnessParams,
+    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, SpecHarness, SpecHarnessParams,
 };
 use calm_server::ids::ActorId;
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
@@ -28,7 +28,7 @@ async fn seed_harness(
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            cove_id: cove.id,
+            cove_id: cove.id.clone(),
             title: "items persist".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -39,7 +39,7 @@ async fn seed_harness(
         .unwrap();
     let card = repo
         .card_create(NewCard {
-            wave_id: wave.id,
+            wave_id: wave.id.clone(),
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1, "spec_harness": true}),
@@ -77,6 +77,8 @@ async fn seed_harness(
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    wave_cove_cache.insert(wave.id.clone(), cove.id);
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id,
         wave_id: card.wave_id.clone(),
@@ -85,7 +87,7 @@ async fn seed_harness(
         repo: repo_dyn,
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        wave_cove_cache,
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -222,6 +224,7 @@ async fn item_notification_persists_row_and_emits_event() {
 
     let envelope = recv_item_event(&mut rx).await;
     let event_id = envelope.id;
+    let event_scope = envelope.scope.clone();
     match envelope.event {
         Event::HarnessItemAdded {
             card_id: event_card_id,
@@ -243,6 +246,14 @@ async fn item_notification_persists_row_and_emits_event() {
         }
         other => panic!("expected HarnessItemAdded, got {other:?}"),
     }
+    assert!(
+        matches!(
+            event_scope,
+            EventScope::Card { ref card, ref wave, .. }
+                if card.as_str() == card_id && wave.as_str() == wave_id
+        ),
+        "HarnessItemAdded envelope must be card-scoped, got {event_scope:?}"
+    );
 
     let events = repo.events_since(0, None).await.unwrap();
     let durable_item_event_id = events
@@ -254,6 +265,55 @@ async fn item_notification_persists_row_and_emits_event() {
         .expect("HarnessItemAdded row must exist in events_since");
     assert_ne!(durable_item_event_id, 0);
     assert_eq!(durable_item_event_id, event_id);
+
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn phase_log_failure_keeps_last_phase_for_retry() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let (harness, _daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id: "turn-rollback".into(),
+            started_at: Instant::now(),
+        })
+        .await;
+
+    sqlx::query("ALTER TABLE events RENAME TO events_broken")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let err = harness
+        .persist_snapshot()
+        .await
+        .expect_err("missing events table should fail phase event persistence");
+    assert!(
+        err.to_string().contains("events"),
+        "expected events-table failure, got {err}"
+    );
+    sqlx::query("ALTER TABLE events_broken RENAME TO events")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    harness.persist_snapshot().await.unwrap();
+    let events = repo.events_since(0, None).await.unwrap();
+    assert!(
+        events.iter().any(|(_id, _version, _scope, event)| matches!(
+            event,
+            Event::HarnessPhaseChanged {
+                card_id: event_card_id,
+                wave_id: event_wave_id,
+                old_phase: HarnessPhaseTag::Idle,
+                new_phase: HarnessPhaseTag::TurnRunning,
+                ..
+            } if event_card_id.as_str() == card_id && event_wave_id.as_str() == wave_id
+        )),
+        "retry must persist Idle -> TurnRunning after first log failure: {events:?}"
+    );
 
     harness.shutdown().await.unwrap();
 }

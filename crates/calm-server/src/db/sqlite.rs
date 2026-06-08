@@ -2624,21 +2624,36 @@ impl RepoRead for SqlxRepo {
         limit: i64,
         descending: bool,
     ) -> Result<Vec<HarnessItem>> {
-        let order = if descending { "DESC" } else { "ASC" };
-        let sql = format!(
-            r#"SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
-                      item_uuid, item_type, method, params, created_at_ms
-               FROM harness_items
-               WHERE card_id = ?1 AND id > ?2
-               ORDER BY id {order}
-               LIMIT ?3"#
-        );
-        let rows = sqlx::query_as::<_, HarnessItem>(&sql)
+        let (sql, cursor) = if descending {
+            (
+                r#"SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
+                          item_uuid, item_type, method, params, created_at_ms
+                   FROM harness_items
+                   WHERE card_id = ?1 AND id < ?2
+                   ORDER BY id DESC
+                   LIMIT ?3"#,
+                if after_id == 0 { i64::MAX } else { after_id },
+            )
+        } else {
+            (
+                r#"SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
+                          item_uuid, item_type, method, params, created_at_ms
+                   FROM harness_items
+                   WHERE card_id = ?1 AND id > ?2
+                   ORDER BY id ASC
+                   LIMIT ?3"#,
+                after_id,
+            )
+        };
+        let mut rows = sqlx::query_as::<_, HarnessItem>(sql)
             .bind(card_id)
-            .bind(after_id)
+            .bind(cursor)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
+        if descending {
+            rows.reverse();
+        }
         Ok(rows)
     }
 

@@ -924,19 +924,11 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
     })
     .await?;
 
-    let old_phase = {
-        let mut last_phase = inner.last_phase.lock().await;
-        if *last_phase == new_phase {
-            None
-        } else {
-            let old_phase = *last_phase;
-            *last_phase = new_phase;
-            Some(old_phase)
-        }
-    };
-    if let Some(old_phase) = old_phase {
+    let mut last_phase = inner.last_phase.lock().await;
+    if *last_phase != new_phase {
+        let old_phase = *last_phase;
         let scope = harness_event_scope(inner, "harness.phase.changed");
-        inner
+        if let Err(e) = inner
             .repo
             .log_pure_event(
                 ActorId::Kernel,
@@ -953,7 +945,20 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
                     new_phase,
                 },
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                runtime_id = %inner.runtime_id,
+                card_id = %inner.card_id,
+                wave_id = %inner.wave_id,
+                ?old_phase,
+                ?new_phase,
+                error = %e,
+                "spec harness phase event persist failed; retaining previous phase for retry"
+            );
+            return Err(e);
+        }
+        *last_phase = new_phase;
     }
     Ok(())
 }

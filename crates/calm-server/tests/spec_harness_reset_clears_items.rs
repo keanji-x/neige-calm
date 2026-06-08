@@ -6,7 +6,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
-use calm_server::event::EventBus;
+use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -179,6 +179,28 @@ async fn reset_spec_card_clears_persisted_harness_items() {
         .await
         .unwrap()
         .expect("new active runtime");
+    let events = boot.repo.events_since(0, None).await.unwrap();
+    assert!(
+        events.iter().any(|(_id, _version, scope, event)| {
+            matches!(
+                (scope, event),
+                (
+                    EventScope::Card { card, wave, .. },
+                    Event::HarnessTranscriptCleared {
+                        runtime_id,
+                        card_id,
+                        wave_id,
+                    },
+                ) if runtime_id == &active.id
+                    && card_id == &boot.spec_card.id
+                    && wave_id == &boot.spec_card.wave_id
+                    && card == &boot.spec_card.id
+                    && wave == &boot.spec_card.wave_id
+            )
+        }),
+        "reset must emit durable harness.transcript.cleared for {}: {events:?}",
+        boot.spec_card.id
+    );
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();
     }

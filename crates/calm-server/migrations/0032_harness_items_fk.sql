@@ -14,6 +14,9 @@ CREATE TABLE harness_items_new (
     created_at_ms INTEGER NOT NULL
 );
 
+DELETE FROM harness_items
+WHERE card_id NOT IN (SELECT id FROM cards);
+
 INSERT INTO harness_items_new
 SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
        item_uuid, item_type, method, params, created_at_ms
