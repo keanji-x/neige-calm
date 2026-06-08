@@ -2087,8 +2087,17 @@
           {
             "name": "thread_id",
             "in": "path",
-            "description": "Codex thread/session id",
+            "description": "Provider thread/session id",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Agent provider: codex or claude; defaults to codex",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -2096,11 +2105,21 @@
         ],
         "responses": {
           "200": {
-            "description": "Owning card for this codex thread",
+            "description": "Owning card for this provider thread/session",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ThreadCardResolution"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
