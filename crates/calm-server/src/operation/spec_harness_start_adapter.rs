@@ -144,7 +144,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let card_id = payload.spec_card_id;
         let wave_id = payload.wave_id;
         let report_card_id = payload.report_card_id;
-        let snapshot = initial_snapshot_with_goal(payload.goal.clone());
         let defer_runtime_start = payload.force_new_thread;
         let card = sqlx::query_as::<_, Card>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
@@ -157,6 +156,24 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+
+        let inherited_push_watermark = if defer_runtime_start {
+            runtime_get_active_for_card_tx(tx, card.id.as_str())
+                .await?
+                .and_then(|runtime| {
+                    runtime
+                        .handle_state_json
+                        .as_ref()
+                        .and_then(|state| state.get("push_watermark"))
+                        .and_then(Value::as_i64)
+                })
+        } else {
+            None
+        };
+        let mut snapshot = initial_snapshot_with_goal(payload.goal.clone());
+        if let Some(push_watermark) = inherited_push_watermark {
+            snapshot.push_watermark = push_watermark;
+        }
 
         let runtime_id = new_id();
         if !defer_runtime_start {

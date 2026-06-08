@@ -9,7 +9,9 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx, runtime_start_tx};
 use calm_server::event::EventBus;
-use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot};
+use calm_server::harness::{
+    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, SpecHarness, SpecHarnessParams,
+};
 use calm_server::ids::WaveId;
 use calm_server::model::{
     Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id, now_ms,
@@ -424,6 +426,22 @@ async fn request_lines_containing(path: &PathBuf, method: &str, count: usize) ->
     }
 }
 
+async fn wait_for_harness_watermark(harness: &SpecHarness, watermark: i64) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = harness.snapshot().await;
+        if snapshot.push_watermark == watermark {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for harness watermark {watermark}; got {}",
+            snapshot.push_watermark
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 fn has_interrupt(rows: &[Value], thread_id: &str, turn_id: &str) -> bool {
     rows.iter().any(|row| {
         row.get("method").and_then(Value::as_str) == Some("turn/interrupt")
@@ -705,6 +723,127 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
         .expect("new active runtime");
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
     assert!(boot.state.harness.get(&active.id).is_some());
+    if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn reset_spec_card_preserves_runtime_push_watermark() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "spec_harness": true,
+                "push_watermark": 0
+            }),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    let old_runtime_id = new_id();
+    let thread_id = "thread-old-watermark".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: old_runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: old_runtime_id.clone(),
+        wave_id: card.wave_id.clone(),
+        card_id: card.id.clone(),
+        thread_id: Some(thread_id),
+        repo: repo_dyn,
+        events: boot.state.events.clone(),
+        card_role_cache: boot.state.card_role_cache.clone(),
+        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        daemon: boot.state.shared_codex_appserver.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+    boot.state
+        .harness
+        .insert(old_runtime_id.clone(), harness.clone());
+    for envelope_id in 1_i64..=5 {
+        harness
+            .observe_envelope(
+                Observation::WaveGoal {
+                    text: format!("seeded observation {envelope_id}"),
+                },
+                envelope_id,
+            )
+            .unwrap();
+    }
+    wait_for_harness_watermark(&harness, 5).await;
+    harness.persist_snapshot().await.unwrap();
+
+    let old_runtime = boot
+        .repo
+        .runtime_get_by_id(&old_runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let old_snapshot = HarnessSnapshot::from_value_strict(old_runtime.handle_state_json.unwrap());
+    assert_eq!(old_snapshot.push_watermark, 5);
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let active = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("new active runtime");
+    assert_ne!(active.id, old_runtime_id);
+    let new_snapshot = HarnessSnapshot::from_value_strict(
+        active
+            .handle_state_json
+            .clone()
+            .expect("new runtime snapshot"),
+    );
+    assert_eq!(new_snapshot.push_watermark, 5);
+    assert!(boot.state.harness.get(&old_runtime_id).is_none());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();
     }
