@@ -46,11 +46,29 @@ pub async fn resolve_card_for_thread(
     provider: AgentProvider,
     thread_id: &str,
 ) -> Result<Option<String>> {
-    let active = repo
-        .runtime_get_active_by_thread(provider.clone(), thread_id)
-        .await?;
+    let active = match &provider {
+        AgentProvider::Codex => {
+            repo.runtime_get_active_by_thread(AgentProvider::Codex, thread_id)
+                .await?
+        }
+        AgentProvider::Claude => {
+            repo.runtime_get_active_by_session(AgentProvider::Claude, thread_id)
+                .await?
+        }
+    };
     if let Some(runtime) = active.as_ref() {
         return Ok(Some(runtime.card_id.clone()));
+    }
+
+    if provider != AgentProvider::Codex {
+        tracing::warn!(
+            target: "runtime_lookup::fallback",
+            thread_id,
+            provider = ?provider,
+            legacy_hit = false,
+            "runtime thread->card lookup missed; no legacy fallback for provider"
+        );
+        return Ok(None);
     }
 
     let legacy = repo.card_codex_thread_get_by_thread(thread_id).await?;

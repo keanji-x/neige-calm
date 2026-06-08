@@ -65,7 +65,7 @@ fn main() {
     let hook_url = std::env::var("NEIGE_HOOK_URL")
         .ok()
         .filter(|v| !v.is_empty());
-    let card_id = match resolve_card_id_for_hook(&base, &body) {
+    let card_id = match resolve_card_id_for_hook(provider, &base, &body) {
         Some(card_id) => card_id,
         None => {
             print!("{}", provider.ack());
@@ -82,7 +82,7 @@ fn main() {
     print!("{}", provider.ack());
 }
 
-fn resolve_card_id_for_hook(base: &str, body: &str) -> Option<String> {
+fn resolve_card_id_for_hook(provider: Provider, base: &str, body: &str) -> Option<String> {
     if let Ok(card_id) = std::env::var("NEIGE_CARD_ID")
         && !card_id.is_empty()
     {
@@ -105,7 +105,7 @@ fn resolve_card_id_for_hook(base: &str, body: &str) -> Option<String> {
         return None;
     };
 
-    match resolve_card_id(base, session_id) {
+    match resolve_card_id(base, provider, session_id) {
         Ok(card_id) => Some(card_id),
         Err(e) => {
             eprintln!(
@@ -116,11 +116,12 @@ fn resolve_card_id_for_hook(base: &str, body: &str) -> Option<String> {
     }
 }
 
-fn resolve_card_id(base: &str, thread_id: &str) -> Result<String, String> {
+fn resolve_card_id(base: &str, provider: Provider, thread_id: &str) -> Result<String, String> {
     let url = format!(
-        "{}/api/threads/{}/card",
+        "{}/api/threads/{}/card?provider={}",
         base.trim_end_matches('/'),
         url_encode(thread_id),
+        provider.query_value(),
     );
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(3))
@@ -366,6 +367,13 @@ impl Provider {
         }
     }
 
+    fn query_value(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+
     fn ack(self) -> &'static str {
         match self {
             Self::Codex => "{}",
@@ -551,8 +559,10 @@ mod tests {
     #[test]
     fn provider_endpoints_and_acks_match_hook_contracts() {
         assert_eq!(Provider::Codex.endpoint(), "/internal/codex/hook");
+        assert_eq!(Provider::Codex.query_value(), "codex");
         assert_eq!(Provider::Codex.ack(), "{}");
         assert_eq!(Provider::Claude.endpoint(), "/internal/claude/hook");
+        assert_eq!(Provider::Claude.query_value(), "claude");
         assert_eq!(Provider::Claude.ack(), "{\"continue\":true}");
     }
 

@@ -66,7 +66,7 @@ async fn serve_resolution_then_hook(listener: TcpListener, captured: oneshot::Se
     let (mut get_stream, _) = listener.accept().await.expect("accept resolve conn");
     let get_req = read_request(&mut get_stream).await;
     assert!(
-        get_req.contains("GET /api/threads/thread-abc/card"),
+        get_req.contains("GET /api/threads/thread-abc/card?provider=codex"),
         "resolution request was:\n{get_req}"
     );
     let body =

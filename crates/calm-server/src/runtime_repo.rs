@@ -141,6 +141,12 @@ pub trait RuntimeRepo {
         thread_id: &str,
     ) -> Result<Option<CardRuntime>>;
 
+    async fn runtime_get_active_by_session(
+        &self,
+        provider: AgentProvider,
+        session_id: &str,
+    ) -> Result<Option<CardRuntime>>;
+
     async fn runtime_get_active_for_card(&self, card_id: &CardId) -> Result<Option<CardRuntime>>;
 
     /// Runtime row used by read-time payload projection. This preserves the

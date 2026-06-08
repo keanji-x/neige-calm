@@ -27,9 +27,11 @@
 //! This file keeps only the loopback ingest.
 
 use crate::actor::Actor;
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
+use crate::runtime_lookup::resolve_card_for_thread;
+use crate::runtime_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
@@ -101,6 +103,13 @@ impl HookProvider {
             },
         }
     }
+
+    fn into_agent_provider(self) -> AgentProvider {
+        match self {
+            Self::Codex => AgentProvider::Codex,
+            Self::Claude => AgentProvider::Claude,
+        }
+    }
 }
 
 /// Loopback-only ingest. The bridge subprocess POSTs the raw codex hook
@@ -144,6 +153,7 @@ pub(crate) async fn ingest_provider_hook(
     payload: Value,
     provider: HookProvider,
 ) -> Result<()> {
+    let card_id_typed = CardId::from(card_id_str.clone());
     let event_name = payload
         .get("hook_event_name")
         .and_then(|v| v.as_str())
@@ -166,6 +176,8 @@ pub(crate) async fn ingest_provider_hook(
         }
     }
 
+    cross_check_session_card(s, &card_id_str, &payload, provider).await?;
+
     // PR3 (#136) — reattribute the hook to the codex card that produced
     // it. PR2's stopgap stamped `ActorId::Kernel` because there was no
     // typed card id at the ingest boundary; PR3 now resolves the card
@@ -180,7 +192,6 @@ pub(crate) async fn ingest_provider_hook(
     // deleted. The gate's unknown-card branch then refuses the write,
     // which is what we want: a hook for a deleted card is an audit
     // smell.
-    let card_id_typed = CardId::from(card_id_str.clone());
     let scope = match s.repo.card_get(&card_id_str).await? {
         Some(c) => match s.repo.wave_get(c.wave_id.as_str()).await? {
             Some(w) => EventScope::Card {
@@ -209,6 +220,48 @@ pub(crate) async fn ingest_provider_hook(
         .lock()
         .expect("hook ingest cache mutex poisoned")
         .insert(hook_idempotency_key);
+    Ok(())
+}
+
+async fn cross_check_session_card(
+    s: &RouteState,
+    card_id_str: &str,
+    payload: &Value,
+    provider: HookProvider,
+) -> Result<()> {
+    let Some(session_id) = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|session_id| !session_id.is_empty())
+    else {
+        tracing::info!(
+            target: "hook.ingest.no_session",
+            provider = ?provider,
+            query_card = %card_id_str,
+            "hook ingest proceeding without payload session_id"
+        );
+        return Ok(());
+    };
+
+    let resolved_card =
+        resolve_card_for_thread(s.repo.as_ref(), provider.into_agent_provider(), session_id)
+            .await?;
+    if let Some(other_card) = resolved_card
+        && other_card != card_id_str
+    {
+        tracing::warn!(
+            target: "hook.ingest.card_mismatch",
+            provider = ?provider,
+            query_card = %card_id_str,
+            payload_card = %other_card,
+            session_id = %session_id,
+            "hook ingest rejected: session_id maps to different card"
+        );
+        return Err(CalmError::BadRequest(
+            "hook session_id/card_id mismatch".into(),
+        ));
+    }
+
     Ok(())
 }
 

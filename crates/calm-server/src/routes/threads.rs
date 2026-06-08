@@ -7,10 +7,10 @@ use crate::runtime_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
@@ -28,9 +28,13 @@ pub fn router() -> Router<AppState> {
     get,
     path = "/api/threads/{thread_id}/card",
     tag = "threads",
-    params(("thread_id" = String, Path, description = "Codex thread/session id")),
+    params(
+        ("thread_id" = String, Path, description = "Provider thread/session id"),
+        ("provider" = Option<String>, Query, description = "Agent provider: codex or claude; defaults to codex"),
+    ),
     responses(
-        (status = 200, description = "Owning card for this codex thread", body = ThreadCardResolution),
+        (status = 200, description = "Owning card for this provider thread/session", body = ThreadCardResolution),
+        (status = 400, description = "Invalid provider", body = ErrorBody),
         (status = 404, description = "No card is mapped to this thread", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -38,11 +42,12 @@ pub fn router() -> Router<AppState> {
 pub async fn resolve_card_for_thread(
     State(s): State<RouteState>,
     Path(thread_id): Path<String>,
+    Query(q): Query<ResolveThreadQuery>,
 ) -> Result<Json<ThreadCardResolution>> {
-    let card_id =
-        resolve_card_for_thread_runtime(s.repo.as_ref(), AgentProvider::Codex, &thread_id)
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("thread {thread_id}")))?;
+    let provider = parse_provider(q.provider.as_deref())?;
+    let card_id = resolve_card_for_thread_runtime(s.repo.as_ref(), provider, &thread_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("thread {thread_id}")))?;
     let card = s
         .repo
         .card_get(&card_id)
@@ -59,6 +64,21 @@ pub async fn resolve_card_for_thread(
         role,
         wave_id: Some(card.wave_id.to_string()),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveThreadQuery {
+    pub provider: Option<String>,
+}
+
+fn parse_provider(provider: Option<&str>) -> Result<AgentProvider> {
+    match provider {
+        None | Some("codex") => Ok(AgentProvider::Codex),
+        Some("claude") => Ok(AgentProvider::Claude),
+        Some(other) => Err(CalmError::BadRequest(format!(
+            "invalid provider {other:?}; expected codex or claude"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

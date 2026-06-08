@@ -3394,23 +3394,35 @@ export interface operations {
     };
     resolve_card_for_thread: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Agent provider: codex or claude; defaults to codex */
+                provider?: string;
+            };
             header?: never;
             path: {
-                /** @description Codex thread/session id */
+                /** @description Provider thread/session id */
                 thread_id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Owning card for this codex thread */
+            /** @description Owning card for this provider thread/session */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ThreadCardResolution"];
+                };
+            };
+            /** @description Invalid provider */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description No card is mapped to this thread */
