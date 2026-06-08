@@ -95,7 +95,6 @@ use crate::routes::terminal::spawn_terminal_with_parts;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::spec_card::build_codex_env_map;
-use crate::spec_push::SpecPushRegistry;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_sweeper::{reap_terminal_artifacts_with_renderer, reap_terminal_pid_only};
@@ -492,7 +491,6 @@ impl Dispatcher {
         codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
-        spec_push: SpecPushRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         permits: usize,
     ) -> Self {
@@ -506,7 +504,6 @@ impl Dispatcher {
             daemon,
             terminal_renderer,
             mcp_server,
-            spec_push,
             shared_codex_appserver,
             permits,
         )
@@ -521,12 +518,6 @@ impl Dispatcher {
         daemon: Arc<DaemonClient>,
         terminal_renderer: Arc<TerminalRendererRegistry>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
-        // #293 — the wave→app-server push registry (shared with
-        // `AppState.spec_push`; `create_wave` fills it). Push is the only
-        // path now (#293 cutover): the subscribe filter unconditionally
-        // includes the `task.*` / `wave.report_edited` kinds so they route to
-        // harness observation delivery.
-        spec_push: SpecPushRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         permits: usize,
     ) -> Self {
@@ -538,7 +529,6 @@ impl Dispatcher {
             daemon,
             terminal_renderer,
             mcp_server,
-            spec_push,
             HarnessRegistry::new(),
             shared_codex_appserver,
             permits,
@@ -554,7 +544,6 @@ impl Dispatcher {
         daemon: Arc<DaemonClient>,
         terminal_renderer: Arc<TerminalRendererRegistry>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
-        spec_push: SpecPushRegistry,
         harness: HarnessRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         permits: usize,
@@ -582,7 +571,6 @@ impl Dispatcher {
             daemon,
             terminal_renderer,
             mcp_server,
-            spec_push,
             harness,
             shared_codex_appserver,
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
@@ -716,12 +704,6 @@ struct Inner {
     /// only assert on card creation. Terminal workers don't read this
     /// (they don't run codex).
     mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
-    /// #293 PR3b — wave→app-server push registry (shared with
-    /// `AppState.spec_push`). `push_to_spec` resolves a wave's
-    /// [`crate::spec_push::SpecPushHandle`] from here and calls
-    /// `push_observation` on it. Empty when a kernel restart lost the
-    /// in-memory handle (no crash-recovery — see `push_to_spec`).
-    spec_push: SpecPushRegistry,
     /// Harness-backed shared specs are driven by the same dispatcher
     /// observations, but through `SpecHarness::observe` instead of the
     /// legacy `SpecPushHandle` registry.

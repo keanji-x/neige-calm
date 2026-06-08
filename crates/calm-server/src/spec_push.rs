@@ -1279,61 +1279,7 @@ impl SpecPushRegistry {
 
     /// Insert (or replace) the handle for a wave. A replaced handle is
     /// returned so the caller can observe it; dropping it kills its child.
-    ///
-    /// **Production code should use [`Self::park`] instead** — `park` runs
-    /// the aspect framework's
-    /// [`JoinPoint::BeforeHandleParkInRegistry`](crate::aspect::JoinPoint::BeforeHandleParkInRegistry)
-    /// invariants (INV-6's `WatermarkSinkInstalledAspect` today). `insert`
-    /// is retained for the spec-push test crate, which constructs handles
-    /// without going through the full install path and intentionally
-    /// bypasses the aspect check.
     pub fn insert(&self, wave_id: WaveId, handle: SpecPushHandle) -> Option<SpecPushHandle> {
-        self.0.insert(wave_id, handle)
-    }
-
-    /// #322 — production registration path. Runs every aspect installed on
-    /// the [`crate::aspect::JoinPoint::BeforeHandleParkInRegistry`] slot,
-    /// then `insert`s the handle. An aspect violation panics (release-mode
-    /// fail-fast: a kernel that parks a handle missing its watermark sink
-    /// has already corrupted the durable push-watermark contract and the
-    /// only safe action is to crash so the supervisor restart re-runs
-    /// boot-takeover from persistent state — see [`crate::aspect`] module
-    /// doc).
-    ///
-    /// Why not collapse with `insert`: tests in `mod tests` build
-    /// [`SpecPushHandle`]s without a watermark sink (they don't exercise
-    /// the queue-flush path), so they'd trip
-    /// [`crate::aspect::WatermarkSinkInstalledAspect`]. `park` is the
-    /// production entry point; `insert` is the bare-insert escape hatch
-    /// tests keep using.
-    ///
-    /// The `aspects: &AspectRegistry` arg is the explicit framework wiring
-    /// the design landed on (see #322 instructions): the registry has
-    /// no opinion on aspect dispatch, the caller passes the aspect
-    /// registry it already holds on [`crate::state::AppState`]. Approach A
-    /// from the issue body — simpler than embedding the aspect registry
-    /// into `SpecPushRegistry` because (a) `SpecPushRegistry::new` is
-    /// called from `Default::default()` chains the aspect registry isn't
-    /// available in, and (b) keeping the registries orthogonal lets the
-    /// aspect framework grow without churning `SpecPushRegistry`'s
-    /// construction sites.
-    pub async fn park(
-        &self,
-        wave_id: WaveId,
-        handle: SpecPushHandle,
-        aspects: &crate::aspect::AspectRegistry,
-    ) -> Option<SpecPushHandle> {
-        // Run BeforeHandleParkInRegistry aspects. The aspect dispatcher
-        // panics on the first failure (see `AspectRegistry::run_before_handle_park`).
-        // Scope the context so its borrows of `handle` / `wave_id` are
-        // released before the `insert` move below.
-        {
-            let ctx = crate::aspect::HandleContext {
-                handle: &handle,
-                wave_id: &wave_id,
-            };
-            aspects.run_before_handle_park(&ctx).await;
-        }
         self.0.insert(wave_id, handle)
     }
 

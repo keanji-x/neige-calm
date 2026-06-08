@@ -50,9 +50,7 @@ use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::runtime_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::terminal_sweeper::{
-    reap_spec_push_from_registry, reap_terminal_artifacts_with_renderer,
-};
+use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::wave_lifecycle::validate_transition;
 use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
@@ -726,15 +724,6 @@ pub(crate) async fn delete_wave(
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
     let cove_id = wave.cove_id.clone();
     let wave_id = wave.id.clone();
-
-    // PR3a (#293) — eager teardown of the wave's spec-push app-server
-    // handle (if any): kills the kernel-owned `codex app-server` *process
-    // group* (SIGTERM→SIGKILL, reaping both the node launcher and the
-    // native child) and removes the listen socket + per-card dir. No-op
-    // when the flag is off or no handle exists. Done alongside the
-    // PTY-daemon reaping below so both processes are torn down before the
-    // rows drop.
-    reap_spec_push_from_registry(&w.spec_push, &wave_id).await;
 
     let mut terminal_ids: Vec<String> = Vec::new();
     let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
