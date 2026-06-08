@@ -2617,6 +2617,28 @@ impl RepoRead for SqlxRepo {
         Ok(row.map(|(role,)| role))
     }
 
+    async fn harness_item_list_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+    ) -> Result<Vec<HarnessItem>> {
+        let rows = sqlx::query_as::<_, HarnessItem>(
+            r#"SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
+                      item_uuid, item_type, method, params, created_at_ms
+               FROM harness_items
+               WHERE card_id = ?1 AND id > ?2
+               ORDER BY id ASC
+               LIMIT ?3"#,
+        )
+        .bind(card_id)
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     async fn card_codex_thread_get_by_thread(
         &self,
         thread_id: &str,
@@ -3739,6 +3761,44 @@ impl RepoOutOfDomain for SqlxRepo {
         }
         let _ = q.execute(&self.pool).await?;
         Ok(())
+    }
+
+    // ---- spec harness item stream (#510 PR-ui C1) -----------------------
+
+    #[allow(clippy::too_many_arguments)]
+    async fn harness_item_insert(
+        &self,
+        runtime_id: &str,
+        card_id: &str,
+        wave_id: &str,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        item_uuid: Option<&str>,
+        item_type: Option<&str>,
+        method: &str,
+        params: &str,
+    ) -> Result<i64> {
+        let row = sqlx::query(
+            r#"INSERT INTO harness_items (
+                   runtime_id, card_id, wave_id, thread_id, turn_id,
+                   item_uuid, item_type, method, params, created_at_ms
+               )
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+               RETURNING id"#,
+        )
+        .bind(runtime_id)
+        .bind(card_id)
+        .bind(wave_id)
+        .bind(thread_id)
+        .bind(turn_id)
+        .bind(item_uuid)
+        .bind(item_type)
+        .bind(method)
+        .bind(params)
+        .bind(now_ms())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("id"))
     }
 
     // --------------------------------------------------------------- plugins

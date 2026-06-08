@@ -528,6 +528,26 @@ pub struct CardPatch {
     pub deletable: Option<bool>,
 }
 
+// ---------------- HarnessItem ----------------
+
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct HarnessItem {
+    pub id: i64,
+    pub runtime_id: String,
+    #[schema(value_type = String)]
+    pub card_id: CardId,
+    #[schema(value_type = String)]
+    pub wave_id: WaveId,
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub item_uuid: Option<String>,
+    pub item_type: Option<String>,
+    pub method: String,
+    pub params: String,
+    pub created_at_ms: i64,
+}
+
 // ---------------- Overlay ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
