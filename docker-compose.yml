@@ -76,13 +76,18 @@ services:
       CALM_CODEX_BIN: ${CALM_CODEX_BIN:-codex}
       # Outbound HTTP proxy. In bridge networking, 127.0.0.1 is the server
       # container, so the default points at the host gateway alias.
+      # `host.docker.internal:CALM_FORWARDER_PORT` is served by the
+      # `calm-proxy-forwarder` container that `make proxy-forwarder-up`
+      # spawns (see Makefile + .env). CALM_CONTAINER_HTTP_PROXY can still
+      # override with a fully-formed URL if you want to skip the forwarder
+      # and point at something else.
       # NO_PROXY keeps loopback traffic (e.g. codex hook bridge →
       # /internal/codex/hook on 127.0.0.1) off the proxy.
-      HTTP_PROXY: ${CALM_CONTAINER_HTTP_PROXY:-http://host.docker.internal:10809}
-      HTTPS_PROXY: ${CALM_CONTAINER_HTTPS_PROXY:-http://host.docker.internal:10809}
+      HTTP_PROXY: ${CALM_CONTAINER_HTTP_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
+      HTTPS_PROXY: ${CALM_CONTAINER_HTTPS_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
       NO_PROXY: ${CALM_CONTAINER_NO_PROXY:-localhost,127.0.0.1,::1}
-      http_proxy: ${CALM_CONTAINER_HTTP_PROXY:-http://host.docker.internal:10809}
-      https_proxy: ${CALM_CONTAINER_HTTPS_PROXY:-http://host.docker.internal:10809}
+      http_proxy: ${CALM_CONTAINER_HTTP_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
+      https_proxy: ${CALM_CONTAINER_HTTPS_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
       no_proxy: ${CALM_CONTAINER_NO_PROXY:-localhost,127.0.0.1,::1}
       # Slim image has no CA bundle; codex's rustls TLS client otherwise
       # errors "no native root CA certificates found" and retries forever.
