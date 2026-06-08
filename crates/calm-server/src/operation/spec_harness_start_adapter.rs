@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_update_tx, harness_items_delete_by_card_tx, runtime_bind_attribution_tx, runtime_start_tx,
+    card_codex_thread_upsert_tx, card_update_tx, harness_items_delete_by_card_tx,
+    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_start_tx,
+    runtime_supersede_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -79,6 +81,8 @@ pub struct SpecHarnessStartOperationPayload {
     pub goal: Option<String>,
     #[serde(default)]
     pub reset_harness_items: bool,
+    #[serde(default)]
+    pub force_new_thread: bool,
 }
 
 #[async_trait]
@@ -141,6 +145,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = payload.wave_id;
         let report_card_id = payload.report_card_id;
         let snapshot = initial_snapshot_with_goal(payload.goal.clone());
+        let defer_runtime_start = payload.force_new_thread;
         let card = sqlx::query_as::<_, Card>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                  FROM cards
@@ -154,25 +159,27 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
 
         let runtime_id = new_id();
-        let runtime = runtime_start_tx(
-            tx,
-            RuntimeInit {
-                id: runtime_id.clone(),
-                card_id: card.id.to_string(),
-                kind: RuntimeKind::SharedSpec,
-                agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&snapshot)?),
-                lease_owner: None,
-                lease_until_ms: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await?;
+        if !defer_runtime_start {
+            runtime_start_tx(
+                tx,
+                RuntimeInit {
+                    id: runtime_id.clone(),
+                    card_id: card.id.to_string(),
+                    kind: RuntimeKind::SharedSpec,
+                    agent_provider: Some(AgentProvider::Codex),
+                    status: RunStatus::Starting,
+                    terminal_run_id: None,
+                    thread_id: None,
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: Some(serde_json::to_value(&snapshot)?),
+                    lease_owner: None,
+                    lease_until_ms: None,
+                    now_ms: now_ms(),
+                },
+            )
+            .await?;
+        }
 
         let mut output = TxOutput::new(
             "card",
@@ -182,7 +189,8 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         output.data = json!({
             "card_id": card.id,
             "wave_id": wave_id,
-            "runtime_id": runtime.id,
+            "runtime_id": runtime_id,
+            "runtime_deferred": defer_runtime_start,
             "cwd": payload.cwd,
             "goal": payload.goal,
             "report_card_id": report_card_id,
@@ -199,42 +207,52 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
     ) -> Result<AppServerInteractOutcome> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
         let reset_harness_items = payload.reset_harness_items;
+        let force_new_thread = payload.force_new_thread;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
         let runtime_id = output_string(output, "runtime_id")?;
+        let runtime_deferred = output_bool(output, "runtime_deferred")?;
         let cwd = output_string(output, "cwd")?;
         if let Some(existing) = output_existing_thread_id(output)? {
             return Ok(AppServerInteractOutcome::MintedAndAwaited {
                 thread_id: existing,
             });
         }
-        let thread_id = if let Some(runtime) =
-            self.repo.runtime_get_active_for_card(&card_id).await?
+        let reusable_thread_id = if force_new_thread {
+            None
+        } else if let Some(runtime) = self.repo.runtime_get_active_for_card(&card_id).await?
             && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
         {
-            thread_id
+            Some(thread_id)
         } else if let Some(row) = self.repo.card_codex_thread_get_by_card(&card_id).await?
             && let Some(thread_id) = non_empty_string(Some(row.thread_id.as_str()))
         {
+            Some(thread_id)
+        } else {
+            None
+        };
+        let thread_id = if let Some(thread_id) = reusable_thread_id {
             thread_id
         } else {
             let developer_instructions = crate::spec_card::render_system_prompt(
                 crate::spec_card::SeededCardRole::Spec.prompt_template(),
                 &wave_id,
             );
-            self.daemon
-                .thread_start_for_card(
-                    &card_id,
-                    CardRole::Spec,
-                    Some(&wave_id),
-                    SharedThreadStartParams {
-                        cwd,
-                        approval_policy: "never".into(),
-                        sandbox_mode: "workspace-write".into(),
-                        developer_instructions: Some(developer_instructions),
-                    },
-                )
-                .await?
+            let params = SharedThreadStartParams {
+                cwd,
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: Some(developer_instructions),
+            };
+            if runtime_deferred {
+                self.daemon
+                    .thread_start_mint_for_card(&card_id, params)
+                    .await?
+            } else {
+                self.daemon
+                    .thread_start_for_card(&card_id, CardRole::Spec, Some(&wave_id), params)
+                    .await?
+            }
         };
         set_output_data(output, "codex_thread_id", json!(thread_id.clone()))?;
         let mut snapshot = output_snapshot(output)?;
@@ -276,22 +294,54 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             &write,
             move |tx| {
                 Box::pin(async move {
-                    runtime_bind_attribution_tx(
-                        tx,
-                        &runtime_id,
-                        ThreadAttribution {
-                            runtime_id: runtime_id.clone(),
-                            provider: AgentProvider::Codex,
+                    if runtime_deferred {
+                        let runtime_init = RuntimeInit {
+                            id: runtime_id.clone(),
+                            card_id: card_id.clone(),
+                            kind: RuntimeKind::SharedSpec,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: RunStatus::Starting,
+                            terminal_run_id: None,
                             thread_id: Some(thread_for_tx.clone()),
                             session_id: None,
                             active_turn_id: None,
-                        },
-                    )
-                    .await?;
-                    crate::db::sqlite::runtime_set_handle_state_tx(
+                            handle_state_json: Some(serde_json::to_value(&snapshot)?),
+                            lease_owner: None,
+                            lease_until_ms: None,
+                            now_ms: now_ms(),
+                        };
+                        if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id).await?
+                        {
+                            runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                        } else {
+                            runtime_start_tx(tx, runtime_init).await?;
+                        }
+                    } else {
+                        runtime_bind_attribution_tx(
+                            tx,
+                            &runtime_id,
+                            ThreadAttribution {
+                                runtime_id: runtime_id.clone(),
+                                provider: AgentProvider::Codex,
+                                thread_id: Some(thread_for_tx.clone()),
+                                session_id: None,
+                                active_turn_id: None,
+                            },
+                        )
+                        .await?;
+                        crate::db::sqlite::runtime_set_handle_state_tx(
+                            tx,
+                            &runtime_id,
+                            Some(serde_json::to_value(&snapshot)?),
+                        )
+                        .await?;
+                    }
+                    card_codex_thread_upsert_tx(
                         tx,
-                        &runtime_id,
-                        Some(serde_json::to_value(&snapshot)?),
+                        &card_id,
+                        &thread_for_tx,
+                        CardRole::Spec,
+                        Some(&wave_id),
                     )
                     .await?;
                     if reset_harness_items {
@@ -387,10 +437,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         from_phase: PhaseTag,
         reason: &str,
         output: &TxOutput,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<CompensationStateVersioned> {
+        let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
         let card_id = output_string(output, "card_id")?;
         let runtime_id = output_string(output, "runtime_id")?;
+        let thread_id = output_optional_string(output, "codex_thread_id")?;
         let mut steps = Vec::new();
         if matches!(
             from_phase,
@@ -404,12 +456,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         if matches!(
             from_phase,
             PhaseTag::AppServerInteract | PhaseTag::SpawnStarted | PhaseTag::SpawnSucceeded
-        ) {
+        ) && (!payload.force_new_thread || thread_id.is_some())
+        {
             steps.push(step(
                 "interrupt_thread",
                 json!({
                     "card_id": card_id,
-                    "thread_id": output_optional_string(output, "codex_thread_id")?,
+                    "thread_id": thread_id,
                 }),
             ));
         }
@@ -512,6 +565,16 @@ fn output_optional_string(output: &TxOutput, key: &str) -> Result<Option<String>
         Some(Value::Null) | None => Ok(None),
         Some(_) => Err(CalmError::Internal(format!(
             "spec harness tx_output {key} must be string or null"
+        ))),
+    }
+}
+
+fn output_bool(output: &TxOutput, key: &str) -> Result<bool> {
+    match output.data.get(key) {
+        Some(Value::Bool(value)) => Ok(*value),
+        None => Ok(false),
+        Some(_) => Err(CalmError::Internal(format!(
+            "spec harness tx_output {key} must be bool"
         ))),
     }
 }

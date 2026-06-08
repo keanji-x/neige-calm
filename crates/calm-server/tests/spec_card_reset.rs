@@ -700,6 +700,104 @@ async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
 }
 
 #[tokio::test]
+async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
+    let boot = boot().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "codex_source": "shared",
+                "spec_harness": true,
+                "codex_thread_id": "thread-old",
+                "push_watermark": 0
+            }),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    boot.repo
+        .card_codex_thread_upsert(
+            card.id.as_str(),
+            "thread-old",
+            CardRole::Spec,
+            Some(boot.wave_id.as_str()),
+        )
+        .await
+        .unwrap();
+
+    let old_runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some("thread-old".into());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: old_runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread-old".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let before = boot
+        .repo
+        .runtime_get_by_id(&old_runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
+    let after = boot
+        .repo
+        .runtime_get_by_id(&old_runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after, before);
+    let active = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("old runtime remains active");
+    assert_eq!(active.id, old_runtime_id);
+    assert_eq!(active.thread_id.as_deref(), Some("thread-old"));
+    let mapping = boot
+        .repo
+        .card_codex_thread_get_by_card(card.id.as_str())
+        .await
+        .unwrap()
+        .expect("old thread mapping remains");
+    assert_eq!(mapping.thread_id, "thread-old");
+}
+
+#[tokio::test]
 async fn shared_reset_writes_runtime_and_projects_new_thread_id() {
     let _guard = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();

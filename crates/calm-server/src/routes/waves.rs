@@ -464,6 +464,7 @@ async fn create_wave_with_spec_harness(
         cwd: wave.cwd.clone(),
         goal: (!goal.is_empty()).then_some(goal),
         reset_harness_items: false,
+        force_new_thread: false,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({

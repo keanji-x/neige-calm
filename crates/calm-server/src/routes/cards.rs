@@ -623,16 +623,6 @@ async fn reset_spec_harness_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
 
-    if let Some(runtime) = runtime {
-        let shutdown_payload = serde_json::to_value(SpecHarnessShutdownOperationPayload {
-            runtime_id: runtime.id.clone(),
-        })?;
-        run_reset_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
-    }
-    s.repo
-        .card_codex_thread_delete_by_card(card.id.as_str())
-        .await?;
-
     let goal = wave.title.trim().to_string();
     let start_request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
@@ -643,9 +633,17 @@ async fn reset_spec_harness_card(
         cwd: wave.cwd.clone(),
         goal: (!goal.is_empty()).then_some(goal),
         reset_harness_items: true,
+        force_new_thread: true,
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_reset_operation(&s, "spec-harness-start", start_payload).await?;
+
+    if let Some(runtime) = runtime {
+        let shutdown_payload = serde_json::to_value(SpecHarnessShutdownOperationPayload {
+            runtime_id: runtime.id.clone(),
+        })?;
+        run_reset_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
+    }
 
     let active = s
         .repo
