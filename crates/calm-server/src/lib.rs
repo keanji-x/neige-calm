@@ -925,59 +925,7 @@ async fn register_and_catch_up(
         .install_initial_prompt_ready_sink(initial_prompt_ready)
         .await;
 
-    // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
-    // alongside the watermark sink, then rehydrate the in-memory queue
-    // from any rows a prior process enqueued but didn't flush. Both steps
-    // happen BEFORE the handle is parked in the registry below (under the
-    // per-wave push lock) so the very first catch-up push has both the
-    // persist path AND the rehydrated cache available.
-    //
-    // Sister install: `routes/waves.rs::legacy spec spawner` (create-wave
-    // path). INV-6 demands the two paths run the same init hook —
-    // installing here keeps boot-takeover symmetric with create-wave.
-    let persist = state.dispatcher.queue_persist_for(card_key.clone());
-    handle.install_queue_persist(persist).await;
-    debug_assert!(
-        handle.has_queue_persist().await,
-        "register_and_catch_up: install_queue_persist did not take effect — \
-         enqueued-but-not-yet-flushed observations would not survive the \
-         next process restart, silently reintroducing the INV-3 (#318) regression"
-    );
-    // #325 fix — capture the rehydrated envelope_ids so the catch-up
-    // replay below can skip them. Without this skip-set, a crash AFTER the
-    // `Enqueue` arm persisted its row but BEFORE the consumer's flush
-    // advanced `push_watermark` leaves both (a) a row that rehydrates here
-    // and (b) the same envelope id in `events_since(watermark)` (the
-    // dispatcher cooperatively withholds `push_watermark` on `Enqueued` —
-    // PR #315 PR4 B1 — exactly so the events log is a recovery safety
-    // net). With both surfaces present, the first catch-up push would
-    // trigger `StartTurnNow` on the resumed (Idle) handle, drain the
-    // rehydrated row, AND append the catch-up envelope as a *second copy*
-    // of the same observation — a duplicate to codex on every recovery.
-    //
-    // Dedup is by `envelope_id` (the persisted `events.id`) — the rehydrate
-    // path reads ids straight off `spec_card_queued_observations`, which
-    // are the same `events.id` values `events_since` returns, so equality
-    // is exact.
-    // #325 round-2 P2 — pass the watermark in so rehydrate can drop rows
-    // whose `envelope_id <= watermark` (already delivered to codex on a
-    // prior process — the flush succeeded and bumped the watermark, but
-    // the `dequeue` write didn't commit). Those rows are physically
-    // deleted from `spec_push_queue` inside `rehydrate_queue_from_persist`
-    // so a third boot doesn't see them either, and only the live
-    // (un-delivered) envelope_ids are returned for the catch-up
-    // dedup skip-set.
-    let rehydrated_ids = handle.rehydrate_queue_from_persist(watermark).await;
-    let rehydrated_count = rehydrated_ids.len();
-    if rehydrated_count > 0 {
-        tracing::info!(
-            card_id,
-            wave_id = %wave_id,
-            count = rehydrated_count,
-            "takeover: rehydrated spec push queue from durable rows; \
-             items will deliver on the next turn/completed flush",
-        );
-    }
+    let rehydrated_ids = Vec::new();
 
     // B3 — hold the per-wave push lock for the WHOLE
     // `seed → insert → events_since → catch-up replay` sequence so any
