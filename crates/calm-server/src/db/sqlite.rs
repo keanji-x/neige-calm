@@ -1888,6 +1888,30 @@ async fn runtime_get_active_by_thread_from_pool(
     row.as_ref().map(card_runtime_from_row).transpose()
 }
 
+async fn runtime_get_active_by_session_from_pool(
+    pool: &SqlitePool,
+    provider: AgentProvider,
+    session_id: &str,
+) -> RuntimeResult<Option<CardRuntime>> {
+    let row = sqlx::query(
+        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE agent_provider = ?1
+             AND session_id = ?2
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+    )
+    .bind(agent_provider_to_db(&provider))
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(card_runtime_from_row).transpose()
+}
+
 async fn runtime_active_shared_thread_attribution_from_pool(
     pool: &SqlitePool,
 ) -> RuntimeResult<Vec<(String, String)>> {
@@ -3105,6 +3129,14 @@ impl RuntimeRepo for SqlxRepo {
         thread_id: &str,
     ) -> RuntimeResult<Option<CardRuntime>> {
         runtime_get_active_by_thread_from_pool(&self.pool, provider, thread_id).await
+    }
+
+    async fn runtime_get_active_by_session(
+        &self,
+        provider: AgentProvider,
+        session_id: &str,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        runtime_get_active_by_session_from_pool(&self.pool, provider, session_id).await
     }
 
     async fn runtime_get_active_for_card(
