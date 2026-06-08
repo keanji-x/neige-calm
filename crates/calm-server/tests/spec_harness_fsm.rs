@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, SpecHarness,
     SpecHarnessParams,
@@ -111,6 +112,9 @@ async fn harness_with(
         card_id: card.id,
         thread_id: Some(thread_id.clone()),
         repo: repo.clone(),
+        events: EventBus::new(),
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
         daemon,
         config,
         snapshot,
@@ -158,6 +162,9 @@ async fn harness_from_snapshot(
         card_id: card.id,
         thread_id: Some(thread_id),
         repo,
+        events: EventBus::new(),
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
         daemon,
         config: HarnessConfig::default(),
         snapshot,
@@ -453,6 +460,9 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
         card_id: card.id,
         thread_id: Some(thread_id),
         repo,
+        events: EventBus::new(),
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
         daemon: daemon.clone(),
         config,
         snapshot,

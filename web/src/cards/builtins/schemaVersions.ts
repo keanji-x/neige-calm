@@ -17,6 +17,8 @@
 export const TERMINAL_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "codex"` card payloads. */
 export const CODEX_PAYLOAD_SCHEMA_VERSION = 1;
+/** `schemaVersion` for spec-harness `kind: "codex"` card payloads. */
+export const SPEC_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "claude"` card payloads. */
 export const CLAUDE_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "wave-report"` card payloads (issue #229 PR B). */

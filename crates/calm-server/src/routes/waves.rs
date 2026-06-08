@@ -996,6 +996,7 @@ async fn create_wave_with_spec_harness(
         sort: None,
         cwd: wave.cwd.clone(),
         goal: (!goal.is_empty()).then_some(goal),
+        reset_harness_items: false,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
@@ -1092,7 +1093,7 @@ fn spec_harness_layout_payload(spec_card_id: &str, report_card_id: &str) -> serd
     })
 }
 
-fn spec_harness_enabled() -> bool {
+pub(crate) fn spec_harness_enabled() -> bool {
     std::env::var("NEIGE_SPEC_HARNESS_ENABLED")
         .ok()
         .map(|value| {

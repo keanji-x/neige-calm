@@ -46,6 +46,7 @@
 //! this enum and the frontend fails at the type-check step. See D7 /
 //! issue #5.
 
+use crate::harness::snapshot::HarnessPhaseTag;
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::{Card, Cove, Overlay, Wave, WaveLifecycle};
 use serde::{Deserialize, Serialize};
@@ -369,6 +370,31 @@ pub enum Event {
         old_runtime_id: String,
         new_runtime_id: String,
         card_id: String,
+    },
+    #[serde(rename = "harness.item.added")]
+    HarnessItemAdded {
+        runtime_id: String,
+        card_id: CardId,
+        wave_id: WaveId,
+        item_db_id: i64,
+        item_uuid: Option<String>,
+        item_type: Option<String>,
+        turn_id: Option<String>,
+        method: String,
+    },
+    #[serde(rename = "harness.phase.changed")]
+    HarnessPhaseChanged {
+        runtime_id: String,
+        card_id: CardId,
+        wave_id: WaveId,
+        old_phase: HarnessPhaseTag,
+        new_phase: HarnessPhaseTag,
+    },
+    #[serde(rename = "harness.transcript.cleared")]
+    HarnessTranscriptCleared {
+        runtime_id: String,
+        card_id: CardId,
+        wave_id: WaveId,
     },
 
     /// Issue #247 PR2 — structured wave-report edit-log entry. Emitted
@@ -705,6 +731,14 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
+            Event::HarnessItemAdded { card_id, .. }
+            | Event::HarnessPhaseChanged { card_id, .. }
+            | Event::HarnessTranscriptCleared { card_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("card".into()),
+                entity_id: Some(card_id.to_string()),
+            },
             Event::WaveReportEdited { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -802,6 +836,9 @@ impl Event {
             Event::RuntimeStarted { .. } => "runtime.started",
             Event::RuntimeStatusChanged { .. } => "runtime.status_changed",
             Event::RuntimeSuperseded { .. } => "runtime.superseded",
+            Event::HarnessItemAdded { .. } => "harness.item.added",
+            Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
+            Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
             Event::WaveReportEdited { .. } => "wave.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
@@ -897,6 +934,19 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::RuntimeSuperseded { card_id, .. } => {
             vec![format!("card:{}", card_id), "*".into()]
         }
+        Event::HarnessItemAdded {
+            wave_id, card_id, ..
+        }
+        | Event::HarnessPhaseChanged {
+            wave_id, card_id, ..
+        }
+        | Event::HarnessTranscriptCleared {
+            wave_id, card_id, ..
+        } => vec![
+            format!("card:{}", card_id),
+            format!("wave:{}", wave_id),
+            "*".into(),
+        ],
 
         // Issue #247 PR2 — wave-report edit log. Card-scoped on the
         // events row; topic mapping mirrors `Card*` so a subscriber
@@ -1482,6 +1532,13 @@ mod scope_tests {
             card_id: "card-1".into(),
         };
         assert_eq!(runtime_superseded.kind_tag(), "runtime.superseded");
+
+        let transcript_cleared = Event::HarnessTranscriptCleared {
+            runtime_id: "runtime-1".into(),
+            card_id: CardId::from("card-1"),
+            wave_id: WaveId::from("wave-1"),
+        };
+        assert_eq!(transcript_cleared.kind_tag(), "harness.transcript.cleared");
     }
 
     #[test]
@@ -1960,6 +2017,11 @@ mod scope_tests {
                 old_runtime_id: "runtime-old".into(),
                 new_runtime_id: "runtime-new".into(),
                 card_id: "card-runtime".into(),
+            },
+            Event::HarnessTranscriptCleared {
+                runtime_id: "runtime-transcript".into(),
+                card_id: CardId::from("card-runtime"),
+                wave_id: WaveId::from("wave-1"),
             },
             wave_report_edited_sample(),
             Event::OverlaySet(overlay_sample("plugin-1", "card", "card-1", "status")),

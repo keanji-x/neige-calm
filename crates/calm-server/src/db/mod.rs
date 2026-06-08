@@ -320,6 +320,13 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
+    async fn harness_item_list_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<HarnessItem>>;
 
     // ---- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
@@ -811,6 +818,21 @@ pub trait RepoOutOfDomain: RepoRead {
     /// A batch delete keeps the flush hot path one round-trip; an empty
     /// `ids` slice is a no-op.
     async fn spec_card_dequeue_observations(&self, ids: &[i64]) -> Result<()>;
+
+    // ---- spec harness item stream (#510 PR-ui C1)
+    #[allow(clippy::too_many_arguments)]
+    async fn harness_item_insert(
+        &self,
+        runtime_id: &str,
+        card_id: &str,
+        wave_id: &str,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        item_uuid: Option<&str>,
+        item_type: Option<&str>,
+        method: &str,
+        params: &str,
+    ) -> Result<i64>;
 
     // ---- plugins (writes)
     //

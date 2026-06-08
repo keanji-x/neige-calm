@@ -79,9 +79,16 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo, daemon, &registry)
-        .await
-        .unwrap();
+    let recovered = recover_harnesses_on_boot(
+        repo,
+        EventBus::new(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon,
+        &registry,
+    )
+    .await
+    .unwrap();
     assert_eq!(recovered, 1);
     let handle = registry.get(&runtime_id).expect("recovered harness");
     let restored = handle.snapshot().await;
@@ -162,9 +169,16 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     assert!(registry.get(&runtime_id).is_none());
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let recovered = recover_harnesses_on_boot(repo, daemon.clone(), &registry)
-        .await
-        .unwrap();
+    let recovered = recover_harnesses_on_boot(
+        repo,
+        EventBus::new(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon.clone(),
+        &registry,
+    )
+    .await
+    .unwrap();
     assert_eq!(recovered, 1);
     tokio::time::timeout(Duration::from_millis(500), async {
         loop {
@@ -305,9 +319,16 @@ async fn boot_recovery_replays_events_since_original_watermark_after_queue_rehyd
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo.clone(), daemon, &registry)
-        .await
-        .unwrap();
+    let recovered = recover_harnesses_on_boot(
+        repo.clone(),
+        EventBus::new(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon,
+        &registry,
+    )
+    .await
+    .unwrap();
     assert_eq!(recovered, 1);
     let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
     let stored: HarnessSnapshot =
@@ -409,9 +430,16 @@ async fn boot_recovery_replays_durable_queue_rows_behind_watermark() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo.clone(), daemon, &registry)
-        .await
-        .unwrap();
+    let recovered = recover_harnesses_on_boot(
+        repo.clone(),
+        EventBus::new(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon,
+        &registry,
+    )
+    .await
+    .unwrap();
     assert_eq!(recovered, 1);
     let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
     let stored: HarnessSnapshot =
@@ -502,9 +530,16 @@ async fn boot_recovery_skips_terminal_waves() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(repo, daemon, &registry)
-        .await
-        .unwrap();
+    let recovered = recover_harnesses_on_boot(
+        repo,
+        EventBus::new(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon,
+        &registry,
+    )
+    .await
+    .unwrap();
     assert_eq!(recovered, 0);
     assert!(registry.get(&runtime_id).is_none());
 }

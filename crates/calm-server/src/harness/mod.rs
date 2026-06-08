@@ -8,14 +8,16 @@ pub mod state;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::card_role_cache::CardRoleCache;
 use crate::db::{Repo, write_in_tx_typed};
 use crate::dispatcher;
 use crate::error::Result;
-use crate::event::Event;
+use crate::event::{Event, EventBus};
 use crate::ids::{CardId, WaveId};
 use crate::model::CardRole;
 use crate::runtime_repo::CardRuntime;
 use crate::shared_codex_appserver::SharedCodexAppServer;
+use crate::wave_cove_cache::WaveCoveCache;
 
 pub use config::HarnessConfig;
 pub use observation::{HookKind, Observation};
@@ -26,6 +28,9 @@ pub use state::{HarnessState, IssuingKind, run_status_for};
 
 pub async fn spawn_recovered_harness(
     repo: Arc<dyn Repo>,
+    events: EventBus,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
     runtime: CardRuntime,
@@ -68,6 +73,9 @@ pub async fn spawn_recovered_harness(
             .clone()
             .or(snapshot.last_thread_id.clone()),
         repo,
+        events,
+        card_role_cache,
+        wave_cove_cache,
         daemon,
         config: HarnessConfig::default(),
         snapshot,
@@ -209,15 +217,26 @@ async fn snapshot_runtime_id(repo: &dyn Repo, card_id: &str) -> Result<String> {
 
 pub async fn recover_harnesses_on_boot(
     repo: Arc<dyn Repo>,
+    events: EventBus,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
 ) -> Result<usize> {
     let runtimes = repo.runtimes_recover_harnesses_on_boot().await?;
     let mut recovered = 0usize;
     for runtime in runtimes {
-        if spawn_recovered_harness(repo.clone(), daemon.clone(), registry, runtime)
-            .await?
-            .is_some()
+        if spawn_recovered_harness(
+            repo.clone(),
+            events.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+            daemon.clone(),
+            registry,
+            runtime,
+        )
+        .await?
+        .is_some()
         {
             recovered += 1;
         }
