@@ -2622,20 +2622,23 @@ impl RepoRead for SqlxRepo {
         card_id: &str,
         after_id: i64,
         limit: i64,
+        descending: bool,
     ) -> Result<Vec<HarnessItem>> {
-        let rows = sqlx::query_as::<_, HarnessItem>(
+        let order = if descending { "DESC" } else { "ASC" };
+        let sql = format!(
             r#"SELECT id, runtime_id, card_id, wave_id, thread_id, turn_id,
                       item_uuid, item_type, method, params, created_at_ms
                FROM harness_items
                WHERE card_id = ?1 AND id > ?2
-               ORDER BY id ASC
-               LIMIT ?3"#,
-        )
-        .bind(card_id)
-        .bind(after_id)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+               ORDER BY id {order}
+               LIMIT ?3"#
+        );
+        let rows = sqlx::query_as::<_, HarnessItem>(&sql)
+            .bind(card_id)
+            .bind(after_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows)
     }
 

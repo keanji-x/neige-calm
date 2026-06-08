@@ -325,6 +325,7 @@ pub trait RepoRead: Send + Sync + 'static {
         card_id: &str,
         after_id: i64,
         limit: i64,
+        descending: bool,
     ) -> Result<Vec<HarnessItem>>;
 
     // ---- overlays

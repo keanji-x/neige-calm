@@ -348,6 +348,9 @@ async function fetchHarnessItems(
   if (query?.limit !== undefined && query.limit !== null) {
     qs.set('limit', String(query.limit));
   }
+  if (query?.direction !== undefined && query.direction !== null) {
+    qs.set('direction', query.direction);
+  }
   const suffix = qs.toString();
   const res = await fetch(
     `/api/cards/${encodeURIComponent(cardId)}/harness/items${
@@ -531,11 +534,11 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
     const controller = new AbortController();
     let cancelled = false;
     setLoading(true);
-    fetchHarnessItems(cardId, { limit: 100 }, controller.signal)
+    fetchHarnessItems(cardId, { direction: 'desc', limit: 100 }, controller.signal)
       .then((loaded) => {
         if (cancelled) return;
         pendingScrollRef.current = true;
-        setItems(mergeHarnessRows(new Map(), loaded).map);
+        setItems((prev) => mergeHarnessRows(prev, loaded).map);
         setLoading(false);
       })
       .catch((err) => {
@@ -577,6 +580,8 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
       cancelled = true;
       off();
       controller.abort();
+      // Keep the card topic subscribed on the shared stream; subscriptions
+      // are sticky across reconnects, matching Codex/Xterm card behavior.
     };
   }, [cardId]);
 
@@ -683,6 +688,7 @@ function SpecCardImpl({
   const resetOpenRef = useRef(resetOpen);
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [timelineVersion, setTimelineVersion] = useState(0);
 
   useEffect(() => {
     setPhase(null);
@@ -718,6 +724,7 @@ function SpecCardImpl({
     setResetError(null);
     try {
       await resetSpecCard(cardId);
+      setTimelineVersion((version) => version + 1);
       setResetOpen(false);
     } catch (err) {
       if (resetOpenRef.current) {
@@ -741,7 +748,7 @@ function SpecCardImpl({
       />
       <GoalBanner goal={card.goal} />
       <div className="wave-report-body">
-        <ChatTimeline cardId={cardId} />
+        <ChatTimeline key={`${cardId ?? 'pending'}:${timelineVersion}`} cardId={cardId} />
       </div>
       <ConfirmDialog
         open={resetOpen}

@@ -111,7 +111,7 @@ async fn wait_for_rows(
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let rows = repo
-            .harness_item_list_by_card(card_id, 0, 100)
+            .harness_item_list_by_card(card_id, 0, 100, false)
             .await
             .unwrap();
         if rows.len() == count {

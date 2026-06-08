@@ -205,6 +205,15 @@
               ],
               "format": "int64"
             }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "description": "Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/HarnessItemsDirection"
+            }
           }
         ],
         "responses": {
@@ -3299,6 +3308,13 @@
           }
         }
       },
+      "HarnessItemsDirection": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ]
+      },
       "HarnessItemsQuery": {
         "type": "object",
         "properties": {
@@ -3309,6 +3325,10 @@
             ],
             "format": "int64",
             "description": "Return items with database ids greater than this value."
+          },
+          "direction": {
+            "$ref": "#/components/schemas/HarnessItemsDirection",
+            "description": "Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`."
           },
           "limit": {
             "type": [

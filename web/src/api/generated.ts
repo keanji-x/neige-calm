@@ -1001,12 +1001,16 @@ export interface components {
             turn_id?: string | null;
             wave_id: string;
         };
+        /** @enum {string} */
+        HarnessItemsDirection: "asc" | "desc";
         HarnessItemsQuery: {
             /**
              * Format: int64
              * @description Return items with database ids greater than this value.
              */
             after_id?: number | null;
+            /** @description Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`. */
+            direction?: components["schemas"]["HarnessItemsDirection"];
             /**
              * Format: int64
              * @description Maximum number of rows to return. Defaults to 100 and is capped at 500.
@@ -1884,6 +1888,8 @@ export interface operations {
                 after_id?: number | null;
                 /** @description Maximum number of rows to return. Defaults to 100 and is capped at 500. */
                 limit?: number | null;
+                /** @description Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`. */
+                direction?: components["schemas"]["HarnessItemsDirection"];
             };
             header?: never;
             path: {

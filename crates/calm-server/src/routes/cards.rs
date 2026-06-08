@@ -145,6 +145,19 @@ pub(crate) async fn list_cards_by_wave(
     Ok(Json(cards))
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HarnessItemsDirection {
+    Asc,
+    Desc,
+}
+
+impl Default for HarnessItemsDirection {
+    fn default() -> Self {
+        Self::Asc
+    }
+}
+
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct HarnessItemsQuery {
     /// Return items with database ids greater than this value.
@@ -153,6 +166,9 @@ pub struct HarnessItemsQuery {
     /// Maximum number of rows to return. Defaults to 100 and is capped at 500.
     #[serde(default)]
     pub limit: Option<i64>,
+    /// Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`.
+    #[serde(default)]
+    pub direction: HarnessItemsDirection,
 }
 
 #[utoipa::path(
@@ -192,10 +208,14 @@ pub(crate) async fn get_harness_items(
 
     let after_id = q.after_id.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(100).clamp(0, 500);
-    let items = s
+    let descending = q.direction == HarnessItemsDirection::Desc;
+    let mut items = s
         .repo
-        .harness_item_list_by_card(card.id.as_str(), after_id, limit)
+        .harness_item_list_by_card(card.id.as_str(), after_id, limit, descending)
         .await?;
+    if descending {
+        items.reverse();
+    }
     Ok(Json(items))
 }
 
