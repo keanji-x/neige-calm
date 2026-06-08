@@ -223,25 +223,17 @@ fn hook_idempotency_key(
         .get("session_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let transcript_path = payload
-        .get("transcript_path")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let transcript_size = payload
-        .get("transcript_size_bytes")
-        .and_then(Value::as_i64)
-        .map(|n| n.to_string())
-        .unwrap_or_default();
     let hook_event = payload
         .get("hook_event_name")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    let body_hash = payload_body_hash(payload);
     let primary = format!(
-        "{prov}|{card}|{session_id}|{hook_event}|{transcript_path}|{transcript_size}",
+        "{prov}|{card}|{session_id}|{hook_event}|{body_hash}",
         prov = provider.kind_prefix(),
         card = card_id
     );
-    if !session_id.is_empty() && (!transcript_path.is_empty() || !transcript_size.is_empty()) {
+    if !session_id.is_empty() {
         return sha256_hex(&primary);
     }
 
@@ -253,9 +245,18 @@ fn hook_idempotency_key(
     ))
 }
 
+fn payload_body_hash(payload: &Value) -> String {
+    let bytes = serde_json::to_vec(payload).expect("serde_json::Value serialization is infallible");
+    sha256_bytes(&bytes)
+}
+
 fn sha256_hex(text: &str) -> String {
+    sha256_bytes(text.as_bytes())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
+    hasher.update(bytes);
     hex::encode(hasher.finalize())
 }
 
@@ -292,12 +293,10 @@ mod tests {
     }
 
     #[test]
-    fn hook_key_uses_transcript_primary_when_available() {
+    fn hook_key_uses_session_primary_without_transcript_metadata() {
         let payload = serde_json::json!({
             "hook_event_name": "Stop",
             "session_id": "s1",
-            "transcript_path": "/tmp/t.jsonl",
-            "transcript_size_bytes": 42,
         });
 
         let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1000);
@@ -311,14 +310,10 @@ mod tests {
         let stop = serde_json::json!({
             "hook_event_name": "Stop",
             "session_id": "s1",
-            "transcript_path": "/tmp/t.jsonl",
-            "transcript_size_bytes": 42,
         });
         let pre_tool = serde_json::json!({
             "hook_event_name": "PreToolUse",
             "session_id": "s1",
-            "transcript_path": "/tmp/t.jsonl",
-            "transcript_size_bytes": 42,
         });
 
         let stop_key = hook_idempotency_key(HookProvider::Codex, "card-1", &stop, 1000);
@@ -327,10 +322,27 @@ mod tests {
     }
 
     #[test]
+    fn hook_key_distinguishes_by_body_hash() {
+        let first_payload = serde_json::json!({
+            "hook_event_name": "Stop",
+            "session_id": "s1",
+            "exit_code": 0,
+        });
+        let second_payload = serde_json::json!({
+            "hook_event_name": "Stop",
+            "session_id": "s1",
+            "exit_code": 1,
+        });
+
+        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &first_payload, 1000);
+        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &second_payload, 1000);
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn hook_key_fallback_is_second_bucketed() {
         let payload = serde_json::json!({
             "hook_event_name": "Stop",
-            "session_id": "s1",
         });
 
         let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1999);
@@ -344,11 +356,9 @@ mod tests {
     fn hook_key_fallback_includes_event_name() {
         let stop = serde_json::json!({
             "hook_event_name": "Stop",
-            "session_id": "s1",
         });
         let pre_tool = serde_json::json!({
             "hook_event_name": "PreToolUse",
-            "session_id": "s1",
         });
 
         let stop_key = hook_idempotency_key(HookProvider::Codex, "card-1", &stop, 1000);
