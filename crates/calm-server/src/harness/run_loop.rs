@@ -396,7 +396,8 @@ async fn enqueue_pending_observation(
         if try_fold_pending_tail(&mut queue, &mut envelope_ids, &obs, envelope_id) {
             return true;
         }
-        if !obs.is_hard_fire()
+        let hard = obs.is_hard_fire();
+        if !hard
             && let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire())
         {
             queue.remove(drop_idx);
@@ -405,8 +406,9 @@ async fn enqueue_pending_observation(
             tracing::warn!(
                 target: "spec.harness.backpressure",
                 queue_len = queue.len(),
+                hard,
                 variant = ?obs,
-                "pending_queue full, hard obs dropped"
+                "pending_queue full, incoming observation dropped"
             );
             return false;
         }
