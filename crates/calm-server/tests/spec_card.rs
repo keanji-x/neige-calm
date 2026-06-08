@@ -297,7 +297,10 @@ async fn post_api_waves_mints_spec_card_atomically() {
         .terminal_get_by_card(spec_card_id.as_str())
         .await
         .unwrap();
-    assert!(term.is_none(), "inert spec card should not have a terminal row");
+    assert!(
+        term.is_none(),
+        "inert spec card should not have a terminal row"
+    );
 }
 
 #[tokio::test]

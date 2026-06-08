@@ -751,7 +751,6 @@ async fn shared_reset_writes_runtime_and_projects_new_thread_id() {
         .unwrap();
     assert_eq!(got.payload["codex_source"], json!("shared"));
     assert_eq!(got.payload["codex_thread_id"], json!("fake-thread-0001"));
-
 }
 
 #[tokio::test]
