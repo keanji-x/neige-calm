@@ -149,8 +149,7 @@ pub(crate) async fn ingest_provider_hook(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
     let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
-    let hook_idempotency_key =
-        hook_idempotency_key(provider, &card_id_str, &payload, crate::model::now_ms());
+    let hook_idempotency_key = hook_idempotency_key(provider, &card_id_str, &payload);
     {
         let cache = s
             .hook_ingest_cache
@@ -213,12 +212,7 @@ pub(crate) async fn ingest_provider_hook(
     Ok(())
 }
 
-fn hook_idempotency_key(
-    provider: HookProvider,
-    card_id: &str,
-    payload: &Value,
-    now_ms: i64,
-) -> String {
+fn hook_idempotency_key(provider: HookProvider, card_id: &str, payload: &Value) -> String {
     let session_id = payload
         .get("session_id")
         .and_then(Value::as_str)
@@ -233,16 +227,7 @@ fn hook_idempotency_key(
         prov = provider.kind_prefix(),
         card = card_id
     );
-    if !session_id.is_empty() {
-        return sha256_hex(&primary);
-    }
-
-    let now_sec = now_ms / 1000;
-    sha256_hex(&format!(
-        "{prov}|{card}|{session_id}|{hook_event}|{now_sec}",
-        prov = provider.kind_prefix(),
-        card = card_id
-    ))
+    sha256_hex(&primary)
 }
 
 fn payload_body_hash(payload: &Value) -> String {
@@ -299,8 +284,8 @@ mod tests {
             "session_id": "s1",
         });
 
-        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1000);
-        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 2999);
+        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload);
+        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &payload);
         assert_eq!(first, second);
         assert!(!first.is_empty());
     }
@@ -316,8 +301,8 @@ mod tests {
             "session_id": "s1",
         });
 
-        let stop_key = hook_idempotency_key(HookProvider::Codex, "card-1", &stop, 1000);
-        let pre_tool_key = hook_idempotency_key(HookProvider::Codex, "card-1", &pre_tool, 1000);
+        let stop_key = hook_idempotency_key(HookProvider::Codex, "card-1", &stop);
+        let pre_tool_key = hook_idempotency_key(HookProvider::Codex, "card-1", &pre_tool);
         assert_ne!(stop_key, pre_tool_key);
     }
 
@@ -334,22 +319,20 @@ mod tests {
             "exit_code": 1,
         });
 
-        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &first_payload, 1000);
-        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &second_payload, 1000);
+        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &first_payload);
+        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &second_payload);
         assert_ne!(first, second);
     }
 
     #[test]
-    fn hook_key_fallback_is_second_bucketed() {
+    fn hook_key_fallback_is_stable() {
         let payload = serde_json::json!({
             "hook_event_name": "Stop",
         });
 
-        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1999);
-        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 1000);
-        let third = hook_idempotency_key(HookProvider::Codex, "card-1", &payload, 2000);
+        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &payload);
+        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &payload);
         assert_eq!(first, second);
-        assert_ne!(first, third);
     }
 
     #[test]
@@ -361,8 +344,24 @@ mod tests {
             "hook_event_name": "PreToolUse",
         });
 
-        let stop_key = hook_idempotency_key(HookProvider::Codex, "card-1", &stop, 1000);
-        let pre_tool_key = hook_idempotency_key(HookProvider::Codex, "card-1", &pre_tool, 1000);
+        let stop_key = hook_idempotency_key(HookProvider::Codex, "card-1", &stop);
+        let pre_tool_key = hook_idempotency_key(HookProvider::Codex, "card-1", &pre_tool);
         assert_ne!(stop_key, pre_tool_key);
+    }
+
+    #[test]
+    fn hook_key_fallback_distinguishes_by_body_hash() {
+        let first_payload = serde_json::json!({
+            "hook_event_name": "Stop",
+            "exit_code": 0,
+        });
+        let second_payload = serde_json::json!({
+            "hook_event_name": "Stop",
+            "exit_code": 1,
+        });
+
+        let first = hook_idempotency_key(HookProvider::Codex, "card-1", &first_payload);
+        let second = hook_idempotency_key(HookProvider::Codex, "card-1", &second_payload);
+        assert_ne!(first, second);
     }
 }
