@@ -729,7 +729,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
 }
 
 #[tokio::test]
-async fn reset_spec_card_preserves_runtime_push_watermark() {
+async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_shared().await;
     let card = boot
@@ -800,7 +800,7 @@ async fn reset_spec_card_preserves_runtime_push_watermark() {
     boot.state
         .harness
         .insert(old_runtime_id.clone(), harness.clone());
-    for envelope_id in 1_i64..=5 {
+    for envelope_id in 1_i64..=3 {
         harness
             .observe_envelope(
                 Observation::WaveGoal {
@@ -810,7 +810,7 @@ async fn reset_spec_card_preserves_runtime_push_watermark() {
             )
             .unwrap();
     }
-    wait_for_harness_watermark(&harness, 5).await;
+    wait_for_harness_watermark(&harness, 3).await;
     harness.persist_snapshot().await.unwrap();
 
     let old_runtime = boot
@@ -820,7 +820,8 @@ async fn reset_spec_card_preserves_runtime_push_watermark() {
         .unwrap()
         .unwrap();
     let old_snapshot = HarnessSnapshot::from_value_strict(old_runtime.handle_state_json.unwrap());
-    assert_eq!(old_snapshot.push_watermark, 5);
+    assert_eq!(old_snapshot.push_watermark, 3);
+    assert_eq!(old_snapshot.pending_queue.len(), 3);
 
     let (status, body) = post_empty(
         boot.app.clone(),
@@ -842,7 +843,8 @@ async fn reset_spec_card_preserves_runtime_push_watermark() {
             .clone()
             .expect("new runtime snapshot"),
     );
-    assert_eq!(new_snapshot.push_watermark, 5);
+    assert_eq!(new_snapshot.push_watermark, 3);
+    assert_eq!(new_snapshot.pending_queue.len(), 3);
     assert!(boot.state.harness.get(&old_runtime_id).is_none());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();

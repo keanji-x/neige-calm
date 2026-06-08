@@ -14,7 +14,7 @@ use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::harness::{
-    HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
+    HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
     SpecHarnessParams, initial_snapshot_with_goal,
 };
 use crate::ids::{ActorId, CardId, WaveId};
@@ -157,22 +157,23 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
 
-        let inherited_push_watermark = if defer_runtime_start {
+        let inherited_snapshot = if defer_runtime_start {
             runtime_get_active_for_card_tx(tx, card.id.as_str())
                 .await?
                 .and_then(|runtime| {
-                    runtime
-                        .handle_state_json
-                        .as_ref()
-                        .and_then(|state| state.get("push_watermark"))
-                        .and_then(Value::as_i64)
+                    let state = runtime.handle_state_json?;
+                    (state.get("mode").and_then(Value::as_str) == Some(HARNESS_MODE))
+                        .then(|| HarnessSnapshot::from_value_strict(state))
                 })
         } else {
             None
         };
         let mut snapshot = initial_snapshot_with_goal(payload.goal.clone());
-        if let Some(push_watermark) = inherited_push_watermark {
-            snapshot.push_watermark = push_watermark;
+        if let Some(inherited) = inherited_snapshot {
+            snapshot.push_watermark = inherited.push_watermark;
+            snapshot.pending_queue = inherited.pending_queue;
+            snapshot.pending_envelope_ids = inherited.pending_envelope_ids;
+            snapshot.align_pending_envelope_ids();
         }
 
         let runtime_id = new_id();
