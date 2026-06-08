@@ -120,5 +120,13 @@ export default defineConfig({
         baseURL: REPLAY_BASE_URL,
       },
     },
+    {
+      name: 'color-anchor',
+      testMatch: ['**/color-system-anchor.spec.ts'],
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: REPLAY_BASE_URL,
+      },
+    },
   ],
 });

@@ -1,0 +1,93 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { expect, test, type Page } from '@playwright/test';
+
+type ThemeName = 'light' | 'dark';
+type Snapshot = { slug: string; backgroundColor: string; color: string; caretColor: string; colorScheme: string; rect: string };
+
+const themes = ['light', 'dark'] as const;
+const transparentAllowlist = new Set([
+  'wave-title-input',
+  'cove-title-input',
+  'cove-nav-edit-input',
+]);
+
+test.describe.serial('color-system anchor', () => {
+  test('captures form control colors across themes', async ({ page }) => {
+    await page.goto('color-anchor.html?testMounts=1', { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () =>
+        typeof (
+          window as unknown as { __calmSetTheme?: (theme: ThemeName) => void }
+        ).__calmSetTheme === 'function',
+    );
+
+    const snapshots = {} as Record<ThemeName, Snapshot[]>;
+    for (const theme of themes) {
+      await setTheme(page, theme);
+      snapshots[theme] = await readSnapshots(page);
+    }
+
+    await writeBaselineReport(snapshots);
+    for (const theme of themes) {
+      for (const item of snapshots[theme]) {
+        expect
+          .soft(item.colorScheme, `${item.slug} computed color-scheme should be ${theme}`)
+          .toBe(theme);
+      }
+    }
+    for (const item of snapshots.dark) {
+      if (transparentAllowlist.has(item.slug)) continue;
+      expect.soft(item.backgroundColor, `${item.slug} dark bg`).not.toBe('rgba(0, 0, 0, 0)');
+      expect.soft(item.backgroundColor, `${item.slug} dark bg`).not.toBe('rgb(255, 255, 255)');
+    }
+  });
+});
+
+async function setTheme(page: Page, theme: ThemeName) {
+  await page.evaluate((nextTheme) => {
+    (window as unknown as { __calmSetTheme?: (theme: ThemeName) => void }).__calmSetTheme?.(
+      nextTheme,
+    );
+  }, theme);
+  await page.waitForFunction((nextTheme) => document.documentElement.dataset.theme === nextTheme, theme);
+}
+
+async function readSnapshots(page: Page): Promise<Snapshot[]> {
+  return page.locator('[data-color-anchor-id]').evaluateAll((elements) =>
+    elements.map((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return {
+        slug: element.getAttribute('data-color-anchor-id') ?? '<missing>',
+        backgroundColor: style.backgroundColor,
+        color: style.color,
+        caretColor: style.caretColor,
+        colorScheme: style.colorScheme,
+        rect: `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)}x${Math.round(rect.height)}`,
+      };
+    }),
+  );
+}
+
+async function writeBaselineReport(snapshots: Record<ThemeName, Snapshot[]>) {
+  const file = path.join(process.cwd(), 'e2e', '__snapshots__', 'color-anchor-baseline.md');
+  const darkBySlug = new Map(snapshots.dark.map((item) => [item.slug, item]));
+  const rows = snapshots.light.map((light) => {
+    const dark = darkBySlug.get(light.slug);
+    return `| ${light.slug} | ${cell(light)} | ${dark ? cell(dark) : '<missing>'} |`;
+  });
+
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, ['| Input | Light | Dark |', '| --- | --- | --- |', ...rows, ''].join('\n'));
+}
+
+function cell(item: Snapshot) {
+  return [
+    `bg=${item.backgroundColor}`,
+    `color=${item.color}`,
+    `caret=${item.caretColor}`,
+    `scheme=${item.colorScheme}`,
+    `rect=${item.rect}`,
+  ].join('<br>');
+}
