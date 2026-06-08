@@ -153,12 +153,11 @@ pub struct Dispatcher {
     /// signal drive the loop down naturally).
     #[allow(dead_code)]
     handle: JoinHandle<()>,
-    /// #313 problem #1 — boot takeover catch-up reaches `push_to_spec`
-    /// through this. Held as a strong `Arc` so the same instance the
-    /// background task is consuming is the one
-    /// [`Dispatcher::catch_up_push`] calls into; the background task
-    /// also holds its own clone, so the dispatcher stays alive as long
-    /// as either side does.
+    /// #313 problem #1 — catch-up reaches harness observation through
+    /// this. Held as a strong `Arc` so the same instance the background
+    /// task is consuming is the one [`Dispatcher::catch_up_push`] calls
+    /// into; the background task also holds its own clone, so the
+    /// dispatcher stays alive as long as either side does.
     inner: Arc<Inner>,
 }
 
@@ -193,73 +192,15 @@ impl Dispatcher {
             .unwrap_or(false)
     }
 
-    /// #313 problem #1 (boot takeover) — seed the in-memory push watermark
-    /// cache for a spec card from its recovered watermark, BEFORE any
-    /// catch-up replay or live envelope can reach `push_to_spec`.
-    ///
-    /// Uses the same monotonic [`EventCursorCache::bump`] semantics the
-    /// live push path uses — a concurrent live event landing while we're
-    /// seeding can only ratchet the cache UP (a lower id is a no-op),
-    /// never down, so the seed is race-safe against a freshly-registered
-    /// handle's first push. Called once per wave from
-    /// [`crate::legacy spec takeover`].
-    pub fn seed_push_cursor(&self, spec_card_id: CardId, watermark: i64) {
-        self.inner.push_cursor.bump(spec_card_id, watermark);
-    }
-
-    /// Runtime app-server recovery reuses this dispatcher in the same
-    /// process, so its soft push cursor may be ahead of the recovered
-    /// watermark. Force it back before event-log catch-up so fallback replay
-    /// cannot dedup undelivered rows.
-    pub fn reset_push_cursor_to_watermark(&self, spec_card_id: CardId, watermark: i64) {
-        self.inner.push_cursor.set(spec_card_id, watermark);
-    }
-
-    /// Test-only — clear the in-memory push cursor for a card so the next
-    /// access falls back to the default `0`. Used by the boot-recovery
-    /// e2e to simulate a cold-boot cache (no in-process state surviving
-    /// across the simulated restart). Production code does not call this.
-    #[doc(hidden)]
-    pub fn clear_push_cursor_for_test(&self, spec_card_id: &CardId) {
-        self.inner.push_cursor.remove(spec_card_id);
-    }
-
     /// Test-only — read the current in-memory push cursor for a card.
-    /// Used by the boot-recovery e2e to assert that `seed_push_cursor`
-    /// actually planted the persisted watermark into the cache.
+    /// Used by harness catch-up tests to assert that delivered envelopes
+    /// advance the push cursor.
     #[doc(hidden)]
     pub fn push_cursor_for_test(&self, spec_card_id: &CardId) -> i64 {
         self.inner.push_cursor.get(spec_card_id)
     }
 
-    /// #313 problem #1 round-2 (B3) — acquire the per-wave push lock.
-    ///
-    /// The dispatcher's `Inner::push_to_spec` takes this same per-wave
-    /// `Mutex` across `(get → compare → bump → push_observation)`. Boot
-    /// takeover holds it across `(seed_push_cursor → spec_push.insert →
-    /// catch_up_push_under_lock for every event)` so a live event landing
-    /// on the bus during the window (between insert and the catch-up's
-    /// last replay) serializes behind takeover instead of slipping past
-    /// the seeded watermark without being delivered. Without this
-    /// serialization, the live event would see a freshly-seeded cursor,
-    /// `bump` it to its own envelope id, and our catch-up replays for
-    /// ids ≤ that bump would dedup silently — losing every event that
-    /// landed while the kernel was down up to and including that id.
-    ///
-    /// IMPORTANT: while holding this lock, the only safe way to drive
-    /// catch-up is via [`Dispatcher::catch_up_push_under_lock`] (not the
-    /// public [`Dispatcher::catch_up_push`]); this is now type-enforced by
-    /// requiring a [`PushLockGuard`]. The latter takes the same per-wave
-    /// lock and `tokio::sync::Mutex` is NOT reentrant — calling
-    /// `catch_up_push` here would deadlock.
-    /// #480 §D — explicit push-lock acquisition. Returns a `PushLockGuard`
-    /// the caller can hold across catch-up sequences and pass to
-    /// [`catch_up_push_under_lock`] (whose signature requires `&PushLockGuard`).
-    pub async fn push_lock(&self, wave_id: &WaveId) -> PushLockGuard {
-        self.inner.acquire_push_lock(wave_id).await
-    }
-
-    /// #313 problem #1 (boot takeover catch-up) — replay an already-persisted
+    /// #313 problem #1 (catch-up) — replay an already-persisted
     /// `(envelope_id, scope, event)` through the dispatcher's push path,
     /// **without** going through the broadcast bus.
     ///
@@ -283,27 +224,6 @@ impl Dispatcher {
         envelope_id: i64,
     ) {
         Inner::observe_harness(&self.inner, wave_id, &event, envelope_id).await;
-    }
-
-    /// #313 problem #1 round-2 (B3) — variant of [`catch_up_push`] that
-    /// runs the lock-free harness observer directly, for callers already
-    /// holding the per-wave push lock via [`PushLockGuard`]. The
-    /// guard parameter type-enforces that scope — the dedup `(get → compare
-    /// → bump)` is non-atomic without the lock and would race with
-    /// concurrent live pushes.
-    ///
-    /// Used by [`crate::legacy spec takeover`] to replay
-    /// catch-up events under the same lock that gates a concurrently-
-    /// arriving live event.
-    pub async fn catch_up_push_under_lock(
-        &self,
-        guard: &PushLockGuard,
-        event: crate::event::Event,
-        envelope_id: i64,
-    ) {
-        self.inner
-            .observe_harness_under_lock(guard, &event, envelope_id)
-            .await;
     }
 
     /// Reference to the global semaphore. Exposed so tests can probe
@@ -866,10 +786,9 @@ impl Inner {
             .await;
     }
 
-    /// #313 round-2 (B3) — per-wave push lock helper, shared between
-    /// `Inner::push_to_spec` (steady state) and
-    /// [`Dispatcher::push_lock`] (boot takeover catch-up). Held by either
-    /// side serializes the other.
+    /// #313 round-2 (B3) — per-wave push lock helper used by harness
+    /// observation so same-wave replay and live pushes serialize around
+    /// `(get → compare → bump)`.
     async fn acquire_push_lock(self: &Arc<Self>, wave_id: &WaveId) -> PushLockGuard {
         // IMPORTANT: do NOT bind the DashMap Entry to a `let` — the shard
         // guard must drop at this statement's `;` before we `.await` below.
