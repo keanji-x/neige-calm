@@ -247,6 +247,11 @@ card_id: CardId,
  */
 kind: string, 
 /**
+ * Stable hook ingest key used by the server and spec harness to
+ * suppress duplicate lifecycle posts.
+ */
+hook_idempotency_key: string, 
+/**
  * Original codex hook JSON, verbatim.
  */
 payload: unknown, } } | { "ev": "claude.hook", "data": { 
@@ -258,6 +263,11 @@ card_id: CardId,
  * Hook discriminator supplied by the future Claude hook route.
  */
 kind: string, 
+/**
+ * Stable hook ingest key used by the server and spec harness to
+ * suppress duplicate lifecycle posts.
+ */
+hook_idempotency_key: string, 
 /**
  * Original Claude hook JSON, verbatim.
  */
