@@ -199,16 +199,6 @@ pub struct WaveEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct CardCodexThreadRow {
-    pub thread_id: String,
-    pub card_id: String,
-    pub role: CardRole,
-    pub wave_id: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone)]
 pub struct SharedCodexDaemonRecord {
     pub state: String,
     pub pid: Option<i32>,
@@ -354,11 +344,6 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn shared_spec_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>>;
-    /// Pre-PR8 spec rows that were never migrated onto the shared daemon.
-    /// Boot marks these failed instead of silently leaving dispatcher
-    /// observations without an active harness runtime.
-    async fn legacy_spec_cards_for_boot_cleanup(&self) -> Result<Vec<Card>>;
-
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
     async fn plugins_list_all(&self) -> Result<Vec<Plugin>>;
@@ -407,16 +392,6 @@ pub trait RepoRead: Send + Sync + 'static {
         hashed_token: &str,
     ) -> Result<Option<(String, String)>>;
 
-    async fn card_codex_thread_get_by_thread(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<CardCodexThreadRow>>;
-    async fn card_codex_thread_get_by_card(
-        &self,
-        card_id: &str,
-    ) -> Result<Option<CardCodexThreadRow>>;
-    async fn card_codex_threads_active(&self) -> Result<Vec<CardCodexThreadRow>>;
-    async fn card_codex_threads_active_shared_only(&self) -> Result<Vec<CardCodexThreadRow>>;
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
 }
 
@@ -625,26 +600,6 @@ pub trait RepoEventWrite: RepoRead {
     /// events restart at id=1) detect "the server is no longer the
     /// kernel I was talking to" and re-bootstrap its cache. Issue #290.
     async fn events_latest_id(&self) -> Result<Option<i64>>;
-
-    /// #318 INV-1 (b) — largest `events.id` whose `scope_wave` matches
-    /// the given wave, or `None` when no wave-scoped row exists for
-    /// it.
-    ///
-    /// Used by boot takeover when the inert classifier fires: the helper
-    /// stamps this value onto
-    /// `Event::SpecPushAbandoned.last_envelope_id` so SRE / future
-    /// re-run code sees an upper bound on the stranded set
-    /// (`(push_watermark, last_envelope_id]` for this wave). Returning
-    /// `None` is mapped to `0` at the call site — the same sentinel
-    /// `events.id` reserves for "no row".
-    ///
-    /// Scope filter is `scope_wave = ?1` — `scope_kind` may be either
-    /// `'wave'` or `'card'` (cards under this wave count too — they
-    /// carry `scope_wave` per `EventScope::from_row`). Rows that
-    /// predate migration 0007 default to `scope_kind='system'` with
-    /// NULL ancestor cols and never appear in this query, which is
-    /// correct: pre-PR2 rows have no wave attribution.
-    async fn events_latest_id_for_wave(&self, wave_id: &str) -> Result<Option<i64>>;
 }
 
 /// Raw sync-domain entity writes. Gated: the trait object `RouteRepo` that
@@ -719,86 +674,8 @@ pub trait RepoOutOfDomain: RepoRead {
     /// `_tx`-suffixed helper.
     async fn terminal_delete(&self, id: &str) -> Result<()>;
 
-    /// Legacy compatibility helper for writing `payload.push_watermark`
-    /// without emitting a `CardUpdated` event.
-    ///
-    /// D2 production paths persist the harness watermark in runtime handle
-    /// state instead. This method remains for tests and rollback cleanup
-    /// until the later PR-del sections remove the legacy spec-push surface.
-    async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
-
-    /// Deprecated legacy compatibility helper.
-    ///
-    /// Runtime identity is sourced from `runtimes`; normal production paths
-    /// must not upsert `card_codex_threads`. This remains for migrations,
-    /// tests, and rollback paths that intentionally preserve legacy rows.
-    async fn card_codex_thread_upsert(
-        &self,
-        card_id: &str,
-        thread_id: &str,
-        role: CardRole,
-        wave_id: Option<&str>,
-    ) -> Result<()>;
-    async fn card_codex_thread_delete_by_card(&self, card_id: &str) -> Result<()>;
-
     async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
     async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
-
-    // ---- spec push queue (#318 INV-3 / R2-B1)
-    //
-    // Durable backing store for `spec_appserver::PushQueue`. Before this
-    // surface, the queue lived only as `Arc<Mutex<VecDeque<…>>>` —
-    // `push_observation` returning `Ok(Enqueued)` would lose the buffered
-    // observation on a kernel crash before the next `turn/completed`
-    // flush. The only thing that re-delivered it was the events-log
-    // replay (gated by the dispatcher cooperatively withholding the
-    // `push_watermark` on `Enqueued`, PR #315 PR4 B1) — incidental
-    // durability that INV-3 says the queue should not lean on.
-    //
-    // These methods are server-private operational state (no event
-    // emission, no sync-domain entry) — they live on `RepoOutOfDomain`
-    // alongside `spec_card_set_push_watermark` for the same reason.
-    //
-    // Harness snapshots live on the runtime row; this queue remains a
-    // separate durable row store for pending observations.
-
-    /// #318 INV-3 — persist one observation onto the durable spec push
-    /// queue for `card_id`. The harness queueing path calls this before
-    /// the in-memory `VecDeque::push_back` so a crash can be rehydrated
-    /// from the durable rows. Returns the row id
-    /// (`spec_push_queue.id`) so the consumer task's `flush_push_queue`
-    /// can `spec_card_dequeue_observations(&[id, …])` the right rows
-    /// after a successful coalesced `turn/start`.
-    ///
-    /// `envelope_id` is the `events.id` from the originating push; the
-    /// flush path reports `max(envelope_id)` back to the dispatcher via
-    /// the `WatermarkSink` callback so the durable `push_watermark`
-    /// advances past every item in the flushed turn (#313 B1).
-    async fn spec_card_enqueue_observation(
-        &self,
-        card_id: &str,
-        envelope_id: i64,
-        text: &str,
-    ) -> Result<i64>;
-
-    /// #318 INV-3 — read every pending row for `card_id` in id order,
-    /// as `(row_id, envelope_id, text)`. Used by boot-takeover's
-    /// `register_and_catch_up` to rehydrate the in-memory queue from
-    /// disk before catch-up replay starts (so any observation a prior
-    /// process enqueued but didn't flush is re-delivered on the next
-    /// `turn/completed`).
-    async fn spec_card_queued_observations(&self, card_id: &str)
-    -> Result<Vec<(i64, i64, String)>>;
-
-    /// #318 INV-3 — delete the named queue rows. Called by
-    /// `flush_push_queue` (and the `StartTurnNow` winner's drain) AFTER
-    /// the coalesced `turn/start` resolves successfully. On `turn/start`
-    /// failure the caller does NOT call this — the rows remain so a
-    /// later flush (or the next boot's replay) retries.
-    ///
-    /// A batch delete keeps the flush hot path one round-trip; an empty
-    /// `ids` slice is a no-op.
-    async fn spec_card_dequeue_observations(&self, ids: &[i64]) -> Result<()>;
 
     // ---- spec harness item stream (#510 PR-ui C1)
     #[allow(clippy::too_many_arguments)]

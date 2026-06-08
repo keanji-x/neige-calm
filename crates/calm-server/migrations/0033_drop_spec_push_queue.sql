@@ -1,0 +1,12 @@
+-- #552 F35: drop legacy spec push queue durable boot-rehydrate storage.
+--
+-- Data-loss caveat: any leftover rows in spec_push_queue at upgrade time
+-- are dropped without recovery. This is acceptable because:
+--   * PR-del (#510, merge sha 741dc6a8) stopped writes; the consumer
+--     task has been draining since.
+--   * Any pre-PR-del crash-stranded rows would have been replayed via the
+--     event log catch-up path on subsequent boots (events.id is the
+--     watermark cursor, not the queue row id).
+-- If operator suspects undrained rows, run the prior release once and
+-- let recovery flush before applying this migration.
+DROP TABLE IF EXISTS spec_push_queue;

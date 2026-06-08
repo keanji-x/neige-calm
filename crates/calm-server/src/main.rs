@@ -47,12 +47,6 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
-    // #410 PR7c - pre-shared-daemon cleanup for pre-PR8 legacy spec rows.
-    // This must run before `start_or_takeover()`: the shared daemon rebuilds
-    // its thread cache from `card_codex_threads`, and legacy per-card rows are
-    // explicitly not resumable by the PR7c shared-daemon path.
-    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
-
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
     // only codex app-server path; failures are logged so boot can still bind
     // and routes surface the daemon failure when a codex card is used.

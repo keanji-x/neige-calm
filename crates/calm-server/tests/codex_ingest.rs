@@ -13,14 +13,40 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.to_string()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
 
 #[tokio::test]
 async fn ingest_emits_codex_hook_event() {
@@ -104,14 +130,7 @@ async fn codex_hook_rejects_session_id_that_maps_to_different_card() {
     let (app, repo, events, card_id) = test_app().await;
     let mut rx = events.subscribe();
     let other_card = create_codex_card(repo.as_ref()).await;
-    repo.card_codex_thread_upsert(
-        other_card.id.as_str(),
-        "session-mismatch",
-        CardRole::Plain,
-        None,
-    )
-    .await
-    .unwrap();
+    bind_runtime_thread(repo.as_ref(), other_card.id.as_str(), "session-mismatch").await;
 
     let payload = json!({
         "hook_event_name": "Stop",
@@ -135,9 +154,7 @@ async fn codex_hook_rejects_session_id_that_maps_to_different_card() {
 async fn codex_hook_accepts_session_id_that_maps_to_query_card() {
     let (app, repo, events, card_id) = test_app().await;
     let mut rx = events.subscribe();
-    repo.card_codex_thread_upsert(card_id.as_str(), "session-match", CardRole::Plain, None)
-        .await
-        .unwrap();
+    bind_runtime_thread(repo.as_ref(), card_id.as_str(), "session-match").await;
 
     let payload = json!({
         "hook_event_name": "Stop",

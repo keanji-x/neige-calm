@@ -1,6 +1,6 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::{
     resolve_active_thread_for_card, resolve_card_for_thread, resolve_claude_session_for_card,
 };
@@ -89,17 +89,14 @@ async fn resolve_active_thread_for_card_prefers_runtime() {
 }
 
 #[tokio::test]
-async fn resolve_active_thread_for_card_falls_back_to_legacy() {
+async fn resolve_active_thread_for_card_returns_none_without_runtime_thread() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex", json!({})).await;
-    repo.card_codex_thread_upsert(card.id.as_str(), "thread-legacy", CardRole::Plain, None)
-        .await
-        .unwrap();
 
     let thread = resolve_active_thread_for_card(&repo, card.id.as_str())
         .await
         .unwrap();
-    assert_eq!(thread.as_deref(), Some("thread-legacy"));
+    assert_eq!(thread, None);
 }
 
 #[tokio::test]
@@ -123,17 +120,13 @@ async fn resolve_card_for_thread_prefers_runtime() {
 }
 
 #[tokio::test]
-async fn resolve_card_for_thread_falls_back_to_legacy() {
+async fn resolve_card_for_thread_returns_none_without_runtime_thread() {
     let repo = fresh_repo().await;
-    let card = make_card(&repo, "codex", json!({})).await;
-    repo.card_codex_thread_upsert(card.id.as_str(), "thread-legacy", CardRole::Plain, None)
-        .await
-        .unwrap();
 
-    let card_id = resolve_card_for_thread(&repo, AgentProvider::Codex, "thread-legacy")
+    let card_id = resolve_card_for_thread(&repo, AgentProvider::Codex, "thread-missing")
         .await
         .unwrap();
-    assert_eq!(card_id.as_deref(), Some(card.id.as_str()));
+    assert_eq!(card_id, None);
 }
 
 #[tokio::test]

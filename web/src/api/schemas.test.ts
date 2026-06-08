@@ -300,42 +300,6 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   });
 });
 
-// ---- Issue #318 INV-1 (b): spec_push.abandoned ------------------------
-//
-// Wave-scoped notification emitted when the dispatcher's push path takes
-// over an inert spec daemon and abandons the queued envelope tail. The
-// frontend doesn't dispatch on it today, but the runtime validator must
-// accept it on the firehose subscription so the WS handler doesn't drop
-// frames with a parse warning. Pair with the ts-rs conformance check
-// above — if the Rust variant drifts, both this happy-path parse and
-// the `expectTypeOf` assertion light up.
-describe('Issue #318: spec_push.abandoned', () => {
-  it('parses a valid spec_push.abandoned envelope', () => {
-    const parsed = wireEventSchema.parse({
-      ev: 'spec_push.abandoned',
-      data: {
-        wave_id: 'wave_1',
-        cove_id: 'cove_1',
-        last_envelope_id: 42,
-      },
-    });
-    expect(parsed.ev).toBe('spec_push.abandoned');
-    if (parsed.ev === 'spec_push.abandoned') {
-      expect(parsed.data.wave_id).toBe('wave_1');
-      expect(parsed.data.cove_id).toBe('cove_1');
-      expect(parsed.data.last_envelope_id).toBe(42);
-    }
-  });
-
-  it('rejects spec_push.abandoned missing last_envelope_id', () => {
-    const result = wireEventSchema.safeParse({
-      ev: 'spec_push.abandoned',
-      data: { wave_id: 'wave_1', cove_id: 'cove_1' },
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
 // ---- PR2 of #247: wave.report_edited ----------------------------------
 //
 // Structured edit-log companion to `card.updated`. Card-scoped. PR4

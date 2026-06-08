@@ -417,33 +417,23 @@ impl SharedCodexAppServer {
     pub async fn thread_start_for_card(
         self: &Arc<Self>,
         card_id: &str,
-        role: CardRole,
-        wave_id: Option<&str>,
+        _role: CardRole,
+        _wave_id: Option<&str>,
         params: SharedThreadStartParams,
     ) -> Result<String> {
-        // Hold `kernel_thread_start_serial` across BOTH the mint and the
-        // legacy upsert so `handle_thread_started_notification` (which
-        // takes the same lock before broadcasting) cannot dispatch the
-        // `thread/started` notification until non-reset callers have
-        // their `card_codex_threads` row in place.
         let _start_guard = self.kernel_thread_start_serial.lock().await;
         let thread_id = self.thread_start_mint_inner(card_id, params).await?;
-        self.repo
-            .card_codex_thread_upsert(card_id, &thread_id, role, wave_id)
-            .await?;
         tracing::info!(
             target = "shared_codex_daemon::thread_start",
             %card_id,
-            ?role,
             thread_id = %thread_id,
-            wave_id,
             "shared codex app-server thread started"
         );
         Ok(thread_id)
     }
 
     /// Kernel-only thread mint. Performs the codex `thread/start` RPC and
-    /// populates in-memory caches without touching `card_codex_threads`;
+    /// populates in-memory caches without touching durable runtime rows;
     /// callers that need a durable card/thread row persist it in their own
     /// transaction boundary.
     pub async fn thread_start_mint_for_card(

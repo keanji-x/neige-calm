@@ -83,8 +83,7 @@ async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, wave: &Wave
             payload: json!({
                 "schemaVersion": 1,
                 "codex_source": "shared",
-                "spec_harness": true,
-                "push_watermark": 0
+                "spec_harness": true
             }),
         },
         CardRole::Spec,
@@ -373,7 +372,7 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
 }
 
 #[tokio::test]
-async fn start_adapter_falls_back_to_legacy_thread_mapping_when_runtime_lacks_thread_id() {
+async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
     let card_id = new_id();
@@ -399,15 +398,6 @@ async fn start_adapter_falls_back_to_legacy_thread_mapping_when_runtime_lacks_th
         wait_op(&state, &op_id).await,
         OperationOutcome::Succeeded { .. }
     ));
-    repo.card_codex_thread_upsert(
-        &card_id,
-        "legacy-thread",
-        CardRole::Spec,
-        Some(wave.id.as_str()),
-    )
-    .await
-    .unwrap();
-
     let (tx_output_json,): (String,) =
         sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
             .bind(&op_id)
@@ -460,12 +450,13 @@ async fn start_adapter_falls_back_to_legacy_thread_mapping_when_runtime_lacks_th
         .unwrap()
         .expect("runtime row after recovery")
         .thread_id;
-    assert_eq!(recovered_thread.as_deref(), Some("legacy-thread"));
-    assert!(
+    assert_eq!(recovered_thread.as_deref(), Some("fake-thread-0002"));
+    assert_eq!(
         state
             .shared_codex_appserver
             .cached_card_for_thread("fake-thread-0002")
-            .is_none(),
-        "recovery must reuse legacy mapping when runtime thread_id is absent"
+            .as_deref(),
+        Some(card_id.as_str()),
+        "recovery must mint and bind a runtime thread when runtime thread_id is absent"
     );
 }

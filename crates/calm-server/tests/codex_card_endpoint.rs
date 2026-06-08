@@ -639,14 +639,6 @@ async fn post_codex_card_prompt_spawn_failure_interrupts_turn_and_keeps_card() {
         cards[0].payload.get("codex_thread_id").is_none(),
         "prompted compensation must clear the payload thread id"
     );
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(cards[0].id.as_str())
-            .await
-            .unwrap()
-            .is_none(),
-        "prompted compensation must delete the card/thread mapping"
-    );
     let row = sqlx::query("SELECT status FROM runtimes WHERE card_id = ?1")
         .bind(cards[0].id.as_str())
         .fetch_one(boot.repo.pool())

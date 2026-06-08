@@ -540,7 +540,6 @@ fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
         serde_json::Value::String("shared".into()),
     );
     card_payload.insert("spec_harness".into(), serde_json::Value::Bool(true));
-    card_payload.insert("push_watermark".into(), serde_json::Value::from(0));
     if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
     }

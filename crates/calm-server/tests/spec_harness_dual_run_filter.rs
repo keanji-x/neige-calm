@@ -272,14 +272,6 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let queued = repo
-        .spec_card_queued_observations(card.id.as_str())
-        .await
-        .unwrap();
-    assert!(
-        queued.is_empty(),
-        "durable harness inbox row should be deleted after snapshot persist: {queued:?}"
-    );
     harness.shutdown().await.unwrap();
 }
 
@@ -432,14 +424,6 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         0,
         "full live harness queue must not advance the push cursor before retry"
     );
-    let queued = repo
-        .spec_card_queued_observations(card.id.as_str())
-        .await
-        .unwrap();
-    assert!(
-        queued.is_empty(),
-        "failed live harness wake should leave replay responsibility with the cursor"
-    );
     assert!(matches!(
         observations.recv().await.unwrap().observation,
         Observation::WaveGoal { .. }
@@ -449,10 +433,5 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         .catch_up_push(wave.id.clone(), event, envelope_id)
         .await;
     assert_eq!(dispatcher.push_cursor_for_test(&card.id), envelope_id);
-    let queued_after_retry = repo
-        .spec_card_queued_observations(card.id.as_str())
-        .await
-        .unwrap();
-    assert_eq!(queued_after_retry, queued);
     harness.shutdown().await.unwrap();
 }

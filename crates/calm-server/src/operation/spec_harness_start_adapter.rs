@@ -6,9 +6,8 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_update_tx, harness_items_delete_by_card_tx,
-    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_start_tx,
-    runtime_supersede_tx,
+    card_update_tx, harness_items_delete_by_card_tx, runtime_bind_attribution_tx,
+    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -242,10 +241,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
         {
             Some(thread_id)
-        } else if let Some(row) = self.repo.card_codex_thread_get_by_card(&card_id).await?
-            && let Some(thread_id) = non_empty_string(Some(row.thread_id.as_str()))
-        {
-            Some(thread_id)
         } else {
             None
         };
@@ -371,14 +366,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         )
                         .await?;
                     }
-                    card_codex_thread_upsert_tx(
-                        tx,
-                        &card_id,
-                        &thread_for_tx,
-                        CardRole::Spec,
-                        Some(&wave_id),
-                    )
-                    .await?;
                     if reset_harness_items {
                         harness_items_delete_by_card_tx(tx, &card_id).await?;
                     }
@@ -566,7 +553,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     tracing::warn!(thread_id, error = %e, "spec harness compensation interrupt failed");
                 }
                 let card_id = step_arg_string(step, "card_id")?;
-                ctx.repo.card_codex_thread_delete_by_card(&card_id).await?;
                 clear_card_runtime_fields(ctx, &card_id).await?;
                 Ok(())
             }

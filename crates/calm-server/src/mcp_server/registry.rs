@@ -15,9 +15,8 @@
 //!     surface the MCP server needs so the registry doesn't take a
 //!     full `AppState` clone);
 //!   * a [`ToolCallIdentity`] — resolved for each `tools/call` from
-//!     `_meta.threadId` via `card_codex_threads`, with a temporary
-//!     legacy token fallback while older clients and worker launches
-//!     catch up.
+//!     `_meta.threadId` via runtime thread attribution, with a token
+//!     fallback for calls that have no thread metadata.
 
 use crate::db::RouteRepo;
 use crate::event::EventBus;

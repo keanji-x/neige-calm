@@ -265,13 +265,6 @@ async fn create_prompt_card_writes_runtime_and_projects_thread_id() {
 
     let card_id = card["id"].as_str().unwrap();
     assert_eq!(card["payload"]["codex_thread_id"], "fake-thread-0001");
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(card_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
     // Use projectable (broadened to include terminal-status rows) so the
     // assertion is robust to CI-only timing where the codex TUI fixture
     // exits quickly → attach_reader marks runtime Exited before this read.
@@ -367,13 +360,6 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
     assert!(
         !boot.codex_homes_dir.join(card_id).exists(),
         "shared empty-card path must not create a per-card CODEX_HOME"
-    );
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(card_id)
-            .await
-            .unwrap()
-            .is_none()
     );
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
     let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
@@ -522,13 +508,6 @@ async fn prompt_card_turn_start_failure_marks_runtime_failed() {
         runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
         "failed"
     );
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(cards[0].id.as_str())
-            .await
-            .unwrap()
-            .is_none()
-    );
     assert!(cards[0].payload.get("codex_thread_id").is_none());
 }
 
@@ -582,13 +561,6 @@ async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
     assert_eq!(
         runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
         "failed"
-    );
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(cards[0].id.as_str())
-            .await
-            .unwrap()
-            .is_none()
     );
     assert!(cards[0].payload.get("codex_thread_id").is_none());
 }
@@ -693,13 +665,6 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         .unwrap()
         .expect("runtime");
     assert_eq!(runtime.thread_id.as_deref(), Some("T-new"));
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_thread("T-new")
-            .await
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[tokio::test]

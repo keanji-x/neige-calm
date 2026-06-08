@@ -161,11 +161,4 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     'Dispatcher and spec-agent waiters consume task completion directly.',
   ),
   'task.failed': noop('Dispatcher and spec-agent waiters consume task failure directly.'),
-  'spec_push.abandoned': {
-    keys: (ev) => [
-      queryKeys.wavesInCove(ev.data.cove_id),
-      queryKeys.waveDetail(ev.data.wave_id),
-      ['waves-range'],
-    ],
-  },
 });
