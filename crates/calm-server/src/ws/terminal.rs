@@ -280,7 +280,9 @@ async fn handle_renderer(socket: WebSocket, entry: Arc<RendererEntry>, terminal_
         _ = down => {}
         _ = heartbeat => {}
     }
-    pump_task.abort();
+    if let Err(e) = pump_task.await {
+        tracing::warn!(error = %e, "terminal renderer client pump join failed");
+    }
 }
 
 fn sanitize_client_msg(parsed: &mut ClientMsg) {
