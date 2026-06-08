@@ -115,10 +115,8 @@ test.describe.serial('tui theme protocol', () => {
     await expect(
       page.getByText(waveTitle, { exact: false }).first(),
     ).toBeVisible();
-    await expect(page.locator('.xterm-view').first()).toBeVisible({
-      timeout: 15_000,
-    });
-
+    // Post-#510 PR-del: spec card is a chat panel (no XtermView). The
+    // terminal-card created below is the first xterm-view in the wave.
     const beforeIds = await terminalDumpIds(page);
     const dumpsBeforeAdd = await terminalDumpCount(page);
     await setTheme(page, 'light');

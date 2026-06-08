@@ -171,13 +171,10 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
     page.getByText(waveTitle, { exact: false }).first(),
   ).toBeVisible();
 
-  // Step 3 — wave-create auto-mints a codex spec card (#136/#182) which
-  // brings up its OWN XtermView. Record how many xterm dump hooks exist
-  // before we add the terminal card, so Step 4 can wait for exactly one
-  // MORE (the New-terminal card) rather than guess an absolute count.
-  await expect(page.locator('.xterm-view').first()).toBeVisible({
-    timeout: 15_000,
-  });
+  // Step 3 — wave-create auto-mints a spec card. Post-#510 PR-del the
+  // spec card is a chat panel (no XtermView), so we just record how many
+  // xterm dump hooks exist now (likely 0) and Step 4's terminal card add
+  // will be the "+1" we look for.
   const dumpsBeforeAdd = await terminalDumpCount(page);
 
   // Step 4 — open the AddPanel and choose "terminal". The AddPanel
