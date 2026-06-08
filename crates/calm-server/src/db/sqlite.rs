@@ -3744,11 +3744,10 @@ impl RepoOutOfDomain for SqlxRepo {
         envelope_id: i64,
         text: &str,
     ) -> Result<i64> {
-        // Persist-first: the caller (`SpecPusher::push_observation`)
-        // INSERTs here BEFORE pushing the in-memory `VecDeque` entry and
-        // BEFORE returning `Ok(PushOutcome::Enqueued)`, so a crash
-        // between the persist and the in-memory push leaves a row that
-        // boot-takeover's `spec_card_queued_observations` can rehydrate.
+        // Persist-first: callers insert here before pushing the in-memory
+        // `VecDeque` entry, so a crash between the persist and in-memory
+        // push leaves a row that boot-takeover's
+        // `spec_card_queued_observations` can rehydrate.
         //
         // The FK (`card_id REFERENCES cards(id) ON DELETE CASCADE`) is
         // enforced by `PRAGMA foreign_keys = ON` (set per-connection in

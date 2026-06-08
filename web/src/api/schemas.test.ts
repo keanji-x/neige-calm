@@ -204,8 +204,8 @@ describe('spec harness transcript lifecycle events', () => {
 // Schema-only PR. These tests pin the wire shape the parser accepts/rejects
 // for each of the four new variants. Two per variant: a happy-path parse,
 // and a `safeParse` confirming a missing required field fails. PR5's
-// Dispatcher and PR8's wait_for_events will emit these payloads — these
-// tests are the contract they're emitting against.
+// Dispatcher will emit these payloads — these tests are the contract
+// they're emitting against.
 describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   it('parses a valid codex.job_requested', () => {
     const parsed = wireEventSchema.parse({

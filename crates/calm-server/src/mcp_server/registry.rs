@@ -8,8 +8,7 @@
 //! (`calm.dispatch_request`, `calm.task_completed`, `calm.task_failed`);
 //! PR7b registers `calm.update_wave_state` / `calm.get_wave_state` /
 //! `calm.update_task_meta` and #229 PR B the three `calm.report.*` tools.
-//! (The old `calm.wait_for_events` pull tool was removed in the #293
-//! cutover.) Each handler is `Send + Sync + 'static` and receives:
+//! Each handler is `Send + Sync + 'static` and receives:
 //!
 //!   * an [`AppContext`] — repo, event bus, role cache, and the codex
 //!     home parent (already on `AppState`, factored down to the minimum

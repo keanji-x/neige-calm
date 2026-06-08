@@ -176,8 +176,8 @@ pub type WriteWithEventsFn<'a> = Box<
 ///
 /// The dispatcher's `TaskFailed` emission only fires on a returned
 /// error from a live spawn, not on a process death mid-spawn, so the
-/// requesting spec card's `wait_for_events` loop never wakes up
-/// either. Net effect: an undead card that nothing knows about.
+/// requesting spec harness never receives a task failure observation.
+/// Net effect: an undead card that nothing knows about.
 ///
 /// This is accepted scope for the current fix (the alternative —
 /// emitting `CardAdded` inside the tx — is the live `child-exited`
@@ -356,7 +356,7 @@ pub trait RepoRead: Send + Sync + 'static {
     ) -> Result<Vec<(String, String, String, i64)>>;
     /// Pre-PR8 spec rows that were never migrated onto the shared daemon.
     /// Boot marks these failed instead of silently leaving dispatcher
-    /// observations without a registered `SpecPushHandle`.
+    /// observations without an active harness runtime.
     async fn legacy_spec_cards_for_boot_cleanup(&self) -> Result<Vec<Card>>;
 
     // ---- plugins (read-only)
@@ -759,16 +759,13 @@ pub trait RepoOutOfDomain: RepoRead {
     // emission, no sync-domain entry) — they live on `RepoOutOfDomain`
     // alongside `spec_card_set_push_watermark` for the same reason.
     //
-    // TODO(runtime-state-table): along with `push_watermark` and
-    // `appserver_sock`, this is kernel-private runtime bookkeeping. When the
-    // dedicated runtime-state table lands, `spec_push_queue` can move into the
-    // same surface (or stay separate — it's row-shaped, not card-payload
-    // shaped, so a separate table is already correct).
+    // Harness snapshots live on the runtime row; this queue remains a
+    // separate durable row store for pending observations.
 
     /// #318 INV-3 — persist one observation onto the durable spec push
-    /// queue for `card_id`. Called from `SpecPusher::push_observation`'s
-    /// `Enqueue` arm BEFORE the in-memory `VecDeque::push_back` and
-    /// BEFORE returning `Ok(PushOutcome::Enqueued)`. Returns the row id
+    /// queue for `card_id`. The harness queueing path calls this before
+    /// the in-memory `VecDeque::push_back` so a crash can be rehydrated
+    /// from the durable rows. Returns the row id
     /// (`spec_push_queue.id`) so the consumer task's `flush_push_queue`
     /// can `spec_card_dequeue_observations(&[id, …])` the right rows
     /// after a successful coalesced `turn/start`.

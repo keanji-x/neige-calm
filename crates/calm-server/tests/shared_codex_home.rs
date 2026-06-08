@@ -314,11 +314,10 @@ args = ["--bar"]
     }
 
     #[test]
-    fn shared_home_exposes_legacy_parent_for_future_gc() {
+    fn shared_home_exposes_shared_home_path() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
 
-        assert_eq!(home.legacy_parent(), root.path().join("codex-homes"));
         assert_eq!(home.path(), root.path().join("codex-home"));
     }
 

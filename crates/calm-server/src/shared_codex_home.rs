@@ -20,6 +20,7 @@ use toml_edit::DocumentMut;
 /// PR1 只 seed + writer，不切换 callers。
 pub struct SharedCodexHome {
     home: PathBuf,
+    #[allow(dead_code)]
     legacy_homes_parent: PathBuf,
 }
 
@@ -33,10 +34,6 @@ impl SharedCodexHome {
 
     pub fn path(&self) -> &Path {
         &self.home
-    }
-
-    pub fn legacy_parent(&self) -> &Path {
-        &self.legacy_homes_parent
     }
 
     /// Boot-time seed。如果 home 不存在：mkdir + 复制 host `~/.codex/`

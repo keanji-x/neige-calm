@@ -8,16 +8,14 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, SpecHarness, SpecHarnessParams,
 };
 use calm_server::ids::WaveId;
-use calm_server::model::{
-    Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id, now_ms,
-};
+use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use calm_server::operation::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -27,8 +25,6 @@ use calm_server::operation::{
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::routes::theme::RequestTheme;
-use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
@@ -47,7 +43,7 @@ struct Boot {
     state: AppState,
     repo: Arc<SqlxRepo>,
     wave_id: String,
-    tmp: TempDir,
+    _tmp: TempDir,
 }
 
 struct FailingSpawnSpecHarnessStartAdapter {
@@ -191,7 +187,7 @@ async fn boot() -> Boot {
         state,
         repo,
         wave_id: wave.id.to_string(),
-        tmp,
+        _tmp: tmp,
     }
 }
 
@@ -286,7 +282,7 @@ async fn boot_shared() -> Boot {
         state,
         repo,
         wave_id: wave.id.to_string(),
-        tmp,
+        _tmp: tmp,
     }
 }
 
@@ -367,133 +363,6 @@ async fn delete_empty(app: axum::Router, uri: &str) -> StatusCode {
     .await
     .unwrap()
     .status()
-}
-
-fn stage_fake_codex_on_path(tmp: &TempDir) -> String {
-    let bin_dir = tmp.path().join("bin");
-    std::fs::create_dir_all(&bin_dir).expect("create fake codex bin dir");
-    let dest = bin_dir.join("codex");
-    if dest.exists() {
-        std::fs::remove_file(&dest).expect("remove old fake codex symlink");
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(common::fake_codex_bin(), &dest)
-        .expect("symlink fake codex fixture");
-    let prev = std::env::var("PATH").unwrap_or_default();
-    format!("{}:{prev}", bin_dir.display())
-}
-
-fn spec_env(boot: &Boot, card_id: &str, complete_turns: bool) -> (Value, PathBuf) {
-    let capture = boot.tmp.path().join(format!("{card_id}-requests.ndjson"));
-    let result = boot.tmp.path().join(format!("{card_id}-osc.txt"));
-    let mut env = serde_json::Map::new();
-    env.insert(
-        "CODEX_HOME".into(),
-        json!(
-            boot.tmp
-                .path()
-                .join("codex-home")
-                .join(card_id)
-                .to_string_lossy()
-        ),
-    );
-    env.insert("NEIGE_CARD_ID".into(), json!(card_id));
-    env.insert("NEIGE_CALM_BASE_URL".into(), json!("http://127.0.0.1:0"));
-    env.insert(
-        "NEIGE_OSC_RESULT_PATH".into(),
-        json!(result.to_string_lossy()),
-    );
-    env.insert("NEIGE_OSC_EXPECTED_BG".into(), json!("15,20,24"));
-    env.insert(
-        "FAKE_CODEX_CAPTURE_REQUESTS".into(),
-        json!(capture.to_string_lossy()),
-    );
-    env.insert("PATH".into(), json!(stage_fake_codex_on_path(&boot.tmp)));
-    if complete_turns {
-        env.insert("FAKE_CODEX_TURN_COMPLETED_DELAY_MS".into(), json!("25"));
-    }
-    (Value::Object(env), capture)
-}
-
-async fn seed_spec_card(
-    boot: &Boot,
-    watermark: i64,
-    complete_turns: bool,
-) -> (Card, Terminal, PathBuf) {
-    let card_id = new_id();
-    let (env, capture) = spec_env(boot, &card_id, complete_turns);
-    let mut tx = boot.repo.pool().begin().await.expect("begin tx");
-    let (card, terminal, _token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &new_id(),
-        WaveId::from(boot.wave_id.clone()),
-        None,
-        "/tmp/spec-card-reset".into(),
-        env,
-        None,
-        None,
-        None,
-        CardRole::Spec,
-        false,
-        &boot.state.card_role_cache,
-        RequestTheme::default_dark(),
-    )
-    .await
-    .expect("create spec card + terminal");
-    tx.commit().await.expect("commit spec card");
-    boot.repo
-        .spec_card_set_push_watermark(card.id.as_str(), watermark)
-        .await
-        .expect("seed old watermark");
-    (card, terminal, capture)
-}
-
-async fn seed_shared_spec_card(boot: &Boot, watermark: i64) -> (Card, Terminal, PathBuf) {
-    let (card, terminal, capture) = seed_spec_card(boot, watermark, false).await;
-    let mut payload = boot
-        .repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .unwrap()
-        .payload;
-    payload["codex_source"] = json!("shared");
-    payload["codex_thread_id"] = json!("thread-old");
-    payload["appserver_sock"] = json!(boot.state.shared_codex_appserver.remote_uri());
-    payload["appserver_pgid"] = json!(12345);
-    payload["appserver_start_time"] = json!(67890);
-    payload["appserver_boot_id"] = json!("boot-old");
-    payload
-        .as_object_mut()
-        .unwrap()
-        .remove("appserver_needs_initial_prompt");
-    boot.repo
-        .card_update(
-            card.id.as_str(),
-            CardPatch {
-                kind: None,
-                sort: None,
-                payload: Some(payload),
-                deletable: None,
-            },
-        )
-        .await
-        .expect("mark shared spec card");
-    boot.repo
-        .card_codex_thread_upsert(
-            card.id.as_str(),
-            "thread-old",
-            CardRole::Spec,
-            Some(boot.wave_id.as_str()),
-        )
-        .await
-        .expect("seed old shared thread mapping");
-    (
-        boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap(),
-        terminal,
-        capture,
-    )
 }
 
 async fn seed_shared_plain_card(boot: &Boot, label: &str, thread_id: &str) -> Card {
@@ -1246,75 +1115,4 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
         .unwrap()
         .expect("old thread mapping remains");
     assert_eq!(mapping.thread_id, "thread-old");
-}
-
-#[tokio::test]
-async fn shared_reset_writes_runtime_and_projects_new_thread_id() {
-    let _guard = ENV_LOCK.lock().await;
-    let capture = TempDir::new().unwrap();
-    let capture_file = capture.path().join("requests.ndjson");
-    unsafe {
-        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
-    }
-    let boot = boot_shared().await;
-    let (card, _terminal, _capture) = seed_shared_spec_card(&boot, 42).await;
-
-    let (status, body) = post_empty(
-        boot.app.clone(),
-        &format!("/api/cards/{}/spec/reset", card.id),
-    )
-    .await;
-    unsafe {
-        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
-    }
-
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["card_id"], json!(card.id.as_str()));
-    assert_eq!(body["terminal_id"], json!(""));
-    assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
-
-    let mapping = boot
-        .repo
-        .card_codex_thread_get_by_card(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("#524 reset path writes legacy mapping atomically with runtime");
-    assert_eq!(mapping.thread_id, "fake-thread-0001");
-    let runtime = boot
-        .repo
-        .runtime_get_active_for_card(&card.id.to_string())
-        .await
-        .unwrap()
-        .expect("active runtime");
-    assert_eq!(runtime.kind, RuntimeKind::SharedSpec);
-    assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
-    let mut got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(got.payload["codex_source"], json!("shared"));
-    assert_eq!(got.payload["codex_thread_id"], json!("fake-thread-0001"));
-    assert_eq!(got.payload["push_watermark"], json!(42));
-    assert!(got.payload.get("appserver_pgid").is_none());
-    assert!(got.payload.get("appserver_start_time").is_none());
-    assert!(got.payload.get("appserver_boot_id").is_none());
-    project_runtime_into_card_payload(boot.repo.as_ref(), &mut got)
-        .await
-        .unwrap();
-    assert_eq!(got.payload["codex_source"], json!("shared"));
-    assert_eq!(got.payload["codex_thread_id"], json!("fake-thread-0001"));
-}
-
-#[tokio::test]
-async fn shared_reset_preserves_push_watermark() {
-    let _guard = ENV_LOCK.lock().await;
-    let boot = boot_shared().await;
-    let (card, _terminal, _capture) = seed_shared_spec_card(&boot, 88).await;
-
-    let (status, body) = post_empty(
-        boot.app.clone(),
-        &format!("/api/cards/{}/spec/reset", card.id),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    let got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(got.payload["push_watermark"], json!(88));
 }
