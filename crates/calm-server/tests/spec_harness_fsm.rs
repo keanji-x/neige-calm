@@ -6,8 +6,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::{
-    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, SpecHarness,
-    SpecHarnessParams,
+    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, Observation,
+    SpecHarness, SpecHarnessParams,
 };
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
@@ -270,6 +270,318 @@ async fn idle_to_turn_running_to_completed() {
         matches!(s, HarnessState::TurnCompleted { .. })
     })
     .await;
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stale_turn_completed_ignored_during_active_turn() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let (_repo, harness, _runtime_id, thread_id) = harness_with(
+        repo,
+        daemon.clone(),
+        HarnessPhaseTag::Idle,
+        HarnessConfig::default(),
+    )
+    .await;
+    harness
+        .observe(Observation::WaveGoal {
+            text: "Read the wave goal.".into(),
+        })
+        .unwrap();
+    let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+    let turn1 = match running {
+        HarnessState::TurnRunning { turn_id, .. } => turn_id,
+        other => panic!("expected running, got {other:?}"),
+    };
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: thread_id.clone(),
+        turn: json!({ "id": turn1, "status": "completed" }),
+    });
+    wait_for_state(
+        &harness,
+        |s| matches!(s, HarnessState::TurnCompleted { last_turn_id } if last_turn_id == &turn1),
+    )
+    .await;
+
+    harness
+        .observe(Observation::WaveGoal {
+            text: "Read the next wave goal.".into(),
+        })
+        .unwrap();
+    let running = wait_for_state(
+        &harness,
+        |s| matches!(s, HarnessState::TurnRunning { turn_id, .. } if turn_id != &turn1),
+    )
+    .await;
+    let turn2 = match running {
+        HarnessState::TurnRunning { turn_id, .. } => turn_id,
+        other => panic!("expected second running turn, got {other:?}"),
+    };
+
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id,
+        turn: json!({ "id": turn1, "status": "completed" }),
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::TurnRunning { turn_id, .. } if turn_id == turn2
+    ));
+    assert_eq!(
+        harness.snapshot().await.last_turn_id.as_deref(),
+        Some(turn2.as_str())
+    );
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stale_turn_started_ignored_when_other_turn_active() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let (_repo, harness, _runtime_id, thread_id) = harness_with(
+        repo,
+        daemon.clone(),
+        HarnessPhaseTag::Idle,
+        HarnessConfig::default(),
+    )
+    .await;
+    harness
+        .observe(Observation::WaveGoal {
+            text: "Read the wave goal.".into(),
+        })
+        .unwrap();
+    let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+    let turn1 = match running {
+        HarnessState::TurnRunning { turn_id, .. } => turn_id,
+        other => panic!("expected running, got {other:?}"),
+    };
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id,
+        turn: json!({ "id": "ghost-turn" }),
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::TurnRunning { turn_id, .. } if turn_id == turn1
+    ));
+    assert_eq!(
+        harness.snapshot().await.last_turn_id.as_deref(),
+        Some(turn1.as_str())
+    );
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn replayed_turn_started_after_completed_ignored() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let (_repo, harness, _runtime_id, thread_id) = harness_with(
+        repo,
+        daemon.clone(),
+        HarnessPhaseTag::Idle,
+        HarnessConfig::default(),
+    )
+    .await;
+    harness
+        .observe(Observation::WaveGoal {
+            text: "Read the wave goal.".into(),
+        })
+        .unwrap();
+    let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+    let turn1 = match running {
+        HarnessState::TurnRunning { turn_id, .. } => turn_id,
+        other => panic!("expected running, got {other:?}"),
+    };
+
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: thread_id.clone(),
+        turn: json!({ "id": turn1, "status": "completed" }),
+    });
+    wait_for_state(
+        &harness,
+        |s| matches!(s, HarnessState::TurnCompleted { last_turn_id } if last_turn_id == &turn1),
+    )
+    .await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id,
+        turn: json!({ "id": turn1 }),
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::TurnCompleted { last_turn_id } if last_turn_id == turn1
+    ));
+    assert_eq!(
+        harness.snapshot().await.last_turn_id.as_deref(),
+        Some(turn1.as_str())
+    );
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stale_turn_started_in_turn_completed_ignored() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let (_repo, harness, _runtime_id, thread_id) = harness_with(
+        repo,
+        daemon.clone(),
+        HarnessPhaseTag::Idle,
+        HarnessConfig::default(),
+    )
+    .await;
+    harness
+        .observe(Observation::WaveGoal {
+            text: "Read the wave goal.".into(),
+        })
+        .unwrap();
+    let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+    let turn1 = match running {
+        HarnessState::TurnRunning { turn_id, .. } => turn_id,
+        other => panic!("expected running, got {other:?}"),
+    };
+
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: thread_id.clone(),
+        turn: json!({ "id": turn1, "status": "completed" }),
+    });
+    wait_for_state(
+        &harness,
+        |s| matches!(s, HarnessState::TurnCompleted { last_turn_id } if last_turn_id == &turn1),
+    )
+    .await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id,
+        turn: json!({ "id": "foreign-turn" }),
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::TurnCompleted { last_turn_id } if last_turn_id == turn1
+    ));
+    assert_eq!(
+        harness.snapshot().await.last_turn_id.as_deref(),
+        Some(turn1.as_str())
+    );
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stale_turn_started_in_issuing_with_foreign_id_ignored() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let (_repo, harness, _runtime_id, thread_id) = harness_with(
+        repo,
+        daemon.clone(),
+        HarnessPhaseTag::Idle,
+        HarnessConfig::default(),
+    )
+    .await;
+    harness
+        .set_state_for_test(HarnessState::Issuing {
+            since: Instant::now(),
+            kind: IssuingKind::TurnStart,
+        })
+        .await;
+    harness
+        .set_issued_turn_id_for_test(Some("turn-A".into()))
+        .await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id,
+        turn: json!({ "id": "foreign-turn" }),
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::Issuing {
+            kind: IssuingKind::TurnStart,
+            ..
+        }
+    ));
+    assert!(harness.snapshot().await.last_turn_id.is_none());
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovered_resumed_accepts_matching_turn_started() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Resumed;
+    snapshot.last_thread_id = Some("thread-resumed".into());
+    snapshot.last_turn_id = Some("turn-prior".into());
+    let (harness, _runtime_id) = harness_from_snapshot(repo, daemon.clone(), snapshot).await;
+    harness
+        .set_state_for_test(HarnessState::Resumed {
+            resumed_at: Instant::now(),
+        })
+        .await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: "thread-resumed".into(),
+        turn: json!({ "id": "turn-prior" }),
+    });
+    wait_for_state(
+        &harness,
+        |s| matches!(s, HarnessState::TurnRunning { turn_id, .. } if turn_id == "turn-prior"),
+    )
+    .await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: "thread-resumed".into(),
+        turn: json!({ "id": "other" }),
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::TurnRunning { turn_id, .. } if turn_id == "turn-prior"
+    ));
+    assert_eq!(
+        harness.snapshot().await.last_turn_id.as_deref(),
+        Some("turn-prior")
+    );
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn turn_started_without_id_ignored() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let (_repo, harness, _runtime_id, thread_id) = harness_with(
+        repo,
+        daemon.clone(),
+        HarnessPhaseTag::Idle,
+        HarnessConfig::default(),
+    )
+    .await;
+    harness
+        .observe(Observation::WaveGoal {
+            text: "Read the wave goal.".into(),
+        })
+        .unwrap();
+    let running = wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+    let turn1 = match running {
+        HarnessState::TurnRunning { turn_id, .. } => turn_id,
+        other => panic!("expected running, got {other:?}"),
+    };
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id,
+        turn: json!({}),
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        harness.state_for_test().await,
+        HarnessState::TurnRunning { turn_id, .. } if turn_id == turn1
+    ));
+    assert_eq!(
+        harness.snapshot().await.last_turn_id.as_deref(),
+        Some(turn1.as_str())
+    );
     harness.shutdown().await.unwrap();
 }
 

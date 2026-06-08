@@ -60,6 +60,7 @@ struct Inner {
     pending_envelope_ids: Mutex<VecDeque<Option<i64>>>,
     push_watermark: Mutex<i64>,
     last_turn_id: Mutex<Option<String>>,
+    issued_turn_id: Mutex<Option<String>>,
     last_report_body_sha256: Mutex<Option<String>>,
     debounce: Mutex<DebounceState>,
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
@@ -193,6 +194,10 @@ impl SpecHarness {
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
     }
+
+    pub async fn set_issued_turn_id_for_test(&self, turn_id: Option<String>) {
+        *self.inner.issued_turn_id.lock().await = turn_id;
+    }
 }
 
 fn inner_from_params(
@@ -222,6 +227,7 @@ fn inner_from_params(
         pending_queue: Mutex::new(snapshot.pending_queue.into_iter().collect()),
         push_watermark: Mutex::new(snapshot.push_watermark),
         last_turn_id: Mutex::new(snapshot.last_turn_id),
+        issued_turn_id: Mutex::new(None),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
@@ -366,6 +372,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     since: Instant::now(),
                     reason: "system_error".into(),
                 };
+                *inner.issued_turn_id.lock().await = None;
             } else if status.get("type").and_then(Value::as_str) == Some("idle") {
                 let mut state = inner.state.lock().await;
                 if matches!(*state, HarnessState::Resumed { .. }) {
@@ -374,16 +381,47 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             }
         }
         Notification::TurnStarted { turn, .. } => {
-            let turn_id = turn
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown-turn")
-                .to_string();
-            *inner.last_turn_id.lock().await = Some(turn_id.clone());
-            *inner.state.lock().await = HarnessState::TurnRunning {
-                turn_id,
-                started_at: Instant::now(),
+            let Some(turn_id) = turn.get("id").and_then(Value::as_str).map(str::to_string) else {
+                tracing::debug!(?turn, "spec harness ignoring TurnStarted without id");
+                return persist_snapshot(inner).await;
             };
+            let state_snap = inner.state.lock().await.clone();
+            let last_seen = inner.last_turn_id.lock().await.clone();
+            let issued = inner.issued_turn_id.lock().await.clone();
+            let accept = match &state_snap {
+                HarnessState::Issuing {
+                    kind: IssuingKind::TurnStart,
+                    ..
+                } => issued.as_deref() == Some(turn_id.as_str()),
+                HarnessState::TurnRunning {
+                    turn_id: active, ..
+                } => active == &turn_id,
+                HarnessState::Idle => last_seen.is_none(),
+                HarnessState::Resumed { .. } => last_seen.as_deref() == Some(turn_id.as_str()),
+                _ => false,
+            };
+            if !accept {
+                tracing::debug!(
+                    observed = %turn_id,
+                    last_seen = ?last_seen,
+                    issued = ?issued,
+                    state = ?state_snap,
+                    "spec harness ignoring TurnStarted that does not match expected turn"
+                );
+                return persist_snapshot(inner).await;
+            }
+            let already_running_same = matches!(
+                &state_snap,
+                HarnessState::TurnRunning { turn_id: active, .. } if active == &turn_id
+            );
+            *inner.last_turn_id.lock().await = Some(turn_id.clone());
+            if !already_running_same {
+                *inner.state.lock().await = HarnessState::TurnRunning {
+                    turn_id,
+                    started_at: Instant::now(),
+                }
+            }
+            *inner.issued_turn_id.lock().await = None;
             *inner.interrupt_deadline.lock().await = None;
         }
         Notification::TurnCompleted { turn, .. } => {
@@ -419,6 +457,19 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
+                return persist_snapshot(inner).await;
+            }
+            let state = inner.state.lock().await.clone();
+            let active = state.active_turn_id();
+            if !matches!(state, HarnessState::TurnRunning { .. })
+                || active.as_deref() != Some(turn_id.as_str())
+            {
+                tracing::debug!(
+                    observed = %turn_id,
+                    active = ?active,
+                    state = ?state,
+                    "spec harness ignoring stale TurnCompleted"
+                );
                 return persist_snapshot(inner).await;
             }
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
@@ -596,6 +647,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         };
         prior
     };
+    *inner.issued_turn_id.lock().await = None;
     persist_snapshot(inner).await?;
 
     let (drained, drained_envelope_ids) = {
@@ -610,6 +662,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         *inner.state.lock().await = prior_turn
             .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
             .unwrap_or(HarnessState::Idle);
+        *inner.issued_turn_id.lock().await = None;
         return Ok(());
     }
     *inner.debounce.lock().await = DebounceState::default();
@@ -622,6 +675,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         rebuffer_head(inner, drained, drained_envelope_ids).await;
         *inner.state.lock().await = HarnessState::PendingThreadStart;
+        *inner.issued_turn_id.lock().await = None;
         persist_snapshot(inner).await?;
         return Ok(());
     };
@@ -632,7 +686,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .await
     {
         Ok(turn_id) => {
-            *inner.last_turn_id.lock().await = Some(turn_id);
+            *inner.last_turn_id.lock().await = Some(turn_id.clone());
+            *inner.issued_turn_id.lock().await = Some(turn_id);
             persist_snapshot(inner).await?;
         }
         Err(e) => {
@@ -642,6 +697,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 .unwrap_or(HarnessState::TurnCompleted {
                     last_turn_id: "unknown-turn".into(),
                 });
+            *inner.issued_turn_id.lock().await = None;
             persist_snapshot(inner).await?;
             tracing::warn!(error = %e, "spec harness turn/start failed; re-buffered batch");
         }
@@ -699,6 +755,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
             since: Instant::now(),
             reason: "interrupt_timeout".into(),
         };
+        *inner.issued_turn_id.lock().await = None;
         *inner.interrupt_deadline.lock().await = None;
         persist_snapshot(inner).await?;
         return Ok(());
@@ -775,6 +832,7 @@ async fn issue_interrupt_for_turn(
         if matches!(*state, HarnessState::Wedged { .. }) {
             return Ok(());
         }
+        *inner.issued_turn_id.lock().await = None;
         *state = HarnessState::Issuing {
             since: Instant::now(),
             kind: IssuingKind::Interrupt {
