@@ -105,7 +105,12 @@ export default defineConfig({
     },
     {
       name: 'chromium',
-      testIgnore: ['**/a11y-*.spec.ts', '**/_setup/**', '**/_scroll-probe.spec.ts'],
+      testIgnore: [
+        '**/a11y-*.spec.ts',
+        '**/_setup/**',
+        '**/_scroll-probe.spec.ts',
+        '**/color-system-anchor.spec.ts',
+      ],
       use: {
         ...devices['Desktop Chrome'],
         baseURL: DEV_BASE_URL,
@@ -115,6 +120,14 @@ export default defineConfig({
       name: 'a11y',
       testMatch: ['**/a11y-*.spec.ts'],
       dependencies: ['replay-setup'],
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: REPLAY_BASE_URL,
+      },
+    },
+    {
+      name: 'color-anchor',
+      testMatch: ['**/color-system-anchor.spec.ts'],
       use: {
         ...devices['Desktop Chrome'],
         baseURL: REPLAY_BASE_URL,

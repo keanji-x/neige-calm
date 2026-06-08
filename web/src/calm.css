@@ -28,6 +28,7 @@
   --font-display: var(--font-sans);   /* large titles, modal attn heads */
   --font-numeric: var(--font-sans);   /* clocks, dates, large stats — could diverge from --font-display later */
   --font-code:    var(--font-mono);   /* terminal, diff, inline code, settings hint code */
+  color-scheme: light;
 
   /* Cold neutrals — a hint of snow */
   --bg: oklch(98.8% 0.003 240);
@@ -39,6 +40,8 @@
   --text-2: oklch(45% 0.01 250);
   --text-3: oklch(52% 0.01 250);
   --text-4: oklch(76% 0.008 250);
+  --selection-bg: oklch(82% 0.06 240);   /* light selection — adjust if visually wrong */
+  --selection-fg: var(--text);
 
   /* Semantic aliases over positional tokens. Resolve via the cascade —
      no dark-mode override needed; --text-N already swaps in dark. */
@@ -297,6 +300,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --bg: oklch(16% 0.008 245);
   --paper: oklch(19% 0.009 245);
   --hairline: oklch(28% 0.01 245);
@@ -305,6 +309,7 @@
   --text-2: oklch(72% 0.012 245);
   --text-3: oklch(64% 0.012 245);
   --text-4: oklch(42% 0.012 245);
+  --selection-bg: oklch(38% 0.08 240);   /* dark selection */
   --accent: oklch(72% 0.14 245);
   --accent-soft: oklch(28% 0.05 245);
   --warn: oklch(70% 0.16 30);
@@ -353,7 +358,27 @@ body {
   overflow: hidden;
 }
 button { font: inherit; cursor: pointer; background: 0; border: 0; color: inherit; padding: var(--space-0); }
-input, textarea { font: inherit; color: inherit; }
+input:not([type="radio"]):not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]),
+textarea,
+select { font: inherit; color: inherit; background-color: var(--paper); }
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px var(--paper) inset;
+  caret-color: var(--text);
+  /* 9999s = "never" — suppresses WebKit's autofill yellow flash so the
+     inset box-shadow paper-fill wins from t=0. */
+  transition: background-color 9999s ease-out, color 9999s ease-out;
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg);
+}
 
 /* Visually hidden but readable by assistive tech. Used for aria-describedby
    helper spans (e.g. the rename hint on Cove/Wave titles) so the

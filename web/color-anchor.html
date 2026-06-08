@@ -3,13 +3,6 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Plex Latin (Sans + Mono) is downloaded from Google Fonts. Plex CJK
-         family names (Plex Sans SC/JP/KR) are also declared in the
-         font-family chain in calm.css so users who happen to have them
-         installed locally pick them up; for everyone else the chain falls
-         through to system CJK (PingFang SC / Hiragino Sans GB) — Google
-         Fonts does not serve Plex CJK, and we don't want to push hundreds
-         of KB of webfont before the first Han char. -->
     <!-- Mirrors web/src/app/theme.tsx readPersistedMode + readSystemPreference + resolveTheme so first paint uses the resolved theme. -->
     <script>
       (function () {
@@ -29,10 +22,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap" />
-    <title>Neige · Calm</title>
+    <title>Neige · Color Anchor</title>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/__color_anchor__/main.tsx"></script>
   </body>
 </html>
