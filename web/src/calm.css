@@ -358,7 +358,9 @@ body {
   overflow: hidden;
 }
 button { font: inherit; cursor: pointer; background: 0; border: 0; color: inherit; padding: var(--space-0); }
-input, textarea, select { font: inherit; color: inherit; background-color: var(--paper); }
+input:not([type="radio"]):not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="file"]),
+textarea,
+select { font: inherit; color: inherit; background-color: var(--paper); }
 
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
@@ -368,6 +370,8 @@ select:-webkit-autofill {
   -webkit-text-fill-color: var(--text);
   -webkit-box-shadow: 0 0 0 1000px var(--paper) inset;
   caret-color: var(--text);
+  /* 9999s = "never" — suppresses WebKit's autofill yellow flash so the
+     inset box-shadow paper-fill wins from t=0. */
   transition: background-color 9999s ease-out, color 9999s ease-out;
 }
 

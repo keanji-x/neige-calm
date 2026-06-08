@@ -9,9 +9,10 @@
         try {
           var raw = localStorage.getItem('calm.theme');
           var mode = (raw === 'light' || raw === 'dark' || raw === 'system') ? raw : 'system';
-          var resolved = mode === 'system'
-            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-            : mode;
+          var systemDark = typeof window.matchMedia === 'function'
+            ? window.matchMedia('(prefers-color-scheme: dark)').matches
+            : false;
+          var resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
           document.documentElement.dataset.theme = resolved;
         } catch (e) {
           /* fall through; ThemeProvider will catch up post-mount */
