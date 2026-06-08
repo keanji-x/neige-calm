@@ -2,9 +2,10 @@
 #
 # The base debian:bookworm-slim ships without git, but the File/Code card's
 # `/api/fs/gitstatus` + `/api/fs/gitdiff` endpoints shell out to `git`, and
-# codex/claude worker agents also expect `git` on PATH. The release binaries
-# are still bind-mounted by docker-compose (see the `server` service volumes);
-# this image only adds the missing runtime tools.
+# codex/claude worker agents also expect `git` on PATH. The chromium e2e stack
+# also needs python3 for `web/e2e/tui-theme-protocol.spec.ts`'s TUI fixture.
+# The release binaries are still bind-mounted by docker-compose (see the
+# `server` service volumes); this image only adds the missing runtime tools.
 #
 # apt honours the standard proxy env vars; they're declared as build args so
 # `docker compose build` can pass them through when the host needs a proxy to
@@ -14,5 +15,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+ && apt-get install -y --no-install-recommends git ca-certificates python3-minimal \
  && rm -rf /var/lib/apt/lists/*

@@ -216,6 +216,19 @@ export default tseslint.config(
       'neige-calm/no-raw-primitive-role': 'error',
     },
   },
+  // E2E specs live outside `src/` and are run by Playwright. Keep this
+  // parser-only config so targeted commands like
+  // `eslint e2e/tui-theme-protocol.spec.ts` lint the file instead of
+  // reporting it as ignored by the flat config.
+  {
+    files: ['e2e/**/*.ts'],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        project: false,
+      },
+    },
+  },
   // Exemption: `CardHead.tsx` and the shared `LetterAvatar.tsx` it
   // delegates to own the card-head slot classes and therefore must be
   // allowed to write them as string literals. The letter-avatar markup
