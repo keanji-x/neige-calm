@@ -195,5 +195,78 @@ test.describe.serial('tui theme protocol', () => {
     const finalTheme = latestTheme(await dumpTerminal(page, terminalId));
     expect(finalTheme.fg).toBe(hex(LIGHT_THEME_RGB.fg));
     expect(finalTheme.bg).toBe(hex(LIGHT_THEME_RGB.bg));
+
+    // Anchor D - Bug B regression guard. The wave-switch remount must
+    // reclaim Owner after WS close; fixed by e8d85122.
+    // Invariants pinned:
+    //   1. useTheme() is read at mount in cards/builtins/terminal.tsx.
+    //   2. RenderPlane is registry-scoped (terminal_renderer/mod.rs:206),
+    //      so the daemon's persisted set_default_colors survives WS reconnect.
+    const waveBRes = await page.request.post('/api/waves', {
+      data: {
+        cove_id: coveId,
+        title: `E2E tui-theme wave-B ${Date.now()}`,
+        cwd: `/tmp/playwright-cove-${coveId}-B`,
+        attach_folder: true,
+        theme: { fg: DARK_THEME_RGB.fg, bg: DARK_THEME_RGB.bg },
+      },
+      headers: { 'content-type': 'application/json' },
+    });
+    if (!waveBRes.ok()) {
+      const body = await waveBRes.text().catch(() => '<unreadable>');
+      throw new Error(
+        `POST /api/waves (wave B) -> ${waveBRes.status()} ${waveBRes.statusText()}: ${body}`,
+      );
+    }
+    const waveB = (await waveBRes.json()) as { id: string };
+
+    // Confirm wave A's terminal dump is currently mounted before navigating.
+    const beforeSwitchPresent = await page.evaluate((id) => {
+      const w = window as unknown as { __xtermDumps__?: XtermDumps };
+      return typeof w.__xtermDumps__?.[id] === 'function';
+    }, terminalId);
+    expect(beforeSwitchPresent).toBe(true);
+
+    // Navigate to wave B; wave A's XtermView for terminalId unmounts and
+    // its __xtermDumps__ entry disappears - proves the React fiber really
+    // tore down rather than staying hidden.
+    await page.goto(`/calm/wave/${waveB.id}?testMounts=1`);
+    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+\?testMounts=1$/);
+    await page.waitForFunction(
+      (id) => {
+        const w = window as unknown as { __xtermDumps__?: XtermDumps };
+        return w.__xtermDumps__?.[id] === undefined;
+      },
+      terminalId,
+      { timeout: 10_000 },
+    );
+
+    // On wave B, flip to dark - the "user changed theme while away" case.
+    await setTheme(page, 'dark');
+
+    // Navigate back to wave A. The terminal card remounts; a fresh
+    // XtermView fiber re-registers a dump fn under the same terminalId.
+    await page.goto(`/calm/wave/${wave.id}?testMounts=1`);
+    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+\?testMounts=1$/);
+    await page.waitForFunction(
+      (id) => {
+        const w = window as unknown as { __xtermDumps__?: XtermDumps };
+        return typeof w.__xtermDumps__?.[id] === 'function';
+      },
+      terminalId,
+      { timeout: 15_000 },
+    );
+
+    // Mount-time TerminalThemeUpdate carries dark; daemon updates
+    // RenderPlane.default_colors; the fixture's focus-in driven re-probe
+    // prints fresh THEME_FG/BG lines reflecting dark.
+    await expect
+      .poll(async () => latestTheme(await dumpTerminal(page, terminalId)), {
+        timeout: 5_000,
+      })
+      .toEqual({ fg: hex(DARK_THEME_RGB.fg), bg: hex(DARK_THEME_RGB.bg) });
+    const switchTheme = latestTheme(await dumpTerminal(page, terminalId));
+    expect(switchTheme.fg).toBe(hex(DARK_THEME_RGB.fg));
+    expect(switchTheme.bg).toBe(hex(DARK_THEME_RGB.bg));
   });
 });
