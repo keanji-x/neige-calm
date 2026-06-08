@@ -459,9 +459,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             };
             *inner.interrupt_deadline.lock().await = None;
         }
-        Notification::Item { method, params }
-            if method == "item/started" || method == "item/completed" =>
-        {
+        Notification::Item { method, params } if should_persist_item_method(&method) => {
             let Some(item) = params.get("item") else {
                 tracing::debug!(
                     method,
@@ -537,6 +535,10 @@ fn item_turn_id(params: &Value) -> Option<&str> {
         .and_then(Value::as_str)
         .or_else(|| params.get("turn_id").and_then(Value::as_str))
         .or_else(|| params.get("turnId").and_then(Value::as_str))
+}
+
+fn should_persist_item_method(method: &str) -> bool {
+    matches!(method, "item/started" | "item/completed")
 }
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
@@ -955,5 +957,21 @@ fn run_status_to_db(status: &RunStatus) -> &'static str {
         RunStatus::Failed => "failed",
         RunStatus::Exited => "exited",
         RunStatus::Superseded => "superseded",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_persist_item_method;
+
+    #[test]
+    fn item_persistence_filter_keeps_terminal_items_and_drops_deltas() {
+        assert!(should_persist_item_method("item/started"));
+        assert!(should_persist_item_method("item/completed"));
+
+        assert!(!should_persist_item_method("item/agentMessage/delta"));
+        assert!(!should_persist_item_method("item/reasoning/delta"));
+        assert!(!should_persist_item_method("turn/completed"));
+        assert!(!should_persist_item_method("item/other"));
     }
 }

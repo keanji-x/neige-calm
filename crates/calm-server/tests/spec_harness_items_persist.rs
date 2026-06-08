@@ -1,0 +1,219 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use calm_server::codex_appserver::Notification;
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::event::{Event, EventBus};
+use calm_server::harness::{
+    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, SpecHarness, SpecHarnessParams,
+};
+use calm_server::ids::ActorId;
+use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use serde_json::{Value, json};
+
+async fn seed_harness(
+    repo: Arc<SqlxRepo>,
+    events: EventBus,
+) -> (SpecHarness, Arc<SharedCodexAppServer>, String, String) {
+    let cove = repo
+        .cove_create(NewCove {
+            name: "items-persist".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "items persist".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "spec_harness": true}),
+        })
+        .await
+        .unwrap();
+    let runtime_id = new_id();
+    let thread_id = "thread-items-persist".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id,
+        wave_id: card.wave_id.clone(),
+        card_id: card.id.clone(),
+        thread_id: Some(thread_id),
+        repo: repo_dyn,
+        events,
+        daemon: daemon.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+
+    (
+        harness,
+        daemon,
+        card.id.to_string(),
+        card.wave_id.to_string(),
+    )
+}
+
+async fn wait_for_rows(
+    repo: &SqlxRepo,
+    card_id: &str,
+    count: usize,
+) -> Vec<calm_server::model::HarnessItem> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let rows = repo
+            .harness_item_list_by_card(card_id, 0, 100)
+            .await
+            .unwrap();
+        if rows.len() == count {
+            return rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {count} harness item rows; got {}",
+            rows.len()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_for_notification_receiver(daemon: &SharedCodexAppServer) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if daemon.notification_receiver_count_for_test() > 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for harness notification receiver"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn recv_item_event(
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+) -> Event {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for harness item event"
+        );
+        let env = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("event timeout")
+            .expect("event receive");
+        if matches!(env.event, Event::HarnessItemAdded { .. }) {
+            assert_eq!(env.actor, ActorId::Kernel);
+            return env.event;
+        }
+    }
+}
+
+#[tokio::test]
+async fn item_notification_persists_row_and_emits_event() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let (harness, daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    daemon.emit_notification_for_test(Notification::Item {
+        method: "item/completed".into(),
+        params: json!({
+            "threadId": "thread-items-persist",
+            "turn": { "id": "turn-items-1" },
+            "item": {
+                "id": "item-agent-1",
+                "type": "agent_message",
+                "text": "persisted assistant text"
+            }
+        }),
+    });
+
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    let row = &rows[0];
+    assert_eq!(row.card_id.as_str(), card_id);
+    assert_eq!(row.wave_id.as_str(), wave_id);
+    assert_eq!(row.thread_id, "thread-items-persist");
+    assert_eq!(row.turn_id.as_deref(), Some("turn-items-1"));
+    assert_eq!(row.item_uuid.as_deref(), Some("item-agent-1"));
+    assert_eq!(row.item_type.as_deref(), Some("agent_message"));
+    assert_eq!(row.method, "item/completed");
+    let params: Value = serde_json::from_str(&row.params).unwrap();
+    assert_eq!(params["item"]["text"], "persisted assistant text");
+
+    let event = recv_item_event(&mut rx).await;
+    match event {
+        Event::HarnessItemAdded {
+            card_id: event_card_id,
+            wave_id: event_wave_id,
+            item_db_id,
+            item_uuid,
+            item_type,
+            turn_id,
+            method,
+            ..
+        } => {
+            assert_eq!(event_card_id.as_str(), card_id);
+            assert_eq!(event_wave_id.as_str(), wave_id);
+            assert_eq!(item_db_id, row.id);
+            assert_eq!(item_uuid.as_deref(), Some("item-agent-1"));
+            assert_eq!(item_type.as_deref(), Some("agent_message"));
+            assert_eq!(turn_id.as_deref(), Some("turn-items-1"));
+            assert_eq!(method, "item/completed");
+        }
+        other => panic!("expected HarnessItemAdded, got {other:?}"),
+    }
+
+    harness.shutdown().await.unwrap();
+}
