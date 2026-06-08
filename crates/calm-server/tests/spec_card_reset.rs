@@ -2,12 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx, runtime_start_tx};
+use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, SpecHarness, SpecHarnessParams,
@@ -15,6 +17,12 @@ use calm_server::harness::{
 use calm_server::ids::WaveId;
 use calm_server::model::{
     Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id, now_ms,
+};
+use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
+use calm_server::operation::{
+    AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
+    Operation, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle,
+    SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -40,6 +48,84 @@ struct Boot {
     repo: Arc<SqlxRepo>,
     wave_id: String,
     tmp: TempDir,
+}
+
+struct FailingSpawnSpecHarnessStartAdapter {
+    inner: SpecHarnessStartAdapter,
+}
+
+#[async_trait]
+impl ProviderAdapter for FailingSpawnSpecHarnessStartAdapter {
+    fn kind(&self) -> &'static str {
+        self.inner.kind()
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        self.inner.phases()
+    }
+
+    fn app_server_interact_kind(
+        &self,
+        output: &TxOutput,
+        op: &Operation,
+    ) -> CalmResult<AppServerInteractKind> {
+        self.inner.app_server_interact_kind(output, op)
+    }
+
+    async fn validate(&self, input: &Value) -> CalmResult<()> {
+        self.inner.validate(input).await
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        self.inner.prepare_tx(tx, input, op).await
+    }
+
+    async fn app_server_interact(
+        &self,
+        output: &mut TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        self.inner.app_server_interact(output, op, ctx).await
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnHandle> {
+        Err(CalmError::Internal(
+            "test spec harness spawn failure".into(),
+        ))
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        self.inner
+            .plan_compensation(from_phase, reason, output, op)
+            .await
+    }
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        self.inner.compensate_step(step, output, op, ctx).await
+    }
 }
 
 async fn boot() -> Boot {
@@ -202,6 +288,37 @@ async fn boot_shared() -> Boot {
         wave_id: wave.id.to_string(),
         tmp,
     }
+}
+
+fn install_failing_spec_start_runtime(boot: &mut Boot) {
+    let route_repo: Arc<dyn RouteRepo> = boot.repo.clone();
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let start_adapter: Arc<dyn ProviderAdapter> = Arc::new(FailingSpawnSpecHarnessStartAdapter {
+        inner: SpecHarnessStartAdapter::new(
+            boot.repo.clone(),
+            boot.state.shared_codex_appserver.clone(),
+            boot.state.harness.clone(),
+            boot.state.card_role_cache.clone(),
+            boot.state.wave_cove_cache.clone(),
+        ),
+    });
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![start_adapter],
+        boot.state.events.clone(),
+        SpawnCtx::new(
+            route_repo,
+            boot.state.daemon.clone(),
+            boot.state.terminal_renderer.clone(),
+            boot.state.events.clone(),
+        ),
+    ));
+    boot.state = boot.state.clone().with_operation_runtime(runtime);
+    boot.app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(boot.state.clone());
 }
 
 async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -847,6 +964,126 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     assert_eq!(new_snapshot.pending_queue.len(), 3);
     assert!(boot.state.harness.get(&old_runtime_id).is_none());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn reset_spec_card_spawn_failure_keeps_old_runtime_and_harness() {
+    let _guard = ENV_LOCK.lock().await;
+    let mut boot = boot_shared().await;
+    install_failing_spec_start_runtime(&mut boot);
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "spec_harness": true,
+                "push_watermark": 0
+            }),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    let old_runtime_id = new_id();
+    let old_thread_id = "thread-old-spawn-failure".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(old_thread_id.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: old_runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(old_thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let old_harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: old_runtime_id.clone(),
+        wave_id: card.wave_id.clone(),
+        card_id: card.id.clone(),
+        thread_id: Some(old_thread_id.clone()),
+        repo: repo_dyn,
+        events: boot.state.events.clone(),
+        card_role_cache: boot.state.card_role_cache.clone(),
+        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        daemon: boot.state.shared_codex_appserver.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+    boot.state
+        .harness
+        .insert(old_runtime_id.clone(), old_harness);
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
+    let old_after = boot
+        .repo
+        .runtime_get_by_id(&old_runtime_id)
+        .await
+        .unwrap()
+        .expect("old runtime row remains");
+    assert_eq!(old_after.status, RunStatus::Idle);
+    let active = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("old runtime remains active");
+    assert_eq!(active.id, old_runtime_id);
+    assert!(
+        boot.state.harness.get(&old_runtime_id).is_some(),
+        "old harness remains registered after new spawn failure"
+    );
+
+    let new_rows: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT id, status
+             FROM runtimes
+            WHERE card_id = ?1
+              AND id != ?2"#,
+    )
+    .bind(card.id.as_str())
+    .bind(&old_runtime_id)
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(new_rows.len(), 1, "expected one replacement runtime");
+    assert_eq!(new_rows[0].1, "failed");
+    assert!(boot.state.harness.get(&new_rows[0].0).is_none());
+
+    if let Some(handle) = boot.state.harness.remove(&old_runtime_id) {
         handle.shutdown().await.unwrap();
     }
 }

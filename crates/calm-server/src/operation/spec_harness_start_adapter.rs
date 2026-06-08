@@ -303,7 +303,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
-        let (updated_card, _id) = write_with_event_typed(
+        let ((updated_card, old_runtime_id, old_runtime_status), _id) = write_with_event_typed(
             ctx.repo.as_ref(),
             payload.actor,
             scope,
@@ -312,6 +312,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             &write,
             move |tx| {
                 Box::pin(async move {
+                    let mut checkpoint_output = output_clone;
+                    let mut old_runtime_id = None;
+                    let mut old_runtime_status = None;
                     if runtime_deferred {
                         let runtime_init = RuntimeInit {
                             id: runtime_id.clone(),
@@ -330,6 +333,20 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         };
                         if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id).await?
                         {
+                            let existing_id = existing.id.clone();
+                            let existing_status = existing.status.clone();
+                            old_runtime_id = Some(existing_id.clone());
+                            old_runtime_status = Some(existing_status.clone());
+                            set_output_data(
+                                &mut checkpoint_output,
+                                "old_runtime_id",
+                                json!(existing_id),
+                            )?;
+                            set_output_data(
+                                &mut checkpoint_output,
+                                "old_runtime_status",
+                                serde_json::to_value(&existing_status)?,
+                            )?;
                             runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
                         } else {
                             runtime_start_tx(tx, runtime_init).await?;
@@ -376,7 +393,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         },
                     )
                     .await?;
-                    let mut checkpoint_output = output_clone;
                     checkpoint_output.result = serde_json::to_value(&card)?;
                     checkpoint_output.target_id = Some(card.id.to_string());
                     checkpoint_app_server_interact_tx(
@@ -388,12 +404,25 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         &checkpoint_output,
                     )
                     .await?;
-                    Ok((card.clone(), Event::CardUpdated(card)))
+                    Ok((
+                        (card.clone(), old_runtime_id, old_runtime_status),
+                        Event::CardUpdated(card),
+                    ))
                 })
             },
         )
         .await?;
         card = updated_card;
+        if let Some(old_runtime_id) = old_runtime_id {
+            set_output_data(output, "old_runtime_id", json!(old_runtime_id))?;
+        }
+        if let Some(old_runtime_status) = old_runtime_status {
+            set_output_data(
+                output,
+                "old_runtime_status",
+                serde_json::to_value(&old_runtime_status)?,
+            )?;
+        }
         if reset_harness_items {
             ctx.repo
                 .log_pure_event(
@@ -484,7 +513,26 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 }),
             ));
         }
-        steps.push(step("delete_runtime", json!({ "runtime_id": runtime_id })));
+        steps.push(step("fail_runtime", json!({ "runtime_id": runtime_id })));
+        if let Some(old_runtime_id) = output_optional_string(output, "old_runtime_id")? {
+            let old_runtime_status =
+                output
+                    .data
+                    .get("old_runtime_status")
+                    .cloned()
+                    .ok_or_else(|| {
+                        CalmError::Internal(
+                            "spec harness tx_output missing old_runtime_status".into(),
+                        )
+                    })?;
+            steps.push(step(
+                "restore_old_runtime",
+                json!({
+                    "runtime_id": old_runtime_id,
+                    "status": old_runtime_status,
+                }),
+            ));
+        }
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase,
@@ -521,6 +569,33 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 ctx.repo.card_codex_thread_delete_by_card(&card_id).await?;
                 clear_card_runtime_fields(ctx, &card_id).await?;
                 Ok(())
+            }
+            "fail_runtime" => {
+                let runtime_id = step_arg_string(step, "runtime_id")?;
+                write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+                    Box::pin(async move {
+                        let now = now_ms();
+                        sqlx::query(
+                            r#"UPDATE runtimes
+                                  SET status = 'failed',
+                                      updated_at_ms = ?1,
+                                      completed_at_ms = ?1
+                                WHERE id = ?2
+                                  AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
+                        )
+                        .bind(now)
+                        .bind(&runtime_id)
+                        .execute(&mut **tx)
+                        .await?;
+                        Ok(())
+                    })
+                })
+                .await
+            }
+            "restore_old_runtime" => {
+                let runtime_id = step_arg_string(step, "runtime_id")?;
+                let status = step_arg_run_status(step, "status")?;
+                restore_old_runtime_after_spawn_failure(ctx.repo.as_ref(), runtime_id, status).await
             }
             "delete_runtime" => {
                 let runtime_id = step_arg_string(step, "runtime_id")?;
@@ -646,6 +721,73 @@ async fn clear_card_runtime_fields(ctx: &SpawnCtx, card_id: &str) -> Result<()> 
         })
     })
     .await
+}
+
+async fn restore_old_runtime_after_spawn_failure(
+    repo: &dyn crate::db::RouteRepo,
+    old_runtime_id: String,
+    status: RunStatus,
+) -> Result<()> {
+    let status_db = active_run_status_to_db(&status)?;
+    write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let now = now_ms();
+            let res = sqlx::query(
+                r#"UPDATE runtimes
+                      SET status = ?1,
+                          updated_at_ms = ?2,
+                          completed_at_ms = NULL
+                    WHERE id = ?3
+                      AND status = 'superseded'"#,
+            )
+            .bind(status_db)
+            .bind(now)
+            .bind(&old_runtime_id)
+            .execute(&mut **tx)
+            .await?;
+            if res.rows_affected() > 0 {
+                return Ok(());
+            }
+
+            let current: Option<(String,)> =
+                sqlx::query_as("SELECT status FROM runtimes WHERE id = ?1")
+                    .bind(&old_runtime_id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            match current {
+                Some((current,)) if current == status_db => Ok(()),
+                Some((current,)) => Err(CalmError::Internal(format!(
+                    "runtime {old_runtime_id} has status {current}; cannot restore old spec harness runtime to {status_db}"
+                ))),
+                None => Err(CalmError::Internal(format!(
+                    "runtime {old_runtime_id} missing while restoring old spec harness runtime"
+                ))),
+            }
+        })
+    })
+    .await
+}
+
+fn active_run_status_to_db(status: &RunStatus) -> Result<&'static str> {
+    match status {
+        RunStatus::Starting => Ok("starting"),
+        RunStatus::Running => Ok("running"),
+        RunStatus::Idle => Ok("idle"),
+        RunStatus::TurnPending => Ok("turn_pending"),
+        RunStatus::Failed | RunStatus::Exited | RunStatus::Superseded => Err(CalmError::Internal(
+            format!("cannot restore old spec harness runtime to terminal status {status:?}"),
+        )),
+    }
+}
+
+fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<RunStatus> {
+    let value = step.args.get(key).cloned().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "spec harness compensation step {} missing {key}",
+            step.op
+        ))
+    })?;
+    Ok(serde_json::from_value(value)?)
 }
 
 fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
