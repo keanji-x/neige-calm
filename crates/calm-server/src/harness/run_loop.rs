@@ -397,7 +397,7 @@ async fn enqueue_pending_observation(
             return true;
         }
         let hard = obs.is_hard_fire();
-        if !hard && let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire()) {
+        if let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire()) {
             queue.remove(drop_idx);
             envelope_ids.remove(drop_idx);
         } else {
