@@ -11,13 +11,12 @@
 //! internal types.
 
 use crate::error::ErrorBody;
-use crate::model::Terminal;
 use crate::model::{
     Card, CardPatch, Cove, CoveFolder, CoveKind, CovePatch, CoveResolve, FolderConflict,
-    FolderConflictKind, NewCard, NewCove, NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin,
-    Wave, WaveDetail, WavePatch,
+    FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay, NewWave, Overlay,
+    Plugin, Terminal, Wave, WaveDetail, WavePatch,
 };
-use crate::routes::cards::{CreateCardBody, ResetSpecCardResponse, ViaToolCall};
+use crate::routes::cards::{CreateCardBody, HarnessItemsQuery, ResetSpecCardResponse, ViaToolCall};
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::cove_folders::ResolveQuery;
@@ -68,6 +67,7 @@ use utoipa::OpenApi;
         crate::routes::cards::list_cards_by_wave,
         crate::routes::cards::create_card,
         crate::routes::cards::update_card,
+        crate::routes::cards::get_harness_items,
         crate::routes::cards::reset_spec_card,
         crate::routes::cards::delete_card,
         // ---- overlays ----
@@ -130,6 +130,8 @@ use utoipa::OpenApi;
         Card,
         NewCard,
         CardPatch,
+        HarnessItem,
+        HarnessItemsQuery,
         ResetSpecCardResponse,
         // Issue #229 PR B — wave-report card payload shape (kernel-owned;
         // surfaced in the OpenAPI doc so frontend codegen + external

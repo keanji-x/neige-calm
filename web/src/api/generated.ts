@@ -41,6 +41,22 @@ export interface paths {
         patch: operations["update_card"];
         trace?: never;
     };
+    "/api/cards/{id}/harness/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_harness_items"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/spec/reset": {
         parameters: {
             query?: never;
@@ -970,6 +986,33 @@ export interface components {
             files: components["schemas"]["GitChangedFile"][];
             repo_root: string;
         };
+        HarnessItem: {
+            card_id: string;
+            /** Format: int64 */
+            created_at_ms: number;
+            /** Format: int64 */
+            id: number;
+            item_type?: string | null;
+            item_uuid?: string | null;
+            method: string;
+            params: string;
+            runtime_id: string;
+            thread_id: string;
+            turn_id?: string | null;
+            wave_id: string;
+        };
+        HarnessItemsQuery: {
+            /**
+             * Format: int64
+             * @description Return items with database ids greater than this value.
+             */
+            after_id?: number | null;
+            /**
+             * Format: int64
+             * @description Maximum number of rows to return. Defaults to 100 and is capped at 500.
+             */
+            limit?: number | null;
+        };
         InstallBody: {
             source: components["schemas"]["InstallSource"];
         };
@@ -1812,6 +1855,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_harness_items: {
+        parameters: {
+            query?: {
+                /** @description Return items with database ids greater than this value. */
+                after_id?: number | null;
+                /** @description Maximum number of rows to return. Defaults to 100 and is capped at 500. */
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description Spec card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Persisted spec harness items */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HarnessItem"][];
+                };
+            };
+            /** @description Card is not a spec codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Card not found */

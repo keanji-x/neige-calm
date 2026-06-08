@@ -164,6 +164,96 @@
         }
       }
     },
+    "/api/cards/{id}/harness/items": {
+      "get": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "get_harness_items",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Spec card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after_id",
+            "in": "query",
+            "description": "Return items with database ids greater than this value.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Persisted spec harness items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HarnessItem"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a spec codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/spec/reset": {
       "post": {
         "tags": [
@@ -3147,6 +3237,86 @@
           },
           "repo_root": {
             "type": "string"
+          }
+        }
+      },
+      "HarnessItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "runtime_id",
+          "card_id",
+          "wave_id",
+          "thread_id",
+          "method",
+          "params",
+          "created_at_ms"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "item_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "type": "string"
+          },
+          "params": {
+            "type": "string"
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wave_id": {
+            "type": "string"
+          }
+        }
+      },
+      "HarnessItemsQuery": {
+        "type": "object",
+        "properties": {
+          "after_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Return items with database ids greater than this value."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500."
           }
         }
       },

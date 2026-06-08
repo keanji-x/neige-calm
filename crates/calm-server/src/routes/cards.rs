@@ -22,7 +22,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::harness::is_harness_snapshot_value;
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, CardPatch, CardRole, NewCard, Wave, new_id, now_ms};
+use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id, now_ms};
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
@@ -45,7 +45,7 @@ use crate::terminal_sweeper::{
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -53,7 +53,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 /// Resolve the (wave, cove) ancestor pair for a wave id, returning a
 /// pre-built [`EventScope::Card`] for the given card. PR2 of #136 needs
@@ -121,6 +121,7 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}",
             axum::routing::patch(update_card).delete(delete_card),
         )
+        .route("/api/cards/{id}/harness/items", get(get_harness_items))
         .route("/api/cards/{id}/spec/reset", post(reset_spec_card))
 }
 
@@ -141,6 +142,60 @@ pub(crate) async fn list_cards_by_wave(
     let mut cards = s.repo.cards_by_wave(&wave_id).await?;
     project_runtime_into_cards_payload(s.repo.as_ref(), &mut cards).await?;
     Ok(Json(cards))
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub struct HarnessItemsQuery {
+    /// Return items with database ids greater than this value.
+    #[serde(default)]
+    pub after_id: Option<i64>,
+    /// Maximum number of rows to return. Defaults to 100 and is capped at 500.
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/cards/{id}/harness/items",
+    tag = "cards",
+    params(
+        ("id" = String, Path, description = "Spec card id"),
+        HarnessItemsQuery,
+    ),
+    responses(
+        (status = 200, description = "Persisted spec harness items", body = Vec<HarnessItem>),
+        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn get_harness_items(
+    State(s): State<RouteState>,
+    Path(id): Path<String>,
+    Query(q): Query<HarnessItemsQuery>,
+) -> Result<Json<Vec<HarnessItem>>> {
+    let card = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let role = s
+        .write
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    if card.kind != "codex" || role != CardRole::Spec {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is not a spec codex card",
+        )));
+    }
+
+    let after_id = q.after_id.unwrap_or(0).max(0);
+    let limit = q.limit.unwrap_or(100).clamp(0, 500);
+    let items = s
+        .repo
+        .harness_item_list_by_card(card.id.as_str(), after_id, limit)
+        .await?;
+    Ok(Json(items))
 }
 
 /// Body payload accepted by `POST /api/waves/:wave_id/cards`.
