@@ -719,28 +719,12 @@ pub trait RepoOutOfDomain: RepoRead {
     /// `_tx`-suffixed helper.
     async fn terminal_delete(&self, id: &str) -> Result<()>;
 
-    /// #313 problem #1 (boot takeover) — persist a spec card's push
-    /// watermark (`payload.push_watermark`) as a single-field merge,
+    /// Legacy compatibility helper for writing `payload.push_watermark`
     /// without emitting a `CardUpdated` event.
     ///
-    /// The dispatcher's push path calls this on every push, right after
-    /// bumping the in-memory [`crate::event_cursor::EventCursorCache`].
-    /// Going through `write_with_event` would emit one `CardUpdated` per
-    /// push — pure noise nothing subscribes to (the dispatcher's filter
-    /// doesn't watch `CardUpdated`, and the field is server-private
-    /// bookkeeping). Treating it like the terminal PID / handle /exit
-    /// sidecars (which use this same trait for the same reason) keeps the
-    /// hot path narrow.
-    ///
-    /// The write is a JSON merge so it never clobbers `appserver_sock` or
-    /// other payload fields. A missing card row is a no-op (the wave was
-    /// deleted between the bump and the persist).
-    ///
-    // TODO(runtime-state-table): push_watermark — along with appserver_sock —
-    // is kernel-private runtime handle state living on the card payload via
-    // OutOfDomain (no CardUpdated event). When the dedicated runtime-state
-    // table lands, migrate these fields out of card payload into it.
-    // Acceptable short-term per #315 review.
+    /// D2 production paths persist the harness watermark in runtime handle
+    /// state instead. This method remains for tests and rollback cleanup
+    /// until the later PR-del sections remove the legacy spec-push surface.
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
 
     /// Deprecated legacy compatibility helper.

@@ -195,8 +195,8 @@ impl Dispatcher {
     }
 
     /// #313 problem #1 (boot takeover) — seed the in-memory push watermark
-    /// cache for a spec card from its persisted `payload.push_watermark`,
-    /// BEFORE any catch-up replay or live envelope can reach `push_to_spec`.
+    /// cache for a spec card from its recovered watermark, BEFORE any
+    /// catch-up replay or live envelope can reach `push_to_spec`.
     ///
     /// Uses the same monotonic [`EventCursorCache::bump`] semantics the
     /// live push path uses — a concurrent live event landing while we're
@@ -209,9 +209,9 @@ impl Dispatcher {
     }
 
     /// Runtime app-server recovery reuses this dispatcher in the same
-    /// process, so its soft push cursor may be ahead of the durable
-    /// `push_watermark`. Force it back before event-log catch-up so fallback
-    /// replay cannot dedup undelivered rows.
+    /// process, so its soft push cursor may be ahead of the recovered
+    /// watermark. Force it back before event-log catch-up so fallback replay
+    /// cannot dedup undelivered rows.
     pub fn reset_push_cursor_to_watermark(&self, spec_card_id: CardId, watermark: i64) {
         self.inner.push_cursor.set(spec_card_id, watermark);
     }
@@ -260,41 +260,16 @@ impl Dispatcher {
         self.inner.acquire_push_lock(wave_id).await
     }
 
-    /// #313 problem #1 round-2 (B1) — build the [`WatermarkSink`] the
-    /// `SpecPushHandle` consumer task will call on a successful queue
-    /// flush, so the durable `push_watermark` advances for envelope ids
-    /// that were ONLY delivered out of the queue (the dispatcher's
-    /// own `push_to_spec` never re-runs for those).
-    ///
-    /// Captures `repo` + the spec card id; emits no `CardUpdated` event
-    /// (same posture as `Inner::push_to_spec`'s direct call).
+    /// Build the [`WatermarkSink`] the `SpecPushHandle` consumer task calls
+    /// on a successful queue flush so the in-process dedup cursor advances
+    /// for envelope ids that were delivered out of the queue.
     pub fn watermark_sink_for(&self, spec_card_id: CardId) -> crate::spec_push::WatermarkSink {
-        let repo = Arc::clone(&self.inner.repo);
         let push_cursor = self.inner.push_cursor.clone();
         Arc::new(move |max_envelope_id: i64| {
-            let repo = Arc::clone(&repo);
             let push_cursor = push_cursor.clone();
             let spec_card_id = spec_card_id.clone();
             Box::pin(async move {
-                // Mirror `push_to_spec`'s post-success bookkeeping: bump
-                // the in-memory cache too so a same-process re-delivery
-                // dedups against the just-flushed id. Monotonic bump is
-                // a no-op if the cache is already at/above this id (which
-                // happens when push_to_spec already saw + queued this
-                // envelope earlier).
                 push_cursor.bump(spec_card_id.clone(), max_envelope_id);
-                if let Err(e) = repo
-                    .spec_card_set_push_watermark(spec_card_id.as_str(), max_envelope_id)
-                    .await
-                {
-                    tracing::warn!(
-                        spec_card_id = %spec_card_id,
-                        max_envelope_id,
-                        error = %e,
-                        "spec push (flush sink): persist push_watermark failed; \
-                         in-memory cache bumped, next boot may re-push these envelopes (idempotent)"
-                    );
-                }
             })
         })
     }
@@ -427,56 +402,18 @@ impl Dispatcher {
         })
     }
 
-    /// #318 INV-3 (R2-B1) — build the [`crate::spec_push::QueuePersist`]
-    /// the `SpecPushHandle` uses to mirror its in-memory `VecDeque` into the
-    /// durable `spec_push_queue` table. Captures `repo` + the spec card id;
-    /// emits no events (the rows are server-private operational state, same
-    /// posture as the `watermark_sink_for` closure).
-    ///
-    /// Three closures:
-    ///   * `enqueue(envelope_id, text)` — INSERT one row, returning the
-    ///     assigned `id`. On error, log and return `None` so the in-memory
-    ///     cache still receives the entry (matching pre-fix posture).
-    ///   * `dequeue(ids)` — batch DELETE by id; empty input is a no-op,
-    ///     errors are logged.
-    ///   * `list()` — SELECT every pending row for the card in id order;
-    ///     errors are logged + an empty vec returned (boot-takeover then
-    ///     proceeds as if nothing was queued — same conservative posture as
-    ///     a `push_watermark = 0` read on a missing field).
-    ///
-    /// Installed by both production sites alongside
-    /// [`Self::watermark_sink_for`]:
-    ///   * `routes/waves.rs::legacy spec spawner` — create-wave path,
-    ///   * `lib.rs::register_and_catch_up`        — boot-takeover path.
+    /// Build the legacy queue reader/drainer for `SpecPushHandle`.
+    /// New observations no longer mirror into `spec_push_queue`; the list
+    /// and dequeue callbacks remain so boot can drain rows written by older
+    /// builds.
     pub fn queue_persist_for(&self, spec_card_id: CardId) -> crate::spec_push::QueuePersist {
-        let repo_e = Arc::clone(&self.inner.repo);
-        let card_e = spec_card_id.clone();
         let repo_d = Arc::clone(&self.inner.repo);
         let card_d = spec_card_id.clone();
         let repo_l = Arc::clone(&self.inner.repo);
         let card_l = spec_card_id;
         crate::spec_push::QueuePersist {
-            enqueue: Arc::new(move |envelope_id: i64, text: String| {
-                let repo = Arc::clone(&repo_e);
-                let card_id = card_e.clone();
-                Box::pin(async move {
-                    match repo
-                        .spec_card_enqueue_observation(card_id.as_str(), envelope_id, &text)
-                        .await
-                    {
-                        Ok(id) => Some(id),
-                        Err(e) => {
-                            tracing::warn!(
-                                spec_card_id = %card_id,
-                                envelope_id,
-                                error = %e,
-                                "spec push: persist enqueue failed; entry kept in-memory only \
-                                 (next-boot rehydrate will not see it)"
-                            );
-                            None
-                        }
-                    }
-                })
+            enqueue: Arc::new(move |_envelope_id: i64, _text: String| {
+                Box::pin(async move { None })
             }),
             dequeue: Arc::new(move |ids: Vec<i64>| {
                 let repo = Arc::clone(&repo_d);
@@ -1188,12 +1125,9 @@ impl Inner {
     ///      [`crate::spec_push::SpecPusher::push_observation`],
     ///      which decides `turn/start`-now vs enqueue based on the tracked
     ///      turn phase.
-    ///   5. **Persist durable watermark** — only AFTER a successful
-    ///      delivery, persist `envelope_id` onto `payload.push_watermark`
-    ///      via `spec_card_set_push_watermark`. The next boot's
-    ///      `events_since(watermark)` uses strict `id > watermark`, so
-    ///      persisting before/without successful delivery would
-    ///      permanently skip the envelope on recovery (#313 PR4 B1).
+    ///   5. **Bump cursor after delivery** — only AFTER a successful
+    ///      delivery, bump the in-process cursor so same-process redelivery
+    ///      dedups against the just-accepted envelope.
     async fn push_to_spec(self: &Arc<Self>, wave_id: WaveId, event: &Event, envelope_id: i64) {
         // S1 — serialize the whole dedup-check-and-deliver PER WAVE so the
         // monotonic watermark only dedups true redeliveries, never a
@@ -1290,54 +1224,14 @@ impl Inner {
                 );
                 return;
             };
-            let observation_text = match serde_json::to_string(&observation) {
-                Ok(text) => text,
-                Err(e) => {
-                    tracing::warn!(
-                        wave_id = %wave_id,
-                        spec_card_id = %spec_card_id,
-                        runtime_id = %runtime_id,
-                        envelope_id,
-                        kind = event.kind_tag(),
-                        error = %e,
-                        "dispatcher push: harness observation serialize failed; cursor NOT bumped"
-                    );
-                    return;
-                }
-            };
-            let durable_queue_id = match self
-                .repo
-                .spec_card_enqueue_observation(
-                    spec_card_id.as_str(),
-                    envelope_id,
-                    &observation_text,
-                )
-                .await
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(
-                        wave_id = %wave_id,
-                        spec_card_id = %spec_card_id,
-                        runtime_id = %runtime_id,
-                        envelope_id,
-                        kind = event.kind_tag(),
-                        error = %e,
-                        "dispatcher push: harness durable inbox enqueue failed; cursor NOT bumped"
-                    );
-                    return;
-                }
-            };
-            self.push_cursor.bump(spec_card_id.clone(), envelope_id);
             let Some(harness) = self.harness.get(&runtime_id) else {
                 tracing::warn!(
                     wave_id = %wave_id,
                     spec_card_id = %spec_card_id,
                     runtime_id = %runtime_id,
                     envelope_id,
-                    spec_push_queue_id = durable_queue_id,
                     kind = event.kind_tag(),
-                    "dispatcher push: no live SpecHarness for harness runtime; durable inbox row will replay on boot"
+                    "dispatcher push: no live SpecHarness for harness runtime; cursor NOT bumped so snapshot recovery will replay on boot"
                 );
                 return;
             };
@@ -1347,22 +1241,21 @@ impl Inner {
                 runtime_id = %runtime_id,
                 envelope_id,
                 kind = event.kind_tag(),
-                spec_push_queue_id = durable_queue_id,
-                "dispatcher push: delivering durable observation to spec harness"
+                "dispatcher push: delivering observation to spec harness"
             );
-            if let Err(e) = harness.observe_durable(observation, durable_queue_id, envelope_id) {
+            if let Err(e) = harness.observe_envelope(observation, envelope_id) {
                 tracing::warn!(
                     wave_id = %wave_id,
                     spec_card_id = %spec_card_id,
                     runtime_id = %runtime_id,
                     envelope_id,
-                    spec_push_queue_id = durable_queue_id,
                     kind = event.kind_tag(),
                     error = %e,
-                    "dispatcher push: SpecHarness observation enqueue failed; durable inbox row will replay on boot"
+                    "dispatcher push: SpecHarness observation enqueue failed; cursor NOT bumped so snapshot recovery will replay on boot"
                 );
                 return;
             }
+            self.push_cursor.bump(spec_card_id.clone(), envelope_id);
             return;
         }
 
@@ -1473,22 +1366,12 @@ impl Inner {
                 // watermark without being deduped by a speculative
                 // same-process cursor bump.
                 self.push_cursor.bump(spec_card_id.clone(), max_envelope_id);
-                if let Err(e) = self
-                    .repo
-                    .spec_card_set_push_watermark(spec_card_id.as_str(), max_envelope_id)
-                    .await
-                {
-                    tracing::warn!(
-                        wave_id = %wave_id,
-                        spec_card_id = %spec_card_id,
-                        max_envelope_id,
-                        error = %e,
-                        "dispatcher push: persist push_watermark failed AFTER successful delivery; \
-                         in-memory cache still bumped, next boot may re-push this envelope \
-                         (spec thread may see this observation twice on a re-push — codex does \
-                         not dedup re-pushed observations)",
-                    );
-                }
+                tracing::debug!(
+                    wave_id = %wave_id,
+                    spec_card_id = %spec_card_id,
+                    max_envelope_id,
+                    "dispatcher push: observation issued; in-process cursor bumped"
+                );
             }
             crate::spec_push::PushOutcome::Enqueued => {
                 self.push_cursor.bump(spec_card_id.clone(), envelope_id);

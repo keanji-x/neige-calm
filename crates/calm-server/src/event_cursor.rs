@@ -19,19 +19,13 @@
 //!
 //! ## Durability
 //!
-//! The cache itself is in-memory only. The dispatcher's PRODUCTION push
-//! path mirrors the cursor onto the spec card's `payload.push_watermark`
-//! (see `spec_card_set_push_watermark`) after a successful delivery, so
-//! a kernel restart can seed the cache from disk via
-//! [`crate::dispatcher::Dispatcher::seed_push_cursor`] and resume catch-up
-//! from the last acked envelope (#313 problem #1). The in-memory cache
-//! and the persisted watermark serve different roles:
-//!   * **in-memory cursor** — per-process dedup hint, bumped before a
-//!     push attempt so a redelivery within the same process is dropped
-//!     even if delivery is in flight.
-//!   * **persisted watermark** — durable floor for cross-restart catch-up;
-//!     advanced ONLY on successful delivery so a crash mid-push replays
-//!     the envelope on the next boot.
+//! The cache itself is in-memory only. Current harness recovery persists
+//! the durable watermark in runtime handle state; the old
+//! `payload.push_watermark` surface remains only as a boot fallback. The
+//! in-memory cache and recovered watermark serve different roles:
+//!   * **in-memory cursor** — per-process dedup hint, bumped after a push
+//!     has been accepted by the live runtime.
+//!   * **recovered watermark** — recovery floor for cross-restart catch-up.
 //!
 //! ## Concurrency
 //!
