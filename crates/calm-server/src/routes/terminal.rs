@@ -12,7 +12,7 @@
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::Terminal;
-use crate::state::{AppState, DaemonClient, RouteState, WorkerState};
+use crate::state::{AppState, DaemonClient, RouteState};
 use crate::terminal_renderer::{RendererConfig, RendererEntry, TerminalRendererRegistry};
 use axum::{
     Json, Router,
@@ -63,28 +63,6 @@ pub(crate) async fn spawn_terminal_for(
     spawn_terminal_with_parts(
         s.daemon.as_ref(),
         s.terminal_renderer.as_ref(),
-        s.repo.as_ref(),
-        term,
-        program,
-        cwd,
-        env,
-    )
-    .await
-}
-
-/// Route-handler variant of [`spawn_terminal_for`] that avoids requiring the
-/// full Axum root state once handlers extract substates.
-pub(crate) async fn spawn_terminal_for_route(
-    s: &RouteState,
-    w: &WorkerState,
-    term: &Terminal,
-    program: &str,
-    cwd: &str,
-    env: &serde_json::Value,
-) -> Result<Arc<RendererEntry>> {
-    spawn_terminal_with_parts(
-        w.daemon.as_ref(),
-        w.terminal_renderer.as_ref(),
         s.repo.as_ref(),
         term,
         program,

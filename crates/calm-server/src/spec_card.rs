@@ -6,7 +6,7 @@
 //! and the one whose Codex daemon runs with a system prompt scoped to
 //! the wave's goal + acceptance criteria.
 //!
-//! This module owns the role-specific prompts and shared-remote TUI command
+//! This module owns the role-specific prompts and Codex environment
 //! construction:
 //!
 //!   1. [`SPEC_SYSTEM_PROMPT_TEMPLATE`] — the system prompt used when
@@ -15,17 +15,11 @@
 //!      block here.
 //!
 //! Atomicity story for the spec card itself lives in
-//! `routes::waves::create_wave` — the spec card row, its terminal row,
-//! and both `Event::WaveUpdated` / `Event::CardAdded` envelopes are
-//! produced in a single `write_with_events_typed` transaction. The
-//! daemon spawn happens post-commit; on failure the orphan-terminal sweeper
-//! reaps the persisted rows (~60s) per the same recovery semantics as
-//! `routes::codex_cards::create_codex_card`.
+//! `routes::waves::create_wave` — the spec card row and both
+//! `Event::WaveUpdated` / `Event::CardAdded` envelopes are produced in a
+//! single `write_with_events_typed` transaction.
 
-use crate::error::{CalmError, Result};
-use crate::routes::codex_cards::shell_single_quote;
-use crate::routes::terminal::spawn_terminal_for_route;
-use crate::state::{CodexClient, RouteState, WorkerState};
+use crate::state::CodexClient;
 
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
 /// that documents the role; PR7a/PR7b will expand this with explicit
@@ -386,238 +380,9 @@ impl SeededCardRole {
     }
 }
 
-/// PR3a (#293) — push-mode PTY daemon arguments for
-/// [`seed_and_spawn_spec_daemon`]. Carries the `app-server` listen socket
-/// and, for non-empty goals, the codex thread id the kernel already created
-/// and drove turn #1 on. Empty-goal waves intentionally leave the thread id
-/// absent so the `--remote` TUI fresh-starts and the kernel observes the
-/// first `turn/started`.
-#[derive(Debug, Clone)]
-pub(crate) struct SpecPushDaemonArgs {
-    /// `codex_thread_id` — the shared thread; `codex resume <thread_id>`.
-    /// `None` means empty-goal fresh start: `codex --remote <sock>`, with
-    /// an optional `-c developer_instructions=...` override.
-    pub thread_id: Option<String>,
-    /// The app-server remote URI; `--remote unix://<sock>`.
-    pub sock_uri: String,
-    /// Optional role prompt for remote fresh-starts that do not use a
-    /// per-card CODEX_HOME. Passed via `codex -c developer_instructions=...`.
-    pub developer_instructions: Option<String>,
-}
-
-impl SpecPushDaemonArgs {
-    /// Build the PTY daemon command line for push mode. Non-empty goals use
-    /// `codex resume <thread_id> --remote unix://<sock>` byte-for-byte as
-    /// before. Empty goals use `codex --remote unix://<sock>` so the TUI
-    /// fresh-starts instead of trying to resume a rollout-less thread.
-    pub(crate) fn command_line(&self) -> String {
-        match &self.thread_id {
-            Some(thread_id) => format!(
-                "codex resume {} --remote {}",
-                shell_single_quote(thread_id),
-                shell_single_quote(&self.sock_uri),
-            ),
-            None => {
-                if let Some(developer_instructions) = self.developer_instructions.as_deref() {
-                    format!(
-                        "codex -c {} --remote {}",
-                        shell_single_quote(&developer_instructions_config_override(
-                            developer_instructions
-                        )),
-                        shell_single_quote(&self.sock_uri)
-                    )
-                } else {
-                    format!("codex --remote {}", shell_single_quote(&self.sock_uri))
-                }
-            }
-        }
-    }
-}
-
-fn developer_instructions_config_override(value: &str) -> String {
-    let escaped = value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n");
-    format!("developer_instructions=\"{escaped}\"")
-}
-
-/// Spawn the spec card's shared-remote TUI daemon bound to its terminal row.
-///
-/// Issue #236 (closes): this used to be invoked from `tokio::spawn`
-/// off the response hot path. That opened a TOCTOU race against
-/// `ws::terminal::resolve_live_renderer` (frontend WS attach between
-/// commit and background task → respawn from baked terminal-row env
-/// missing MCP vars → two daemons racing on one socket). The
-/// `create_wave` handler now awaits this inline; the return type is
-/// `Result<()>` so the route can surface a 5xx on failure rather
-/// than silently dropping the spawn.
-///
-/// On error: the persisted rows (wave + spec card + terminal) survive
-/// in the DB regardless. The route maps the error to a 500 so the
-/// client knows the wave is unusable and may retry; the
-/// orphan-terminal sweeper reaps the dangling terminal row within
-/// ~60 s if the user abandons it. Returning `Ok(())` on the spawn
-/// failure paths would let `create_wave` return 201 even though no
-/// daemon is running, which is exactly the kind of "looks fine but
-/// isn't" failure mode #236 was about.
-///
-/// Inputs are owned (`String` / `CardId` / `WaveId` / `serde_json::Value`)
-/// for back-compat with prior `tokio::spawn` callsites; the
-/// `'static`-future cost is one clone of each at the route boundary.
-///
-// The create-wave path threads several owned inputs through to the
-// post-commit spawn (state, ids, cwd, env, token, push args). Bundling them
-// buys nothing here (each is used once, at the single route call site) and
-// the codebase already uses this allow for the same input-threading shape
-// (see `dispatcher.rs`, `db/sqlite.rs`).
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn seed_and_spawn_spec_daemon(
-    route: RouteState,
-    worker: WorkerState,
-    spec_card_id: String,
-    wave_id: String,
-    cwd: String,
-    env: serde_json::Value,
-    _mcp_token: Option<String>,
-    // #293/#419 — push-mode arguments. Non-empty goals use the original
-    // resume path: `create_wave` has already booted the kernel-owned
-    // `codex app-server`, run turn #1, and persisted the thread id; the
-    // PTY daemon runs `codex resume <thread_id> --remote unix://<sock>` to
-    // rejoin the kernel's thread. Empty goals use `codex --remote
-    // unix://<sock>`; the TUI fresh-starts and the kernel backfills the
-    // thread id after observing the first turn lifecycle.
-    push: SpecPushDaemonArgs,
-) -> Result<()> {
-    // 1. Look up the terminal row. Guaranteed to exist post-commit
-    //    (the row was written inside the same tx as the spec card).
-    let term = match route.repo.terminal_get_by_card(&spec_card_id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            tracing::warn!(
-                card_id = %spec_card_id,
-                wave_id = %wave_id,
-                "spec terminal row missing after commit; orphan terminal will be reaped by sweeper",
-            );
-            return Err(CalmError::Internal(format!(
-                "spec terminal row missing for card {spec_card_id}",
-            )));
-        }
-        Err(e) => {
-            tracing::warn!(
-                card_id = %spec_card_id,
-                wave_id = %wave_id,
-                error = %e,
-                "spec terminal lookup failed; orphan terminal will be reaped by sweeper",
-            );
-            return Err(e);
-        }
-    };
-
-    // 2. Spawn the daemon. For non-empty goals, the spec agent's prompt was
-    //    already sent through the kernel-owned app-server thread/start call.
-    //    For empty goals, the TUI fresh-start path creates the thread using
-    //    the developer_instructions baked into this card's config.toml, and
-    //    the kernel observes the resulting lifecycle.
-    //
-    //    #293/#419 — push is the only path. Non-empty goals still resume
-    //    the thread the kernel already created and started turn #1 on.
-    //    Empty goals omit `resume` and let the TUI create the thread, while
-    //    queued spec pushes wait for the observed thread id. Shared-home
-    //    empty goals pass their role prompt through `-c
-    //    developer_instructions=...`.
-    //
-    //    `spawn_terminal_for` waits for deterministic daemon readiness on the
-    //    response hot path. Since #236, that synchronous wait is intentional:
-    //    it is the acceptable cost vs. the correctness bug it closes.
-    let command_line = push.command_line();
-    if let Err(e) =
-        spawn_terminal_for_route(&route, &worker, &term, &command_line, &cwd, &env).await
-    {
-        tracing::warn!(
-            card_id = %spec_card_id,
-            wave_id = %wave_id,
-            error = %e,
-            "spec card daemon spawn failed; orphan terminal will be reaped by sweeper",
-        );
-        return Err(e);
-    }
-
-    tracing::info!(
-        card_id = %spec_card_id,
-        wave_id = %wave_id,
-        terminal_id = %term.id,
-        "spec card + daemon spawned for new wave (synchronous on create)",
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// PR3a (#293) — push-mode command is `codex resume <tid> --remote
-    /// unix://<sock>`, with both the thread id and the `unix://` URI
-    /// shell-quoted (the command runs under `sh -c`).
-    #[test]
-    fn push_mode_command_line_is_codex_resume_remote() {
-        let args = SpecPushDaemonArgs {
-            thread_id: Some("thread-abc123".into()),
-            sock_uri: "unix:///home/u/.local/share/neige-calm/appserver/card-9/app.sock".into(),
-            developer_instructions: None,
-        };
-        assert_eq!(
-            args.command_line(),
-            "codex resume 'thread-abc123' \
-             --remote 'unix:///home/u/.local/share/neige-calm/appserver/card-9/app.sock'",
-        );
-    }
-
-    /// Shell metacharacters in the thread id / socket path must land in
-    /// codex's argv verbatim (single-quoted), not be interpreted by the
-    /// `sh -c` wrapper.
-    #[test]
-    fn push_mode_command_line_quotes_metacharacters() {
-        let args = SpecPushDaemonArgs {
-            thread_id: Some("a b; rm -rf /".into()),
-            sock_uri: "unix:///tmp/has space/app.sock".into(),
-            developer_instructions: None,
-        };
-        let line = args.command_line();
-        assert!(
-            line.starts_with(
-                "codex resume 'a b; rm -rf /' --remote 'unix:///tmp/has space/app.sock'"
-            ),
-            "metacharacters must be single-quoted; got: {line}"
-        );
-    }
-
-    #[test]
-    fn empty_goal_command_line_is_codex_remote_fresh_start() {
-        let args = SpecPushDaemonArgs {
-            thread_id: None,
-            sock_uri: "unix:///tmp/has space/app.sock".into(),
-            developer_instructions: None,
-        };
-        assert_eq!(
-            args.command_line(),
-            "codex --remote 'unix:///tmp/has space/app.sock'",
-        );
-    }
-
-    #[test]
-    fn empty_goal_command_line_can_pass_developer_instructions_config_override() {
-        let args = SpecPushDaemonArgs {
-            thread_id: None,
-            sock_uri: "unix:///tmp/spec/app.sock".into(),
-            developer_instructions: Some("line 1\nsay \"hi\" and don't expand $HOME".into()),
-        };
-        assert_eq!(
-            args.command_line(),
-            "codex -c 'developer_instructions=\"line 1\\nsay \\\"hi\\\" and don'\\''t expand $HOME\"' \
-             --remote 'unix:///tmp/spec/app.sock'",
-        );
-    }
 
     #[test]
     fn render_system_prompt_substitutes_wave_id() {

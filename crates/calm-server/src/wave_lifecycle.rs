@@ -236,9 +236,9 @@ pub fn validate_transition(
     // table is for the non-cancel, non-reopen edges.
     let (allow_user, allow_spec) = match (from, to) {
         // Kickoff. Both User (manual start) and SpecAgent (auto-
-        // start) can drive draft → planning. The spec-driven path is
-        // what `seed_and_spawn_spec_daemon` will eventually use; the
-        // user-driven path is the "Start" button in the UI.
+        // start) can drive draft → planning. The spec-driven path lets
+        // harness-backed spec sessions advance themselves; the user-driven
+        // path is the "Start" button in the UI.
         (WaveLifecycle::Draft, WaveLifecycle::Planning) => (true, true),
 
         // Spec-only progressions through the happy path.

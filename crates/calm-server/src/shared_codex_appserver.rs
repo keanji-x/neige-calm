@@ -584,10 +584,6 @@ impl SharedCodexAppServer {
         self.notifications.subscribe()
     }
 
-    pub(crate) async fn thread_id_bound_to_card(&self, card_id: &str) -> Result<Option<String>> {
-        resolve_active_thread_for_card(self.repo.as_ref(), card_id).await
-    }
-
     pub fn is_running(&self) -> bool {
         #[cfg(feature = "fixtures")]
         if self.fake.is_some() {
