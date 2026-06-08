@@ -129,6 +129,9 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'harness.phase.changed': noop(
     'SpecCard card-topic consumers handle harness phase updates directly.',
   ),
+  'harness.transcript.cleared': noop(
+    'Spec ChatTimeline card-topic consumers reset local transcript state directly.',
+  ),
   'wave.report_edited': noop(
     'Companion card.updated invalidates the report card projection.',
   ),

@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { z } from 'zod';
@@ -286,6 +293,8 @@ function normalizedItemType(itemType: string | null | undefined): string {
   switch (itemType) {
     case 'agentMessage':
       return 'agent_message';
+    case 'userMessage':
+      return 'user_message';
     case 'functionCall':
       return 'function_call';
     case 'functionCallOutput':
@@ -317,6 +326,18 @@ function mergeHarnessRows(
   };
 
   for (const row of rows.slice().sort((a, b) => a.id - b.id)) {
+    const current = next ?? prev;
+    if (
+      row.method === 'item/started' &&
+      row.item_uuid &&
+      Array.from(current.values()).some(
+        (existing) =>
+          existing.item_uuid === row.item_uuid &&
+          existing.method === 'item/completed',
+      )
+    ) {
+      continue;
+    }
     const target = ensureNext();
     if (row.method === 'item/completed' && row.item_uuid) {
       for (const [id, existing] of target) {
@@ -403,23 +424,41 @@ function SpecMarkdown({ children }: { children: string }) {
 function TimelineBubble({
   children,
   tone = 'default',
+  attribution,
 }: {
   children: ReactNode;
-  tone?: 'default' | 'muted';
+  tone?: 'default' | 'muted' | 'user';
+  attribution?: string;
 }) {
+  const isMuted = tone === 'muted';
+  const isUser = tone === 'user';
   return (
     <div
       style={{
         maxWidth: '100%',
         padding: 'var(--space-3) var(--space-4)',
         borderRadius: 'var(--radius-md)',
-        border: '1px solid var(--hairline)',
-        background: tone === 'muted' ? 'var(--paper-2)' : 'var(--paper)',
-        color: tone === 'muted' ? 'var(--text-3)' : 'var(--text-1)',
+        border: `1px solid ${isUser ? 'var(--hairline-strong)' : 'var(--hairline)'}`,
+        background: isMuted || isUser ? 'var(--paper-2)' : 'var(--paper)',
+        color: isMuted ? 'var(--text-3)' : 'var(--text-1)',
         fontSize: 'var(--text-sm)',
         lineHeight: 'var(--leading-loose)',
       }}
     >
+      {attribution ? (
+        <div
+          style={{
+            marginBottom: 'var(--space-1)',
+            color: 'var(--text-3)',
+            fontSize: 'var(--text-xs)',
+            fontWeight: 700,
+            letterSpacing: 0,
+            textTransform: 'uppercase',
+          }}
+        >
+          {attribution}
+        </div>
+      ) : null}
       {children}
     </div>
   );
@@ -442,6 +481,14 @@ function HarnessItemView({ row }: { row: HarnessItem }) {
       return (
         <TimelineBubble tone={text ? 'default' : 'muted'}>
           {text ? <SpecMarkdown>{text}</SpecMarkdown> : <em>Thinking...</em>}
+        </TimelineBubble>
+      );
+    }
+    case 'user_message': {
+      const text = itemText(item);
+      return (
+        <TimelineBubble tone={text ? 'user' : 'muted'} attribution="user">
+          {text ? <SpecMarkdown>{text}</SpecMarkdown> : <em>(empty message)</em>}
         </TimelineBubble>
       );
     }
@@ -508,12 +555,35 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
   const [items, setItems] = useState<Map<number, HarnessItem>>(() => new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [freshFetchKey, setFreshFetchKey] = useState<{
+    dedupe: string;
+    transcriptClearedCount: number;
+  }>(() => ({ dedupe: 'initial', transcriptClearedCount: 0 }));
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pendingScrollRef = useRef(false);
+  const freshFetchDedupeRef = useRef(freshFetchKey.dedupe);
   const rows = useMemo(
     () => Array.from(items.values()).sort((a, b) => a.id - b.id),
     [items],
   );
+
+  useEffect(() => {
+    freshFetchDedupeRef.current = freshFetchKey.dedupe;
+  }, [freshFetchKey.dedupe]);
+
+  const requestFreshFetch = useCallback((runtimeId: string | null | undefined) => {
+    setFreshFetchKey((prev) => {
+      const runtimeKey = runtimeId && runtimeId.length > 0 ? runtimeId : null;
+      if (runtimeKey && prev.dedupe === runtimeKey) return prev;
+      const transcriptClearedCount = runtimeKey
+        ? prev.transcriptClearedCount
+        : prev.transcriptClearedCount + 1;
+      return {
+        dedupe: runtimeKey ?? `transcript-cleared:${transcriptClearedCount}`,
+        transcriptClearedCount,
+      };
+    });
+  }, []);
 
   useEffect(() => {
     if (pendingScrollRef.current) {
@@ -533,16 +603,23 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
 
     const controller = new AbortController();
     let cancelled = false;
+    const requestKey = freshFetchKey.dedupe;
     setLoading(true);
     fetchHarnessItems(cardId, { direction: 'desc', limit: 100 }, controller.signal)
       .then((loaded) => {
-        if (cancelled) return;
+        if (cancelled || freshFetchDedupeRef.current !== requestKey) return;
         pendingScrollRef.current = true;
         setItems((prev) => mergeHarnessRows(prev, loaded).map);
         setLoading(false);
       })
       .catch((err) => {
-        if (cancelled || controller.signal.aborted) return;
+        if (
+          cancelled ||
+          controller.signal.aborted ||
+          freshFetchDedupeRef.current !== requestKey
+        ) {
+          return;
+        }
         setError(err instanceof Error ? err.message : 'Failed to load conversation');
         setLoading(false);
       });
@@ -551,7 +628,7 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
       cancelled = true;
       controller.abort();
     };
-  }, [cardId]);
+  }, [cardId, freshFetchKey.dedupe]);
 
   useEffect(() => {
     if (!cardId) return;
@@ -560,15 +637,29 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
     const controller = new AbortController();
     let cancelled = false;
     const off = stream.on((ev) => {
+      if (
+        ev.ev === 'harness.transcript.cleared' &&
+        ev.data.card_id === cardId
+      ) {
+        requestFreshFetch(ev.data.runtime_id);
+        return;
+      }
       if (ev.ev !== 'harness.item.added' || ev.data.card_id !== cardId) return;
       const shouldScroll = isAtBottom(scrollRef.current);
+      const requestKey = freshFetchDedupeRef.current;
       void fetchHarnessItems(
         cardId,
         { after_id: ev.data.item_db_id - 1, limit: 1 },
         controller.signal,
       )
         .then((loaded) => {
-          if (cancelled || loaded.length === 0) return;
+          if (
+            cancelled ||
+            loaded.length === 0 ||
+            freshFetchDedupeRef.current !== requestKey
+          ) {
+            return;
+          }
           if (shouldScroll) pendingScrollRef.current = true;
           setItems((prev) => mergeHarnessRows(prev, loaded).map);
         })
@@ -583,7 +674,7 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
       // Keep the card topic subscribed on the shared stream; subscriptions
       // are sticky across reconnects, matching Codex/Xterm card behavior.
     };
-  }, [cardId]);
+  }, [cardId, requestFreshFetch]);
 
   const onScroll = () => {
     if (isAtBottom(scrollRef.current)) {
@@ -724,6 +815,7 @@ function SpecCardImpl({
     setResetError(null);
     try {
       await resetSpecCard(cardId);
+      setPhase(null);
       setTimelineVersion((version) => version + 1);
       setResetOpen(false);
     } catch (err) {

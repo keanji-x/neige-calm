@@ -288,6 +288,15 @@ export const harnessPhaseChangedSchema = z.object({
   }),
 });
 
+export const harnessTranscriptClearedSchema = z.object({
+  ev: z.literal('harness.transcript.cleared'),
+  data: z.object({
+    runtime_id: z.string(),
+    card_id: z.string(),
+    wave_id: z.string(),
+  }),
+});
+
 /**
  * Issue #247 PR2 — `Event::WaveReportEdited`. Structured edit-log
  * companion to `card.updated` emitted from every wave-report write.
@@ -548,6 +557,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   runtimeSupersededSchema,
   harnessItemAddedSchema,
   harnessPhaseChangedSchema,
+  harnessTranscriptClearedSchema,
   waveReportEditedSchema,
   overlaySetSchema,
   overlayDeletedSchema,
@@ -585,6 +595,9 @@ export type RuntimeStatusChangedEvent = z.infer<typeof runtimeStatusChangedSchem
 export type RuntimeSupersededEvent = z.infer<typeof runtimeSupersededSchema>;
 export type HarnessItemAddedEvent = z.infer<typeof harnessItemAddedSchema>;
 export type HarnessPhaseChangedEvent = z.infer<typeof harnessPhaseChangedSchema>;
+export type HarnessTranscriptClearedEvent = z.infer<
+  typeof harnessTranscriptClearedSchema
+>;
 export type WaveReportEditedEvent = z.infer<typeof waveReportEditedSchema>;
 export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;

@@ -204,37 +204,43 @@ describe('CodexEntry.fromKernel', () => {
 describe('SpecCard chat timeline', () => {
   it('renders supported harness item types without crashing on unknown items', async () => {
     renderSpecCard([
-      harnessRow(1, 'agent_message', {
+      harnessRow(1, 'userMessage', {
+        id: 'user_1',
+        content: [{ text: 'please update the PR UI' }],
+      }),
+      harnessRow(2, 'agent_message', {
         id: 'agent_1',
         text: 'assistant hello',
       }),
-      harnessRow(2, 'reasoning', {
+      harnessRow(3, 'reasoning', {
         id: 'reason_1',
         text: 'private chain summary',
       }),
-      harnessRow(3, 'function_call', {
+      harnessRow(4, 'function_call', {
         id: 'call_1',
         name: 'lookup',
         arguments: { query: 'spec docs' },
       }),
-      harnessRow(4, 'function_call_output', {
+      harnessRow(5, 'function_call_output', {
         id: 'out_1',
         output: 'tool output body',
       }),
-      harnessRow(5, 'web_search', {
+      harnessRow(6, 'web_search', {
         id: 'search_1',
         query: 'playwright fixtures',
       }),
-      harnessRow(6, 'local_shell', {
+      harnessRow(7, 'local_shell', {
         id: 'shell_1',
         command: 'echo hi',
         output: 'hi',
       }),
-      harnessRow(7, 'mystery_item', {
+      harnessRow(8, 'mystery_item', {
         id: 'mystery_1',
       }),
     ]);
 
+    expect(await screen.findByText('please update the PR UI')).toBeInTheDocument();
+    expect(screen.getByText('user')).toBeInTheDocument();
     expect(await screen.findByText('assistant hello')).toBeInTheDocument();
     expect(screen.getByText('Reasoning')).toBeInTheDocument();
     expect(screen.getByText('private chain summary')).toBeInTheDocument();
@@ -366,6 +372,106 @@ describe('SpecCard chat timeline', () => {
     );
   });
 
+  it('drops a stale started item when its completed item already exists', async () => {
+    const completed = harnessRow(
+      2,
+      'agent_message',
+      { id: 'agent_same', text: 'final assistant answer' },
+      { method: 'item/completed', item_uuid: 'agent_same' },
+    );
+    const lateStarted = harnessRow(
+      1,
+      'agent_message',
+      { id: 'agent_same' },
+      { method: 'item/started', item_uuid: 'agent_same' },
+    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([completed]))
+      .mockResolvedValueOnce(response([lateStarted]));
+    vi.stubGlobal('fetch', fetchMock);
+    const Component = SpecEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'spec',
+          id: 'card_spec_1',
+          goal: 'Ship the spec UI',
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('final assistant answer')).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.fakeStream.emit({
+        ev: 'harness.item.added',
+        data: {
+          runtime_id: 'runtime_1',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+          item_db_id: 1,
+          item_uuid: 'agent_same',
+          item_type: 'agent_message',
+          turn_id: 'turn_1',
+          method: 'item/started',
+        },
+      });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Thinking...')).not.toBeInTheDocument();
+    expect(screen.getByText('final assistant answer')).toBeInTheDocument();
+  });
+
+  it('clears and refetches rows when the transcript is cleared', async () => {
+    const before = harnessRow(1, 'agent_message', {
+      id: 'agent_before_clear',
+      text: 'before clear',
+    });
+    const after = harnessRow(
+      10,
+      'agent_message',
+      { id: 'agent_after_clear', text: 'after clear' },
+      { runtime_id: 'runtime_2' },
+    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([before]))
+      .mockResolvedValueOnce(response([after]));
+    vi.stubGlobal('fetch', fetchMock);
+    const Component = SpecEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'spec',
+          id: 'card_spec_1',
+          goal: 'Ship the spec UI',
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('before clear')).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.fakeStream.emit({
+        ev: 'harness.transcript.cleared',
+        data: {
+          runtime_id: 'runtime_2',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+        },
+      });
+    });
+
+    expect(await screen.findByText('after clear')).toBeInTheDocument();
+    expect(screen.queryByText('before clear')).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/cards/card_spec_1/harness/items?limit=100&direction=desc',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
   it('remounts the chat timeline after a successful reset', async () => {
     const user = userEvent.setup();
     mocks.resetSpecCard.mockResolvedValueOnce({
@@ -382,6 +488,19 @@ describe('SpecCard chat timeline', () => {
 
     expect(await screen.findByText('before reset')).toBeInTheDocument();
     const timelineBefore = screen.getByTestId('spec-chat-timeline');
+    act(() => {
+      mocks.fakeStream.emit({
+        ev: 'harness.phase.changed',
+        data: {
+          runtime_id: 'runtime_1',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+          old_phase: 'idle',
+          new_phase: 'turn_running',
+        },
+      });
+    });
+    expect(screen.getByText('Turn Running')).toBeInTheDocument();
 
     await user.click(
       await screen.findByRole('button', { name: 'Reset spec session' }),
@@ -393,6 +512,9 @@ describe('SpecCard chat timeline', () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId('spec-chat-timeline')).not.toBe(timelineBefore),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText('Turn Running')).not.toBeInTheDocument(),
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

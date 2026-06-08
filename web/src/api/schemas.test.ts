@@ -167,6 +167,36 @@ describe('zod ↔ ts-rs conformance', () => {
   });
 });
 
+describe('spec harness transcript lifecycle events', () => {
+  it('parses harness.transcript.cleared', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'harness.transcript.cleared',
+      data: {
+        runtime_id: 'runtime_2',
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+      },
+    });
+    expect(parsed.ev).toBe('harness.transcript.cleared');
+    if (parsed.ev === 'harness.transcript.cleared') {
+      expect(parsed.data.runtime_id).toBe('runtime_2');
+      expect(parsed.data.card_id).toBe('card_spec_1');
+      expect(parsed.data.wave_id).toBe('wave_1');
+    }
+  });
+
+  it('rejects harness.transcript.cleared missing runtime_id', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'harness.transcript.cleared',
+      data: {
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 // ---- PR4 of #136: dispatcher + task-lifecycle variants ----------------
 //
 // Schema-only PR. These tests pin the wire shape the parser accepts/rejects
