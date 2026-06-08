@@ -194,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");
+    calm_server::spawn_hook_fallback_replay(cfg.codex_ingest_url_resolved());
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
