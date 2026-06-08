@@ -127,6 +127,7 @@ describe('wireEventSchema', () => {
       data: {
         card_id: 'card_claude_1',
         kind: 'hook.claude.pre_tool_use',
+        hook_idempotency_key: 'test-key',
         payload,
       },
     });
@@ -134,6 +135,7 @@ describe('wireEventSchema', () => {
     if (parsed.ev === 'claude.hook') {
       expect(parsed.data.card_id).toBe('card_claude_1');
       expect(parsed.data.kind).toBe('hook.claude.pre_tool_use');
+      expect(parsed.data.hook_idempotency_key).toBe('test-key');
       expect(parsed.data.payload).toEqual(payload);
     }
   });

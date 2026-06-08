@@ -390,6 +390,7 @@ export const codexHookSchema = z.object({
   data: z.object({
     card_id: z.string(),
     kind: z.string(),
+    hook_idempotency_key: z.string(),
     payload: z.unknown(),
   }),
 });
@@ -403,6 +404,7 @@ export const claudeHookSchema = z.object({
   data: z.object({
     card_id: z.string(),
     kind: z.string(),
+    hook_idempotency_key: z.string(),
     payload: z.unknown(),
   }),
 });

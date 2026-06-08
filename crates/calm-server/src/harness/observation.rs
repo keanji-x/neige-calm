@@ -26,6 +26,8 @@ pub enum Observation {
         wave_id: WaveId,
         card_id: CardId,
         kind: HookKind,
+        #[serde(default)]
+        idempotency_key: String,
     },
 }
 
@@ -70,10 +72,11 @@ impl Observation {
             } => format!(
                 "A dispatched task failed (idempotency_key={idempotency_key}): {error}. Re-read the wave state and decide how to proceed."
             ),
-            Observation::WorkerHookStop { .. } => {
-                "A worker card finished a turn. Re-read the wave state to incorporate any changes."
-                    .to_string()
-            }
+            Observation::WorkerHookStop {
+                idempotency_key, ..
+            } => format!(
+                "A worker card finished a turn. Re-read the wave state to incorporate any changes.\n(hook_id={idempotency_key})"
+            ),
         }
     }
 }

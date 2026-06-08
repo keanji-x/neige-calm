@@ -648,6 +648,7 @@ mod tests {
         Event::CodexHook {
             card_id: CardId::from(card),
             kind: "hook.codex.permission_request".into(),
+            hook_idempotency_key: "hook-codex".into(),
             payload: serde_json::json!({}),
         }
     }
@@ -656,6 +657,7 @@ mod tests {
         Event::ClaudeHook {
             card_id: CardId::from(card),
             kind: "hook.claude.pre_tool_use".into(),
+            hook_idempotency_key: "hook-claude".into(),
             payload: serde_json::json!({}),
         }
     }

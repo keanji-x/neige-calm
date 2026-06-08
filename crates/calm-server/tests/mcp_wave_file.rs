@@ -494,6 +494,7 @@ async fn card_events_json_returns_hook_events_in_event_order() {
         Event::ClaudeHook {
             card_id: card_id.clone(),
             kind: "hook.claude.user_prompt_submit".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: first_payload.clone(),
         },
     )
@@ -504,6 +505,7 @@ async fn card_events_json_returns_hook_events_in_event_order() {
         Event::CodexHook {
             card_id: card_id.clone(),
             kind: "hook.codex.stop".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: second_payload.clone(),
         },
     )
@@ -551,6 +553,7 @@ async fn card_conversation_md_renders_prompt_tool_and_assistant_turns() {
         Event::ClaudeHook {
             card_id: card_id.clone(),
             kind: "hook.claude.user_prompt_submit".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({
                 "hook_event_name": "UserPromptSubmit",
                 "prompt": "Please inspect the hook history."
@@ -564,6 +567,7 @@ async fn card_conversation_md_renders_prompt_tool_and_assistant_turns() {
         Event::ClaudeHook {
             card_id: card_id.clone(),
             kind: "hook.claude.pre_tool_use".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({
                 "hook_event_name": "PreToolUse",
                 "tool_name": "Read"
@@ -577,6 +581,7 @@ async fn card_conversation_md_renders_prompt_tool_and_assistant_turns() {
         Event::CodexHook {
             card_id: card_id.clone(),
             kind: "hook.codex.stop".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({
                 "last_assistant_message": "The projection is ready."
             }),
@@ -617,6 +622,7 @@ async fn card_conversation_md_ignores_subagent_stop_assistant_message() {
         Event::ClaudeHook {
             card_id: card_id.clone(),
             kind: "hook.claude.subagent_stop".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({
                 "hook_event_name": "SubagentStop",
                 "last_assistant_message": "subagent completion must not leak"
@@ -669,6 +675,7 @@ async fn ls_card_directory_includes_hook_event_views() {
         Event::ClaudeHook {
             card_id: card_id.clone(),
             kind: "hook.claude.stop".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({
                 "hook_event_name": "Stop",
                 "last_assistant_message": "done"
@@ -731,6 +738,7 @@ async fn card_events_json_filters_out_sibling_card_hooks() {
         Event::ClaudeHook {
             card_id: target_id.clone(),
             kind: "hook.claude.stop".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({
                 "hook_event_name": "Stop",
                 "last_assistant_message": "target only"
@@ -744,6 +752,7 @@ async fn card_events_json_filters_out_sibling_card_hooks() {
         Event::ClaudeHook {
             card_id: sibling_id.clone(),
             kind: "hook.claude.stop".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({
                 "hook_event_name": "Stop",
                 "last_assistant_message": "sibling must not leak"

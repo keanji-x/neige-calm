@@ -1716,20 +1716,28 @@ pub(crate) fn harness_observation_from_event(
             body_sha256: sha256_hex(body_after),
             body: body_after.clone(),
         }),
-        Event::CodexHook { card_id, kind, .. } if kind == "hook.codex.stop" => {
-            Some(HarnessObservation::WorkerHookStop {
-                wave_id: wave_id.clone(),
-                card_id: card_id.clone(),
-                kind: HarnessHookKind::CodexStop,
-            })
-        }
-        Event::ClaudeHook { card_id, kind, .. } if kind == "hook.claude.stop" => {
-            Some(HarnessObservation::WorkerHookStop {
-                wave_id: wave_id.clone(),
-                card_id: card_id.clone(),
-                kind: HarnessHookKind::ClaudeStop,
-            })
-        }
+        Event::CodexHook {
+            card_id,
+            kind,
+            hook_idempotency_key,
+            ..
+        } if kind == "hook.codex.stop" => Some(HarnessObservation::WorkerHookStop {
+            wave_id: wave_id.clone(),
+            card_id: card_id.clone(),
+            kind: HarnessHookKind::CodexStop,
+            idempotency_key: hook_idempotency_key.clone(),
+        }),
+        Event::ClaudeHook {
+            card_id,
+            kind,
+            hook_idempotency_key,
+            ..
+        } if kind == "hook.claude.stop" => Some(HarnessObservation::WorkerHookStop {
+            wave_id: wave_id.clone(),
+            card_id: card_id.clone(),
+            kind: HarnessHookKind::ClaudeStop,
+            idempotency_key: hook_idempotency_key.clone(),
+        }),
         _ => None,
     }
 }
@@ -2832,11 +2840,13 @@ mod tests {
         assert!(filter.matches(&env(Event::CodexHook {
             card_id: CardId::from("worker-codex"),
             kind: "hook.codex.stop".into(),
+            hook_idempotency_key: "hook-codex".into(),
             payload: serde_json::Value::Null,
         })));
         assert!(filter.matches(&env(Event::ClaudeHook {
             card_id: CardId::from("worker-claude"),
             kind: "hook.claude.stop".into(),
+            hook_idempotency_key: "hook-claude".into(),
             payload: serde_json::Value::Null,
         })));
         // A kind NOT in the list must not match — the filter is still a
@@ -2904,11 +2914,13 @@ mod tests {
         let codex_hook = |card_id: CardId, kind: &str| Event::CodexHook {
             card_id,
             kind: kind.into(),
+            hook_idempotency_key: format!("hook-codex-{kind}"),
             payload: serde_json::Value::Null,
         };
         let claude_hook = |card_id: CardId, kind: &str| Event::ClaudeHook {
             card_id,
             kind: kind.into(),
+            hook_idempotency_key: format!("hook-claude-{kind}"),
             payload: serde_json::Value::Null,
         };
         assert!(event_warrants_spec_push(

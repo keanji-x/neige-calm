@@ -28,10 +28,53 @@ use crate::shared_codex_home::SharedCodexHome;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
 use axum::extract::FromRef;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+const HOOK_INGEST_CACHE_CAPACITY: usize = 4096;
+
+/// Fixed-size FIFO cache for hook ingest idempotency keys.
+///
+/// This is intentionally process-local: after a server restart the first
+/// re-posted hook can emit again, and downstream harness/dispatcher replay
+/// guards are the remaining defense.
+#[derive(Debug)]
+pub(crate) struct HookIngestCache {
+    capacity: usize,
+    order: VecDeque<String>,
+    keys: HashSet<String>,
+}
+
+impl HookIngestCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::with_capacity(capacity),
+            keys: HashSet::with_capacity(capacity),
+        }
+    }
+
+    pub(crate) fn contains(&self, key: &str) -> bool {
+        self.keys.contains(key)
+    }
+
+    pub(crate) fn insert(&mut self, key: String) {
+        if !self.keys.insert(key.clone()) {
+            return;
+        }
+        while self.order.len() >= self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.keys.remove(&evicted);
+            } else {
+                break;
+            }
+        }
+        self.order.push_back(key);
+    }
+}
 
 /// #480 PR1 write-surface slice shared by route and worker substates.
 /// Clone-cheap: both caches alias their underlying `Arc<DashMap<...>>`.
@@ -86,6 +129,7 @@ pub struct RouteState {
     pub write: WriteContext,
     pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
+    pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
 }
 
 /// #480 PR1 worker-facing state slice for dispatcher/background flows.
@@ -142,6 +186,9 @@ impl BootState {
     pub fn into_app_state(self) -> AppState {
         let route_repo: Arc<dyn RouteRepo> = self.repo.clone();
         let write = WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
+        let hook_ingest_cache = Arc::new(StdMutex::new(HookIngestCache::new(
+            HOOK_INGEST_CACHE_CAPACITY,
+        )));
         let route = RouteState {
             repo: route_repo.clone(),
             events: self.events.clone(),
@@ -149,6 +196,7 @@ impl BootState {
             write: write.clone(),
             aspects: self.aspects.clone(),
             operation_runtime: self.operation_runtime.clone(),
+            hook_ingest_cache,
         };
         let worker = WorkerState {
             repo: self.repo.clone(),

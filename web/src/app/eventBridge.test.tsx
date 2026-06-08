@@ -616,6 +616,7 @@ describe('EventBridge', () => {
         data: {
           card_id: 'card_claude',
           kind: 'hook.claude.pre_tool_use',
+          hook_idempotency_key: 'test-key',
           payload: { tool: 'Read' },
         },
       }),

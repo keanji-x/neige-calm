@@ -119,12 +119,52 @@ async fn ingest_emits_codex_hook_event() {
         Event::CodexHook {
             card_id,
             kind,
+            hook_idempotency_key,
             payload,
         } => {
             assert_eq!(card_id.as_str(), card.id.as_str());
             assert_eq!(kind, "hook.codex.pre_tool_use");
+            assert!(!hook_idempotency_key.is_empty());
             assert_eq!(payload["tool_name"], "Bash");
         }
         other => panic!("expected CodexHook, got {other:?}"),
+    }
+
+    let stop_body = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "session-stop",
+        "transcript_path": "/tmp/neige-stop.jsonl",
+        "transcript_size_bytes": 128,
+    })
+    .to_string();
+    let stop_uri = format!("/internal/codex/hook?card_id={}", card.id);
+    let stop_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(stop_uri)
+                .header("content-type", "application/json")
+                .body(Body::from(stop_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stop_resp.status(), 204);
+
+    let stop_env = rx.recv().await.expect("stop event emitted");
+    match stop_env.event {
+        Event::CodexHook {
+            card_id,
+            kind,
+            hook_idempotency_key,
+            payload,
+        } => {
+            assert_eq!(card_id.as_str(), card.id.as_str());
+            assert_eq!(kind, "hook.codex.stop");
+            assert!(!hook_idempotency_key.is_empty());
+            assert_eq!(payload["hook_event_name"], "Stop");
+        }
+        other => panic!("expected stop CodexHook, got {other:?}"),
     }
 }

@@ -160,6 +160,7 @@ mod tests {
         Event::ClaudeHook {
             card_id: card_id.into(),
             kind: "hook.claude.stop".into(),
+            hook_idempotency_key: "hook-key".into(),
             payload: json!({}),
         }
     }

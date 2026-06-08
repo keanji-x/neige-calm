@@ -500,6 +500,10 @@ pub enum Event {
         /// `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
         /// the codex payload; defaults to `hook.codex.unknown` if missing.
         kind: String,
+        /// Stable hook ingest key used by the server and spec harness to
+        /// suppress duplicate lifecycle posts.
+        #[serde(default)]
+        hook_idempotency_key: String,
         /// Original codex hook JSON, verbatim.
         #[ts(type = "unknown")]
         payload: Value,
@@ -514,6 +518,10 @@ pub enum Event {
         card_id: CardId,
         /// Hook discriminator supplied by the future Claude hook route.
         kind: String,
+        /// Stable hook ingest key used by the server and spec harness to
+        /// suppress duplicate lifecycle posts.
+        #[serde(default)]
+        hook_idempotency_key: String,
         /// Original Claude hook JSON, verbatim.
         #[ts(type = "unknown")]
         payload: Value,
@@ -1505,6 +1513,7 @@ mod scope_tests {
         let claude_hook = Event::ClaudeHook {
             card_id: CardId::from("card-1"),
             kind: "hook.claude.stop".into(),
+            hook_idempotency_key: "hook-claude".into(),
             payload: serde_json::Value::Null,
         };
         assert_eq!(claude_hook.kind_tag(), "claude.hook");
@@ -1693,6 +1702,7 @@ mod scope_tests {
         let ev = Event::ClaudeHook {
             card_id: CardId::from("card-claude"),
             kind: "hook.claude.pre_tool_use".into(),
+            hook_idempotency_key: "hook-claude".into(),
             payload: serde_json::json!({
                 "hook_event_name": "PreToolUse",
                 "tool_name": "Bash",
@@ -1702,6 +1712,7 @@ mod scope_tests {
         assert_eq!(json["ev"], "claude.hook");
         assert_eq!(json["data"]["card_id"], "card-claude");
         assert_eq!(json["data"]["kind"], "hook.claude.pre_tool_use");
+        assert_eq!(json["data"]["hook_idempotency_key"], "hook-claude");
         assert_eq!(json["data"]["payload"]["tool_name"], "Bash");
 
         let back: Event = serde_json::from_value(json).unwrap();
@@ -1709,10 +1720,12 @@ mod scope_tests {
             Event::ClaudeHook {
                 card_id,
                 kind,
+                hook_idempotency_key,
                 payload,
             } => {
                 assert_eq!(card_id.as_str(), "card-claude");
                 assert_eq!(kind, "hook.claude.pre_tool_use");
+                assert_eq!(hook_idempotency_key, "hook-claude");
                 assert_eq!(payload["hook_event_name"], "PreToolUse");
             }
             other => panic!("expected ClaudeHook after round-trip, got {other:?}"),
@@ -1728,6 +1741,13 @@ mod scope_tests {
         )
         .expect("replay decode ClaudeHook");
         assert_eq!(replay.kind_tag(), "claude.hook");
+        match &replay {
+            Event::ClaudeHook {
+                hook_idempotency_key,
+                ..
+            } => assert!(hook_idempotency_key.is_empty()),
+            other => panic!("expected ClaudeHook replay, got {other:?}"),
+        }
 
         let t = topics(&replay);
         assert!(t.iter().any(|s| s == "card:card-claude"), "topics={t:?}");
@@ -2043,11 +2063,13 @@ mod scope_tests {
             Event::CodexHook {
                 card_id: CardId::from("card-codex"),
                 kind: "hook.codex.stop".into(),
+                hook_idempotency_key: "hook-codex".into(),
                 payload: serde_json::Value::Null,
             },
             Event::ClaudeHook {
                 card_id: CardId::from("card-claude"),
                 kind: "hook.claude.stop".into(),
+                hook_idempotency_key: "hook-claude".into(),
                 payload: serde_json::Value::Null,
             },
             Event::CodexJobRequested {

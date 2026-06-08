@@ -24,9 +24,18 @@
 //!   * `NEIGE_HOOK_URL`       — full ingest URL override (optional)
 
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
 const MAX_TRANSCRIPT_BYTES: u64 = 256 * 1024 * 1024;
+const POST_RETRY_BACKOFFS: [Duration; 3] = [
+    Duration::from_millis(50),
+    Duration::from_millis(200),
+    Duration::from_millis(800),
+];
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--version") {
@@ -343,6 +352,20 @@ impl Provider {
         }
     }
 
+    fn kind_prefix(self) -> &'static str {
+        match self {
+            Self::Codex => "hook.codex",
+            Self::Claude => "hook.claude",
+        }
+    }
+
+    fn fallback_dir_name(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+
     fn ack(self) -> &'static str {
         match self {
             Self::Codex => "{}",
@@ -351,7 +374,8 @@ impl Provider {
     }
 }
 
-/// Fire-and-forget POST of the raw hook body to the provider ingest route.
+/// POST the raw hook body to the provider ingest route without ever failing
+/// the hook caller. If all attempts fail, persist a replayable fallback file.
 fn post_hook(provider: Provider, base: &str, card_id: &str, hook_url: Option<&str>, body: &str) {
     let url = hook_url.map(String::from).unwrap_or_else(|| {
         format!(
@@ -367,20 +391,121 @@ fn post_hook(provider: Provider, base: &str, card_id: &str, hook_url: Option<&st
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(3))
         .build();
-    // Scope β — declare the actor for every hook the bridge forwards.
-    // The kernel's `actor_middleware` reads `X-Calm-Actor`, validates it,
-    // and stamps the resulting event row with `actor = "ai:codex"`. Without
-    // this header the middleware falls back to its `"user"` default, which
-    // would misattribute codex's own lifecycle signal as a human write.
-    match agent
-        .post(&url)
-        .set("content-type", "application/json")
-        .set("X-Calm-Actor", provider.actor_header())
-        .send_string(body)
-    {
-        Ok(_) => {}
-        Err(e) => eprintln!("neige-codex-bridge: POST failed: {e}"),
+    let mut last_error = None;
+    for (attempt, backoff) in POST_RETRY_BACKOFFS.iter().enumerate() {
+        // Scope β — declare the actor for every hook the bridge forwards.
+        // The kernel's `actor_middleware` reads `X-Calm-Actor`, validates it,
+        // and stamps the resulting event row with `actor = "ai:codex"`. Without
+        // this header the middleware falls back to its `"user"` default, which
+        // would misattribute codex's own lifecycle signal as a human write.
+        match agent
+            .post(&url)
+            .set("content-type", "application/json")
+            .set("X-Calm-Actor", provider.actor_header())
+            .send_string(body)
+        {
+            Ok(_) => return,
+            Err(e) => {
+                last_error = Some(e.to_string());
+                eprintln!(
+                    "neige-codex-bridge: POST attempt {} failed: {e}",
+                    attempt + 1
+                );
+                std::thread::sleep(*backoff);
+            }
+        }
     }
+
+    let captured_ms = now_ms();
+    let idempotency_key = hook_idempotency_key(provider, card_id, body, captured_ms);
+    if let Err(e) = write_hook_fallback(provider, &idempotency_key, card_id, body, captured_ms) {
+        eprintln!(
+            "neige-codex-bridge: fallback write failed after POST failures ({:?}): {e}",
+            last_error
+        );
+    }
+}
+
+fn hook_idempotency_key(provider: Provider, card_id: &str, body: &str, now_ms: i64) -> String {
+    let payload = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let transcript_path = payload
+        .get("transcript_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let transcript_size = payload
+        .get("transcript_size_bytes")
+        .and_then(Value::as_i64)
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let primary = format!(
+        "{prov}|{card_id}|{session_id}|{transcript_path}|{transcript_size}",
+        prov = provider.kind_prefix()
+    );
+    if !session_id.is_empty() && (!transcript_path.is_empty() || !transcript_size.is_empty()) {
+        return sha256_hex(&primary);
+    }
+
+    let hook_event = payload
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let now_sec = now_ms / 1000;
+    sha256_hex(&format!(
+        "{prov}|{card_id}|{session_id}|{hook_event}|{now_sec}",
+        prov = provider.kind_prefix()
+    ))
+}
+
+fn write_hook_fallback(
+    provider: Provider,
+    idempotency_key: &str,
+    card_id: &str,
+    body: &str,
+    captured_ms: i64,
+) -> Result<(), String> {
+    let dir = hook_fallback_dir().join(provider.fallback_dir_name());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let body_hash = sha256_hex(body);
+    let file_stem = format!("{captured_ms:016}-{idempotency_key}-{}", &body_hash[..16]);
+    let path = dir.join(format!("{file_stem}.json"));
+    let tmp = dir.join(format!(".{file_stem}.{}.tmp", std::process::id()));
+    let body = serde_json::from_str::<Value>(body).unwrap_or_else(|_| Value::String(body.into()));
+    let record = serde_json::json!({
+        "card_id": card_id,
+        "body": body,
+    });
+    let bytes = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    Ok(())
+}
+
+fn hook_fallback_dir() -> PathBuf {
+    std::env::var_os("NEIGE_HOOK_FALLBACK_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new("/tmp/neige-hook-fallback").to_path_buf())
+}
+
+fn sha256_hex(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Bare-bones percent-encoder so we don't need a `url` dep. Card ids are
