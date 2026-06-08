@@ -31,7 +31,7 @@ def end_at(buf):
         ends.append((st, st + 2))
     return min(ends)[1] if ends else None
 def read_frame(fd, pending):
-    for _ in range(40):
+    for _ in range(100):
         end = end_at(pending)
         if end is not None:
             frame = bytes(pending[:end])

@@ -131,7 +131,7 @@ test.describe.serial('tui theme protocol', () => {
       `/api/waves/${wave.id}/terminal-cards`,
       {
         data: {
-          program: `python3 ${absFixturePath}`,
+          program: `python3 '${absFixturePath}'`,
           cwd: '/tmp',
           env: {},
           theme: { fg: LIGHT_THEME_RGB.fg, bg: LIGHT_THEME_RGB.bg },
@@ -164,8 +164,10 @@ test.describe.serial('tui theme protocol', () => {
     }
 
     await expect
-      .poll(() => dumpTerminal(page, terminalId), { timeout: 15_000 })
-      .toContain('THEME_FG=');
+      .poll(async () => latestTheme(await dumpTerminal(page, terminalId)), {
+        timeout: 15_000,
+      })
+      .toEqual({ fg: hex(LIGHT_THEME_RGB.fg), bg: hex(LIGHT_THEME_RGB.bg) });
     const bootTheme = latestTheme(await dumpTerminal(page, terminalId));
     expect(bootTheme.fg).toBe(hex(LIGHT_THEME_RGB.fg));
     expect(bootTheme.bg).toBe(hex(LIGHT_THEME_RGB.bg));
@@ -173,10 +175,10 @@ test.describe.serial('tui theme protocol', () => {
     const t0 = Date.now();
     await setTheme(page, 'dark');
     await expect
-      .poll(async () => latestTheme(await dumpTerminal(page, terminalId)).fg, {
+      .poll(async () => latestTheme(await dumpTerminal(page, terminalId)), {
         timeout: 5_000,
       })
-      .toBe(hex(DARK_THEME_RGB.fg));
+      .toEqual({ fg: hex(DARK_THEME_RGB.fg), bg: hex(DARK_THEME_RGB.bg) });
     const t1 = Date.now();
     const darkTheme = latestTheme(await dumpTerminal(page, terminalId));
     expect(darkTheme.fg).toBe(hex(DARK_THEME_RGB.fg));
@@ -186,10 +188,10 @@ test.describe.serial('tui theme protocol', () => {
 
     await setTheme(page, 'light');
     await expect
-      .poll(async () => latestTheme(await dumpTerminal(page, terminalId)).fg, {
+      .poll(async () => latestTheme(await dumpTerminal(page, terminalId)), {
         timeout: 5_000,
       })
-      .toBe(hex(LIGHT_THEME_RGB.fg));
+      .toEqual({ fg: hex(LIGHT_THEME_RGB.fg), bg: hex(LIGHT_THEME_RGB.bg) });
     const finalTheme = latestTheme(await dumpTerminal(page, terminalId));
     expect(finalTheme.fg).toBe(hex(LIGHT_THEME_RGB.fg));
     expect(finalTheme.bg).toBe(hex(LIGHT_THEME_RGB.bg));
