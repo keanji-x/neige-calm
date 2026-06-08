@@ -84,7 +84,7 @@ use crate::event::{
 };
 use crate::event_cursor::EventCursorCache;
 use crate::harness::{
-    HarnessRegistry, HookKind as HarnessHookKind, Observation as HarnessObservation,
+    HarnessRegistry, HookKind as HarnessHookKind, Observation as HarnessObservation, PushLockGuard,
     is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
@@ -519,25 +519,6 @@ impl Dispatcher {
     }
 }
 
-/// #480 §D — proof token that the per-wave push lock for `wave_id` is held.
-/// `OwnedMutexGuard<()>` owns the `Arc<tokio::sync::Mutex<()>>` so the guard
-/// is not tied to a `DashMap` entry borrow and can cross `.await`. Holding
-/// across `.await` is intentional (catch-up replay) but can starve that
-/// wave; bound replay bodies.
-///
-/// **Invariant**: this guard proves the lock is held — NOT that replay
-/// events are semantically complete or ordered (#480 §F4).
-pub struct PushLockGuard {
-    wave_id: WaveId,
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-}
-
-impl PushLockGuard {
-    pub fn wave_id(&self) -> &WaveId {
-        &self.wave_id
-    }
-}
-
 struct Inner {
     repo: Arc<dyn Repo>,
     events: EventBus,
@@ -898,10 +879,7 @@ impl Inner {
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
         let guard = lock.lock_owned().await;
-        PushLockGuard {
-            wave_id: wave_id.clone(),
-            _guard: guard,
-        }
+        PushLockGuard::new(wave_id.clone(), guard)
     }
 
     async fn observe_harness_under_lock(

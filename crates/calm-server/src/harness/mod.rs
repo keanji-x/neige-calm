@@ -1,4 +1,5 @@
 pub mod config;
+pub mod lock;
 pub mod observation;
 pub mod registry;
 pub mod run_loop;
@@ -20,6 +21,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
 
 pub use config::HarnessConfig;
+pub use lock::PushLockGuard;
 pub use observation::{HookKind, Observation};
 pub use registry::HarnessRegistry;
 pub use run_loop::{SpecHarness, SpecHarnessParams};
