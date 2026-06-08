@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
-use crate::db::sqlite::{card_update_tx, runtime_bind_attribution_tx, runtime_start_tx};
+use crate::db::sqlite::{
+    card_update_tx, harness_items_delete_by_card_tx, runtime_bind_attribution_tx, runtime_start_tx,
+};
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::Event;
@@ -75,6 +77,8 @@ pub struct SpecHarnessStartOperationPayload {
     pub cwd: String,
     #[serde(default)]
     pub goal: Option<String>,
+    #[serde(default)]
+    pub reset_harness_items: bool,
 }
 
 #[async_trait]
@@ -194,6 +198,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
+        let reset_harness_items = payload.reset_harness_items;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
         let runtime_id = output_string(output, "runtime_id")?;
@@ -285,6 +290,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         Some(serde_json::to_value(&snapshot)?),
                     )
                     .await?;
+                    if reset_harness_items {
+                        harness_items_delete_by_card_tx(tx, &card_id).await?;
+                    }
                     let card = card_update_tx(
                         tx,
                         &card_id,
@@ -341,6 +349,8 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             thread_id,
             repo: self.repo.clone(),
             events: ctx.events.clone(),
+            card_role_cache: self.card_role_cache.clone(),
+            wave_cove_cache: self.wave_cove_cache.clone(),
             daemon: self.daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,

@@ -353,6 +353,8 @@ impl AppState {
         crate::harness::recover_harnesses_on_boot(
             self.raw.clone(),
             self.events.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
             self.shared_codex_appserver.clone(),
             &self.harness,
         )

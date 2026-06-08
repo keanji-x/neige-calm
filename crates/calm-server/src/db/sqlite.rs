@@ -3411,6 +3411,17 @@ impl RepoSyncDomainRaw for SqlxRepo {
     }
 }
 
+pub async fn harness_items_delete_by_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<()> {
+    sqlx::query("DELETE FROM harness_items WHERE card_id = ?1")
+        .bind(card_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // RepoOutOfDomain — operational writes that intentionally bypass the event
 // log: terminal lifecycle, plugin install/config, app-global settings. See

@@ -13,8 +13,8 @@ use crate::actor::Actor;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
     card_codex_thread_upsert_tx, card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx,
-    card_update_tx, runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
-    terminal_delete_tx,
+    card_update_tx, harness_items_delete_by_card_tx, runtime_get_active_for_card_tx,
+    runtime_start_tx, runtime_supersede_tx, terminal_delete_tx,
 };
 use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_in_tx_typed, write_with_event_typed, write_with_events_typed};
@@ -30,6 +30,7 @@ use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::routes::waves::{
     await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
+    spec_harness_enabled,
 };
 use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
@@ -629,6 +630,7 @@ async fn reset_spec_card_shared(
             card.id
         )));
     }
+    let reset_harness_items = spec_harness_enabled() || card_payload_marks_spec_harness(&card);
     let terminal = match s.repo.terminal_get_by_card(card.id.as_str()).await? {
         Some(terminal) => terminal,
         None => {
@@ -636,10 +638,15 @@ async fn reset_spec_card_shared(
                 .repo
                 .runtime_get_active_for_card(&card.id.to_string())
                 .await?;
-            if card_payload_marks_spec_harness(&card)
-                || active_runtime.as_ref().is_some_and(is_harness_runtime)
-            {
-                return reset_spec_harness_card(s, actor, card, active_runtime).await;
+            if reset_harness_items || active_runtime.as_ref().is_some_and(is_harness_runtime) {
+                return reset_spec_harness_card(
+                    s,
+                    actor,
+                    card,
+                    active_runtime,
+                    reset_harness_items,
+                )
+                .await;
             }
             return Err(CalmError::Internal(format!(
                 "spec terminal row missing for card {}",
@@ -725,8 +732,15 @@ async fn reset_spec_card_shared(
         reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &terminal).await;
         s.repo.terminal_set_pid(&terminal.id, None).await?;
         s.repo.terminal_set_exit(&terminal.id, None, false).await?;
-        persist_shared_reset_runtime_fields(&s, &cs, card_id.as_str(), &wave, &started.thread_id)
-            .await?;
+        persist_shared_reset_runtime_fields(
+            &s,
+            &cs,
+            card_id.as_str(),
+            &wave,
+            &started.thread_id,
+            reset_harness_items,
+        )
+        .await?;
 
         let handle = spec_push::park_shared_handle(
             cs.shared_codex_appserver.clone(),
@@ -824,6 +838,7 @@ async fn reset_spec_harness_card(
     actor: Actor,
     card: Card,
     runtime: Option<CardRuntime>,
+    reset_harness_items: bool,
 ) -> Result<ResetSpecCardResponse> {
     let wave = s
         .repo
@@ -850,6 +865,7 @@ async fn reset_spec_harness_card(
         sort: None,
         cwd: wave.cwd.clone(),
         goal: (!goal.is_empty()).then_some(goal),
+        reset_harness_items,
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_reset_operation(&s, "spec-harness-start", start_payload).await?;
@@ -1013,6 +1029,7 @@ async fn persist_shared_reset_runtime_fields(
     spec_card_id: &str,
     wave: &crate::model::Wave,
     thread_id: &str,
+    reset_harness_items: bool,
 ) -> Result<()> {
     let scope = EventScope::Card {
         card: spec_card_id.into(),
@@ -1094,6 +1111,9 @@ async fn persist_shared_reset_runtime_fields(
                             status: new_status,
                         }
                     };
+                if reset_harness_items {
+                    harness_items_delete_by_card_tx(tx, &card_id_for_tx).await?;
+                }
                 let card = card_update_tx(
                     tx,
                     &card_id_for_tx,

@@ -7,10 +7,11 @@ use serde_json::Value;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::task::AbortHandle;
 
+use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
-use crate::event::{Event, EventBus};
+use crate::event::{Event, EventBus, EventScope};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
@@ -19,6 +20,7 @@ use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::now_ms;
 use crate::runtime_repo::{RunStatus, RuntimeId};
 use crate::shared_codex_appserver::SharedCodexAppServer;
+use crate::wave_cove_cache::WaveCoveCache;
 
 const OBSERVATION_BUFFER: usize = 256;
 
@@ -34,6 +36,8 @@ pub struct SpecHarnessParams {
     pub thread_id: Option<String>,
     pub repo: Arc<dyn Repo>,
     pub events: EventBus,
+    pub card_role_cache: CardRoleCache,
+    pub wave_cove_cache: WaveCoveCache,
     pub daemon: Arc<SharedCodexAppServer>,
     pub config: HarnessConfig,
     pub snapshot: HarnessSnapshot,
@@ -46,6 +50,8 @@ struct Inner {
     thread_id: RwLock<Option<String>>,
     repo: Arc<dyn Repo>,
     events: EventBus,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
     daemon: Arc<SharedCodexAppServer>,
     observations: mpsc::Sender<HarnessObservationDelivery>,
     state: Mutex<HarnessState>,
@@ -214,6 +220,8 @@ fn inner_from_params(
         thread_id: RwLock::new(params.thread_id.or(snapshot.last_thread_id.clone())),
         repo: params.repo,
         events: params.events,
+        card_role_cache: params.card_role_cache,
+        wave_cove_cache: params.wave_cove_cache,
         daemon: params.daemon,
         observations,
         state: Mutex::new(state),
@@ -230,6 +238,24 @@ fn inner_from_params(
         abort_handle: StdMutex::new(None),
         config: params.config,
     })
+}
+
+fn harness_event_scope(inner: &Inner, event_name: &'static str) -> EventScope {
+    let card = inner.card_id.clone();
+    let wave = inner.wave_id.clone();
+    match inner.wave_cove_cache.cove_of(&wave) {
+        Some(cove) => EventScope::Card { card, wave, cove },
+        None => {
+            tracing::warn!(
+                runtime_id = %inner.runtime_id,
+                card_id = %card,
+                wave_id = %wave,
+                event_name,
+                "spec harness event missing wave cove cache entry; using system scope"
+            );
+            EventScope::System
+        }
+    }
 }
 
 fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
@@ -501,19 +527,28 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     &params_json,
                 )
                 .await?;
-            inner.events.emit(
-                ActorId::Kernel,
-                Event::HarnessItemAdded {
-                    runtime_id: inner.runtime_id.clone(),
-                    card_id: inner.card_id.clone(),
-                    wave_id: inner.wave_id.clone(),
-                    item_db_id,
-                    item_uuid,
-                    item_type,
-                    turn_id,
-                    method,
-                },
-            );
+            let scope = harness_event_scope(inner, "harness.item.added");
+            inner
+                .repo
+                .log_pure_event(
+                    ActorId::Kernel,
+                    scope,
+                    None,
+                    &inner.events,
+                    &inner.card_role_cache,
+                    &inner.wave_cove_cache,
+                    Event::HarnessItemAdded {
+                        runtime_id: inner.runtime_id.clone(),
+                        card_id: inner.card_id.clone(),
+                        wave_id: inner.wave_id.clone(),
+                        item_db_id,
+                        item_uuid,
+                        item_type,
+                        turn_id,
+                        method,
+                    },
+                )
+                .await?;
         }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }
@@ -900,16 +935,25 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
         }
     };
     if let Some(old_phase) = old_phase {
-        inner.events.emit(
-            ActorId::Kernel,
-            Event::HarnessPhaseChanged {
-                runtime_id: event_runtime_id,
-                card_id: event_card_id,
-                wave_id: event_wave_id,
-                old_phase,
-                new_phase,
-            },
-        );
+        let scope = harness_event_scope(inner, "harness.phase.changed");
+        inner
+            .repo
+            .log_pure_event(
+                ActorId::Kernel,
+                scope,
+                None,
+                &inner.events,
+                &inner.card_role_cache,
+                &inner.wave_cove_cache,
+                Event::HarnessPhaseChanged {
+                    runtime_id: event_runtime_id,
+                    card_id: event_card_id,
+                    wave_id: event_wave_id,
+                    old_phase,
+                    new_phase,
+                },
+            )
+            .await?;
     }
     Ok(())
 }

@@ -84,6 +84,8 @@ async fn seed_harness(
         thread_id: Some(thread_id),
         repo: repo_dyn,
         events,
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
