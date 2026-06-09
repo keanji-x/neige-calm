@@ -55,8 +55,8 @@ test('Report card file sidebar opens a real wave file', async ({ page }) => {
   await expect(reportCard).toBeVisible();
   await expect(reportCard.locator('.wave-report-files-tree')).toBeVisible();
 
-  await reportCard.getByRole('button', { name: /cards\// }).click();
-  await reportCard.getByRole('button', { name: /index\.json/ }).click();
+  await reportCard.getByRole('treeitem', { name: /cards\// }).click();
+  await reportCard.getByRole('treeitem', { name: /index\.json/ }).click();
 
   const viewer = reportCard.locator('.wave-report-files-code-wrap');
   await expect(viewer).toBeVisible();
