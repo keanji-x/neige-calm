@@ -45,7 +45,7 @@ kind: string, sort: number,
  * `serde-json-impl` feature, but we pin it explicitly so a future
  * feature-flag change can't silently widen / narrow the surface.
  */
-payload: unknown, 
+payload: unknown, runtime?: CardRuntimeView, 
 /**
  * Issue #229 PR A — system-card guard. `true` for user-facing cards
  * (the default; all pre-#229 rows backfill via the column DEFAULT in
@@ -104,6 +104,8 @@ export type CardRuntime = { id: string, card_id: string, kind: RuntimeKind, agen
  * Lazy-joined view; not a schema column.
  */
 terminal_ref: TerminalRunRef | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, lease_owner: string | null, lease_until_ms: number | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, };
+
+export type CardRuntimeView = { runtime_id: string, kind: string, status: string, provider?: string, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, };
 
 export type Cove = { id: CoveId, name: string, color: string, sort: number, 
 /**
@@ -269,7 +271,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.job_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, } } | { "ev": "terminal.job_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, } };
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, } };
 
 /**
  * Where an event lives in the cove → wave → card hierarchy.

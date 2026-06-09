@@ -167,6 +167,7 @@ fn wave_fs_error_to_rpc(err: WaveFsError) -> RpcError {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -70,6 +70,13 @@ type TestSpawnHook = Arc<
         + Sync,
 >;
 
+fn strip_runtime(mut card: Value) -> Value {
+    if let Some(obj) = card.as_object_mut() {
+        obj.remove("runtime");
+    }
+    card
+}
+
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -529,7 +536,10 @@ async fn post_terminal_card_idempotency_retry_skips_validation_after_wave_delete
         StatusCode::CREATED,
         "retry must return the stored operation instead of revalidating the deleted wave: {retry_card:?}"
     );
-    assert_eq!(retry_card, first_card);
+    assert_eq!(
+        strip_runtime(retry_card.clone()),
+        strip_runtime(first_card.clone())
+    );
 }
 
 #[tokio::test]

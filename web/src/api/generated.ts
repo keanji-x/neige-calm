@@ -779,6 +779,7 @@ export interface components {
              *     feature-flag change can't silently widen / narrow the surface.
              */
             payload: Record<string, never>;
+            runtime?: null | components["schemas"]["CardRuntimeView"];
             /** Format: double */
             sort: number;
             /** Format: int64 */

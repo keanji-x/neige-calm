@@ -8,7 +8,7 @@
 //!     touches the actor header path or the Worker scope semantics
 //!     end-to-end.
 //!   * `wave_as_actor_smoke.rs` boots real axum + SqlxRepo + role cache
-//!     and runs the happy path (Spec card emits CodexJobRequested → worker
+//!     and runs the happy path (Spec card emits CodexWorkerRequested → worker
 //!     mint), but the *deny* paths are unexercised.
 //!
 //! This file fills the gap with focused assertions on the cross-layer
@@ -558,7 +558,7 @@ async fn spec_emitting_wave_scope_is_accepted() {
             &bus,
             &cache,
             &wcc,
-            Event::CodexJobRequested {
+            Event::CodexWorkerRequested {
                 idempotency_key: "spec-pos-1".into(),
                 goal: "go".into(),
                 context: Value::Null,
@@ -568,6 +568,6 @@ async fn spec_emitting_wave_scope_is_accepted() {
         .await;
     assert!(
         res.is_ok(),
-        "Spec card emitting Wave-scoped CodexJobRequested must be accepted: {res:?}",
+        "Spec card emitting Wave-scoped CodexWorkerRequested must be accepted: {res:?}",
     );
 }

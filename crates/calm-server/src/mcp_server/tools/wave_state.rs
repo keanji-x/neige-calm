@@ -29,7 +29,7 @@
 //!   accept/reject verdict on a worker's prior result. Lowers to
 //!   either `Event::TaskCompleted` (verdict = "accepted") or
 //!   `Event::TaskFailed` (verdict = "rejected"); the `idempotency_key`
-//!   echoes the original `*.job_requested` so consumers can correlate.
+//!   echoes the original `*.worker_requested` so consumers can correlate.
 //!
 //!   ### Variant choice (TaskCompleted/TaskFailed reuse vs. new variant)
 //!
@@ -437,7 +437,7 @@ fn update_task_meta_descriptor() -> ToolDescriptor {
         name: TOOL_UPDATE_TASK_META.into(),
         description: "Spec-only: record the spec's accept/reject verdict on \
              a worker's prior result. `idempotency_key` echoes the original \
-             `*.job_requested`. `status = \"accepted\"` emits \
+             `*.worker_requested`. `status = \"accepted\"` emits \
              `task.completed`; `status = \"rejected\"` emits `task.failed` \
              with `reason` (free-form). The verdict is persisted on the \
              events log so audit replay surfaces the spec's rationale."

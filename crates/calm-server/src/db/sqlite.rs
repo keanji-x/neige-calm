@@ -808,6 +808,7 @@ pub async fn card_create_with_id_tx(
         kind: p.kind,
         sort,
         payload: p.payload,
+        runtime: None,
         deletable,
         created_at: now,
         updated_at: now,

@@ -3107,6 +3107,16 @@
             "type": "object",
             "description": "Opaque JSON blob — ts-rs would otherwise emit `unknown` via the\n`serde-json-impl` feature, but we pin it explicitly so a future\nfeature-flag change can't silently widen / narrow the surface."
           },
+          "runtime": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CardRuntimeView"
+              }
+            ]
+          },
           "sort": {
             "type": "number",
             "format": "double"
@@ -3159,6 +3169,61 @@
           "spec",
           "reportcard"
         ]
+      },
+      "CardRuntimeView": {
+        "type": "object",
+        "required": [
+          "runtime_id",
+          "kind",
+          "status"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "terminal_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thread_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thread_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "Cove": {
         "type": "object",

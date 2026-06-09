@@ -73,8 +73,8 @@ type WaveFilesDerivedEvent =
   | RuntimeCardEvent
   | EventOf<'codex.hook'>
   | EventOf<'claude.hook'>
-  | EventOf<'codex.job_requested'>
-  | EventOf<'terminal.job_requested'>
+  | EventOf<'codex.worker_requested'>
+  | EventOf<'terminal.worker_requested'>
   | EventOf<'task.completed'>
   | EventOf<'task.failed'>
   | EventOf<'terminal.deleted'>;
@@ -205,13 +205,13 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     requiresContext: waveFilesDerivedEventKeys,
     reason: 'Card topic consumers handle claude hook payloads directly.',
   },
-  'codex.job_requested': {
+  'codex.worker_requested': {
     requiresContext: waveFilesDerivedEventKeys,
-    reason: 'Dispatcher consumes codex job requests directly from the event bus.',
+    reason: 'Dispatcher consumes codex worker requests directly from the event bus.',
   },
-  'terminal.job_requested': {
+  'terminal.worker_requested': {
     requiresContext: waveFilesDerivedEventKeys,
-    reason: 'Dispatcher consumes terminal job requests directly from the event bus.',
+    reason: 'Dispatcher consumes terminal worker requests directly from the event bus.',
   },
   'task.completed': {
     requiresContext: waveFilesDerivedEventKeys,

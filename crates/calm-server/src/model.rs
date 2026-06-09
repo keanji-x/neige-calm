@@ -446,6 +446,32 @@ pub struct WavePatch {
 
 // ---------------- Card ----------------
 
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct CardRuntimeView {
+    pub runtime_id: String,
+    pub kind: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub terminal_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_status: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Card {
@@ -468,6 +494,11 @@ pub struct Card {
     /// feature-flag change can't silently widen / narrow the surface.
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    #[sqlx(skip)]
+    #[ts(optional)]
+    pub runtime: Option<CardRuntimeView>,
     /// Issue #229 PR A — system-card guard. `true` for user-facing cards
     /// (the default; all pre-#229 rows backfill via the column DEFAULT in
     /// migration 0013). `false` for kernel-owned cards that the user

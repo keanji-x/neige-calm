@@ -541,8 +541,8 @@ pub enum Event {
     /// `context` is opaque payload (working-dir hints, prior turn history,
     /// model preference). Kernel never inspects it; PR5's dispatcher
     /// forwards verbatim into the spawned worker's card payload.
-    #[serde(rename = "codex.job_requested")]
-    CodexJobRequested {
+    #[serde(rename = "codex.worker_requested", alias = "codex.job_requested")]
+    CodexWorkerRequested {
         idempotency_key: String,
         goal: String,
         #[ts(type = "unknown")]
@@ -557,8 +557,8 @@ pub enum Event {
     ///
     /// `cwd` is `None` when the spec card defers to the wave/cove default
     /// working directory.
-    #[serde(rename = "terminal.job_requested")]
-    TerminalJobRequested {
+    #[serde(rename = "terminal.worker_requested", alias = "terminal.job_requested")]
+    TerminalWorkerRequested {
         idempotency_key: String,
         cmd: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -569,7 +569,7 @@ pub enum Event {
     /// Worker card reports task completion. PR4 schema-only; the
     /// dispatcher's push path delivers this to the requesting spec card. The
     /// `idempotency_key` echoes back the one from the matching
-    /// `*.job_requested` event so the spec can correlate without parsing
+    /// `*.worker_requested` event so the spec can correlate without parsing
     /// the worker card's identity.
     ///
     /// `result` is opaque agent payload (free-form text, structured
@@ -610,7 +610,7 @@ pub enum Event {
 /// `Event::OverlayDeleted`, and `Event::PluginState`; every other variant
 /// has no plugin attribution. `entity_kind` / `entity_id` are set only for
 /// events with a filterable entity surface. The PR4 dispatcher/task-lifecycle
-/// variants (`Event::CodexJobRequested`, `Event::TerminalJobRequested`,
+/// variants (`Event::CodexWorkerRequested`, `Event::TerminalWorkerRequested`,
 /// `Event::TaskCompleted`, `Event::TaskFailed`) carry no plugin id, entity
 /// kind, or entity id; plugins that want those signals must filter via the
 /// events glob clause and omit the classifier clauses.
@@ -747,13 +747,13 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
-            Event::CodexJobRequested { .. } => EventMetadata {
+            Event::CodexWorkerRequested { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: None,
             },
-            Event::TerminalJobRequested { .. } => EventMetadata {
+            Event::TerminalWorkerRequested { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -801,8 +801,8 @@ impl Event {
             Event::PluginState { .. } => "plugin.state",
             Event::CodexHook { .. } => "codex.hook",
             Event::ClaudeHook { .. } => "claude.hook",
-            Event::CodexJobRequested { .. } => "codex.job_requested",
-            Event::TerminalJobRequested { .. } => "terminal.job_requested",
+            Event::CodexWorkerRequested { .. } => "codex.worker_requested",
+            Event::TerminalWorkerRequested { .. } => "terminal.worker_requested",
             Event::TaskCompleted { .. } => "task.completed",
             Event::TaskFailed { .. } => "task.failed",
         }
@@ -951,8 +951,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         // carries the originating `EventScope` instead — see `Dispatcher`).
         // Subscribers identify these via the firehose plus the dispatcher's
         // `kinds=` filter (PR5).
-        Event::CodexJobRequested { .. }
-        | Event::TerminalJobRequested { .. }
+        Event::CodexWorkerRequested { .. }
+        | Event::TerminalWorkerRequested { .. }
         | Event::TaskCompleted { .. }
         | Event::TaskFailed { .. } => vec!["*".into()],
     }
@@ -1102,7 +1102,7 @@ impl EventBus {
     /// kind-tag match only. A future extension can add prefix globs
     /// (`"task.*"`) by widening [`SubscribeFilter::kinds`] semantics.
     /// The dispatcher subscribes with explicit kind list
-    /// `["codex.job_requested", "terminal.job_requested"]`.
+    /// `["codex.worker_requested", "terminal.worker_requested"]`.
     ///
     /// Relationship to [`topics`]: `topics()` is the plugin-host /
     /// WS-client filter grammar (`"card:<id>"`, `"plugin:*"`, glob over
@@ -1140,7 +1140,7 @@ pub struct SubscribeFilter {
     /// true` matches `Cove{c}`, `Wave{cove=c,...}`, and
     /// `Card{cove=c,...}`). When false, only exact equality matches —
     /// e.g. `Cove(c)` matches the cove-level event but not any wave
-    /// under it. The dispatcher uses `true` so a `*.job_requested`
+    /// under it. The dispatcher uses `true` so a `*.worker_requested`
     /// emitted from any spec card scope (Card) routes upward.
     pub include_descendants: bool,
     /// `None` accepts any kind; `Some([...])` accepts only those exact
@@ -1420,20 +1420,20 @@ mod scope_tests {
         // The kind_tag strings are persisted to `events.kind` and surfaced
         // on the wire as the `ev` discriminator — changing them is a wire
         // break. Pin each PR4 variant explicitly.
-        let codex_req = Event::CodexJobRequested {
+        let codex_req = Event::CodexWorkerRequested {
             idempotency_key: "k".into(),
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
         };
-        assert_eq!(codex_req.kind_tag(), "codex.job_requested");
+        assert_eq!(codex_req.kind_tag(), "codex.worker_requested");
 
-        let term_req = Event::TerminalJobRequested {
+        let term_req = Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,
         };
-        assert_eq!(term_req.kind_tag(), "terminal.job_requested");
+        assert_eq!(term_req.kind_tag(), "terminal.worker_requested");
 
         let done = Event::TaskCompleted {
             idempotency_key: "k".into(),
@@ -1679,8 +1679,8 @@ mod scope_tests {
     }
 
     #[test]
-    fn codex_job_requested_serde_round_trip() {
-        let ev = Event::CodexJobRequested {
+    fn codex_worker_requested_serde_round_trip() {
+        let ev = Event::CodexWorkerRequested {
             idempotency_key: "idem-1".into(),
             goal: "refactor X".into(),
             context: serde_json::json!({ "cwd": "/tmp", "hints": [1, 2] }),
@@ -1688,19 +1688,25 @@ mod scope_tests {
         };
         let json = serde_json::to_value(&ev).unwrap();
         // Pin the exact wire shape: `{ev, data}` envelope, snake_case keys.
-        assert_eq!(json["ev"], "codex.job_requested");
+        assert_eq!(json["ev"], "codex.worker_requested");
         assert_eq!(json["data"]["idempotency_key"], "idem-1");
         assert_eq!(json["data"]["goal"], "refactor X");
         assert_eq!(json["data"]["context"]["cwd"], "/tmp");
         assert_eq!(json["data"]["acceptance_criteria"], "tests pass");
 
         // Round-trip via the Event enum.
-        let back: Event = serde_json::from_value(json).unwrap();
-        assert_eq!(back.kind_tag(), "codex.job_requested");
+        let back: Event = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.kind_tag(), "codex.worker_requested");
+
+        // Backward compatibility for pre-#581 event-log rows / clients.
+        let mut old_json = json;
+        old_json["ev"] = serde_json::json!("codex.job_requested");
+        let back: Event = serde_json::from_value(old_json).unwrap();
+        assert_eq!(back.kind_tag(), "codex.worker_requested");
 
         // `acceptance_criteria = None` should be absent on the wire via
         // `skip_serializing_if`.
-        let no_ac = Event::CodexJobRequested {
+        let no_ac = Event::CodexWorkerRequested {
             idempotency_key: "k".into(),
             goal: "g".into(),
             context: serde_json::Value::Null,
@@ -1714,20 +1720,20 @@ mod scope_tests {
     }
 
     #[test]
-    fn terminal_job_requested_serde_round_trip() {
-        let ev = Event::TerminalJobRequested {
+    fn terminal_worker_requested_serde_round_trip() {
+        let ev = Event::TerminalWorkerRequested {
             idempotency_key: "idem-2".into(),
             cmd: "cargo test".into(),
             cwd: Some("/repo".into()),
         };
         let json = serde_json::to_value(&ev).unwrap();
-        assert_eq!(json["ev"], "terminal.job_requested");
+        assert_eq!(json["ev"], "terminal.worker_requested");
         assert_eq!(json["data"]["idempotency_key"], "idem-2");
         assert_eq!(json["data"]["cmd"], "cargo test");
         assert_eq!(json["data"]["cwd"], "/repo");
 
         // `cwd = None` absent on the wire.
-        let no_cwd = Event::TerminalJobRequested {
+        let no_cwd = Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,
@@ -1739,8 +1745,14 @@ mod scope_tests {
         );
 
         // Round-trip via the Event enum.
-        let back: Event = serde_json::from_value(json).unwrap();
-        assert_eq!(back.kind_tag(), "terminal.job_requested");
+        let back: Event = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.kind_tag(), "terminal.worker_requested");
+
+        // Backward compatibility for pre-#581 event-log rows / clients.
+        let mut old_json = json;
+        old_json["ev"] = serde_json::json!("terminal.job_requested");
+        let back: Event = serde_json::from_value(old_json).unwrap();
+        assert_eq!(back.kind_tag(), "terminal.worker_requested");
     }
 
     #[test]
@@ -2050,13 +2062,13 @@ mod scope_tests {
                 hook_idempotency_key: "hook-claude".into(),
                 payload: serde_json::Value::Null,
             },
-            Event::CodexJobRequested {
+            Event::CodexWorkerRequested {
                 idempotency_key: "k".into(),
                 goal: "g".into(),
                 context: serde_json::Value::Null,
                 acceptance_criteria: None,
             },
-            Event::TerminalJobRequested {
+            Event::TerminalWorkerRequested {
                 idempotency_key: "k".into(),
                 cmd: "ls".into(),
                 cwd: None,
@@ -2108,6 +2120,7 @@ mod scope_tests {
             kind: "terminal".into(),
             sort: 1.0,
             payload: serde_json::json!({}),
+            runtime: None,
             deletable: true,
             created_at: 0,
             updated_at: 0,
@@ -2142,7 +2155,7 @@ mod scope_tests {
                 }),
             ),
             (
-                "codex.job_requested",
+                "codex.worker_requested",
                 serde_json::json!({
                     "idempotency_key": "k",
                     "goal": "g",
@@ -2150,7 +2163,7 @@ mod scope_tests {
                 }),
             ),
             (
-                "terminal.job_requested",
+                "terminal.worker_requested",
                 serde_json::json!({ "idempotency_key": "k", "cmd": "ls" }),
             ),
             (
@@ -2225,6 +2238,7 @@ mod filter_tests {
             kind: "terminal".into(),
             sort: 1.0,
             payload: serde_json::Value::Null,
+            runtime: None,
             deletable: true,
             created_at: 0,
             updated_at: 0,
@@ -2232,7 +2246,7 @@ mod filter_tests {
     }
 
     fn codex_req() -> Event {
-        Event::CodexJobRequested {
+        Event::CodexWorkerRequested {
             idempotency_key: "k".into(),
             goal: "g".into(),
             context: serde_json::Value::Null,
@@ -2285,8 +2299,8 @@ mod filter_tests {
             scope: SubscribeScope::Any,
             include_descendants: true,
             kinds: Some(vec![
-                "codex.job_requested".into(),
-                "terminal.job_requested".into(),
+                "codex.worker_requested".into(),
+                "terminal.worker_requested".into(),
             ]),
         };
         assert!(f.matches(&env(EventScope::System, codex_req())));
@@ -2424,7 +2438,7 @@ mod filter_tests {
         let f = SubscribeFilter {
             scope: SubscribeScope::Cove(CoveId::from("c")),
             include_descendants: true,
-            kinds: Some(vec!["codex.job_requested".into()]),
+            kinds: Some(vec!["codex.worker_requested".into()]),
         };
         // Right cove, but wrong kind.
         assert!(!f.matches(&env(cove_scope(), task_failed())));

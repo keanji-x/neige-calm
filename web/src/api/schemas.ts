@@ -102,6 +102,19 @@ export const waveSchema = z.object({
   updated_at: z.number(),
 });
 
+export const cardRuntimeViewSchema = z.object({
+  runtime_id: z.string(),
+  kind: z.string(),
+  status: z.string(),
+  provider: z.string().optional(),
+  terminal_id: z.string().optional(),
+  thread_id: z.string().optional(),
+  session_id: z.string().optional(),
+  source: z.string().optional(),
+  thread_status: z.string().optional(),
+});
+export type CardRuntimeView = z.infer<typeof cardRuntimeViewSchema>;
+
 /** `model::Card` — card row. `payload` is opaque `serde_json::Value`. */
 export const cardSchema = z.object({
   id: z.string(),
@@ -110,6 +123,7 @@ export const cardSchema = z.object({
   sort: z.number(),
   // serde_json::Value on the wire: arbitrary JSON. Kernel never inspects.
   payload: z.unknown(),
+  runtime: cardRuntimeViewSchema.optional(),
   // Issue #229 PR A — system-card guard bit. Kernel default = true
   // (matches the migration's `INTEGER NOT NULL DEFAULT 1`); the `#[serde(default
   // = "default_deletable")]` on the Rust struct means wire payloads
@@ -407,7 +421,7 @@ export const claudeHookSchema = z.object({
 // element of `task.completed.artifacts[]` is a bare string.
 
 /**
- * `Event::CodexJobRequested` — spec/worker card asks the kernel
+ * `Event::CodexWorkerRequested` — spec/worker card asks the kernel
  * dispatcher to spawn a codex worker card. PR5's `Dispatcher` consumes
  * via `EventBus::subscribe(kinds=["*.requested"])` and correlates the
  * eventual `task.completed` / `task.failed` back to the requester via
@@ -417,8 +431,8 @@ export const claudeHookSchema = z.object({
  * history, model preference) — kernel never inspects, dispatcher
  * forwards verbatim into the spawned worker's card payload.
  */
-export const codexJobRequestedSchema = z.object({
-  ev: z.literal('codex.job_requested'),
+export const codexWorkerRequestedSchema = z.object({
+  ev: z.literal('codex.worker_requested'),
   data: z.object({
     idempotency_key: z.string(),
     goal: z.string(),
@@ -428,12 +442,12 @@ export const codexJobRequestedSchema = z.object({
 });
 
 /**
- * `Event::TerminalJobRequested` — spec card asks the dispatcher to spawn
+ * `Event::TerminalWorkerRequested` — spec card asks the dispatcher to spawn
  * a terminal worker card. `cwd` is `None` when the spec card defers to
  * the wave/cove default working directory.
  */
-export const terminalJobRequestedSchema = z.object({
-  ev: z.literal('terminal.job_requested'),
+export const terminalWorkerRequestedSchema = z.object({
+  ev: z.literal('terminal.worker_requested'),
   data: z.object({
     idempotency_key: z.string(),
     cmd: z.string(),
@@ -443,7 +457,7 @@ export const terminalJobRequestedSchema = z.object({
 
 /**
  * `Event::TaskCompleted` — worker card reports task completion.
- * `idempotency_key` echoes the matching `*.job_requested` key so the
+ * `idempotency_key` echoes the matching `*.worker_requested` key so the
  * spec can correlate without parsing the worker card's identity.
  *
  * `artifacts` is `Vec<ArtifactRef>` server-side; `ArtifactRef` is a
@@ -531,8 +545,8 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   pluginStateSchema,
   codexHookSchema,
   claudeHookSchema,
-  codexJobRequestedSchema,
-  terminalJobRequestedSchema,
+  codexWorkerRequestedSchema,
+  terminalWorkerRequestedSchema,
   taskCompletedSchema,
   taskFailedSchema,
 ]);
@@ -570,8 +584,8 @@ export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
 export type CodexHookEvent = z.infer<typeof codexHookSchema>;
 export type ClaudeHookEvent = z.infer<typeof claudeHookSchema>;
-export type CodexJobRequestedEvent = z.infer<typeof codexJobRequestedSchema>;
-export type TerminalJobRequestedEvent = z.infer<typeof terminalJobRequestedSchema>;
+export type CodexWorkerRequestedEvent = z.infer<typeof codexWorkerRequestedSchema>;
+export type TerminalWorkerRequestedEvent = z.infer<typeof terminalWorkerRequestedSchema>;
 export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
 

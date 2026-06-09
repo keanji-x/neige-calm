@@ -6,17 +6,17 @@
 //!      three events of mixed kinds + scopes, assert the filter delivers
 //!      only the requested ones (and that the receiver outlives extra
 //!      lifecycle activity around it).
-//!   2. **Happy path** — emit one `CodexJobRequested`, await the worker
+//!   2. **Happy path** — emit one `CodexWorkerRequested`, await the worker
 //!      card landing in the DB with `role = Worker` + payload carrying
 //!      the idempotency key, and a single `card.added` event in the
 //!      log.
-//!   3. **Idempotency** — emit the same `CodexJobRequested` (same
+//!   3. **Idempotency** — emit the same `CodexWorkerRequested` (same
 //!      `idempotency_key`) twice rapid-fire; the operation-table unique
 //!      key allows only one worker operation/card.
 //!   4. **Semaphore cap** — with `NEIGE_DISPATCHER_PERMITS = 2`, emit
 //!      five `*.Requested` events; observe the global permit count
 //!      stays bounded by 2.
-//!   5. **TaskFailed on bad scope** — emit a `CodexJobRequested` with
+//!   5. **TaskFailed on bad scope** — emit a `CodexWorkerRequested` with
 //!      `EventScope::System` (the dispatcher needs a wave scope to mint
 //!      a card); assert a `task.failed` event lands in the events log.
 //!
@@ -111,7 +111,7 @@ fn stub_shared(
 }
 
 fn codex_req(idem: &str, goal: &str) -> Event {
-    Event::CodexJobRequested {
+    Event::CodexWorkerRequested {
         idempotency_key: idem.into(),
         goal: goal.into(),
         context: serde_json::Value::Null,
@@ -322,7 +322,7 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
     let filter = SubscribeFilter {
         scope: SubscribeScope::Any,
         include_descendants: true,
-        kinds: Some(vec!["codex.job_requested".into()]),
+        kinds: Some(vec!["codex.worker_requested".into()]),
     };
 
     // Emit three events: matching kind, non-matching kind, matching kind again.
@@ -350,11 +350,11 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
     assert_eq!(
         matched.len(),
         2,
-        "exactly two codex.job_requested events should match, got {}",
+        "exactly two codex.worker_requested events should match, got {}",
         matched.len()
     );
     for env in &matched {
-        assert_eq!(env.event.kind_tag(), "codex.job_requested");
+        assert_eq!(env.event.kind_tag(), "codex.worker_requested");
     }
 }
 
@@ -371,7 +371,7 @@ async fn subscribe_filtered_returns_live_receiver() {
         .await
         .expect("recv within 200ms")
         .expect("recv ok");
-    assert_eq!(env.event.kind_tag(), "codex.job_requested");
+    assert_eq!(env.event.kind_tag(), "codex.worker_requested");
 }
 
 #[tokio::test]
@@ -597,11 +597,11 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 
     // Subscribe BEFORE emitting so we don't race past the CardAdded
     // frame. Filter on the kind below so the dispatch's own
-    // `TerminalJobRequested` echo doesn't show up as the "first" event.
+    // `TerminalWorkerRequested` echo doesn't show up as the "first" event.
     let mut rx = events.subscribe();
 
     let idem = "issue-310-ordering-terminal";
-    let req = Event::TerminalJobRequested {
+    let req = Event::TerminalWorkerRequested {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
@@ -612,7 +612,7 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
         .unwrap();
 
     // Drain the bus until we see the worker's CardAdded. Skip the
-    // initial TerminalJobRequested envelope we just emitted; skip any
+    // initial TerminalWorkerRequested envelope we just emitted; skip any
     // unrelated kinds.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut worker_card: Option<calm_server::model::Card> = None;
@@ -685,7 +685,7 @@ async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
         &events,
         &cache,
         &wcc,
-        Event::TerminalJobRequested {
+        Event::TerminalWorkerRequested {
             idempotency_key: idem.into(),
             cmd: cmd.into(),
             cwd: None,
@@ -700,7 +700,7 @@ async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
         &events,
         &cache,
         &wcc,
-        Event::TerminalJobRequested {
+        Event::TerminalWorkerRequested {
             idempotency_key: idem.into(),
             cmd: cmd.into(),
             cwd: Some(String::new()),
@@ -821,7 +821,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     );
 
     let idem = "rollback-terminal-1";
-    let req = Event::TerminalJobRequested {
+    let req = Event::TerminalWorkerRequested {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
@@ -905,7 +905,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     );
     let mut rx_retry = events_retry.subscribe();
 
-    let req_retry = Event::TerminalJobRequested {
+    let req_retry = Event::TerminalWorkerRequested {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
@@ -1028,7 +1028,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
     // plumbing) but exercises the same worker compensation helper as the
     // codex path. Reap-on-rollback proven for one path holds for both.
     let idem = "reap-on-rollback-1";
-    let req = Event::TerminalJobRequested {
+    let req = Event::TerminalWorkerRequested {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
@@ -1151,7 +1151,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     // after the renderer has observed the child exit.
     let mut rx = events.subscribe();
 
-    let req = Event::TerminalJobRequested {
+    let req = Event::TerminalWorkerRequested {
         idempotency_key: idem.into(),
         // Fast-exit command for the real supervised shell.
         cmd: "printf done\n".into(),
