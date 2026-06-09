@@ -79,7 +79,14 @@ pub const API_VERSION: &str = "1";
 ///   Changed, ProtocolError, TerminalExited). A v1 frontend hitting a v2
 ///   kernel will fail its first frame and be hard-refreshed by the compat
 ///   modal — clean break, no backwards compatibility shim.
-pub const WEB_COMPAT_VERSION: u32 = 2;
+/// * `3` — dispatcher request event rename (issue #581). Wire kinds
+///   `codex.job_requested` / `terminal.job_requested` are renamed to
+///   `*.worker_requested`. A v2 frontend's zod `WireEvent` union only
+///   accepts the old kind strings, so live frames after the bump would
+///   silently fail discriminator validation and skip
+///   `wave-files`/`overlays` invalidation. The compat modal forces a
+///   hard refresh.
+pub const WEB_COMPAT_VERSION: u32 = 3;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,
