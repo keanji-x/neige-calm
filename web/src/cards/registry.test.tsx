@@ -723,7 +723,7 @@ describe('router AddPanel create runtime failures', () => {
     );
   });
 
-  it('swallows rejected atomic terminal creates at the router edge', async () => {
+  it('surfaces rejected atomic terminal creates at the router edge', async () => {
     registerCard(TerminalEntry);
     const err = new Error('offline');
     vi.mocked(api.createTerminalCard).mockRejectedValue(err);
@@ -732,7 +732,7 @@ describe('router AddPanel create runtime failures', () => {
 
     await expect(
       addCardWithValues(qc, 'wave_1', 'terminal', {}, 'dark'),
-    ).resolves.toBeUndefined();
+    ).rejects.toBe(err);
 
     expect(api.createTerminalCard).toHaveBeenCalled();
     expect(qc.invalidateQueries).not.toHaveBeenCalled();

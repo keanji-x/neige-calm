@@ -119,9 +119,19 @@ describe('Menu — keyboard wiring', () => {
     render(
       <Harness items={makeItems([{ label: 'First' }, { label: 'Second' }])} />,
     );
-    await user.click(screen.getByRole('button', { name: 'Open' }));
+    const trigger = screen.getByRole('button', { name: 'Open' });
+    trigger.focus();
+    await user.keyboard('{Enter}');
     const items = screen.getAllByRole('menuitem');
     expect(items[0]).toHaveFocus();
+
+    // A menu can open under a stationary pointer; mouseenter from that
+    // mount must not override keyboard initial focus.
+    fireEvent.mouseEnter(items[1]);
+    expect(items[0]).toHaveFocus();
+
+    fireEvent.mouseMove(items[1]);
+    expect(items[1]).toHaveFocus();
   });
 
   it('ArrowDown moves focus to the next item', async () => {

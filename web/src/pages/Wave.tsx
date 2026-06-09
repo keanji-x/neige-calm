@@ -9,6 +9,7 @@ import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
 import { WaveLifecycleBadge } from '../shared/components/WaveLifecycleBadge';
 import { WaveContext } from '../shared/components/WaveContext';
+import { CalmApiError } from '../api/calm';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
 import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
@@ -47,6 +48,20 @@ function isViewMode(s: unknown): s is ViewMode {
   return s === 'grid' || s === 'list';
 }
 
+function formatCreateCardError(err: unknown): string {
+  if (err instanceof CalmApiError) {
+    const message = err.message.trim();
+    if (message.length > 0) return message;
+    return err.status >= 500
+      ? 'Failed to create card'
+      : `Request failed (${err.status})`;
+  }
+  if (err instanceof Error && err.message.trim().length > 0) {
+    return err.message;
+  }
+  return 'Failed to create card';
+}
+
 // ============================================================
 // WavePage — workbench: thin header + stacked cards.
 // Drag is restricted to the ⠿ grip so xterm / inputs inside cards stay usable.
@@ -67,7 +82,7 @@ export function WavePage({
   onGo: (r: Route) => void;
   /** No-schema "create immediately" path — kept for terminal cards which
    *  spawn with default args. */
-  onAddCard: (waveId: string, type: AddPanelKind) => void;
+  onAddCard: (waveId: string, type: AddPanelKind) => Promise<void> | void;
   /** Schema-driven path — invoked after the user submits a config card.
    *  The Wave-level dispatcher knows how to translate per-kind values
    *  into the right kernel calls. */
@@ -86,23 +101,45 @@ export function WavePage({
   // Schema-driven AddPanel selections open a modal SchemaForm — kept in
   // local state, never reaches the kernel until submit.
   const [modalItem, setModalItem] = useState<AddPanelMenuItem | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
+
+  const [directAddError, setDirectAddError] = useState<string | null>(null);
 
   const beginAdd = (item: AddPanelMenuItem) => {
+    // Reset both error channels on every new attempt so a stale error
+    // from a previous failed add doesn't linger past the next click.
+    setDirectAddError(null);
+    setModalError(null);
     if (!item.createSchema) {
-      // No schema → immediate create (today: terminal).
-      onAddCard(wave.id, item.type);
+      // No schema → immediate create (today: terminal). `onAddCard` now
+      // rethrows non-contract failures (see `createFromEntry` in
+      // router.tsx) so we await + catch here and surface the error
+      // inline. The schema-modal branch below uses `modalError`.
+      void (async () => {
+        try {
+          await onAddCard(wave.id, item.type);
+        } catch (err) {
+          setDirectAddError(formatCreateCardError(err));
+        }
+      })();
       return;
     }
     setModalItem(item);
   };
 
-  const closeModal = () => setModalItem(null);
+  const closeModal = () => {
+    setModalError(null);
+    setModalItem(null);
+  };
   const submitModal = async (values: Record<string, string>) => {
     if (!modalItem) return;
+    setModalError(null);
     try {
       await onCreateCardWithBody?.(wave.id, modalItem.type, values);
-    } finally {
+      setModalError(null);
       setModalItem(null);
+    } catch (err) {
+      setModalError(formatCreateCardError(err));
     }
   };
 
@@ -288,6 +325,14 @@ export function WavePage({
             {viewMode === 'list' ? 'List' : 'Grid'}
           </button>
           <AddPanel onSelect={beginAdd} />
+          {directAddError && (
+            <p
+              className="schema-form-error wave-add-direct-error"
+              role="alert"
+            >
+              {directAddError}
+            </p>
+          )}
           {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
               lifecycle on every wave (defaults to 'draft' on create); this
               renders the current state as a small uppercase pill. After
@@ -357,6 +402,11 @@ export function WavePage({
                 onSelect={(path) => submitModal({ [soleDir.key]: path })}
                 selectLabel="Create here"
               />
+              {modalError && (
+                <p className="schema-form-error schema-form-error-inset" role="alert">
+                  {modalError}
+                </p>
+              )}
             </Dialog>
           );
         }
@@ -366,6 +416,11 @@ export function WavePage({
             onClose={closeModal}
             title={`New ${modalItem.label.replace(/^New\s+/i, '')}`}
           >
+            {modalError && (
+              <p className="schema-form-error" role="alert">
+                {modalError}
+              </p>
+            )}
             {modalItem.createSchema && (
               <SchemaForm
                 schema={modalItem.createSchema}

@@ -601,6 +601,38 @@ export interface paths {
         patch: operations["update_wave"];
         trace?: never;
     };
+    "/api/waves/{id}/files/cat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["cat_wave_file"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/waves/{id}/files/ls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_wave_files"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves/{id}/report": {
         parameters: {
             query?: never;
@@ -1623,6 +1655,25 @@ export interface components {
             cards: components["schemas"]["Card"][];
             overlays: components["schemas"]["Overlay"][];
             wave: components["schemas"]["Wave"];
+        };
+        WaveFsCatQuery: {
+            /** @description Logical path to read. Required. */
+            path?: string | null;
+        };
+        WaveFsContent: {
+            content: string;
+            content_type: string;
+        };
+        WaveFsEntry: {
+            kind: string;
+            name: string;
+            size?: number | null;
+            /** Format: int64 */
+            updated_at?: number | null;
+        };
+        WaveFsLsQuery: {
+            /** @description Logical path to list. Omitted or `/` lists the wave root. */
+            path?: string | null;
         };
         /**
          * @description Issue #145 — Wave lifecycle state machine.
@@ -3657,6 +3708,148 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Wave"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    cat_wave_file: {
+        parameters: {
+            query?: {
+                /** @description Logical path to read. Required. */
+                path?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Wave id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wave file view content */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveFsContent"];
+                };
+            };
+            /** @description Missing path or logical path not available */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Referenced card is outside the wave */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_wave_files: {
+        parameters: {
+            query?: {
+                /** @description Logical path to list. Omitted or `/` lists the wave root. */
+                path?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Wave id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wave file view directory entries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveFsEntry"][];
+                };
+            };
+            /** @description Logical path not available */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Referenced card is outside the wave */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Wave not found */

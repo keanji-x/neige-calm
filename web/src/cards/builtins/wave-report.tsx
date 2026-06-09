@@ -26,19 +26,22 @@
 // row through every card. If the context is missing (e.g. unit tests
 // that render the card in isolation) the badge silently omits.
 
-import { useContext } from 'react';
+import { useContext, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useQueryClient } from '@tanstack/react-query';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import { CardHead } from '../CardHead';
 import { WaveContext } from '../../shared/components/WaveContext';
 import { WaveLifecycleBadge } from '../../shared/components/WaveLifecycleBadge';
 import { updateWaveReport, CalmApiError } from '../../api/calm';
+import { waveFileContentQueryKey } from '../../api/queries';
 import {
   WAVE_REPORT_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
 } from './schemaVersions';
+import { WaveReportSidebar } from './wave-report-sidebar';
 import type { CardEntry } from '../registry';
 
 declare module '../../types' {
@@ -461,6 +464,7 @@ function WaveReportCardImpl({
   onClose?: () => void;
 }) {
   const waveCtx = useContext(WaveContext);
+  const qc = useQueryClient();
   const waveId = waveCtx?.id ?? null;
 
   // Optimistic display state. Seeded from props; after a successful
@@ -473,6 +477,11 @@ function WaveReportCardImpl({
     summary: string;
     body: string;
   } | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedPath(null);
+  }, [waveId]);
 
   // Prefer the locally-applied save projection over the prop. If the
   // prop later catches up (server-pushed event) we'd ideally drop
@@ -482,7 +491,8 @@ function WaveReportCardImpl({
   const summary = override ? override.summary : card.summary;
   const body = override ? override.body : card.body;
 
-  const canEdit = waveId !== null;
+  const canEdit =
+    waveId !== null && (selectedPath === null || selectedPath === 'report.md');
 
   return (
     <div className="wave-report-card">
@@ -499,8 +509,8 @@ function WaveReportCardImpl({
         {/* Edit pencil — sits between the title slot and the status
             badge so the close button (absolutely positioned by
             CardHead) doesn't overlap it. Hidden when we have no
-            wave id (defensive — the headless-test renders without
-            WaveContext, and there's no wave to POST against). */}
+            wave id, or when the file sidebar is projecting a
+            non-report file. */}
         {canEdit && !editing && (
           <button
             type="button"
@@ -537,7 +547,24 @@ function WaveReportCardImpl({
           onSaved={(next) => {
             setOverride({ summary: next.summary, body: next.body });
             setEditing(false);
+            // If the sidebar viewer is currently showing report.md, its
+            // cached `useWaveFileContent` is now stale until the WS
+            // invalidation arrives. Refetch eagerly so the user sees
+            // their edit immediately (the optimistic `override` only
+            // covers the fallback ReadOnlyView, not the file viewer).
+            if (waveId !== null) {
+              void qc.invalidateQueries({
+                queryKey: waveFileContentQueryKey(waveId, 'report.md'),
+              });
+            }
           }}
+        />
+      ) : waveId !== null ? (
+        <WaveReportSidebar
+          waveId={waveId}
+          selectedPath={selectedPath}
+          onSelectedPathChange={setSelectedPath}
+          fallback={<ReadOnlyView summary={summary} body={body} waveId={waveId} />}
         />
       ) : (
         <ReadOnlyView summary={summary} body={body} waveId={waveId} />

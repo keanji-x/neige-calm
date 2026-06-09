@@ -14,6 +14,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Hoisted mock for the api client. Only the wave-report endpoint is
 // exercised here; we still need to passthrough `CalmApiError` because
@@ -26,6 +28,31 @@ vi.mock('../../api/calm', async () => {
     updateWaveReport: vi.fn(),
   };
 });
+
+vi.mock('./wave-report-sidebar', () => ({
+  WaveReportSidebar: ({
+    selectedPath,
+    onSelectedPathChange,
+    fallback,
+  }: {
+    selectedPath: string | null;
+    onSelectedPathChange: (path: string | null) => void;
+    fallback?: ReactNode;
+  }) => (
+    <div data-testid="mock-wave-report-sidebar" data-selected-path={selectedPath ?? ''}>
+      <button
+        type="button"
+        onClick={() => onSelectedPathChange('cards/card_1/payload.json')}
+      >
+        Select payload
+      </button>
+      <button type="button" onClick={() => onSelectedPathChange('report.md')}>
+        Select report.md
+      </button>
+      {fallback}
+    </div>
+  ),
+}));
 
 import { WaveReportEntry, parseSections, type WaveReportCardData } from './wave-report';
 import { WaveContext } from '../../shared/components/WaveContext';
@@ -156,14 +183,23 @@ describe('WaveReportCard rendering', () => {
     } = {},
   ) {
     const Component = WaveReportEntry.Component;
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     if (withContext) {
       return render(
-        <WaveContext.Provider value={{ id: 'wave_test', lifecycle }}>
-          <Component card={card} onClose={onClose} />
-        </WaveContext.Provider>,
+        <QueryClientProvider client={qc}>
+          <WaveContext.Provider value={{ id: 'wave_test', lifecycle }}>
+            <Component card={card} onClose={onClose} />
+          </WaveContext.Provider>
+        </QueryClientProvider>,
       );
     }
-    return render(<Component card={card} onClose={onClose} />);
+    return render(
+      <QueryClientProvider client={qc}>
+        <Component card={card} onClose={onClose} />
+      </QueryClientProvider>,
+    );
   }
 
   it('renders sections from the markdown body', () => {
@@ -316,10 +352,15 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
 
   function renderEditable(card: WaveReportCardData) {
     const Component = WaveReportEntry.Component;
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     return render(
-      <WaveContext.Provider value={{ id: 'wave_edit_test', lifecycle: 'planning' }}>
-        <Component card={card} />
-      </WaveContext.Provider>,
+      <QueryClientProvider client={qc}>
+        <WaveContext.Provider value={{ id: 'wave_edit_test', lifecycle: 'planning' }}>
+          <Component card={card} />
+        </WaveContext.Provider>
+      </QueryClientProvider>,
     );
   }
 
@@ -336,17 +377,51 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
     expect(screen.queryByLabelText('Wave report body')).toBeNull();
   });
 
+  it('shows the edit affordance when the default report view is selected', () => {
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'initial summary',
+      body: '# Goal\n\nbody\n',
+    });
+    expect(screen.getByTestId('mock-wave-report-sidebar')).toHaveAttribute(
+      'data-selected-path',
+      '',
+    );
+    expect(screen.getByLabelText('Edit report')).toBeTruthy();
+  });
+
+  it('hides the edit affordance when a non-report file is selected', () => {
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'initial summary',
+      body: '# Goal\n\nbody\n',
+    });
+    fireEvent.click(screen.getByText('Select payload'));
+    expect(screen.getByTestId('mock-wave-report-sidebar')).toHaveAttribute(
+      'data-selected-path',
+      'cards/card_1/payload.json',
+    );
+    expect(screen.queryByLabelText('Edit report')).toBeNull();
+  });
+
   it('omits the edit button when no WaveContext is provided', () => {
     const Component = WaveReportEntry.Component;
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     render(
-      <Component
-        card={{
-          type: 'wave-report',
-          id: 'r1',
-          summary: '',
-          body: '# Goal\n\nx\n',
-        }}
-      />,
+      <QueryClientProvider client={qc}>
+        <Component
+          card={{
+            type: 'wave-report',
+            id: 'r1',
+            summary: '',
+            body: '# Goal\n\nx\n',
+          }}
+        />
+      </QueryClientProvider>,
     );
     expect(screen.queryByLabelText('Edit report')).toBeNull();
   });

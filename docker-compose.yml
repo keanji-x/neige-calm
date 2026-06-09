@@ -158,7 +158,12 @@ services:
       # ${CALM_CODEX_HOST_BIN}; we mount it inside as a bare `codex` so
       # `Command::new("codex")` resolves via PATH. Set CALM_CODEX_HOST_BIN
       # in .env if your install path differs.
-      - ${CALM_CODEX_HOST_BIN:-/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex}:/usr/local/bin/codex:ro
+      #
+      # 0.137+ npm layout moved the binary from `.../musl/codex/codex` to
+      # `.../musl/bin/codex`. nvm users still need to override
+      # CALM_CODEX_HOST_BIN to point at the nvm-versioned path
+      # (see project_codex_npm_bin_path_change memory note).
+      - ${CALM_CODEX_HOST_BIN:-/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex}:/usr/local/bin/codex:ro
       # Host home, same path inside the container. calm-server's data dir,
       # plugin install dir, and plugin state dir all default under here, so
       # no extra env wiring is needed.

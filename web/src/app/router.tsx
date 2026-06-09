@@ -535,6 +535,7 @@ async function createFromEntry(
   } catch (err) {
     if (isCreateContractError(err)) throw err;
     console.warn(`[Calm] ${createWarnKind(entry)} create failed:`, err);
+    throw err;
   }
 }
 

@@ -52,6 +52,7 @@ use crate::runtime_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
+use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::validate_transition;
 use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
 use axum::{
@@ -78,7 +79,100 @@ pub fn router() -> Router<AppState> {
         // unchanged; both paths funnel through `wave_report::persist_report`
         // so the dual-event invariant + CRDT write stays one boundary.
         .route("/api/waves/{id}/report", post(update_wave_report))
+        .route("/api/waves/{id}/files/ls", get(list_wave_files))
+        .route("/api/waves/{id}/files/cat", get(cat_wave_file))
         .route("/api/coves/{cove_id}/waves", get(list_waves_by_cove))
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub struct WaveFsLsQuery {
+    /// Logical path to list. Omitted or `/` lists the wave root.
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub struct WaveFsCatQuery {
+    /// Logical path to read. Required.
+    pub path: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/waves/{id}/files/ls",
+    tag = "waves",
+    params(("id" = String, Path, description = "Wave id"), WaveFsLsQuery),
+    responses(
+        (status = 200, description = "Wave file view directory entries", body = Vec<WaveFsEntry>),
+        (status = 400, description = "Logical path not available", body = ErrorBody),
+        (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 403, description = "Referenced card is outside the wave", body = ErrorBody),
+        (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+// NOTE: no `Principal` extractor here.
+//
+// `update_wave_report` (POST) keeps `_principal: Principal` as an implicit
+// session-middleware assertion — the route fires on user action, never
+// during a11y/replay traffic. These GET routes fire on every wave page
+// mount (the report sidebar lists root on first render); the replay
+// binary intentionally does NOT attach `require_session` so its a11y
+// suite can drive REST without a session, and a `Principal` extractor
+// here would surface as a 401 → SessionProvider redirect → login page
+// during a11y replay runs. The TODO below keeps the multi-user
+// ownership hook visible without breaking the no-auth surface contract.
+//
+// TODO(#573 multi-user): ownership check
+pub(crate) async fn list_wave_files(
+    State(s): State<RouteState>,
+    Path(id): Path<String>,
+    Query(q): Query<WaveFsLsQuery>,
+) -> Result<Json<Vec<WaveFsEntry>>> {
+    let wave = s
+        .repo
+        .wave_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    // TODO(#573 multi-user): ownership check
+    let view = WaveFsView::new(s.repo.as_ref(), &s.write);
+    let entries = view.ls(&wave, q.path.as_deref()).await?;
+    Ok(Json(entries))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/waves/{id}/files/cat",
+    tag = "waves",
+    params(("id" = String, Path, description = "Wave id"), WaveFsCatQuery),
+    responses(
+        (status = 200, description = "Wave file view content", body = WaveFsContent),
+        (status = 400, description = "Missing path or logical path not available", body = ErrorBody),
+        (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 403, description = "Referenced card is outside the wave", body = ErrorBody),
+        (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+// See note on `list_wave_files` for why `Principal` is intentionally NOT
+// extracted here. The `TODO(#573 multi-user)` lives next to `list_wave_files`.
+pub(crate) async fn cat_wave_file(
+    State(s): State<RouteState>,
+    Path(id): Path<String>,
+    Query(q): Query<WaveFsCatQuery>,
+) -> Result<Json<WaveFsContent>> {
+    let path = q
+        .path
+        .as_deref()
+        .ok_or_else(|| CalmError::BadRequest("calm.wave.cat: missing `path` (string)".into()))?;
+    let wave = s
+        .repo
+        .wave_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    // TODO(#573 multi-user): ownership check
+    let view = WaveFsView::new(s.repo.as_ref(), &s.write);
+    let content = view.cat(&wave, path).await?;
+    Ok(Json(content))
 }
 
 #[utoipa::path(
