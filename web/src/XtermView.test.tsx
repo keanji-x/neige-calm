@@ -62,6 +62,7 @@ interface MockTerm {
   open: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
   /** #177 — xterm.js OSC suppressor surface. The component calls
    *  `term.parser.registerOscHandler(10|11|12, () => true)` to silence
    *  xterm.js's built-in OSC color reply so the daemon is the sole
@@ -98,6 +99,7 @@ vi.mock('@xterm/xterm', () => {
     open = vi.fn();
     loadAddon = vi.fn();
     dispose = vi.fn();
+    attachCustomKeyEventHandler = vi.fn();
     // xterm.js exposes `options` as a mutable bag; the live-theme effect
     // assigns `term.options.theme = ...` and the real impl picks it up
     // on the next render cycle. For the mock we just need the slot to

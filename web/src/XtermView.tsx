@@ -449,6 +449,35 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     term.parser.registerOscHandler(10, () => true);
     term.parser.registerOscHandler(11, () => true);
     term.parser.registerOscHandler(12, () => true);
+    // #554 — port VS Code's default Mac sendSequence keybindings.
+    // VS Code ships `registerSendSequenceKeybinding('\x01', { mac: Cmd+Left })`
+    // (and ^E/^U for Cmd+Right / Cmd+Backspace) in
+    // terminalContrib/sendSequence/browser/terminal.sendSequence.contribution.ts:240-253,
+    // dispatched through their keybindingService → sendText → PTY write. We don't
+    // have that whole infrastructure, so this handler is the byte-equivalent shortcut:
+    // keydown → preventDefault → term.input(seq, true) → existing onData → WS Input
+    // frame → PTY. Guard `!metaKey || ctrlKey || altKey` ⇒ pure-Cmd only;
+    // non-Mac and modifier-combo cases pass through untouched, so zero regression.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      if (!e.metaKey || e.ctrlKey || e.altKey) return true;
+      if (e.key === 'ArrowLeft') {
+        term.input('\x01', true);
+        e.preventDefault();
+        return false;
+      }
+      if (e.key === 'ArrowRight') {
+        term.input('\x05', true);
+        e.preventDefault();
+        return false;
+      }
+      if (e.key === 'Backspace') {
+        term.input('\x15', true);
+        e.preventDefault();
+        return false;
+      }
+      return true;
+    });
     // Tab-trap mitigation — issue #236 followup. xterm.js creates a
     // `<textarea class="xterm-helper-textarea" tabindex="0">` inside the
     // container; once focus lands on it, xterm's keydown handler captures
