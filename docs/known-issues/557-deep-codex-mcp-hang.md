@@ -58,3 +58,34 @@ The daemon window has no `cancelled`/`aborted`/`completed` marker for that call,
 - Add one log immediately before and after `run_turn_stop_hooks` in Codex `run_turn`: if STUCK prints “before Stop” but no hook row, hook runtime/bridge ingestion is guilty; if it never prints, sampling did not return despite rollout final/task_complete.
 - Add calm supervisor ingest logs for `EventMsg::AgentMessage`, `TaskComplete`, and `codex.hook Stop` with turn id: if rollout has final/task_complete but no ingest after push watermark 48, the shared-daemon stream reader stalled or detached.
 - Dump the generated per-card Codex `config.toml` for STUCK and assert `[mcp_servers.calm].tool_timeout_sec`: if it is absent, Codex should use 120s; if it is explicitly disabled/overridden, rerun with a small timeout to see whether missing Stop becomes a timeout error.
+
+## 后置补充(claude 在 codex 出报告之后实测)
+
+把 dispatcher 的 trace 日志 + DB 直接 grep 对照,出现了一个更窄的矛盾点,需要后续刨:
+
+```
+docker logs neige-calm-569-server-1 | grep "hook.codex.stop"
+2026-06-09T12:07:58.292500Z TRACE dispatcher: dispatcher push: ignoring hook event hook_kind=hook.codex.stop card_id=9efd3c95...
+2026-06-09T12:09:02.212500Z TRACE dispatcher: dispatcher push: ignoring hook event hook_kind=hook.codex.stop card_id=cd9d814a...
+```
+
+```
+sqlite> SELECT id,scope_card FROM events WHERE payload LIKE '%hook.codex.stop%';
+124|9efd3c95f85b47ef8b9178f4d1632349    <- WORKING (id=124)
+                                         <- STUCK 没有,events MAX(id)=226
+```
+
+观察:
+- WORKING `9efd3c95` 的 Stop:dispatcher 命中 + DB 行同时存在,自洽。
+- STUCK `cd9d814a` 的 Stop:dispatcher 命中 broadcast,**但 events 表里完全没有这条 row**。
+
+按 `crates/calm-server/src/db/sqlite.rs:3917-3956` `log_pure_event` 的 commit-then-emit 不变式,broadcast 必须发生在 DB commit 之后。所以这个不一致只能由下面三类 bug 之一产生:
+- B1. 有另一条 `bus.emit_envelope`(或 `bus.emit`) 路径绕过了持久化,**仅 STUCK 这条路径走它**。
+- B2. row 在 broadcast 后被某处清掉/回收(events 表没有删除路径,但 sqlite WAL 没 checkpoint 时极端罕见情况下读不到 — 不太可能,因为前后 row id 是连续的 220→221→222→…→226,没空隙)。
+- B3. role_gate `enforce_role` 对 STUCK 这次 Stop 触发了不对称的 `tx.rollback() + bus.emit` —— 当前代码看不像,需要重新审 sqlite.rs:3934 那一段在 violation 路径下有没有 leak。
+
+WORKING 同样是 `role=spec` 的卡,Stop 能写进 DB,所以 role_gate **不会**因卡角色一刀切拒绝 spec 自发 Stop。不对称必然在 STUCK 走到 ingest 之前(payload 字段、session_id 校验、idempotency key 撞)或之中。
+
+下一步实证(不写代码改动,只加临时日志):
+- 在 `crates/calm-server/src/routes/codex.rs:163-217` `ingest_provider_hook` 顶部和 `log_pure_event` 调用前后各加一条 `tracing::info!`,带 `hook_event_name + card_id + hook_idempotency_key`,重启 dev 容器后**复现 STUCK 一次**,查这条 Stop 走没走完整路径。
+- 在 `crates/calm-server/src/db/sqlite.rs:3934-3940` `enforce_role` 失败分支加 `tracing::warn!(?violation, ?actor, ?event)`,看 STUCK Stop 是不是被 role_gate 静悄悄 forbid 掉了(用 `let _ = tx.rollback()`)。
