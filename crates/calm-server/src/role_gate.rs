@@ -34,12 +34,20 @@
 //!    or `Cove` scope event — or a Card scope with a spoofed `wave`
 //!    or `cove` — is refused.
 //!
-//! 4. **User / Kernel / KernelDispatcher / Plugin(_)** are unrestricted
+//! 4. **Dispatch-request events are gated to spec cards.** Issue #583.
+//!    `Event::CodexJobRequested` and `Event::TerminalJobRequested` are
+//!    refused for any `AiCodex` / `AiClaude` actor, mirroring the
+//!    `WaveUpdated` rule. Spec card (`AiSpec`) with cached role `Spec`
+//!    passes; User / Kernel / KernelDispatcher / Plugin keep their
+//!    unrestricted access for forward compatibility (no current emitter
+//!    in those families).
+//!
+//! 5. **User / Kernel / KernelDispatcher / Plugin(_)** are unrestricted
 //!    in PR3. The kernel's own writes (FSM projector, terminal sweeper,
 //!    plugin callback dispatcher) and the user's REST surface continue
 //!    to flow through the gate unchanged.
 //!
-//! 5. **Unknown card.** If the actor names a card the cache doesn't
+//! 6. **Unknown card.** If the actor names a card the cache doesn't
 //!    know, the write is denied. Two possible causes:
 //!      * the card was deleted between the actor's request landing and
 //!        the gate running (race; safe to reject),
@@ -63,6 +71,9 @@ pub enum RoleViolation {
 
     #[error("only spec cards (or User/Kernel) may emit wave.updated (actor={actor})")]
     NotSpecForWave { actor: String },
+
+    #[error("only spec cards (or User/Kernel) may emit dispatch-request events (actor={actor})")]
+    NotSpecForDispatch { actor: String },
 
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
@@ -138,6 +149,38 @@ pub fn enforce_role(
                 // variant is the wire-level claim; the gate sticks
                 // to it rather than re-binding via the cache.
                 return Err(RoleViolation::NotSpecForWave {
+                    actor: ai_worker_actor_label(actor, card_id),
+                });
+            }
+        }
+    }
+
+    // --- (2.5) Dispatch-request events are spec-only. ---
+    //
+    // Issue #583. `calm.dispatch_request` is gated to Spec at the MCP
+    // soft gate (`emit.rs::dispatch_request`), but the in-tx gate must
+    // also refuse worker AI actors from emitting these events to provide
+    // real kernel-level defense-in-depth — otherwise an internal caller
+    // that reaches `write_with_event_typed` with an AiCodex/AiClaude
+    // worker actor + a dispatch event can still commit a recursive
+    // worker-tree mint. Mirrors section (2)'s shape.
+    if matches!(
+        event,
+        Event::CodexJobRequested { .. } | Event::TerminalJobRequested { .. }
+    ) {
+        match actor {
+            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Plugin(_) => {}
+            ActorId::AiSpec(card_id) => {
+                let role = cache.get(card_id);
+                if role != Some(CardRole::Spec) {
+                    return Err(RoleViolation::NotSpecForDispatch {
+                        actor: format!("AiSpec({card_id})"),
+                    });
+                }
+            }
+            ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotSpecForDispatch {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
@@ -907,6 +950,14 @@ mod tests {
         }
     }
 
+    fn terminal_job_requested() -> Event {
+        Event::TerminalJobRequested {
+            idempotency_key: "idem-1".into(),
+            cmd: "echo hi".into(),
+            cwd: None,
+        }
+    }
+
     fn task_completed() -> Event {
         Event::TaskCompleted {
             idempotency_key: "idem-1".into(),
@@ -916,25 +967,63 @@ mod tests {
     }
 
     #[test]
-    fn worker_can_emit_codex_job_requested_in_own_scope() {
-        // PR5's dispatcher will surface this path when a worker card
-        // fans out a sub-job request. Scope must be the worker's own
-        // card (else the section-3 worker-scope check fires).
+    fn worker_cannot_emit_codex_job_requested_after_583() {
+        // Issue #583. Section (2.5) of `enforce_role` now rejects any
+        // Worker-actor `CodexJobRequested` regardless of scope. Replaces
+        // the pre-#583 positive `worker_can_emit_codex_job_requested_in_own_scope`
+        // which encoded the leaky pre-#583 behavior.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
         cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
-        let res = enforce_role(
+        let err = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &codex_job_requested(),
             &card_scope(id.as_str(), "w", "c"),
             &cache,
             &wcc,
-        );
+        )
+        .expect_err("worker AI actor must be refused codex.job_requested");
         assert!(
-            res.is_ok(),
-            "worker in own card scope can request a codex job: {res:?}",
+            matches!(err, RoleViolation::NotSpecForDispatch { .. }),
+            "expected NotSpecForDispatch, got {err:?}",
         );
+    }
+
+    #[test]
+    fn worker_cannot_emit_terminal_job_requested_after_583() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        let err = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &terminal_job_requested(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        )
+        .expect_err("worker AI actor must be refused terminal.job_requested");
+        assert!(
+            matches!(err, RoleViolation::NotSpecForDispatch { .. }),
+            "expected NotSpecForDispatch, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn spec_can_emit_codex_job_requested_in_own_scope() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("spec-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiSpec(id.clone()),
+            &codex_job_requested(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "spec emitting codex.job_requested: {res:?}");
     }
 
     #[test]
