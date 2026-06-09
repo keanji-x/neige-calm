@@ -163,6 +163,7 @@ pub struct ThreadStartParams {
     pub approval_policy: String,
     pub sandbox_mode: String,
     pub developer_instructions: Option<String>,
+    pub config: Option<serde_json::Value>,
 }
 
 impl InputItem {
@@ -519,6 +520,9 @@ impl CodexAppServer {
         });
         if let Some(prompt) = params.developer_instructions {
             value["developerInstructions"] = Value::String(prompt);
+        }
+        if let Some(config) = params.config {
+            value["config"] = config;
         }
         self.request("thread/start", value).await
     }
@@ -1184,6 +1188,7 @@ mod tests {
             approval_policy: "never".into(),
             sandbox_mode: "workspace-write".into(),
             developer_instructions: None,
+            config: None,
         });
 
         let server_task = tokio::spawn(async move {
@@ -1211,6 +1216,12 @@ mod tests {
                     .is_some_and(|params| params.contains_key("additionalContext")),
                 "PR5 must not send additionalContext: {req}"
             );
+            assert!(
+                !params
+                    .as_object()
+                    .is_some_and(|params| params.contains_key("config")),
+                "thread/start must omit config when None: {req}"
+            );
 
             let id = req.get("id").cloned().unwrap();
             server_send_json(
@@ -1227,6 +1238,92 @@ mod tests {
 
         let result = req_fut.await.expect("thread/start");
         assert_eq!(result.thread_id(), Some("with-runtime-fields"));
+        let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thread_start_with_params_sends_config_when_some() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let expected = json!({
+            "shell_environment_policy": {
+                "set": {
+                    "NEIGE_MCP_SOCKET": "/tmp/calm.sock",
+                    "NEIGE_MCP_TOKEN": "raw-per-card",
+                }
+            }
+        });
+        let req_fut = client.thread_start_with_params(ThreadStartParams {
+            cwd: "/workspace".into(),
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            developer_instructions: None,
+            config: Some(expected.clone()),
+        });
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("thread/start")
+            );
+            let params = req.get("params").expect("params");
+            assert_eq!(params.get("config"), Some(&expected));
+
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "thread": { "id": "with-config" }, "model": "m" },
+                }),
+            )
+            .await;
+            h.server
+        });
+
+        let result = req_fut.await.expect("thread/start");
+        assert_eq!(result.thread_id(), Some("with-config"));
+        let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thread_start_with_params_omits_config_when_none() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let req_fut = client.thread_start_with_params(ThreadStartParams {
+            cwd: "/workspace".into(),
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            developer_instructions: None,
+            config: None,
+        });
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("thread/start")
+            );
+            let params = req.get("params").expect("params");
+            assert!(!params.as_object().unwrap().contains_key("config"));
+
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "thread": { "id": "without-config" }, "model": "m" },
+                }),
+            )
+            .await;
+            h.server
+        });
+
+        let result = req_fut.await.expect("thread/start");
+        assert_eq!(result.thread_id(), Some("without-config"));
         let _server = server_task.await.unwrap();
     }
 

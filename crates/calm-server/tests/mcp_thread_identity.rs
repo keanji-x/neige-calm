@@ -225,6 +225,79 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
     tx.commit().await.unwrap();
 }
 
+#[tokio::test]
+async fn card_mcp_token_set_tx_replaces_hash() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = repo
+        .cove_create(NewCove {
+            name: "mcp-token-wrapper".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "mcp-token-wrapper".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card_id = calm_server::model::new_id();
+    let role_cache = CardRoleCache::new();
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.clone(),
+        calm_server::model::NewCard {
+            wave_id: wave.id,
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        },
+        CardRole::Spec,
+        true,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let token_a = auth::CardMcpToken::generate();
+    let hash_a = auth::hash_token(token_a.as_str());
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_mcp_token_set_tx(&mut tx, &card_id, &hash_a)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        repo.card_mcp_token_lookup_by_hash(&hash_a).await.unwrap(),
+        Some((card_id.clone(), hash_a.clone()))
+    );
+
+    let token_b = auth::CardMcpToken::generate();
+    let hash_b = auth::hash_token(token_b.as_str());
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_mcp_token_set_tx(&mut tx, &card_id, &hash_b)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        repo.card_mcp_token_lookup_by_hash(&hash_a)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repo.card_mcp_token_lookup_by_hash(&hash_b).await.unwrap(),
+        Some((card_id, hash_b))
+    );
+}
+
 async fn seed_card_with_legacy_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> LegacyCard {
     let token = auth::CardMcpToken::generate();
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();

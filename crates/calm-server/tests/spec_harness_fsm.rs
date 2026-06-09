@@ -66,6 +66,7 @@ async fn harness_with(
                     approval_policy: "never".into(),
                     sandbox_mode: "workspace-write".into(),
                     developer_instructions: None,
+                    config: None,
                 },
             )
             .await
@@ -749,6 +750,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await

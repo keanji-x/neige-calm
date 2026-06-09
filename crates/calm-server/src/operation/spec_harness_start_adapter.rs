@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -6,8 +7,9 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_update_tx, harness_items_delete_by_card_tx, runtime_bind_attribution_tx,
-    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
+    card_mcp_token_set_tx, card_update_tx, harness_items_delete_by_card_tx,
+    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_start_tx,
+    runtime_supersede_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -46,6 +48,7 @@ pub struct SpecHarnessStartAdapter {
     harness_registry: HarnessRegistry,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
+    mcp_socket_path: Option<PathBuf>,
 }
 
 impl SpecHarnessStartAdapter {
@@ -55,6 +58,7 @@ impl SpecHarnessStartAdapter {
         harness_registry: HarnessRegistry,
         card_role_cache: CardRoleCache,
         wave_cove_cache: WaveCoveCache,
+        mcp_socket_path: Option<PathBuf>,
     ) -> Self {
         Self {
             repo,
@@ -62,6 +66,26 @@ impl SpecHarnessStartAdapter {
             harness_registry,
             card_role_cache,
             wave_cove_cache,
+            mcp_socket_path,
+        }
+    }
+
+    fn mcp_socket_path_for_thread(&self) -> Result<String> {
+        if let Some(path) = self.mcp_socket_path.as_ref() {
+            return Ok(path.to_string_lossy().to_string());
+        }
+
+        #[cfg(feature = "fixtures")]
+        {
+            let path =
+                std::env::temp_dir().join(format!("neige-mcp-fixture-{}.sock", std::process::id()));
+            Ok(path.to_string_lossy().to_string())
+        }
+        #[cfg(not(feature = "fixtures"))]
+        {
+            Err(CalmError::Internal(
+                "spec harness MCP socket path missing".into(),
+            ))
         }
     }
 }
@@ -244,6 +268,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         } else {
             None
         };
+        let mut new_mcp_token_hash = None;
         let thread_id = if let Some(thread_id) = reusable_thread_id {
             thread_id
         } else {
@@ -251,11 +276,24 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 crate::spec_card::SeededCardRole::Spec.prompt_template(),
                 &wave_id,
             );
+            let raw = crate::mcp_server::auth::CardMcpToken::generate();
+            let hashed = crate::mcp_server::auth::hash_token(raw.as_str());
+            new_mcp_token_hash = Some(hashed);
+            let socket_path = self.mcp_socket_path_for_thread()?;
+            let cfg = json!({
+                "shell_environment_policy": {
+                    "set": {
+                        "NEIGE_MCP_SOCKET": socket_path,
+                        "NEIGE_MCP_TOKEN": raw.as_str(),
+                    }
+                }
+            });
             let params = SharedThreadStartParams {
                 cwd,
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: Some(developer_instructions),
+                config: Some(cfg),
             };
             if runtime_deferred {
                 self.daemon
@@ -310,6 +348,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     let mut checkpoint_output = output_clone;
                     let mut old_runtime_id = None;
                     let mut old_runtime_status = None;
+                    if let Some(hashed) = new_mcp_token_hash.as_ref() {
+                        card_mcp_token_set_tx(tx, &card_id, hashed).await?;
+                    }
                     if runtime_deferred {
                         let runtime_init = RuntimeInit {
                             id: runtime_id.clone(),

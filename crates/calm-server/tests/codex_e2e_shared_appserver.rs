@@ -102,6 +102,7 @@ async fn shared_appserver_two_threads_true_binary() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await
@@ -117,6 +118,7 @@ async fn shared_appserver_two_threads_true_binary() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await
@@ -156,6 +158,7 @@ async fn shared_appserver_restart_resumes_thread() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await

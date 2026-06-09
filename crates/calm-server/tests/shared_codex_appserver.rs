@@ -693,6 +693,7 @@ async fn thread_start_mint_for_card_respects_needs_respawn_flag() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await
@@ -735,6 +736,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
                     approval_policy: "never".into(),
                     sandbox_mode: "workspace-write".into(),
                     developer_instructions: None,
+                    config: None,
                 },
             )
             .await
@@ -786,6 +788,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
                     approval_policy: "never".into(),
                     sandbox_mode: "workspace-write".into(),
                     developer_instructions: None,
+                    config: None,
                 },
             )
             .await
@@ -1127,6 +1130,7 @@ async fn turn_start_seeds_active_turns_synchronously() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await
@@ -1170,6 +1174,7 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await
@@ -1210,6 +1215,7 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
+                config: None,
             },
         )
         .await
