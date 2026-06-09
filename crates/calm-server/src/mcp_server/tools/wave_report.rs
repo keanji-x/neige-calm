@@ -56,7 +56,7 @@ use crate::event::EditAuthor;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role,
+    read_only_annotations, require_role, write_no_approval_annotations,
 };
 use crate::model::{Card, CardRole, Wave};
 use crate::wave_report::{WaveReportPayload, persist_report};
@@ -99,6 +99,7 @@ fn read_descriptor() -> ToolDescriptor {
             "type": "object",
             "properties": {}
         }),
+        annotations: Some(read_only_annotations()),
     }
 }
 
@@ -140,6 +141,7 @@ fn write_descriptor() -> ToolDescriptor {
                 "summary": { "type": "string" }
             }
         }),
+        annotations: Some(write_no_approval_annotations()),
     }
 }
 
@@ -204,6 +206,7 @@ fn edit_descriptor() -> ToolDescriptor {
                 "replace_all": { "type": "boolean" }
             }
         }),
+        annotations: Some(write_no_approval_annotations()),
     }
 }
 

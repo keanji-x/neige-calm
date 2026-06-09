@@ -178,6 +178,7 @@ fn test_descriptor(name: &str) -> ToolDescriptor {
         name: name.into(),
         description: "test tool".into(),
         input_schema: json!({ "type": "object", "properties": {} }),
+        annotations: None,
     }
 }
 

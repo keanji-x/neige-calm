@@ -24,7 +24,7 @@ use crate::ids::{ActorId, CardId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
 use crate::state::WriteContext;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -183,6 +183,25 @@ pub struct ToolDescriptor {
     /// accepts the schema verbatim — no need to round-trip through a
     /// typed schema crate for three small handlers.
     pub input_schema: Value,
+    /// Optional MCP `annotations` block, surfaced verbatim in `tools/list`.
+    /// Codex 0.13x reads `readOnlyHint`/`destructiveHint`/`openWorldHint`
+    /// from this to decide whether the tool needs explicit approval; missing
+    /// annotations default to "approval required" (codex
+    /// `mcp_tool_call.rs:1953`). Set explicitly per tool to avoid that
+    /// default landing on every call.
+    pub annotations: Option<Value>,
+}
+
+pub fn read_only_annotations() -> Value {
+    json!({ "readOnlyHint": true })
+}
+
+pub fn write_no_approval_annotations() -> Value {
+    json!({
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false,
+    })
 }
 
 /// Map of tool name → handler + descriptor. Populated by

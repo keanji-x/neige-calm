@@ -212,6 +212,7 @@ fn identity_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<To
                 "type": "object",
                 "properties": {}
             }),
+            annotations: None,
         },
         handler,
     );

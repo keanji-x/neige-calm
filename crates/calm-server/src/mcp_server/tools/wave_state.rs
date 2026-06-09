@@ -72,7 +72,7 @@ use crate::ids::WaveId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role, require_role_any,
+    read_only_annotations, require_role, require_role_any, write_no_approval_annotations,
 };
 use crate::model::{CardRole, Wave, WaveLifecycle, WavePatch};
 use crate::wave_lifecycle::validate_transition;
@@ -115,6 +115,7 @@ fn get_wave_state_descriptor() -> ToolDescriptor {
             "type": "object",
             "properties": {}
         }),
+        annotations: Some(read_only_annotations()),
     }
 }
 
@@ -197,6 +198,7 @@ fn update_wave_state_descriptor() -> ToolDescriptor {
                 }
             }
         }),
+        annotations: Some(write_no_approval_annotations()),
     }
 }
 
@@ -447,6 +449,7 @@ fn update_task_meta_descriptor() -> ToolDescriptor {
                 "reason": { "type": "string" }
             }
         }),
+        annotations: Some(write_no_approval_annotations()),
     }
 }
 

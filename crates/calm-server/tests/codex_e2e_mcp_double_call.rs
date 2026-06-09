@@ -9,7 +9,7 @@
 //! `mcpToolCall` `item/started` vs `item/completed` notifications for
 //! 90 s. Asserts both calls complete.
 //!
-//! ## Current status: FAILS (codex-side bug, captured 2026-06-09)
+//! ## Current status: PASSES, regression net for #569 codex approval gap
 //!
 //! Reproduces the exact user-visible symptom from the docker preview:
 //!

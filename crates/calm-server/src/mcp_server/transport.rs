@@ -376,16 +376,20 @@ async fn dispatch_request(
     match method {
         "tools/list" => {
             // Codex's `tools/list` expects `{ "tools": [...] }`. Each
-            // entry is `{ name, description, inputSchema }`.
+            // entry is `{ name, description, inputSchema }`, optionally
+            // carrying MCP `annotations` when a descriptor provides them.
             let tools: Vec<Value> = registry
                 .descriptors()
                 .into_iter()
                 .map(|d| {
-                    json!({
-                        "name": d.name,
-                        "description": d.description,
-                        "inputSchema": d.input_schema,
-                    })
+                    let mut obj = serde_json::Map::new();
+                    obj.insert("name".into(), Value::String(d.name));
+                    obj.insert("description".into(), Value::String(d.description));
+                    obj.insert("inputSchema".into(), d.input_schema);
+                    if let Some(annotations) = d.annotations {
+                        obj.insert("annotations".into(), annotations);
+                    }
+                    Value::Object(obj)
                 })
                 .collect();
             Ok(json!({ "tools": tools }))
