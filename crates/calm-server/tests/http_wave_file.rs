@@ -53,30 +53,45 @@ fn cat_uri(wave_id: &str, path: &str) -> String {
 async fn http_ls_and_cat_match_mcp_outputs() {
     let boot = boot().await;
     request_codex(&boot, "run-list").await;
-    materialize_worker(&boot, "run-list").await;
+    let run_card_id = materialize_worker(&boot, "run-list").await;
     let app = app(&boot);
     let cookie = login(&app).await;
     let wave_id = boot.wave_id.as_str();
+    let card_dir_path = format!("cards/{}", run_card_id.as_str());
 
-    for path in ["/", "cards", "runs"] {
+    for path in [
+        "/".to_string(),
+        "cards".to_string(),
+        "runs".to_string(),
+        card_dir_path,
+    ] {
         let mcp = call_tool(
             &boot,
             TOOL_WAVE_LS,
             spec_identity(&boot),
-            json!({ "path": path }),
+            json!({ "path": path.as_str() }),
         )
         .await
         .unwrap_or_else(|e| panic!("MCP ls {path} failed: {e}"));
-        let (status, http) = get_json(&app, ls_uri(wave_id, Some(path)), Some(&cookie)).await;
+        let (status, http) =
+            get_json(&app, ls_uri(wave_id, Some(path.as_str())), Some(&cookie)).await;
         assert_eq!(status, StatusCode::OK, "HTTP ls {path}: {http}");
         assert_eq!(http, mcp, "HTTP ls {path} must match MCP");
     }
 
-    let payload_path = format!("cards/{}/payload.json", boot.worker_card_id.as_str());
+    let initial_payload_path = format!("cards/{}/payload.json", boot.worker_card_id.as_str());
+    let payload_path = format!("cards/{}/payload.json", run_card_id.as_str());
+    let conversation_path = format!("cards/{}/conversation.md", run_card_id.as_str());
     let cat_paths = vec![
+        "index.md".to_string(),
+        "wave.json".to_string(),
         "cards/index.json".to_string(),
         "runs/index.json".to_string(),
+        "runs/run-list.md".to_string(),
+        "runs/run-list.json".to_string(),
         "report.md".to_string(),
+        conversation_path,
+        initial_payload_path,
         payload_path,
     ];
     for path in cat_paths {

@@ -67,6 +67,28 @@ const waveFilesKey = (waveId: unknown): QueryKey =>
     ? queryKeys.waveFiles(waveId)
     : ['wave-files'];
 
+type WaveFilesDerivedEvent =
+  | EventOf<'codex.hook'>
+  | EventOf<'claude.hook'>
+  | EventOf<'codex.job_requested'>
+  | EventOf<'terminal.job_requested'>
+  | EventOf<'task.completed'>
+  | EventOf<'task.failed'>;
+
+function waveFilesDerivedEventKeys(
+  ev: WaveFilesDerivedEvent,
+  ctx: InvalidationContext,
+): QueryKey[] {
+  const data = ev.data as { wave_id?: unknown; card_id?: unknown };
+  if (typeof data.wave_id === 'string' && data.wave_id.length > 0) {
+    return [waveFilesKey(data.wave_id)];
+  }
+  if (typeof data.card_id === 'string' && data.card_id.length > 0) {
+    return [waveFilesKey(ctx.findWaveOwningCard(data.card_id))];
+  }
+  return [waveFilesKey(undefined)];
+}
+
 const waveMutationKeys = (ev: EventOf<'wave.updated'> | EventOf<'wave.lifecycle_changed'>) => [
   queryKeys.wavesInCove(ev.data.cove_id),
   queryKeys.waveDetail(ev.data.id),
@@ -159,18 +181,28 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     "Terminal rows are not read directly by the calendar, sidebar, or wave-list views.",
   ),
   'plugin.state': noop('No plugin list query exists yet.'),
-  'codex.hook': noop(
-    'Codex card topic consumers handle codex hook payloads directly.',
-  ),
-  'claude.hook': noop('Card topic consumers handle claude hook payloads directly.'),
-  'codex.job_requested': noop(
-    'Dispatcher consumes codex job requests directly from the event bus.',
-  ),
-  'terminal.job_requested': noop(
-    'Dispatcher consumes terminal job requests directly from the event bus.',
-  ),
-  'task.completed': noop(
-    'Dispatcher and spec-agent waiters consume task completion directly.',
-  ),
-  'task.failed': noop('Dispatcher and spec-agent waiters consume task failure directly.'),
+  'codex.hook': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason: 'Codex card topic consumers handle codex hook payloads directly.',
+  },
+  'claude.hook': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason: 'Card topic consumers handle claude hook payloads directly.',
+  },
+  'codex.job_requested': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason: 'Dispatcher consumes codex job requests directly from the event bus.',
+  },
+  'terminal.job_requested': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason: 'Dispatcher consumes terminal job requests directly from the event bus.',
+  },
+  'task.completed': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason: 'Dispatcher and spec-agent waiters consume task completion directly.',
+  },
+  'task.failed': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason: 'Dispatcher and spec-agent waiters consume task failure directly.',
+  },
 });

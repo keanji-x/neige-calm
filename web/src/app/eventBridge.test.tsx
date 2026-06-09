@@ -511,12 +511,99 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('PR4 dispatcher/task-lifecycle variants dispatch without invalidating', () => {
-    // PR4 of #136: codex.job_requested / terminal.job_requested /
-    // task.completed / task.failed are kernel-internal signals. The
-    // dispatcher's switch has explicit no-op arms so a stray frame
-    // doesn't crash the UI — assert one each fans through cleanly with
-    // no query invalidation side effect.
+  it('wave-fs projection events invalidate wave file queries', () => {
+    // The report sidebar reads kernel-projected files. These events may
+    // otherwise be consumed directly by card-topic listeners or the
+    // dispatcher, but runs/* and cards/* hook views derive from them.
+    const client = makeClient();
+    seedWaveDetailWithCard(client, 'wave_1', 'card_worker');
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+
+    const cases: Array<{ ev: WireEvent; queryKey: unknown[] }> = [
+      {
+        ev: {
+          ev: 'codex.hook',
+          data: {
+            card_id: 'card_worker',
+            kind: 'hook.codex.stop',
+            hook_idempotency_key: 'hook-codex',
+            payload: { transcript: 'done' },
+          },
+        },
+        queryKey: ['wave-files', 'wave_1'],
+      },
+      {
+        ev: {
+          ev: 'claude.hook',
+          data: {
+            card_id: 'card_worker',
+            kind: 'hook.claude.stop',
+            hook_idempotency_key: 'hook-claude',
+            payload: { transcript: 'done' },
+          },
+        },
+        queryKey: ['wave-files', 'wave_1'],
+      },
+      {
+        ev: {
+          ev: 'codex.job_requested',
+          data: {
+            idempotency_key: 'idem-codex',
+            goal: 'g',
+            context: null,
+          },
+        },
+        queryKey: ['wave-files'],
+      },
+      {
+        ev: {
+          ev: 'terminal.job_requested',
+          data: {
+            idempotency_key: 'idem-terminal',
+            cmd: 'echo ok',
+          },
+        },
+        queryKey: ['wave-files'],
+      },
+      {
+        ev: {
+          ev: 'task.completed',
+          data: {
+            idempotency_key: 'idem-done',
+            result: null,
+            artifacts: [],
+          },
+        },
+        queryKey: ['wave-files'],
+      },
+      {
+        ev: {
+          ev: 'task.failed',
+          data: {
+            idempotency_key: 'idem-failed',
+            reason: 'boom',
+          },
+        },
+        queryKey: ['wave-files'],
+      },
+    ];
+
+    for (const { ev, queryKey } of cases) {
+      invalidate.mockClear();
+      expect(() => fakeStream.emit(ev)).not.toThrow();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
+
+    cleanup();
+  });
+
+  it('hook events fall back to broad wave-file invalidation without cached ownership', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -527,21 +614,16 @@ describe('EventBridge', () => {
     );
     expect(() =>
       fakeStream.emit({
-        ev: 'codex.job_requested',
+        ev: 'codex.hook',
         data: {
-          idempotency_key: 'idem-1',
-          goal: 'g',
-          context: null,
+          card_id: 'card_not_cached',
+          kind: 'hook.codex.stop',
+          hook_idempotency_key: 'hook-not-cached',
+          payload: { transcript: 'done' },
         },
       }),
     ).not.toThrow();
-    expect(() =>
-      fakeStream.emit({
-        ev: 'task.completed',
-        data: { idempotency_key: 'idem-1', result: null, artifacts: [] },
-      }),
-    ).not.toThrow();
-    expect(invalidate).not.toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-files'] });
     cleanup();
   });
 
@@ -603,7 +685,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('claude.hook dispatches as an explicit noop policy', () => {
+  it('claude.hook without cached ownership invalidates all wave-file queries', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -623,7 +705,9 @@ describe('EventBridge', () => {
         },
       }),
     ).not.toThrow();
-    expect(invalidate).not.toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-files'],
+    });
     cleanup();
   });
 

@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError, type WaveFsEntry } from '../../api/calm';
@@ -16,8 +16,14 @@ export interface WaveReportSidebarProps {
 }
 
 export function WaveReportSidebar({ waveId, fallback }: WaveReportSidebarProps) {
+  return <WaveReportSidebarState key={waveId} waveId={waveId} fallback={fallback} />;
+}
+
+function WaveReportSidebarState({ waveId, fallback }: WaveReportSidebarProps) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
+  const treeRef = useRef<HTMLUListElement>(null);
   const rootQ = useWaveFileList(waveId, '');
   const cardIndexQ = useWaveFileContent(waveId, 'cards/index.json', {
     enabled: expandedDirs.has('cards'),
@@ -35,10 +41,74 @@ export function WaveReportSidebar({ waveId, fallback }: WaveReportSidebarProps) 
       return next;
     });
   };
+  const defaultFocusedPath = rootQ.data?.[0] ? joinPath('', rootQ.data[0].name) : null;
+
+  const focusItem = (path: string) => {
+    const item = visibleTreeItems(treeRef.current).find((el) => el.dataset.path === path);
+    if (!item) return;
+    setFocusedPath(path);
+    item.focus();
+  };
+
+  const handleTreeItemKeyDown = (event: KeyboardEvent<HTMLLIElement>) => {
+    const target = event.currentTarget;
+    const path = target.dataset.path;
+    if (!path) return;
+    if (!isTreeNavigationKey(event.key)) return;
+    event.stopPropagation();
+
+    const items = visibleTreeItems(treeRef.current);
+    const index = items.indexOf(target);
+    const isDir = target.dataset.kind === 'dir';
+    const expanded = target.getAttribute('aria-expanded') === 'true';
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      const next = items[Math.min(index + 1, items.length - 1)];
+      if (next?.dataset.path) focusItem(next.dataset.path);
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      const prev = items[Math.max(index - 1, 0)];
+      if (prev?.dataset.path) focusItem(prev.dataset.path);
+      return;
+    }
+    if (event.key === 'ArrowRight' && isDir) {
+      event.preventDefault();
+      if (!expanded) {
+        toggleDir(path);
+        return;
+      }
+      const child = items.find((item) => item.dataset.parentPath === path);
+      if (child?.dataset.path) focusItem(child.dataset.path);
+      return;
+    }
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      if (isDir && expanded) {
+        toggleDir(path);
+        return;
+      }
+      const parentPath = target.dataset.parentPath;
+      if (parentPath) focusItem(parentPath);
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (isDir) toggleDir(path);
+      else setSelectedPath(path);
+    }
+  };
 
   return (
     <div className="wave-report-files" data-testid="wave-report-files">
-      <div className="wave-report-files-tree" aria-label="Wave files">
+      <ul
+        ref={treeRef}
+        role="tree"
+        className="wave-report-files-tree"
+        aria-label="Wave files"
+      >
         <DirectoryBody
           waveId={waveId}
           path=""
@@ -49,11 +119,15 @@ export function WaveReportSidebar({ waveId, fallback }: WaveReportSidebarProps) 
           depth={0}
           expandedDirs={expandedDirs}
           selectedPath={selectedPath}
+          focusedPath={focusedPath}
+          defaultFocusedPath={defaultFocusedPath}
           cardKinds={cardKinds}
           onToggleDir={toggleDir}
           onSelectFile={setSelectedPath}
+          onFocusItem={setFocusedPath}
+          onItemKeyDown={handleTreeItemKeyDown}
         />
-      </div>
+      </ul>
       <WaveFileViewer waveId={waveId} selectedPath={selectedPath} fallback={fallback} />
     </div>
   );
@@ -69,9 +143,13 @@ interface DirectoryBodyProps {
   depth: number;
   expandedDirs: Set<string>;
   selectedPath: string | null;
+  focusedPath: string | null;
+  defaultFocusedPath: string | null;
   cardKinds: Map<string, string>;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
+  onFocusItem: (path: string) => void;
+  onItemKeyDown: (event: KeyboardEvent<HTMLLIElement>) => void;
 }
 
 function DirectoryBody({
@@ -84,15 +162,19 @@ function DirectoryBody({
   depth,
   expandedDirs,
   selectedPath,
+  focusedPath,
+  defaultFocusedPath,
   cardKinds,
   onToggleDir,
   onSelectFile,
+  onFocusItem,
+  onItemKeyDown,
 }: DirectoryBodyProps) {
   if (loading) {
     return <TreeState depth={depth} label="Loading..." />;
   }
   if (error) {
-    return <InlineApiError error={error} depth={depth} />;
+    return <TreeError error={error} depth={depth} />;
   }
   if (!entries || entries.length === 0) {
     return <TreeState depth={depth} label={emptyLabel} />;
@@ -111,9 +193,13 @@ function DirectoryBody({
             depth={depth}
             expandedDirs={expandedDirs}
             selectedPath={selectedPath}
+            focusedPath={focusedPath}
+            defaultFocusedPath={defaultFocusedPath}
             cardKinds={cardKinds}
             onToggleDir={onToggleDir}
             onSelectFile={onSelectFile}
+            onFocusItem={onFocusItem}
+            onItemKeyDown={onItemKeyDown}
           />
         );
       })}
@@ -129,9 +215,13 @@ interface TreeEntryProps {
   depth: number;
   expandedDirs: Set<string>;
   selectedPath: string | null;
+  focusedPath: string | null;
+  defaultFocusedPath: string | null;
   cardKinds: Map<string, string>;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
+  onFocusItem: (path: string) => void;
+  onItemKeyDown: (event: KeyboardEvent<HTMLLIElement>) => void;
 }
 
 function TreeEntry({
@@ -142,53 +232,80 @@ function TreeEntry({
   depth,
   expandedDirs,
   selectedPath,
+  focusedPath,
+  defaultFocusedPath,
   cardKinds,
   onToggleDir,
   onSelectFile,
+  onFocusItem,
+  onItemKeyDown,
 }: TreeEntryProps) {
   const isDir = isDirectory(entry);
   const expanded = isDir && expandedDirs.has(path);
   const label = entryLabel(entry, parentPath, cardKinds);
   const childQ = useWaveFileList(waveId, path, { enabled: expanded });
+  const tabPath = focusedPath ?? defaultFocusedPath;
 
   return (
-    <>
-      <button
-        type="button"
+    <li
+      role="treeitem"
+      aria-label={label}
+      aria-level={depth + 1}
+      aria-expanded={isDir ? expanded : undefined}
+      aria-selected={isDir ? false : selectedPath === path}
+      tabIndex={tabPath === path ? 0 : -1}
+      data-path={path}
+      data-parent-path={parentPath}
+      data-kind={isDir ? 'dir' : 'file'}
+      className="wave-report-files-item"
+      onFocus={(event) => {
+        if (event.target === event.currentTarget) onFocusItem(path);
+      }}
+      onKeyDown={onItemKeyDown}
+      onClick={(event) => {
+        event.stopPropagation();
+        event.currentTarget.focus();
+        onFocusItem(path);
+        if (isDir) onToggleDir(path);
+        else onSelectFile(path);
+      }}
+    >
+      <div
         className={[
           'wave-report-files-row',
           isDir ? 'is-dir' : 'is-file',
           selectedPath === path ? 'is-selected' : '',
         ].join(' ')}
         style={{ paddingLeft: `${8 + depth * 14}px` }}
-        aria-expanded={isDir ? expanded : undefined}
-        onClick={() => {
-          if (isDir) onToggleDir(path);
-          else onSelectFile(path);
-        }}
       >
         <span aria-hidden="true" className="wave-report-files-caret">
           {isDir ? (expanded ? '▾' : '▸') : ''}
         </span>
         <span className="wave-report-files-label">{label}</span>
-      </button>
+      </div>
       {expanded && (
-        <DirectoryBody
-          waveId={waveId}
-          path={path}
-          entries={childQ.data}
-          error={childQ.error}
-          loading={childQ.isLoading}
-          emptyLabel="Empty"
-          depth={depth + 1}
-          expandedDirs={expandedDirs}
-          selectedPath={selectedPath}
-          cardKinds={cardKinds}
-          onToggleDir={onToggleDir}
-          onSelectFile={onSelectFile}
-        />
+        <ul role="group" className="wave-report-files-group">
+          <DirectoryBody
+            waveId={waveId}
+            path={path}
+            entries={childQ.data}
+            error={childQ.error}
+            loading={childQ.isLoading}
+            emptyLabel="Empty"
+            depth={depth + 1}
+            expandedDirs={expandedDirs}
+            selectedPath={selectedPath}
+            focusedPath={focusedPath}
+            defaultFocusedPath={defaultFocusedPath}
+            cardKinds={cardKinds}
+            onToggleDir={onToggleDir}
+            onSelectFile={onSelectFile}
+            onFocusItem={onFocusItem}
+            onItemKeyDown={onItemKeyDown}
+          />
+        </ul>
       )}
-    </>
+    </li>
   );
 }
 
@@ -273,12 +390,24 @@ function InlineApiError({
 
 function TreeState({ depth, label }: { depth: number; label: string }) {
   return (
-    <div
+    <li
+      role="treeitem"
+      aria-disabled="true"
+      aria-selected={false}
       className="wave-report-files-state"
+      tabIndex={-1}
       style={{ paddingLeft: `${8 + depth * 14}px` }}
     >
       {label}
-    </div>
+    </li>
+  );
+}
+
+function TreeError({ error, depth }: { error: Error; depth: number }) {
+  return (
+    <li role="treeitem" aria-disabled="true" aria-selected={false} tabIndex={-1}>
+      <InlineApiError error={error} depth={depth} />
+    </li>
   );
 }
 
@@ -332,4 +461,23 @@ function entryLabel(
 
 function truncateId(id: string): string {
   return id.length <= 8 ? id : id.slice(0, 8);
+}
+
+function visibleTreeItems(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      '[role="treeitem"][data-path]:not([aria-disabled="true"])',
+    ),
+  );
+}
+
+function isTreeNavigationKey(key: string): boolean {
+  return (
+    key === 'ArrowDown' ||
+    key === 'ArrowUp' ||
+    key === 'ArrowRight' ||
+    key === 'ArrowLeft' ||
+    key === 'Enter'
+  );
 }

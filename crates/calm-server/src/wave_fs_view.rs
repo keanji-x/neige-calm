@@ -488,6 +488,10 @@ fn project_runs(
                 if is_spec_verdict_event(&row.scope, &row.actor) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
+                    // Wave-scoped verdicts are routed to `verdict`, not `completed`.
+                    // The remaining competition here is between worker self-reports
+                    // for the same run, such as a dispatcher retry after spawn
+                    // failure, so the latest completion is the most informative one.
                     record_latest(&mut completed, idempotency_key, event);
                 }
             }
@@ -602,6 +606,13 @@ fn latest_final_event<'a>(
     }
 }
 
+/// Spec verdicts are task terminal events emitted at Wave scope by the
+/// `update_task_meta` MCP tool in `wave_state.rs`, where
+/// `identity.to_actor_id()` produces the spec actor. Non-verdict task events
+/// may also be Wave-scoped: the dispatcher spawn-failure path in
+/// `dispatcher.rs` emits `Event::TaskFailed` as `ActorId::KernelDispatcher`
+/// while preserving the request scope. Those dispatcher failures remain run
+/// failures, not verdicts, even though they share the Wave scope.
 fn is_spec_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
     matches!(scope, EventScope::Wave { .. }) && !matches!(actor, ActorId::KernelDispatcher)
 }
