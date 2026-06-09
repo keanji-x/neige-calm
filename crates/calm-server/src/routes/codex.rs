@@ -153,18 +153,11 @@ pub(crate) async fn ingest_provider_hook(
     payload: Value,
     provider: HookProvider,
 ) -> Result<()> {
+    let card_id_typed = CardId::from(card_id_str.clone());
     let event_name = payload
         .get("hook_event_name")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    tracing::info!(
-        target: "repro_557",
-        provider = ?provider,
-        card_id_str = %card_id_str,
-        hook_event_name = %event_name,
-        "codex hook ingest entered"
-    );
-    let card_id_typed = CardId::from(card_id_str.clone());
     let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
     let hook_idempotency_key = hook_idempotency_key(provider, &card_id_str, &payload);
     {
@@ -174,7 +167,7 @@ pub(crate) async fn ingest_provider_hook(
             .expect("hook ingest cache mutex poisoned");
         if cache.contains(&hook_idempotency_key) {
             tracing::warn!(
-                target: "repro_557",
+                target: "hook.ingest.dedupe",
                 provider = ?provider,
                 key = %hook_idempotency_key,
                 "duplicate hook ingest suppressed"
@@ -183,14 +176,6 @@ pub(crate) async fn ingest_provider_hook(
         }
     }
 
-    tracing::info!(
-        target: "repro_557",
-        phase = "pre_cross_check",
-        provider = ?provider,
-        card_id_str = %card_id_str,
-        hook_event_name = %event_name,
-        "codex hook ingest before cross check"
-    );
     cross_check_session_card(s, &card_id_str, &payload, provider).await?;
 
     // PR3 (#136) — reattribute the hook to the codex card that produced
@@ -219,17 +204,7 @@ pub(crate) async fn ingest_provider_hook(
         None => EventScope::System,
     };
 
-    tracing::info!(
-        target: "repro_557",
-        phase = "pre_log_pure_event",
-        provider = ?provider,
-        card_id_str = %card_id_str,
-        hook_event_name = %event_name,
-        scope = %scope.kind(),
-        "codex hook ingest before log_pure_event"
-    );
-    match s
-        .repo
+    s.repo
         .log_pure_event(
             provider.actor(card_id_typed.clone()),
             scope,
@@ -239,26 +214,7 @@ pub(crate) async fn ingest_provider_hook(
             s.write.cove_cache(),
             provider.event(card_id_typed, kind, payload, hook_idempotency_key.clone()),
         )
-        .await
-    {
-        Ok(event_id) => {
-            tracing::info!(
-                target: "repro_557",
-                phase = "logged",
-                event_id = event_id,
-                "codex hook ingest logged"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "repro_557",
-                phase = "log_failed",
-                error = %e,
-                "codex hook ingest log_pure_event failed"
-            );
-            return Err(e);
-        }
-    }
+        .await?;
     // Concurrent duplicates during this log call may pass; dispatcher watermarks and harness LRU dedupe them.
     s.hook_ingest_cache
         .lock()

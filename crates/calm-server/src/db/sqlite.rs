@@ -3934,15 +3934,6 @@ impl RepoEventWrite for SqlxRepo {
         if let Err(violation) =
             crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache, wave_cove_cache)
         {
-            tracing::warn!(
-                target: "repro_557_db",
-                phase = "enforce_role_violation",
-                actor = ?actor,
-                scope = ?scope,
-                event_kind = event.kind_tag(),
-                violation = %violation,
-                "log_pure_event role gate rejected event"
-            );
             let _ = tx.rollback().await;
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -3950,24 +3941,11 @@ impl RepoEventWrite for SqlxRepo {
             match Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, &event).await {
                 Ok(id) => id,
                 Err(e) => {
-                    tracing::warn!(
-                        target: "repro_557_db",
-                        phase = "append_failed",
-                        error = %e,
-                        "log_pure_event append failed"
-                    );
                     let _ = tx.rollback().await;
                     return Err(e);
                 }
             };
         tx.commit().await?;
-        tracing::info!(
-            target: "repro_557_db",
-            phase = "committed_emitting",
-            event_id = event_id,
-            event_kind = event.kind_tag(),
-            "log_pure_event committed before emit"
-        );
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
