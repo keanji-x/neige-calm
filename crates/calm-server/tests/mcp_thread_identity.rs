@@ -807,7 +807,12 @@ async fn initialize_does_not_bind_card_identity() {
 
 #[tokio::test]
 async fn tools_list_works_without_thread_id() {
-    let boot = boot_with_registry(build_default_registry()).await;
+    let mut registry = ToolRegistry::new();
+    let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
+        Box::pin(async move { Ok(json!({ "ok": true })) })
+    });
+    registry.register(test_descriptor("test.no_annotations"), handler);
+    let boot = boot_with_registry(Arc::new(registry)).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
@@ -822,7 +827,13 @@ async fn tools_list_works_without_thread_id() {
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
-    assert!(resp["result"]["tools"].as_array().unwrap().len() >= 4);
+    let result = &resp["result"];
+    assert_eq!(result["tools"].as_array().unwrap().len(), 1);
+    let entry = &result["tools"][0];
+    assert!(
+        entry.get("annotations").is_none(),
+        "descriptor with annotations: None must omit the key from tools/list (got {entry:#?})"
+    );
     let _ = &boot.server;
 }
 

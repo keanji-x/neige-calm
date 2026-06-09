@@ -34,12 +34,12 @@
 //! reverse-mapping; codex's session log shows the bizarre joined name
 //! `mcp__calmcalm_update_wave_state` in its `ToolCall:` info line).
 //!
-//! ## Why ship it failing
+//! ## Why ship it
 //!
-//! Deterministic, single-shot, headless reproduction lets us iterate
-//! against a fix without driving the live preview each time. The
-//! `#[ignore]` gate keeps it out of normal `cargo test` runs.
-//! Operator workflow:
+//! Deterministic, single-shot, headless regression net for the MCP
+//! approval-gate bug. The `#[ignore]` gate keeps it out of normal
+//! `cargo test` runs (no codex on CI per memory
+//! `project_ci_e2e_no_codex.md`). Operator workflow:
 //!
 //! ```sh
 //! NEIGE_CODEX_BIN=/path/to/codex \
@@ -398,7 +398,7 @@ After the second call returns, output the single word OK and stop.";
     eprintln!("[double-call] final_wave_title={final_title:?}");
     assert_eq!(
         completed, started,
-        "BUG REPRODUCED: started={started} completed={completed}"
+        "every started mcpToolCall must complete: started={started} completed={completed}"
     );
     assert!(
         started >= 2,

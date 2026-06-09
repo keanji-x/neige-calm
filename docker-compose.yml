@@ -33,13 +33,17 @@ services:
         no_proxy: ${CALM_BUILD_NO_PROXY:-}
     image: neige-calm-server:local
     init: true
-    # Codex (0.13x+) wraps every local_shell tool call in bubblewrap. Docker's
-    # default seccomp + AppArmor filter blocks the CLONE_NEWUSER syscall bwrap
-    # needs, so without these relaxations every AI shell command dies before
-    # producing output. Capability + security-opt set matches codex's upstream
-    # `.devcontainer/devcontainer.secure.json` recipe for the same scenario.
-    # The container already runs as the host user with $HOME bind-mounted
-    # rw, so these relaxations do not materially widen blast radius.
+    # Codex 0.13x wraps every local_shell tool call in bubblewrap. The cap_add
+    # + security_opt set below matches codex's upstream
+    # `.devcontainer/devcontainer.secure.json` so bwrap can construct its
+    # user namespace + chroot inside the container. This IS a broad dev-
+    # container relaxation (near-`--privileged` for many escape paths);
+    # adequate for the per-developer preview stack where the server already
+    # runs as the host user with $HOME bind-mounted rw, NOT for production.
+    # Production neige-app runs on bare host where the host kernel allows
+    # unprivileged userns directly. Tighten to the minimum bwrap actually
+    # requires (SETUID + SETGID + seccomp:unconfined) if we ever need to
+    # narrow the dev container.
     cap_add:
       - SYS_ADMIN
       - SYS_CHROOT
