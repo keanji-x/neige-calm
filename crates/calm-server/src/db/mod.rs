@@ -392,6 +392,11 @@ pub trait RepoRead: Send + Sync + 'static {
         hashed_token: &str,
     ) -> Result<Option<(String, String)>>;
 
+    /// Return whether a card owns a per-card MCP token row. Used by the
+    /// spec-harness reusable-thread invariant: only threads minted under
+    /// PR #567 should be reused without reminting.
+    async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
+
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
 }
 

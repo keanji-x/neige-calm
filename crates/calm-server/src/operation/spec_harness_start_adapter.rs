@@ -335,6 +335,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             });
         }
         let mint_lock_guard = self.lock_card_mint(&card_id).await;
+        // Reuse requires the existing thread to have been minted under
+        // PR #567's per-card token contract: the card owns a
+        // `card_mcp_tokens` row. Migration 0035 forces a fresh mint for
+        // any earlier thread.
         let reusable_thread_id = if force_new_thread {
             None
         } else if let Some(runtime) = self.repo.runtime_get_active_for_card(&card_id).await?
@@ -346,6 +350,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         };
         let mut new_mcp_token_hash = None;
         let thread_id = if let Some(thread_id) = reusable_thread_id {
+            if !self.repo.card_mcp_token_exists_for_card(&card_id).await? {
+                tracing::warn!(
+                    target: "spec_harness::reusable_thread_invariant",
+                    %card_id,
+                    thread_id = %thread_id,
+                    "spec card reuses thread without per-card MCP token row - AI shell `neige` will fail -32401; migration 0035 should have nulled this thread_id"
+                );
+            }
             thread_id
         } else {
             let developer_instructions = crate::spec_card::render_system_prompt(
