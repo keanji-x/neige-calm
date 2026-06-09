@@ -29,12 +29,14 @@
 import { useContext, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useQueryClient } from '@tanstack/react-query';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import { CardHead } from '../CardHead';
 import { WaveContext } from '../../shared/components/WaveContext';
 import { WaveLifecycleBadge } from '../../shared/components/WaveLifecycleBadge';
 import { updateWaveReport, CalmApiError } from '../../api/calm';
+import { waveFileContentQueryKey } from '../../api/queries';
 import {
   WAVE_REPORT_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -462,6 +464,7 @@ function WaveReportCardImpl({
   onClose?: () => void;
 }) {
   const waveCtx = useContext(WaveContext);
+  const qc = useQueryClient();
   const waveId = waveCtx?.id ?? null;
 
   // Optimistic display state. Seeded from props; after a successful
@@ -544,6 +547,16 @@ function WaveReportCardImpl({
           onSaved={(next) => {
             setOverride({ summary: next.summary, body: next.body });
             setEditing(false);
+            // If the sidebar viewer is currently showing report.md, its
+            // cached `useWaveFileContent` is now stale until the WS
+            // invalidation arrives. Refetch eagerly so the user sees
+            // their edit immediately (the optimistic `override` only
+            // covers the fallback ReadOnlyView, not the file viewer).
+            if (waveId !== null) {
+              void qc.invalidateQueries({
+                queryKey: waveFileContentQueryKey(waveId, 'report.md'),
+              });
+            }
           }}
         />
       ) : waveId !== null ? (

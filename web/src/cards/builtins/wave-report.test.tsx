@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Hoisted mock for the api client. Only the wave-report endpoint is
 // exercised here; we still need to passthrough `CalmApiError` because
@@ -182,14 +183,23 @@ describe('WaveReportCard rendering', () => {
     } = {},
   ) {
     const Component = WaveReportEntry.Component;
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     if (withContext) {
       return render(
-        <WaveContext.Provider value={{ id: 'wave_test', lifecycle }}>
-          <Component card={card} onClose={onClose} />
-        </WaveContext.Provider>,
+        <QueryClientProvider client={qc}>
+          <WaveContext.Provider value={{ id: 'wave_test', lifecycle }}>
+            <Component card={card} onClose={onClose} />
+          </WaveContext.Provider>
+        </QueryClientProvider>,
       );
     }
-    return render(<Component card={card} onClose={onClose} />);
+    return render(
+      <QueryClientProvider client={qc}>
+        <Component card={card} onClose={onClose} />
+      </QueryClientProvider>,
+    );
   }
 
   it('renders sections from the markdown body', () => {
@@ -342,10 +352,15 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
 
   function renderEditable(card: WaveReportCardData) {
     const Component = WaveReportEntry.Component;
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     return render(
-      <WaveContext.Provider value={{ id: 'wave_edit_test', lifecycle: 'planning' }}>
-        <Component card={card} />
-      </WaveContext.Provider>,
+      <QueryClientProvider client={qc}>
+        <WaveContext.Provider value={{ id: 'wave_edit_test', lifecycle: 'planning' }}>
+          <Component card={card} />
+        </WaveContext.Provider>
+      </QueryClientProvider>,
     );
   }
 
@@ -393,15 +408,20 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
 
   it('omits the edit button when no WaveContext is provided', () => {
     const Component = WaveReportEntry.Component;
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     render(
-      <Component
-        card={{
-          type: 'wave-report',
-          id: 'r1',
-          summary: '',
-          body: '# Goal\n\nx\n',
-        }}
-      />,
+      <QueryClientProvider client={qc}>
+        <Component
+          card={{
+            type: 'wave-report',
+            id: 'r1',
+            summary: '',
+            body: '# Goal\n\nx\n',
+          }}
+        />
+      </QueryClientProvider>,
     );
     expect(screen.queryByLabelText('Edit report')).toBeNull();
   });
