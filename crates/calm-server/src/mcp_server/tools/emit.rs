@@ -36,7 +36,7 @@ use crate::ids::CardId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role_any,
+    require_role_any, role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use serde_json::{Value, json};
@@ -87,6 +87,7 @@ fn dispatch_request_descriptor() -> ToolDescriptor {
                 "cwd": { "type": ["string", "null"] }
             }
         }),
+        annotations: Some(role_gated_write_annotations()),
     }
 }
 
@@ -180,6 +181,7 @@ fn task_completed_descriptor() -> ToolDescriptor {
                 "artifacts": { "type": "array" }
             }
         }),
+        annotations: Some(role_gated_write_annotations()),
     }
 }
 
@@ -233,6 +235,7 @@ fn task_failed_descriptor() -> ToolDescriptor {
                 "reason": { "type": "string" }
             }
         }),
+        annotations: Some(role_gated_write_annotations()),
     }
 }
 

@@ -242,6 +242,30 @@ describe('SpecCard chat timeline', () => {
       harnessRow(8, 'mystery_item', {
         id: 'mystery_1',
       }),
+      harnessRow(9, 'mcpToolCall', {
+        id: 'mcp_1',
+        server: 'neige',
+        tool: 'spec_set_phase',
+        status: 'completed',
+        arguments: { phase: 'expand' },
+        result: { content: [{ type: 'text', text: 'ok' }] },
+        durationMs: 42,
+      }),
+      harnessRow(10, 'mcpToolCall', {
+        id: 'mcp_2',
+        server: 'neige',
+        tool: 'spec_set_phase',
+        status: 'failed',
+        arguments: { phase: 'bad' },
+        error: { message: 'invalid phase' },
+      }),
+      harnessRow(11, 'mcpToolCall', {
+        id: 'mcp_3',
+        server: 'neige',
+        tool: 'spec_set_phase',
+        status: 'inProgress',
+        arguments: { phase: 'collapse' },
+      }),
     ]);
 
     expect(await screen.findByText('please update the PR UI')).toBeInTheDocument();
@@ -257,6 +281,13 @@ describe('SpecCard chat timeline', () => {
     expect(screen.getByText('Searched: playwright fixtures')).toBeInTheDocument();
     expect(screen.getByText(/\$ echo hi/)).toBeInTheDocument();
     expect(screen.getByText('[mystery_item]')).toBeInTheDocument();
+    expect(screen.queryByText('[mcpToolCall]')).not.toBeInTheDocument();
+    expect(screen.queryByText('[mcp_tool_call]')).not.toBeInTheDocument();
+    expect(screen.getAllByText('neige/spec_set_phase')).toHaveLength(3);
+    expect(screen.getByText('completed')).toBeInTheDocument();
+    expect(screen.getByText('running...')).toBeInTheDocument();
+    expect(screen.getByText('failed')).toBeInTheDocument();
+    expect(screen.getByText(/invalid phase/)).toBeInTheDocument();
   });
 
   it('merges a live item that arrives while the initial REST load is in flight', async () => {
@@ -376,6 +407,77 @@ describe('SpecCard chat timeline', () => {
       '/api/cards/card_spec_1/harness/items?after_id=1&limit=1',
       expect.objectContaining({ credentials: 'include' }),
     );
+  });
+
+  it('dedupes mcpToolCall by item_uuid: inProgress is replaced by completed', async () => {
+    const started = harnessRow(
+      1,
+      'mcpToolCall',
+      {
+        id: 'mcp_call_x',
+        server: 'neige',
+        tool: 'calm.wave.cat',
+        status: 'inProgress',
+        arguments: { path: 'report.md' },
+      },
+      { method: 'item/started', item_uuid: 'mcp_call_x' },
+    );
+    const completed = harnessRow(
+      2,
+      'mcpToolCall',
+      {
+        id: 'mcp_call_x',
+        server: 'neige',
+        tool: 'calm.wave.cat',
+        status: 'completed',
+        arguments: { path: 'report.md' },
+        result: { content: [{ type: 'text', text: 'final report body' }] },
+        durationMs: 120,
+      },
+      { method: 'item/completed', item_uuid: 'mcp_call_x' },
+    );
+
+    // First REST fetch returns only the started row, then the live event
+    // causes a REST reload whose completed row replaces it by item_uuid.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([started]))
+      .mockResolvedValueOnce(response([started, completed]));
+    vi.stubGlobal('fetch', fetchMock);
+    const Component = SpecEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'spec',
+          id: 'card_spec_1',
+          goal: 'Ship the spec UI',
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('running...')).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.fakeStream.emit({
+        ev: 'harness.item.added',
+        data: {
+          runtime_id: 'runtime_1',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+          item_db_id: 2,
+          item_uuid: 'mcp_call_x',
+          item_type: 'mcpToolCall',
+          turn_id: 'turn_1',
+          method: 'item/completed',
+        },
+      });
+    });
+
+    expect(await screen.findByText('completed')).toBeInTheDocument();
+    expect(screen.queryByText('running...')).not.toBeInTheDocument();
+    expect(screen.getAllByText('neige/calm.wave.cat')).toHaveLength(1);
+    expect(screen.getByText(/final report body/)).toBeInTheDocument();
+    expect(screen.queryByText('[mcpToolCall]')).not.toBeInTheDocument();
   });
 
   it('drops a stale started item when its completed item already exists', async () => {

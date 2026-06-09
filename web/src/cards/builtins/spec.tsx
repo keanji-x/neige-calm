@@ -302,6 +302,8 @@ function normalizedItemType(itemType: string | null | undefined): string {
       return 'web_search';
     case 'localShell':
       return 'local_shell';
+    case 'mcpToolCall':
+      return 'mcp_tool_call';
     default:
       return itemType ?? 'unknown';
   }
@@ -540,6 +542,56 @@ function HarnessItemView({ row }: { row: HarnessItem }) {
       const output = itemOutput(item);
       const body = `${command ? `$ ${command}` : '$'}${output ? `\n${output}` : ''}`;
       return <TimelinePre>{body}</TimelinePre>;
+    }
+    case 'mcp_tool_call': {
+      const server = stringField(item, 'server') ?? 'mcp';
+      const tool = stringField(item, 'tool') ?? 'tool';
+      const status = stringField(item, 'status') ?? 'unknown';
+      const statusLabel = status === 'inProgress' ? 'running...' : status;
+      const args = item?.arguments;
+      const showArgs =
+        args !== null &&
+        args !== undefined &&
+        !(isRecord(args) && Object.keys(args).length === 0);
+      const error = isRecord(item?.error) ? item.error : null;
+      const result = isRecord(item?.result) ? item.result : null;
+      return (
+        <>
+          <TimelineBubble attribution="MCP">
+            <strong>{server}/{tool}</strong>
+            <span
+              style={{
+                marginLeft: 'var(--space-2)',
+                color: 'var(--text-3)',
+                fontSize: 'var(--text-xs)',
+              }}
+            >
+              {statusLabel}
+            </span>
+            {showArgs ? (
+              <>
+                {' '}
+                <code
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    maxWidth: '100%',
+                  }}
+                >
+                  {formatUnknown(args)}
+                </code>
+              </>
+            ) : null}
+          </TimelineBubble>
+          {stringField(error, 'message') ? (
+            <TimelinePre>{stringField(error, 'message') ?? ''}</TimelinePre>
+          ) : result ? (
+            <TimelinePre>
+              {formatUnknown(result.content ?? result.structuredContent ?? result)}
+            </TimelinePre>
+          ) : null}
+        </>
+      );
     }
     default:
       return (

@@ -9,7 +9,7 @@ use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role_any,
+    read_only_annotations, require_role_any,
 };
 use crate::mcp_server::tools::wave_report;
 use crate::model::{Card, CardRole, Wave};
@@ -58,6 +58,7 @@ fn ls_descriptor() -> ToolDescriptor {
                 "path": { "type": "string" }
             }
         }),
+        annotations: Some(read_only_annotations()),
     }
 }
 
@@ -78,6 +79,7 @@ fn cat_descriptor() -> ToolDescriptor {
                 "path": { "type": "string" }
             }
         }),
+        annotations: Some(read_only_annotations()),
     }
 }
 

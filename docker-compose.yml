@@ -33,6 +33,28 @@ services:
         no_proxy: ${CALM_BUILD_NO_PROXY:-}
     image: neige-calm-server:local
     init: true
+    # Codex 0.13x wraps every local_shell tool call in bubblewrap. The cap_add
+    # + security_opt set below matches codex's upstream
+    # `.devcontainer/devcontainer.secure.json` so bwrap can construct its
+    # user namespace + chroot inside the container. This IS a broad dev-
+    # container relaxation (near-`--privileged` for many escape paths);
+    # adequate for the per-developer preview stack where the server already
+    # runs as the host user with $HOME bind-mounted rw, NOT for production.
+    # Production neige-app runs on bare host where the host kernel allows
+    # unprivileged userns directly. Tighten to the minimum bwrap actually
+    # requires (SETUID + SETGID + seccomp:unconfined) if we ever need to
+    # narrow the dev container.
+    cap_add:
+      - SYS_ADMIN
+      - SYS_CHROOT
+      - SETUID
+      - SETGID
+      - SYS_PTRACE
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
     # Let the container and child processes reach host services such as the
     # developer's HTTP proxy via host.docker.internal.
     extra_hosts:

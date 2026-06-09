@@ -24,7 +24,7 @@ use crate::ids::{ActorId, CardId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
 use crate::state::WriteContext;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -183,6 +183,40 @@ pub struct ToolDescriptor {
     /// accepts the schema verbatim — no need to round-trip through a
     /// typed schema crate for three small handlers.
     pub input_schema: Value,
+    /// Optional MCP `annotations` block, surfaced verbatim in `tools/list`.
+    /// Codex 0.13x reads `readOnlyHint`/`destructiveHint`/`openWorldHint`
+    /// from this to decide whether the tool needs explicit approval; missing
+    /// annotations default to "approval required" (codex
+    /// `mcp_tool_call.rs:1953`). Set explicitly per tool to avoid that
+    /// default landing on every call.
+    pub annotations: Option<Value>,
+}
+
+pub fn read_only_annotations() -> Value {
+    json!({ "readOnlyHint": true })
+}
+
+/// MCP `annotations` block for write tools whose access is already gated
+/// by `require_role(...)` inside the kernel. Codex's
+/// `requires_mcp_tool_approval()` (mcp_tool_call.rs:1953) short-circuits
+/// on these three keys: `destructiveHint: false` + `openWorldHint: false`
+/// makes it return false (no approval needed). Use this ONLY for tools
+/// whose handler explicitly checks `CardRole` - the kernel's role gate
+/// is the actual authorization boundary; this annotation just tells codex
+/// not to insert a second approval prompt on top.
+///
+/// Do NOT slap this on every new write tool - re-evaluate whether the
+/// handler enforces a real authorization gate first. If a tool ever
+/// writes outside the wave/cove the caller owns (e.g. crosses cove
+/// boundaries or touches global state), keep approval ON by using
+/// `None` annotations or building a custom block with `destructiveHint:
+/// true`.
+pub fn role_gated_write_annotations() -> Value {
+    json!({
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false,
+    })
 }
 
 /// Map of tool name → handler + descriptor. Populated by
