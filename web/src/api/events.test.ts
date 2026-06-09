@@ -264,6 +264,42 @@ describe('EventStream future-protocol eventVersion gate (issue #198)', () => {
     }
   });
 
+  it('normalizes legacy *.job_requested wire kind to *.worker_requested (issue #581 skew shim)', () => {
+    // v3 frontend can mount against a v2 backend (`isCompatible` only
+    // checks `frontend >= server.minWebCompatVersion`). The v2 backend
+    // emits old kinds with `eventVersion=1`. Without this shim, the
+    // gate accepts the frame, the cursor advances, and zod silently
+    // drops the unknown discriminator. With the shim, the listener
+    // receives the normalized new-kind event.
+    const s = new EventStream('ws://test/api/events');
+    s.setSyncEventVersion(1);
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+    const received: unknown[] = [];
+    s.on((ev) => received.push(ev));
+
+    ws.push({
+      _id: 7,
+      eventVersion: 1,
+      ev: 'codex.job_requested',
+      data: { idempotency_key: 'idem-c', goal: 'g', context: null },
+    });
+    ws.push({
+      _id: 8,
+      eventVersion: 1,
+      ev: 'terminal.job_requested',
+      data: { idempotency_key: 'idem-t', cmd: 'echo' },
+    });
+
+    expect(received).toEqual([
+      { ev: 'codex.worker_requested', data: { idempotency_key: 'idem-c', goal: 'g', context: null } },
+      { ev: 'terminal.worker_requested', data: { idempotency_key: 'idem-t', cmd: 'echo' } },
+    ]);
+    expect(s.cursor).toBe(8);
+  });
+
   it('without setSyncEventVersion (bootstrap window) does not gate', () => {
     // Defensive path: if `setSyncEventVersion` was never called (the
     // EventBridge sets it before subscribe, but a test or pre-mount path

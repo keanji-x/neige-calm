@@ -71,6 +71,32 @@ import { fireUnauthorized } from './onUnauthorized';
 import { wireEventSchema } from './schemas';
 
 /**
+ * Wire-discriminator skew shim (issue #581).
+ *
+ * A v3 frontend can mount against a v2 backend during a split web/code
+ * upgrade — `isCompatible` only checks `frontend >= server.minWebCompatVersion`.
+ * The v2 backend keeps emitting `codex.job_requested` / `terminal.job_requested`
+ * with `eventVersion=1`, which our v3 schemas no longer accept. Without
+ * this remap, the gate at L425 accepts the frame, the cursor advances,
+ * and zod silently drops it as unknown — losing the wave-files
+ * invalidation it should have triggered.
+ *
+ * Strip in the next compat-version bump (when v2 backends are no longer
+ * supported).
+ */
+function normalizeLegacyEv(json: unknown): unknown {
+  if (!json || typeof json !== 'object') return json;
+  const ev = (json as { ev?: unknown }).ev;
+  if (ev === 'codex.job_requested') {
+    return { ...(json as object), ev: 'codex.worker_requested' };
+  }
+  if (ev === 'terminal.job_requested') {
+    return { ...(json as object), ev: 'terminal.worker_requested' };
+  }
+  return json;
+}
+
+/**
  * Per-frame envelope metadata the server stamps onto every broadcast.
  *
  *   * `id` — `events.id` of the persisted row this broadcast came from
@@ -447,7 +473,7 @@ export class EventStream {
     // the cursor and force a re-replay on every reconnect.
     this.advanceCursor(envelope._id);
 
-    const result = wireEventSchema.safeParse(json);
+    const result = wireEventSchema.safeParse(normalizeLegacyEv(json));
     if (!result.success) {
       // eslint-disable-next-line no-console
       console.warn('event bus: unknown payload', raw, result.error);
