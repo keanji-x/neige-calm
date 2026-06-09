@@ -684,7 +684,7 @@ impl AppError {
             json,
             json!({
                 "kind": "usage",
-                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige task-completed --idempotency-key K [--result <json>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text>",
+                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text>",
             }),
         )
     }
