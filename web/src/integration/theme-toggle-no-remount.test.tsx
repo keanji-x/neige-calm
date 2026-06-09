@@ -58,6 +58,7 @@ vi.mock('@xterm/xterm', () => {
     open = vi.fn();
     loadAddon = vi.fn();
     dispose = vi.fn();
+    attachCustomKeyEventHandler = vi.fn();
     options: Record<string, unknown> = {};
     parser = {
       registerOscHandler: vi.fn(() => ({ dispose: () => {} })),
