@@ -36,7 +36,7 @@ use crate::ids::CardId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role_any, role_gated_write_annotations,
+    require_role, require_role_any, role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use serde_json::{Value, json};
@@ -70,7 +70,7 @@ where
 fn dispatch_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_DISPATCH_REQUEST.into(),
-        description: "Request that the kernel dispatcher spawn a worker card. \
+        description: "Spec-only: request that the kernel dispatcher spawn a worker card. \
              `kind` selects codex vs terminal; `idempotency_key` must be \
              stable across retries so the dispatcher dedupes."
             .into(),
@@ -96,7 +96,7 @@ async fn dispatch_request(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role(&identity, CardRole::Spec)?;
 
     let idempotency_key = args
         .get("idempotency_key")
