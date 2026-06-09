@@ -4,6 +4,7 @@ pub mod spec_harness_interrupt_adapter;
 pub mod spec_harness_shutdown_adapter;
 pub mod spec_harness_start_adapter;
 pub mod terminal_adapter;
+pub(crate) mod worker_cleanup;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -624,6 +625,15 @@ impl OperationRuntime {
         let op_id = self.repo.insert_operation(kind, key, payload).await?;
         self.drive().await?;
         Ok(op_id)
+    }
+
+    pub async fn start(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+    ) -> Result<OperationId> {
+        self.submit(kind, key, payload).await
     }
 
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {

@@ -6,15 +6,17 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_with_terminal_create_tx, event_append_for_operation_tx, runtime_get_active_for_card_tx,
-    runtime_set_status_tx,
+    card_update_tx, card_with_terminal_create_tx, event_append_for_operation_tx,
+    runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{CardRole, new_id};
+use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::routes::cards::card_scope;
+use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
 use crate::runtime_repo::{RunStatus, RuntimeKind};
 use crate::state::WriteContext;
@@ -49,6 +51,13 @@ pub struct TerminalAdapter {
     wave_cove_cache: WaveCoveCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
+}
+
+#[derive(Clone)]
+pub struct TerminalWorkerAdapter {
+    repo: Arc<dyn crate::db::RouteRepo>,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
 }
 
 impl TerminalAdapter {
@@ -105,6 +114,20 @@ impl TerminalAdapter {
     }
 }
 
+impl TerminalWorkerAdapter {
+    pub fn new(
+        repo: Arc<dyn crate::db::RouteRepo>,
+        card_role_cache: CardRoleCache,
+        wave_cove_cache: WaveCoveCache,
+    ) -> Self {
+        Self {
+            repo,
+            card_role_cache,
+            wave_cove_cache,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalCreateOperationPayload {
     pub actor: ActorId,
@@ -126,6 +149,16 @@ pub struct TerminalCreateRequestPayload {
     #[serde(default)]
     pub env: Value,
     pub theme: RequestTheme,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TerminalWorkerOperationPayload {
+    pub actor: ActorId,
+    pub wave_id: String,
+    pub idempotency_key: String,
+    pub cmd: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 pub fn normalize_terminal_create_request(
@@ -487,12 +520,300 @@ impl ProviderAdapter for TerminalAdapter {
     }
 }
 
+#[async_trait]
+impl ProviderAdapter for TerminalWorkerAdapter {
+    fn kind(&self) -> &'static str {
+        "terminal-worker"
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        TERMINAL_PHASES
+    }
+
+    async fn validate(&self, input: &Value) -> Result<()> {
+        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        if payload.idempotency_key.trim().is_empty() {
+            return Err(CalmError::BadRequest(
+                "terminal worker idempotency_key must not be empty".into(),
+            ));
+        }
+        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
+        }
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        _op: &Operation,
+    ) -> Result<TxOutput> {
+        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        let card_id = new_id();
+        let runtime_id = new_id();
+        let wave_id = WaveId::from(payload.wave_id.clone());
+        let cwd = payload
+            .cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(default_cwd);
+        let env = terminal_worker_env(self.repo.as_ref()).await?;
+        let scope = card_scope(
+            self.repo.as_ref(),
+            CardId::from(card_id.clone()),
+            wave_id.clone(),
+        )
+        .await?;
+        let (mut card, term) = card_with_terminal_create_tx(
+            tx,
+            card_id,
+            &runtime_id,
+            wave_id,
+            None,
+            payload.cmd.clone(),
+            cwd.clone(),
+            env.clone(),
+            CardRole::Worker,
+            true,
+            &self.card_role_cache,
+            RequestTheme::default_dark(),
+        )
+        .await?;
+
+        if let Some(existing_map) = card.payload.as_object() {
+            let mut merged = existing_map.clone();
+            merged.insert(
+                "idempotency_key".into(),
+                Value::String(payload.idempotency_key.clone()),
+            );
+            merged.insert("role_request".into(), Value::String("terminal".into()));
+            merged.insert("cmd".into(), Value::String(payload.cmd.clone()));
+            merged.insert("cwd".into(), Value::String(cwd.clone()));
+            card = card_update_tx(
+                tx,
+                card.id.as_ref(),
+                crate::model::CardPatch {
+                    kind: None,
+                    sort: None,
+                    payload: Some(Value::Object(merged)),
+                    deletable: None,
+                },
+            )
+            .await?;
+        }
+
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card)?,
+        );
+        output.data = json!({
+            "card_id": card.id,
+            "runtime_id": runtime_id,
+            "wave_id": card.wave_id,
+            "terminal_id": term.id,
+            "cmd": payload.cmd,
+            "cwd": cwd,
+            "env": env,
+            "scope": scope,
+        });
+        Ok(output)
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> Result<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        output: &TxOutput,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<SpawnHandle> {
+        let card_id = output_card_id(output)?;
+        let terminal_id = output_string(output, "terminal_id")?;
+        let wave_id = WaveId::from(output_string(output, "wave_id")?);
+        let cmd = output_string(output, "cmd")?;
+        let cwd = output_string(output, "cwd")?;
+        let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+        let term = ctx
+            .repo
+            .terminal_get(&terminal_id)
+            .await?
+            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
+
+        match ctx.spawn_terminal(&term, &cmd, &cwd, &env).await {
+            Ok(handle) => {
+                if let Err(e) = ctx
+                    .repo
+                    .runtime_set_status_for_card(card_id.as_ref(), RunStatus::Running)
+                    .await
+                {
+                    tracing::warn!(
+                        target: "operation::terminal_worker_adapter::runtime_running_mark_failed",
+                        card_id = %card_id,
+                        terminal_id = %terminal_id,
+                        error = %e,
+                        "failed to mark terminal worker runtime running after spawn; CardAdded still broadcasting",
+                    );
+                }
+                log_terminal_worker_card_added(
+                    ctx,
+                    &self.card_role_cache,
+                    &self.wave_cove_cache,
+                    &card_id,
+                    &wave_id,
+                )
+                .await?;
+                Ok(handle)
+            }
+            Err(e) if worker_spawn_failure_preserved(ctx.repo.as_ref(), &terminal_id).await? => {
+                tracing::info!(
+                    card_id = %card_id,
+                    wave_id = %wave_id,
+                    terminal_id = %terminal_id,
+                    spawn_err = %e,
+                    "worker terminal fast-exit (sidecar present); preserving card + terminal",
+                );
+                log_terminal_worker_card_added(
+                    ctx,
+                    &self.card_role_cache,
+                    &self.wave_cove_cache,
+                    &card_id,
+                    &wave_id,
+                )
+                .await?;
+                Ok(SpawnHandle::NoOp)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        _op: &Operation,
+    ) -> Result<CompensationStateVersioned> {
+        Ok(CompensationStateVersioned {
+            version: 1,
+            from_phase,
+            reason: reason.to_string(),
+            steps: vec![CompensationStep {
+                op: "cleanup_terminal_worker".into(),
+                args: json!({
+                    "card_id": output_string(output, "card_id")?,
+                    "terminal_id": output_string(output, "terminal_id")?,
+                }),
+                completed: false,
+                attempts: 0,
+                last_error: None,
+            }],
+        })
+    }
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<()> {
+        if step.completed {
+            return Ok(());
+        }
+        if step.op != "cleanup_terminal_worker" {
+            return Err(CalmError::Internal(format!(
+                "unknown terminal worker compensation op {}",
+                step.op
+            )));
+        }
+        let card_id = step
+            .args
+            .get("card_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CalmError::Internal("terminal worker cleanup missing card_id".into()))?;
+        let terminal_id = step
+            .args
+            .get("terminal_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CalmError::Internal("terminal worker cleanup missing terminal_id".into())
+            })?;
+        compensate_worker_rows(
+            ctx.repo.as_ref(),
+            ctx.terminal_renderer.as_ref(),
+            &self.card_role_cache,
+            card_id,
+            terminal_id,
+        )
+        .await;
+        Ok(())
+    }
+}
+
 fn output_wave_id(output: &TxOutput) -> Result<&str> {
     output
         .result
         .get("wave_id")
         .and_then(Value::as_str)
         .ok_or_else(|| CalmError::Internal("terminal tx_output missing wave_id".into()))
+}
+
+async fn terminal_worker_env(repo: &dyn crate::db::RouteRepo) -> Result<Value> {
+    let settings = load_settings(repo).await?;
+    let mut env_map = serde_json::Map::new();
+    if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
+        env_map.insert("HTTP_PROXY".to_string(), Value::String(p.to_string()));
+        env_map.insert("http_proxy".to_string(), Value::String(p.to_string()));
+    }
+    if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
+        env_map.insert("HTTPS_PROXY".to_string(), Value::String(p.to_string()));
+        env_map.insert("https_proxy".to_string(), Value::String(p.to_string()));
+    }
+    Ok(Value::Object(env_map))
+}
+
+async fn log_terminal_worker_card_added(
+    ctx: &SpawnCtx,
+    card_role_cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
+    card_id: &str,
+    wave_id: &WaveId,
+) -> Result<()> {
+    let card = ctx
+        .repo
+        .card_get(card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let scope = card_scope(
+        ctx.repo.as_ref(),
+        CardId::from(card_id.to_string()),
+        wave_id.clone(),
+    )
+    .await?;
+    ctx.repo
+        .log_pure_event(
+            ActorId::KernelDispatcher,
+            scope,
+            None,
+            &ctx.events,
+            card_role_cache,
+            wave_cove_cache,
+            Event::CardAdded(card),
+        )
+        .await?;
+    Ok(())
 }
 
 fn output_card_id(output: &TxOutput) -> Result<String> {

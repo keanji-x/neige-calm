@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -8,14 +9,19 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
-    card_with_codex_create_tx, event_append_for_operation_tx, runtime_bind_attribution_tx,
-    runtime_get_active_for_card_tx, runtime_set_status_tx,
+    card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
+    event_append_for_operation_tx, runtime_bind_attribution_tx, runtime_get_active_for_card_tx,
+    runtime_set_status_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
+use crate::mcp_server::McpServer;
 use crate::model::{Card, CardRole, new_id, now_ms};
+use crate::operation::worker_cleanup::{
+    WorkerCleanupOutcome, compensate_worker_rows, worker_spawn_failure_preserved,
+};
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
@@ -64,6 +70,16 @@ pub struct CodexAdapter {
     wave_cove_cache: WaveCoveCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
+}
+
+#[derive(Clone)]
+pub struct CodexWorkerAdapter {
+    repo: Arc<dyn crate::db::RouteRepo>,
+    codex: Arc<CodexClient>,
+    shared_codex_appserver: Arc<SharedCodexAppServer>,
+    mcp_server: Option<Arc<McpServer>>,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
 }
 
 impl CodexAdapter {
@@ -115,12 +131,44 @@ impl CodexAdapter {
     }
 }
 
+impl CodexWorkerAdapter {
+    pub fn new(
+        repo: Arc<dyn crate::db::RouteRepo>,
+        codex: Arc<CodexClient>,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        mcp_server: Option<Arc<McpServer>>,
+        card_role_cache: CardRoleCache,
+        wave_cove_cache: WaveCoveCache,
+    ) -> Self {
+        Self {
+            repo,
+            codex,
+            shared_codex_appserver,
+            mcp_server,
+            card_role_cache,
+            wave_cove_cache,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CodexCreateOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
     pub runtime_id: Option<String>,
     pub request: NormalizedCodexCreateRequest,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CodexWorkerOperationPayload {
+    pub actor: ActorId,
+    pub wave_id: String,
+    pub idempotency_key: String,
+    pub goal: String,
+    #[serde(default)]
+    pub context: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_criteria: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -611,6 +659,576 @@ impl ProviderAdapter for CodexAdapter {
     }
 }
 
+#[async_trait]
+impl ProviderAdapter for CodexWorkerAdapter {
+    fn kind(&self) -> &'static str {
+        "codex-worker"
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        &[
+            PhaseTag::Pending,
+            PhaseTag::TxCommitted,
+            PhaseTag::SpawnStarted,
+            PhaseTag::SpawnSucceeded,
+            PhaseTag::Succeeded,
+        ]
+    }
+
+    async fn validate(&self, input: &Value) -> Result<()> {
+        let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        if payload.idempotency_key.trim().is_empty() {
+            return Err(CalmError::BadRequest(
+                "codex worker idempotency_key must not be empty".into(),
+            ));
+        }
+        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
+        }
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        _op: &Operation,
+    ) -> Result<TxOutput> {
+        let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        let card_id = new_id();
+        let runtime_id = new_id();
+        let wave_id = WaveId::from(payload.wave_id.clone());
+        let cwd = default_cwd();
+        let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
+        let rendered_prompt = render_worker_prompt(
+            &payload.goal,
+            &payload.context,
+            payload.acceptance_criteria.as_deref(),
+        );
+        let scope = card_scope(
+            self.repo.as_ref(),
+            CardId::from(card_id.clone()),
+            wave_id.clone(),
+        )
+        .await?;
+
+        let (mut card, term, _mcp_token) = card_with_codex_create_tx(
+            tx,
+            card_id.clone(),
+            &runtime_id,
+            wave_id,
+            None,
+            cwd.clone(),
+            env.clone(),
+            None,
+            None,
+            None,
+            CardRole::Worker,
+            true,
+            &self.card_role_cache,
+            RequestTheme::default_dark(),
+        )
+        .await?;
+
+        if let Some(existing_map) = card.payload.as_object() {
+            let mut merged = existing_map.clone();
+            merged.insert(
+                "idempotency_key".into(),
+                Value::String(payload.idempotency_key.clone()),
+            );
+            merged.insert("role_request".into(), Value::String("codex".into()));
+            merged.insert("goal".into(), Value::String(payload.goal.clone()));
+            merged.insert("context".into(), payload.context.clone());
+            if let Some(ac) = payload.acceptance_criteria.as_ref() {
+                merged.insert("acceptance_criteria".into(), Value::String(ac.clone()));
+            }
+            merged.insert("prompt".into(), Value::String(rendered_prompt.clone()));
+            card = card_update_tx(
+                tx,
+                card.id.as_ref(),
+                crate::model::CardPatch {
+                    kind: None,
+                    sort: None,
+                    payload: Some(Value::Object(merged)),
+                    deletable: None,
+                },
+            )
+            .await?;
+        }
+
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card)?,
+        );
+        output.data = json!({
+            "card_id": card.id,
+            "runtime_id": runtime_id,
+            "wave_id": card.wave_id,
+            "terminal_id": term.id,
+            "cwd": cwd,
+            "env": env,
+            "prompt": rendered_prompt,
+            "scope": scope,
+        });
+        Ok(output)
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> Result<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        output: &TxOutput,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<SpawnHandle> {
+        let card_id = output_string(output, "card_id")?;
+        let terminal_id = output_string(output, "terminal_id")?;
+        let wave_id = WaveId::from(output_string(output, "wave_id")?);
+        let cwd = output_string(output, "cwd")?;
+        let rendered_prompt = output_string(output, "prompt")?;
+        let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+
+        if !self.shared_codex_appserver.is_running() {
+            return Err(CalmError::Internal(
+                "shared codex app-server is not running".into(),
+            ));
+        }
+
+        let card = ctx
+            .repo
+            .card_get(&card_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+        let term = ctx
+            .repo
+            .terminal_get(&terminal_id)
+            .await?
+            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
+        let mcp_token = mint_card_mcp_token(ctx, &card_id).await?;
+
+        let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {
+            spawn_ctx: ctx,
+            shared_codex_appserver: &self.shared_codex_appserver,
+            mcp_server: self.mcp_server.as_deref(),
+            card: &card,
+            term: &term,
+            wave_id: &wave_id,
+            mcp_token: Some(mcp_token.as_str()),
+            rendered_prompt: &rendered_prompt,
+            cwd: &cwd,
+            legacy_env: &env,
+        })
+        .await?;
+
+        log_worker_card_added(
+            ctx,
+            &self.card_role_cache,
+            &self.wave_cove_cache,
+            &card_id,
+            &wave_id,
+        )
+        .await?;
+        Ok(handle)
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        _op: &Operation,
+    ) -> Result<CompensationStateVersioned> {
+        Ok(CompensationStateVersioned {
+            version: 1,
+            from_phase,
+            reason: reason.to_string(),
+            steps: vec![step(
+                "cleanup_codex_worker",
+                json!({
+                    "card_id": output_string(output, "card_id")?,
+                    "terminal_id": output_string(output, "terminal_id")?,
+                }),
+            )],
+        })
+    }
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<()> {
+        if step.completed {
+            return Ok(());
+        }
+        if step.op != "cleanup_codex_worker" {
+            return Err(CalmError::Internal(format!(
+                "unknown codex worker compensation op {}",
+                step.op
+            )));
+        }
+        let card_id = step_arg_string(step, "card_id")?;
+        let terminal_id = step_arg_string(step, "terminal_id")?;
+        let thread_id = ctx
+            .repo
+            .runtime_get_active_for_card(&card_id)
+            .await?
+            .and_then(|runtime| non_empty_string(runtime.thread_id.as_deref()));
+        let outcome = compensate_worker_rows(
+            ctx.repo.as_ref(),
+            ctx.terminal_renderer.as_ref(),
+            &self.card_role_cache,
+            &card_id,
+            &terminal_id,
+        )
+        .await;
+        if outcome == WorkerCleanupOutcome::Deleted
+            && let Some(thread_id) = thread_id
+            && let Err(e) = self
+                .shared_codex_appserver
+                .interrupt_active_turn(&thread_id)
+                .await
+        {
+            tracing::warn!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                thread_id = %thread_id,
+                error = %e,
+                "codex worker compensation could not interrupt active shared turn"
+            );
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct CodexWorkerSpawnCtx<'a> {
+    pub(crate) spawn_ctx: &'a SpawnCtx,
+    pub(crate) shared_codex_appserver: &'a Arc<SharedCodexAppServer>,
+    pub(crate) mcp_server: Option<&'a McpServer>,
+    pub(crate) card: &'a Card,
+    pub(crate) term: &'a crate::model::Terminal,
+    pub(crate) wave_id: &'a WaveId,
+    pub(crate) mcp_token: Option<&'a str>,
+    pub(crate) rendered_prompt: &'a str,
+    pub(crate) cwd: &'a str,
+    pub(crate) legacy_env: &'a Value,
+}
+
+pub(crate) async fn spawn_codex_worker_via_shared_daemon(
+    ctx: CodexWorkerSpawnCtx<'_>,
+) -> Result<SpawnHandle> {
+    let mut notifications = ctx.shared_codex_appserver.subscribe_notifications();
+    let remote_uri = ctx.shared_codex_appserver.remote_uri();
+    let card_id = ctx.card.id.as_str();
+    let worker_instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Worker.prompt_template(),
+        ctx.wave_id.as_str(),
+    );
+    let thread_id = ctx
+        .shared_codex_appserver
+        .thread_start_mint_for_card(
+            card_id,
+            SharedThreadStartParams {
+                cwd: ctx.cwd.to_string(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: Some(worker_instructions),
+                config: None,
+            },
+        )
+        .await?;
+    tracing::info!(
+        target: "shared_codex_daemon::worker",
+        card_id,
+        wave_id = %ctx.wave_id,
+        thread_id = %thread_id,
+        "thread_start_succeeded"
+    );
+
+    persist_shared_worker_runtime_fields(ctx.spawn_ctx, ctx.card, &thread_id, &remote_uri).await?;
+
+    let initial_turn_result = async {
+        ctx.shared_codex_appserver
+            .turn_start(
+                &thread_id,
+                vec![InputItem::text(ctx.rendered_prompt.trim())],
+            )
+            .await?;
+        await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
+        Ok::<(), CalmError>(())
+    }
+    .await;
+    if let Err(e) = initial_turn_result {
+        tracing::warn!(
+            target: "shared_codex_daemon::worker",
+            card_id,
+            wave_id = %ctx.wave_id,
+            thread_id = %thread_id,
+            error = %e,
+            "turn_start_failed"
+        );
+        return Err(e);
+    }
+
+    let mut env_for_spawn = ctx.legacy_env.clone();
+    if let Some(map) = env_for_spawn.as_object_mut() {
+        map.insert(
+            "CODEX_HOME".into(),
+            Value::String(ctx.shared_codex_appserver.status_snapshot().codex_home),
+        );
+        if let Some(token) = ctx.mcp_token {
+            map.insert("NEIGE_MCP_TOKEN".into(), Value::String(token.to_string()));
+        }
+        if let Some(server) = ctx.mcp_server {
+            map.insert(
+                "NEIGE_MCP_SOCKET".into(),
+                Value::String(server.shim_config.socket_path.to_string_lossy().to_string()),
+            );
+        }
+    }
+
+    let command_line = format!(
+        "codex resume {} --remote {}",
+        shell_single_quote(&thread_id),
+        shell_single_quote(&remote_uri)
+    );
+    match ctx
+        .spawn_ctx
+        .spawn_terminal(ctx.term, &command_line, ctx.cwd, &env_for_spawn)
+        .await
+    {
+        Ok(handle) => {
+            tracing::info!(
+                target: "shared_codex_daemon::worker",
+                card_id,
+                wave_id = %ctx.wave_id,
+                terminal_id = %ctx.term.id,
+                thread_id = %thread_id,
+                "worker_spawn_succeeded"
+            );
+            Ok(handle)
+        }
+        Err(e)
+            if worker_spawn_failure_preserved(ctx.spawn_ctx.repo.as_ref(), &ctx.term.id)
+                .await? =>
+        {
+            tracing::info!(
+                target: "shared_codex_daemon::worker",
+                card_id,
+                wave_id = %ctx.wave_id,
+                terminal_id = %ctx.term.id,
+                thread_id = %thread_id,
+                spawn_err = %e,
+                "worker shared TUI fast-exit; preserving card + terminal"
+            );
+            Ok(SpawnHandle::NoOp)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn mint_card_mcp_token(ctx: &SpawnCtx, card_id: &str) -> Result<String> {
+    let token = crate::mcp_server::auth::CardMcpToken::generate();
+    let hashed = crate::mcp_server::auth::hash_token(token.as_str());
+    let card_id = card_id.to_string();
+    write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+        let card_id = card_id.clone();
+        let hashed = hashed.clone();
+        Box::pin(async move { card_mcp_token_set_tx(tx, &card_id, &hashed).await })
+    })
+    .await?;
+    Ok(token.into_inner())
+}
+
+async fn log_worker_card_added(
+    ctx: &SpawnCtx,
+    card_role_cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
+    card_id: &str,
+    wave_id: &WaveId,
+) -> Result<()> {
+    let card = ctx
+        .repo
+        .card_get(card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let scope = card_scope(
+        ctx.repo.as_ref(),
+        CardId::from(card_id.to_string()),
+        wave_id.clone(),
+    )
+    .await?;
+    ctx.repo
+        .log_pure_event(
+            ActorId::KernelDispatcher,
+            scope,
+            None,
+            &ctx.events,
+            card_role_cache,
+            wave_cove_cache,
+            Event::CardAdded(card),
+        )
+        .await?;
+    Ok(())
+}
+
+async fn await_shared_worker_initial_turn_started(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::codex_appserver::Notification>,
+    thread_id: &str,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            tracing::warn!(
+                target: "shared_codex_daemon::worker",
+                thread_id,
+                "timed out awaiting initial turn/started; continuing best-effort"
+            );
+            return Ok(());
+        }
+        match tokio::time::timeout(deadline - now, rx.recv()).await {
+            Ok(Ok(n)) => {
+                if n.thread_id() == Some(thread_id)
+                    && matches!(n, crate::codex_appserver::Notification::TurnStarted { .. })
+                {
+                    return Ok(());
+                }
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::worker",
+                    skipped,
+                    thread_id,
+                    "shared worker initial lifecycle subscriber lagged"
+                );
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                return Err(CalmError::CodexAppServer(format!(
+                    "shared app-server notification channel closed before initial lifecycle for {thread_id}"
+                )));
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::worker",
+                    thread_id,
+                    "timed out awaiting initial turn/started; continuing best-effort"
+                );
+                return Ok(());
+            }
+        }
+    }
+}
+
+async fn persist_shared_worker_runtime_fields(
+    ctx: &SpawnCtx,
+    card: &Card,
+    thread_id: &str,
+    remote_uri: &str,
+) -> Result<()> {
+    let card_id_for_tx = card.id.to_string();
+    let thread_id_for_tx = thread_id.to_string();
+    let remote_uri_for_tx = remote_uri.to_string();
+    write_in_tx_typed::<Card, _>(ctx.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let mut payload = card_payload_get_tx(tx, &card_id_for_tx).await?;
+            let Some(map) = payload.as_object_mut() else {
+                return Err(CalmError::Internal(format!(
+                    "worker card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
+                )));
+            };
+            map.insert("appserver_sock".into(), Value::String(remote_uri_for_tx));
+            map.remove("appserver_pgid");
+            let updated = card_update_tx(
+                tx,
+                &card_id_for_tx,
+                crate::model::CardPatch {
+                    kind: None,
+                    sort: None,
+                    payload: Some(payload),
+                    deletable: None,
+                },
+            )
+            .await?;
+            let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::Internal(format!(
+                        "worker card {card_id_for_tx} has no active runtime to bind"
+                    ))
+                })?;
+            runtime_bind_attribution_tx(
+                tx,
+                &runtime.id,
+                ThreadAttribution {
+                    runtime_id: runtime.id.clone(),
+                    provider: AgentProvider::Codex,
+                    thread_id: Some(thread_id_for_tx),
+                    session_id: None,
+                    active_turn_id: None,
+                },
+            )
+            .await?;
+            runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+            Ok(updated)
+        })
+    })
+    .await?;
+    Ok(())
+}
+
+async fn card_payload_get_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<Value> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let payload_text = row
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
+        .0;
+    serde_json::from_str(&payload_text)
+        .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
+}
+
+pub(crate) fn render_worker_prompt(
+    goal: &str,
+    context: &Value,
+    acceptance_criteria: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("Goal:\n");
+    out.push_str(goal);
+
+    let context_str = match context {
+        Value::Null => String::new(),
+        Value::String(s) if s.trim().is_empty() => String::new(),
+        Value::Object(m) if m.is_empty() => String::new(),
+        Value::Array(a) if a.is_empty() => String::new(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+    };
+    if !context_str.is_empty() {
+        out.push_str("\n\nContext:\n");
+        out.push_str(&context_str);
+    }
+
+    if let Some(ac) = acceptance_criteria.map(str::trim).filter(|s| !s.is_empty()) {
+        out.push_str("\n\nAcceptance criteria:\n");
+        out.push_str(ac);
+    }
+    out
+}
+
 async fn build_codex_env(
     repo: &dyn crate::db::RouteRepo,
     codex: &CodexClient,
@@ -958,4 +1576,52 @@ fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
         .ok_or_else(|| {
             CalmError::Internal(format!("codex compensation step {} missing {key}", step.op))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_worker_prompt_goal_only() {
+        let out = render_worker_prompt("fix the bug", &Value::Null, None);
+        assert_eq!(out, "Goal:\nfix the bug");
+    }
+
+    #[test]
+    fn render_worker_prompt_goal_plus_context() {
+        let ctx = serde_json::json!({ "issue": 42, "title": "x" });
+        let out = render_worker_prompt("fix it", &ctx, None);
+        assert!(out.starts_with("Goal:\nfix it"));
+        assert!(out.contains("\n\nContext:\n"));
+        assert!(out.contains("\"issue\": 42"));
+        assert!(out.contains("\"title\": \"x\""));
+        assert!(!out.contains("Acceptance criteria"));
+    }
+
+    #[test]
+    fn render_worker_prompt_goal_plus_context_plus_ac() {
+        let ctx = serde_json::json!({ "pr": 7 });
+        let out = render_worker_prompt("ship", &ctx, Some("tests pass"));
+        assert!(out.contains("Goal:\nship"));
+        assert!(out.contains("\n\nContext:\n"));
+        assert!(out.contains("\"pr\": 7"));
+        assert!(out.ends_with("Acceptance criteria:\ntests pass"));
+    }
+
+    #[test]
+    fn render_worker_prompt_skips_empty_context_object() {
+        let out = render_worker_prompt("g", &serde_json::json!({}), Some("ac"));
+        assert!(
+            !out.contains("Context"),
+            "empty {{}} should be skipped: {out}"
+        );
+        assert!(out.contains("Acceptance criteria:\nac"));
+    }
+
+    #[test]
+    fn render_worker_prompt_skips_blank_ac() {
+        let out = render_worker_prompt("g", &Value::Null, Some("   "));
+        assert_eq!(out, "Goal:\ng");
+    }
 }

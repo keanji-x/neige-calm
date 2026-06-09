@@ -15,11 +15,11 @@ use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
 use crate::model::CardRole;
 use crate::operation::claude_adapter::ClaudeAdapter;
-use crate::operation::codex_adapter::CodexAdapter;
+use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
-use crate::operation::terminal_adapter::TerminalAdapter;
+use crate::operation::terminal_adapter::{TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
@@ -430,12 +430,25 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
+            route_repo.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let codex_adapter = Arc::new(CodexAdapter::new(
             route_repo.clone(),
             codex.clone(),
             shared_codex_appserver.clone(),
             pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            None,
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
@@ -464,7 +477,9 @@ impl AppState {
             operation_repo,
             vec![
                 terminal_adapter,
+                terminal_worker_adapter,
                 codex_adapter,
+                codex_worker_adapter,
                 claude_adapter,
                 spec_harness_start_adapter,
                 spec_harness_interrupt_adapter,
@@ -487,20 +502,23 @@ impl AppState {
         // event. Permit count honors `NEIGE_DISPATCHER_PERMITS` for
         // the rare test that twiddles the env var; the default 8 is
         // the value tests will see otherwise.
-        let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer_and_harness(
-            repo.clone(),
-            events.clone(),
-            write.clone(),
-            codex.clone(),
-            daemon.clone(),
-            terminal_renderer.clone(),
-            // `from_parts` is the test / replay hatch — no live MCP
-            // server. PR7a.1 (#136 followup) added this slot.
-            None,
-            harness.clone(),
-            shared_codex_appserver.clone(),
-            Dispatcher::permits_from_env(8),
-        ));
+        let dispatcher = Arc::new(
+            Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+                repo.clone(),
+                events.clone(),
+                write.clone(),
+                codex.clone(),
+                daemon.clone(),
+                terminal_renderer.clone(),
+                // `from_parts` is the test / replay hatch — no live MCP
+                // server. PR7a.1 (#136 followup) added this slot.
+                None,
+                harness.clone(),
+                shared_codex_appserver.clone(),
+                operation_runtime.clone(),
+                Dispatcher::permits_from_env(8),
+            ),
+        );
         BootState {
             repo,
             events,
@@ -565,12 +583,25 @@ impl AppState {
             self.card_role_cache.clone(),
             self.wave_cove_cache.clone(),
         ));
+        let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
+            route_repo.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
         let codex_adapter = Arc::new(CodexAdapter::new(
             route_repo.clone(),
             self.codex.clone(),
             self.shared_codex_appserver.clone(),
             self.pending_codex_threads.clone(),
             self.pending_codex_threads_spawn_serial.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
+        let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
+            route_repo.clone(),
+            self.codex.clone(),
+            self.shared_codex_appserver.clone(),
+            self.mcp_server.clone(),
             self.card_role_cache.clone(),
             self.wave_cove_cache.clone(),
         ));
@@ -601,7 +632,9 @@ impl AppState {
             operation_repo,
             vec![
                 terminal_adapter,
+                terminal_worker_adapter,
                 codex_adapter,
+                codex_worker_adapter,
                 claude_adapter,
                 spec_harness_start_adapter,
                 spec_harness_interrupt_adapter,
@@ -779,12 +812,25 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
+            route_repo.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let codex_adapter = Arc::new(CodexAdapter::new(
             route_repo.clone(),
             codex.clone(),
             shared_codex_appserver.clone(),
             pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
+        let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            shared_codex_appserver.clone(),
+            Some(mcp_server.clone()),
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
@@ -814,7 +860,9 @@ impl AppState {
                 operation_repo,
                 vec![
                     terminal_adapter,
+                    terminal_worker_adapter,
                     codex_adapter,
+                    codex_worker_adapter,
                     claude_adapter,
                     spec_harness_start_adapter,
                     spec_harness_interrupt_adapter,
@@ -840,7 +888,7 @@ impl AppState {
         // seeded so the dispatcher's `card_create_with_id_tx` write-
         // through into the cache sees the seeded state.
         let dispatcher = Arc::new(
-            crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness(
+            crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
                 repo.clone(),
                 events.clone(),
                 write.clone(),
@@ -853,6 +901,7 @@ impl AppState {
                 Some(mcp_server.clone()),
                 harness.clone(),
                 shared_codex_appserver.clone(),
+                operation_runtime.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
             ),
         );

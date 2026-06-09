@@ -71,11 +71,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::codex_appserver::{InputItem, Notification};
-use crate::db::sqlite::{
-    card_update_tx, card_with_codex_create_tx, runtime_bind_attribution_tx,
-    runtime_get_active_for_card_tx, runtime_set_status_tx,
-};
+use crate::db::sqlite::card_with_codex_create_tx;
 use crate::db::write_in_tx_typed;
 use crate::db::{Repo, RouteRepo};
 use crate::error::CalmError;
@@ -88,12 +84,26 @@ use crate::harness::{
     is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::model::{CardPatch, CardRole};
-use crate::routes::codex_cards::shell_single_quote;
+use crate::model::CardRole;
+use crate::operation::claude_adapter::ClaudeAdapter;
+use crate::operation::codex_adapter::{
+    CodexAdapter, CodexWorkerAdapter, CodexWorkerOperationPayload, CodexWorkerSpawnCtx,
+    render_worker_prompt,
+    spawn_codex_worker_via_shared_daemon as spawn_codex_worker_via_shared_operation_daemon,
+};
+use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
+use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
+use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
+use crate::operation::terminal_adapter::{
+    TerminalAdapter, TerminalWorkerAdapter, TerminalWorkerOperationPayload,
+};
+use crate::operation::{OperationKey, OperationRuntime, SpawnCtx, SqlxOperationRepo};
+use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_with_parts;
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
-use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use crate::routes::terminal_cards::stable_payload_hash;
+use crate::runtime_repo::{RunStatus, RuntimeKind};
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::spec_card::build_codex_env_map;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -112,6 +122,7 @@ const DEFAULT_PERMITS: usize = 8;
 /// in-memory set can't grow without limit; the SELECT-inside-tx
 /// idempotency check is the canonical guard, this is just a fast-path
 /// short-circuit.
+#[allow(dead_code)]
 const RECENT_KEYS_TTL: Duration = Duration::from_secs(60);
 
 pub(crate) fn event_warrants_spec_push(event: &Event, write: &WriteContext) -> bool {
@@ -132,6 +143,96 @@ pub(crate) fn event_warrants_spec_push_with_role(
         }
         _ => false,
     }
+}
+
+#[allow(deprecated, clippy::too_many_arguments)]
+fn dispatcher_operation_runtime(
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    write: WriteContext,
+    codex: Arc<CodexClient>,
+    daemon: Arc<DaemonClient>,
+    terminal_renderer: Arc<TerminalRendererRegistry>,
+    mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+    shared_codex_appserver: Arc<SharedCodexAppServer>,
+    harness: HarnessRegistry,
+) -> Arc<OperationRuntime> {
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+    let operation_repo = Arc::new(SqlxOperationRepo::new(
+        repo.sqlite_pool()
+            .expect("Dispatcher operation runtime requires a sqlite-backed Repo"),
+    ));
+    let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
+        repo.clone(),
+        events.clone(),
+    ));
+    let pending_codex_threads_spawn_serial = Arc::new(tokio::sync::Mutex::new(()));
+    let terminal_adapter = Arc::new(TerminalAdapter::new(
+        route_repo.clone(),
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+    ));
+    let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
+        route_repo.clone(),
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+    ));
+    let codex_adapter = Arc::new(CodexAdapter::new(
+        route_repo.clone(),
+        codex.clone(),
+        shared_codex_appserver.clone(),
+        pending_codex_threads.clone(),
+        pending_codex_threads_spawn_serial,
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+    ));
+    let mcp_socket_path = mcp_server
+        .as_ref()
+        .map(|s| s.shim_config.socket_path.clone());
+    let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
+        route_repo.clone(),
+        codex.clone(),
+        shared_codex_appserver.clone(),
+        mcp_server,
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+    ));
+    let claude_adapter = Arc::new(ClaudeAdapter::new(
+        route_repo.clone(),
+        codex,
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+    ));
+    let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
+        repo.clone(),
+        shared_codex_appserver.clone(),
+        harness.clone(),
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+        mcp_socket_path,
+    ));
+    let spec_harness_interrupt_adapter =
+        Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
+    let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
+        harness,
+        shared_codex_appserver,
+        repo,
+    ));
+    Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![
+            terminal_adapter,
+            terminal_worker_adapter,
+            codex_adapter,
+            codex_worker_adapter,
+            claude_adapter,
+            spec_harness_start_adapter,
+            spec_harness_interrupt_adapter,
+            spec_harness_shutdown_adapter,
+        ],
+        events.clone(),
+        SpawnCtx::new(route_repo, daemon, terminal_renderer, events),
+    ))
 }
 
 /// Subscribed handle. Holding the [`Dispatcher`] keeps the spawned
@@ -288,6 +389,34 @@ impl Dispatcher {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_operation_runtime(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        codex: Arc<CodexClient>,
+        daemon: Arc<DaemonClient>,
+        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        operation_runtime: Arc<OperationRuntime>,
+        permits: usize,
+    ) -> Self {
+        let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+        Self::spawn_with_terminal_renderer_and_operation_runtime(
+            repo,
+            events,
+            write,
+            codex,
+            daemon,
+            terminal_renderer,
+            mcp_server,
+            shared_codex_appserver,
+            operation_runtime,
+            permits,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_terminal_renderer(
         repo: Arc<dyn Repo>,
         events: EventBus,
@@ -299,7 +428,18 @@ impl Dispatcher {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         permits: usize,
     ) -> Self {
-        Self::spawn_with_terminal_renderer_and_harness(
+        let operation_runtime = dispatcher_operation_runtime(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            codex.clone(),
+            daemon.clone(),
+            terminal_renderer.clone(),
+            mcp_server.clone(),
+            shared_codex_appserver.clone(),
+            HarnessRegistry::new(),
+        );
+        Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
             events,
             write,
@@ -309,6 +449,35 @@ impl Dispatcher {
             mcp_server,
             HarnessRegistry::new(),
             shared_codex_appserver,
+            operation_runtime,
+            permits,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_terminal_renderer_and_operation_runtime(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        codex: Arc<CodexClient>,
+        daemon: Arc<DaemonClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        operation_runtime: Arc<OperationRuntime>,
+        permits: usize,
+    ) -> Self {
+        Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+            repo,
+            events,
+            write,
+            codex,
+            daemon,
+            terminal_renderer,
+            mcp_server,
+            HarnessRegistry::new(),
+            shared_codex_appserver,
+            operation_runtime,
             permits,
         )
     }
@@ -324,6 +493,46 @@ impl Dispatcher {
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         harness: HarnessRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
+        permits: usize,
+    ) -> Self {
+        let operation_runtime = dispatcher_operation_runtime(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            codex.clone(),
+            daemon.clone(),
+            terminal_renderer.clone(),
+            mcp_server.clone(),
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
+        Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+            repo,
+            events,
+            write,
+            codex,
+            daemon,
+            terminal_renderer,
+            mcp_server,
+            harness,
+            shared_codex_appserver,
+            operation_runtime,
+            permits,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        codex: Arc<CodexClient>,
+        daemon: Arc<DaemonClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        harness: HarnessRegistry,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        operation_runtime: Arc<OperationRuntime>,
         permits: usize,
     ) -> Self {
         let permits = if permits == 0 {
@@ -351,6 +560,7 @@ impl Dispatcher {
             mcp_server,
             harness,
             shared_codex_appserver,
+            operation_runtime,
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
             // a SEPARATE instance from anything else: keyed by the spec
             // `CardId`;
@@ -451,8 +661,11 @@ struct Inner {
     /// reviving the leak PR #271 closed. Upgrade per `handle_envelope`
     /// call; a failed upgrade means `AppState` has dropped and the
     /// dispatcher should no-op until the bus closes.
+    #[allow(dead_code)]
     codex: Weak<CodexClient>,
+    #[allow(dead_code)]
     daemon: Arc<DaemonClient>,
+    #[allow(dead_code)]
     terminal_renderer: Arc<TerminalRendererRegistry>,
     /// PR7a.1 (#136 followup) — kernel-as-MCP-server handle. When `Some`,
     /// every codex-worker spawn folds the per-card MCP token + kernel
@@ -462,12 +675,15 @@ struct Inner {
     /// without a wire back into the kernel — fine for unit tests that
     /// only assert on card creation. Terminal workers don't read this
     /// (they don't run codex).
+    #[allow(dead_code)]
     mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
     /// Harness-backed shared specs are driven by dispatcher observations
     /// through the active harness registry.
     harness: HarnessRegistry,
     /// PR4 shared codex daemon. Worker codex cards start through this daemon.
+    #[allow(dead_code)]
     shared_codex_appserver: Arc<SharedCodexAppServer>,
+    operation_runtime: Arc<OperationRuntime>,
     /// #293 PR3b — DEDICATED push watermark cache keyed by the spec
     /// `CardId`. A push fires only when `envelope_id > cursor`, then bumps;
     /// this makes pushes idempotent under at-least-once broadcast delivery
@@ -494,6 +710,7 @@ struct Inner {
     /// time) and never cross an `.await`, so the blocking mutex is
     /// fine. A scheduled cleanup tokio task purges entries older than
     /// [`RECENT_KEYS_TTL`].
+    #[allow(dead_code)]
     recently_seen: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -587,33 +804,10 @@ impl Inner {
             _ => {}
         }
 
-        // #272 (N3) — upgrade the `Weak<CodexClient>` to a strong
-        // `Arc` for the duration of this dispatch. If the upgrade
-        // fails, `AppState` has dropped (test teardown) and there's
-        // no point spawning a worker against a vanished kernel — bail
-        // out. The broadcast `Closed` recv in the spawn loop will
-        // shut the dispatcher down shortly anyway. Cheap: atomic
-        // strong-count bump on success, no allocation.
-        let codex = match self.codex.upgrade() {
-            Some(c) => c,
-            None => {
-                tracing::debug!(
-                    "dispatcher: CodexClient dropped (AppState gone); skipping envelope"
-                );
-                return;
-            }
-        };
-
         // Extract the request shape we know how to handle. The filter
         // already narrowed us to two variants; the `_` arm exists for
         // future-proofing in case the filter ever widens.
         let req = match &envelope.event {
-            // #481 PR2 N4 guard marker: route-origin `codex-create` is
-            // framework-owned by OperationRuntime/CodexAdapter and does
-            // not emit `Event::TerminalJobRequested` or
-            // `Event::CodexJobRequested`. This dispatcher arm remains
-            // the legacy worker request path until PR5 rewrites
-            // `spawn_codex_worker`.
             Event::CodexJobRequested {
                 idempotency_key,
                 goal,
@@ -625,16 +819,6 @@ impl Inner {
                 context: context.clone(),
                 acceptance_criteria: acceptance_criteria.clone(),
             },
-            // #481 PR1 N4 guard marker: route-origin `terminal-create` is
-            // framework-owned by OperationRuntime/TerminalAdapter and no
-            // longer emits `Event::TerminalJobRequested`. This dispatcher arm
-            // is only for spec/worker terminal jobs. If a future framework
-            // emitter adds an origin field, framework-owned terminal-create
-            // envelopes must short-circuit before `recently_seen` install.
-            // #481 PR3 N4 guard marker: route-origin `claude-create` is also
-            // framework-owned by OperationRuntime/ClaudeAdapter. It writes
-            // Claude settings and spawns directly in the saga spawn phase;
-            // it must not be represented as a `TerminalJobRequested` event.
             Event::TerminalJobRequested {
                 idempotency_key,
                 cmd,
@@ -655,35 +839,6 @@ impl Inner {
         let idem = req.idempotency_key().to_string();
         let scope = envelope.scope.clone();
 
-        // Fast-path: in-process recently-seen set. The canonical guard
-        // is still the SELECT-inside-tx; this just short-circuits a
-        // double-fire from the same source within the grace window.
-        //
-        // PR6 (#136) cache-lifecycle fix: insert at start for race
-        // protection (two `*.Requested` envelopes hitting the
-        // dispatcher within microseconds — the in-tx SELECT also
-        // catches them but this short-circuits before we open the
-        // tx); the [`RecentlySeenGuard`] RAII handle returned by
-        // [`RecentlySeenGuard::install`] owns the cleanup contract:
-        //
-        //   * On panic anywhere in the dispatch path, the guard's
-        //     `Drop` impl removes the key so a retry within the TTL
-        //     window isn't silently dropped (PR6 followup of issue
-        //     #136 — note 2 from the original review).
-        //   * On failure paths that return normally, the guard is
-        //     dropped at scope end and removes the key.
-        //   * On success the caller calls `guard.commit()`, which
-        //     marks the guard so its `Drop` is a no-op, and the key
-        //     stays for `RECENT_KEYS_TTL` (a bounded cleanup task
-        //     scheduled below removes it).
-        let guard = match RecentlySeenGuard::install(self.recently_seen.clone(), idem.clone()) {
-            Some(g) => g,
-            None => {
-                tracing::debug!(idempotency_key = %idem, "dispatcher: recently-seen, skipping");
-                return;
-            }
-        };
-
         // Retry on transient SQLite BUSY/locked errors. With more
         // than one dispatcher in flight (permits > 1), SQLite can
         // refuse a write with "database is locked" or "deadlocked"
@@ -695,7 +850,10 @@ impl Inner {
         let mut backoff = Duration::from_millis(10);
         const MAX_RETRIES: usize = 5;
         for attempt in 0..=MAX_RETRIES {
-            match self.dispatch(&codex, req.clone(), scope.clone()).await {
+            match self
+                .dispatch(req.clone(), scope.clone(), envelope.actor.clone())
+                .await
+            {
                 Ok(()) => {
                     last_err = None;
                     break;
@@ -717,32 +875,6 @@ impl Inner {
                 }
             }
         }
-        if last_err.is_none() {
-            // Success path: commit the guard so its Drop is a no-op,
-            // and schedule a bounded cleanup task to remove the key
-            // after `RECENT_KEYS_TTL`. The TTL retention is the whole
-            // point of the success path — keeps the in-process fast-
-            // path arm warm so a re-emit of the same envelope within
-            // the grace window short-circuits without opening a tx.
-            guard.commit();
-            let key_for_cleanup = idem.clone();
-            let inner = Arc::clone(&self);
-            tokio::spawn(async move {
-                tokio::time::sleep(RECENT_KEYS_TTL).await;
-                if let Ok(mut g) = inner.recently_seen.lock() {
-                    g.remove(&key_for_cleanup);
-                }
-            });
-        }
-        // Failure path: the guard goes out of scope here and its
-        // Drop impl removes the key from `recently_seen` so the
-        // request can be retried after the requester sees the
-        // task.failed event. (No explicit drop needed; this is the
-        // RAII point — but we keep `guard` live until after the
-        // success-path commit above so the success branch can opt
-        // out via `guard.commit()`.) The canonical SELECT-inside-tx
-        // guard still prevents a double-spawn if the retry races a
-        // late re-emit of the original event.
         if let Some(e) = last_err {
             tracing::warn!(
                 idempotency_key = %idem,
@@ -950,9 +1082,9 @@ impl Inner {
 
     async fn dispatch(
         self: &Arc<Self>,
-        codex: &Arc<CodexClient>,
         req: DispatchRequest,
         scope: EventScope,
+        actor: ActorId,
     ) -> crate::error::Result<()> {
         // The request envelope must carry a wave (and therefore a cove)
         // — a dispatcher can't materialize a worker card without a
@@ -973,30 +1105,51 @@ impl Inner {
                 context,
                 acceptance_criteria,
             } => {
-                self.spawn_codex_worker(
-                    codex,
-                    wave_id,
-                    scope.cove_id().cloned(),
-                    idempotency_key,
+                let payload = serde_json::to_value(CodexWorkerOperationPayload {
+                    actor,
+                    wave_id: wave_id.to_string(),
+                    idempotency_key: idempotency_key.clone(),
                     goal,
                     context,
                     acceptance_criteria,
-                )
-                .await?;
+                })?;
+                let payload_hash = stable_payload_hash(&payload)?;
+                self.operation_runtime
+                    .start(
+                        "codex-worker",
+                        OperationKey {
+                            operation_key: crate::model::new_id(),
+                            idempotency_key: Some(idempotency_key),
+                            payload_hash,
+                        },
+                        payload,
+                    )
+                    .await?;
             }
             DispatchRequest::Terminal {
                 idempotency_key,
                 cmd,
                 cwd,
             } => {
-                self.spawn_terminal_worker(
-                    wave_id,
-                    scope.cove_id().cloned(),
-                    idempotency_key,
+                let payload = serde_json::to_value(TerminalWorkerOperationPayload {
+                    actor,
+                    wave_id: wave_id.to_string(),
+                    idempotency_key: idempotency_key.clone(),
                     cmd,
                     cwd,
-                )
-                .await?;
+                })?;
+                let payload_hash = stable_payload_hash(&payload)?;
+                self.operation_runtime
+                    .start(
+                        "terminal-worker",
+                        OperationKey {
+                            operation_key: crate::model::new_id(),
+                            idempotency_key: Some(idempotency_key),
+                            payload_hash,
+                        },
+                        payload,
+                    )
+                    .await?;
             }
         }
         Ok(())
@@ -1014,7 +1167,7 @@ impl Inner {
     /// errors from `card_with_codex_create_tx` (e.g. terminal-already-
     /// exists from `terminal_create_tx`) propagate instead of being
     /// silently swallowed as "duplicate request".
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     async fn spawn_codex_worker(
         self: &Arc<Self>,
         codex: &Arc<CodexClient>,
@@ -1397,6 +1550,7 @@ impl Inner {
     /// circuit. Real `CalmError::Conflict` errors from
     /// `card_with_terminal_create_tx` (e.g. terminal-already-exists)
     /// now propagate instead of being silently swallowed.
+    #[allow(dead_code)]
     async fn spawn_terminal_worker(
         self: &Arc<Self>,
         wave_id: WaveId,
@@ -1972,389 +2126,26 @@ async fn spawn_codex_worker_via_shared_daemon(
     inner: &Arc<Inner>,
     ctx: SharedWorkerSpawn<'_>,
 ) -> crate::error::Result<()> {
-    let mut notifications = inner.shared_codex_appserver.subscribe_notifications();
-    let remote_uri = inner.shared_codex_appserver.remote_uri();
-    let card_id = ctx.card.id.as_str();
-    // Worker role developer_instructions — without this, the agent on the
-    // shared daemon behaves like a plain prompt session and won't call
-    // calm.task_completed / calm.task_failed when the job is done. The
-    // legacy path injects this via SeededCardRole::Worker into the per-card
-    // CODEX_HOME config.toml; for the shared path we must thread it
-    // explicitly through thread_start.
-    let worker_instructions = crate::spec_card::render_system_prompt(
-        crate::spec_card::SeededCardRole::Worker.prompt_template(),
-        ctx.wave_id.as_str(),
+    let spawn_ctx = crate::operation::SpawnCtx::new(
+        inner.repo.clone(),
+        inner.daemon.clone(),
+        inner.terminal_renderer.clone(),
+        inner.events.clone(),
     );
-    let thread_id = match inner
-        .shared_codex_appserver
-        .thread_start_mint_for_card(
-            card_id,
-            SharedThreadStartParams {
-                cwd: ctx.cwd.to_string(),
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
-                developer_instructions: Some(worker_instructions),
-                config: None,
-            },
-        )
-        .await
-    {
-        Ok(id) => id,
-        Err(e) => {
-            // thread_start failed (transport error, daemon crash). The
-            // card + terminal rows were already committed with the
-            // idempotency_key; without rollback they'd permanently
-            // short-circuit retries. rollback_orphan_worker's pre-spawn
-            // fallthrough deletes both rows.
-            let _ = rollback_orphan_worker(
-                inner.repo.as_ref(),
-                inner.terminal_renderer.as_ref(),
-                inner.write.role_cache(),
-                card_id,
-                ctx.term.id.as_str(),
-            )
-            .await;
-            tracing::warn!(
-                target: "shared_codex_daemon::worker",
-                card_id,
-                wave_id = %ctx.wave_id,
-                error = %e,
-                "thread_start_failed_rolled_back"
-            );
-            return Err(e);
-        }
-    };
-    tracing::info!(
-        target: "shared_codex_daemon::worker",
-        card_id,
-        wave_id = %ctx.wave_id,
-        thread_id = %thread_id,
-        "thread_start_succeeded"
-    );
-
-    // Persist runtime identity + app-server handle state BEFORE the PTY spawn.
-    // The persist is SILENT (no CardUpdated event) — wave subscribers refetch
-    // on CardUpdated and could mount the card before its renderer entry is
-    // live (issue #310 race). CardAdded remains the first visible event,
-    // emitted by the caller after spawn succeeds.
-    if let Err(e) =
-        persist_shared_worker_runtime_fields(inner, ctx.card, &thread_id, &remote_uri).await
-    {
-        // The thread/start succeeded but persisting runtime/handle state
-        // failed (e.g. SQLite IO error). Without rollback, the card +
-        // terminal rows stay with idempotency_key intact and short-circuit
-        // future retries.
-        let _ = rollback_orphan_worker(
-            inner.repo.as_ref(),
-            inner.terminal_renderer.as_ref(),
-            inner.write.role_cache(),
-            card_id,
-            ctx.term.id.as_str(),
-        )
-        .await;
-        tracing::warn!(
-            target: "shared_codex_daemon::worker",
-            card_id,
-            wave_id = %ctx.wave_id,
-            thread_id = %thread_id,
-            error = %e,
-            "persist_shared_runtime_fields_failed_rolled_back"
-        );
-        return Err(e);
-    }
-
-    // turn_start BEFORE spawn — codex 0.135's `codex resume <thread_id>
-    // --remote ...` REQUIRES at least one prior turn on the thread before
-    // a second connection can resume it. PR5/PR7b spec take the same
-    // order; PR7b-worker mirrors. If the subsequent PTY spawn fails, the
-    // shared daemon's turn is interrupted via turn/interrupt — see the
-    // spawn-fail rollback below. On in-process turn_start failure we delete
-    // the orphan card so its idempotency_key clears for retry.
-    let initial_turn_result = async {
-        let turn_id = inner
-            .shared_codex_appserver
-            .turn_start(
-                &thread_id,
-                vec![InputItem::text(ctx.rendered_prompt.trim())],
-            )
-            .await?;
-        await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
-        Ok::<String, CalmError>(turn_id)
-    }
-    .await;
-    let initial_turn_id = match initial_turn_result {
-        Ok(turn_id) => turn_id,
-        Err(e) => {
-            tracing::warn!(
-                target: "shared_codex_daemon::worker",
-                card_id,
-                wave_id = %ctx.wave_id,
-                thread_id = %thread_id,
-                error = %e,
-                "turn_start_failed"
-            );
-            // No PTY has been spawned yet; rollback_orphan_worker's pre-spawn
-            // fallthrough (case 1a: term present, no pid, no renderer) deletes
-            // both the card and terminal rows. This clears the idempotency_key
-            // so a retry can mint a fresh card row.
-            let _ = rollback_orphan_worker(
-                inner.repo.as_ref(),
-                inner.terminal_renderer.as_ref(),
-                inner.write.role_cache(),
-                card_id,
-                ctx.term.id.as_str(),
-            )
-            .await;
-            tracing::error!(
-                target: "shared_codex_daemon::worker",
-                card_id,
-                wave_id = %ctx.wave_id,
-                terminal_id = %ctx.term.id,
-                thread_id = %thread_id,
-                error = %e,
-                "worker_turn_start_rolled_back"
-            );
-            return Err(e);
-        }
-    };
-
-    let mut env_for_spawn = ctx.legacy_env.clone();
-    if let Some(map) = env_for_spawn.as_object_mut() {
-        map.insert(
-            "CODEX_HOME".into(),
-            serde_json::Value::String(inner.shared_codex_appserver.status_snapshot().codex_home),
-        );
-        if let Some(token) = ctx.mcp_token {
-            map.insert(
-                "NEIGE_MCP_TOKEN".into(),
-                serde_json::Value::String(token.to_string()),
-            );
-        }
-        if let Some(server) = inner.mcp_server.as_ref() {
-            map.insert(
-                "NEIGE_MCP_SOCKET".into(),
-                serde_json::Value::String(
-                    server.shim_config.socket_path.to_string_lossy().to_string(),
-                ),
-            );
-        }
-    }
-
-    let command_line = format!(
-        "codex resume {} --remote {}",
-        shell_single_quote(&thread_id),
-        shell_single_quote(&remote_uri)
-    );
-    if let Err(e) = spawn_terminal_with_parts(
-        inner.daemon.as_ref(),
-        inner.terminal_renderer.as_ref(),
-        inner.repo.as_ref(),
-        ctx.term,
-        &command_line,
-        ctx.cwd,
-        &env_for_spawn,
-    )
-    .await
-    {
-        // turn_start has already delivered the worker job to the shared
-        // daemon. If the PTY spawn fails, delete the card/terminal rows so
-        // the idempotency_key clears for retry, then interrupt the in-flight
-        // shared turn so it cannot keep modifying the workspace invisibly.
-        match rollback_orphan_worker(
-            inner.repo.as_ref(),
-            inner.terminal_renderer.as_ref(),
-            inner.write.role_cache(),
-            card_id,
-            ctx.term.id.as_str(),
-        )
-        .await
-        {
-            RollbackOutcome::Deleted => {
-                if let Err(interrupt_err) = inner
-                    .shared_codex_appserver
-                    .turn_interrupt(&thread_id, &initial_turn_id)
-                    .await
-                {
-                    tracing::warn!(
-                        target: "shared_codex_daemon::worker",
-                        card_id,
-                        wave_id = %ctx.wave_id,
-                        terminal_id = %ctx.term.id,
-                        thread_id = %thread_id,
-                        turn_id = %initial_turn_id,
-                        error = %interrupt_err,
-                        "failed to interrupt shared worker turn after TUI spawn failure"
-                    );
-                }
-                tracing::error!(
-                    target: "shared_codex_daemon::worker",
-                    card_id,
-                    wave_id = %ctx.wave_id,
-                    terminal_id = %ctx.term.id,
-                    thread_id = %thread_id,
-                    turn_id = %initial_turn_id,
-                    error = %e,
-                    "worker_spawn_failed_turn_interrupted"
-                );
-                return Err(e);
-            }
-            RollbackOutcome::Preserved => {
-                tracing::info!(
-                    target: "shared_codex_daemon::worker",
-                    card_id,
-                    wave_id = %ctx.wave_id,
-                    terminal_id = %ctx.term.id,
-                    thread_id = %thread_id,
-                    spawn_err = %e,
-                    "worker shared TUI fast-exit; preserving card + terminal"
-                );
-            }
-        }
-    }
-
-    tracing::info!(
-        target: "shared_codex_daemon::worker",
-        card_id,
-        wave_id = %ctx.wave_id,
-        terminal_id = %ctx.term.id,
-        thread_id = %thread_id,
-        "worker_spawn_succeeded"
-    );
-    Ok(())
-}
-
-async fn await_shared_worker_initial_turn_started(
-    rx: &mut tokio::sync::broadcast::Receiver<Notification>,
-    thread_id: &str,
-) -> crate::error::Result<()> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            tracing::warn!(
-                target: "shared_codex_daemon::worker",
-                thread_id,
-                "timed out awaiting initial turn/started; continuing best-effort"
-            );
-            return Ok(());
-        }
-        match tokio::time::timeout(deadline - now, rx.recv()).await {
-            Ok(Ok(n)) => {
-                if n.thread_id() == Some(thread_id) && matches!(n, Notification::TurnStarted { .. })
-                {
-                    return Ok(());
-                }
-            }
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
-                tracing::warn!(
-                    target: "shared_codex_daemon::worker",
-                    skipped,
-                    thread_id,
-                    "shared worker initial lifecycle subscriber lagged"
-                );
-            }
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-                return Err(CalmError::CodexAppServer(format!(
-                    "shared app-server notification channel closed before initial lifecycle for {thread_id}"
-                )));
-            }
-            Err(_) => {
-                tracing::warn!(
-                    target: "shared_codex_daemon::worker",
-                    thread_id,
-                    "timed out awaiting initial turn/started; continuing best-effort"
-                );
-                return Ok(());
-            }
-        }
-    }
-}
-
-async fn persist_shared_worker_runtime_fields(
-    inner: &Arc<Inner>,
-    card: &crate::model::Card,
-    thread_id: &str,
-    remote_uri: &str,
-) -> crate::error::Result<()> {
-    let card_id_for_tx = card.id.to_string();
-    let thread_id_for_tx = thread_id.to_string();
-    let remote_uri_for_tx = remote_uri.to_string();
-    // SILENT update: `write_in_tx_typed` (not `write_with_event_typed`).
-    // CardAdded is the first visible event the broadcaster emits for a worker
-    // card (Stage 3, after spawn succeeds); emitting CardUpdated here would
-    // pre-empt the renderer-mount race protection (issue #310) — wave
-    // subscribers refetch on CardUpdated and could mount the card before its
-    // terminal renderer entry is live.
-    let _ = write_in_tx_typed::<crate::model::Card, _>(inner.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            let mut payload = dispatcher_card_payload_get(tx, &card_id_for_tx).await?;
-            let Some(map) = payload.as_object_mut() else {
-                return Err(CalmError::Internal(format!(
-                    "worker card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
-                )));
-            };
-            map.insert(
-                "appserver_sock".into(),
-                serde_json::Value::String(remote_uri_for_tx),
-            );
-            map.remove("appserver_pgid");
-            let updated = card_update_tx(
-                tx,
-                &card_id_for_tx,
-                CardPatch {
-                    kind: None,
-                    sort: None,
-                    payload: Some(payload),
-                    deletable: None,
-                },
-            )
-            .await?;
-            let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
-                .await?
-                .ok_or_else(|| {
-                    CalmError::Internal(format!(
-                        "worker card {card_id_for_tx} has no active runtime to bind"
-                    ))
-                })?;
-            runtime_bind_attribution_tx(
-                tx,
-                &runtime.id,
-                ThreadAttribution {
-                    runtime_id: runtime.id.clone(),
-                    provider: AgentProvider::Codex,
-                    thread_id: Some(thread_id_for_tx),
-                    session_id: None,
-                    active_turn_id: None,
-                },
-            )
-            .await?;
-            runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
-            Ok(updated)
-        })
+    spawn_codex_worker_via_shared_operation_daemon(CodexWorkerSpawnCtx {
+        spawn_ctx: &spawn_ctx,
+        shared_codex_appserver: &inner.shared_codex_appserver,
+        mcp_server: inner.mcp_server.as_deref(),
+        card: ctx.card,
+        term: ctx.term,
+        wave_id: ctx.wave_id,
+        mcp_token: ctx.mcp_token,
+        rendered_prompt: ctx.rendered_prompt,
+        cwd: ctx.cwd,
+        legacy_env: ctx.legacy_env,
     })
     .await?;
     Ok(())
-}
-
-// NOTE: an earlier R2 iteration also defined `clear_shared_worker_runtime_fields`
-// to revert the silent persist on turn_start failure WITHOUT deleting the
-// card row. R3 replaced that path with rollback_orphan_worker (which deletes
-// the card + terminal rows entirely) so the helper is gone — the card row
-// rollback subsumes the payload clear.
-
-async fn dispatcher_card_payload_get(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    card_id: &str,
-) -> crate::error::Result<serde_json::Value> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
-        .bind(card_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    let payload_text = row
-        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
-        .0;
-    serde_json::from_str(&payload_text)
-        .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
 }
 
 /// SELECT a card by its `payload.idempotency_key` inside a tx. Returns
@@ -2433,6 +2224,7 @@ fn is_sqlite_busy(e: &crate::error::CalmError) -> bool {
 /// on panic the same way it does on a normal return. The blocking
 /// `std::sync::Mutex` is fine here because the critical sections are
 /// O(hash insert/remove) under sub-µs contention.
+#[allow(dead_code)]
 struct RecentlySeenGuard {
     set: Arc<Mutex<HashSet<String>>>,
     key: String,
@@ -2446,6 +2238,7 @@ impl RecentlySeenGuard {
     /// "duplicate" — the dispatcher's lock recovery semantics prefer
     /// dropping the request over panicking on a poisoned lock; the
     /// next emit will retry.
+    #[allow(dead_code)]
     fn install(set: Arc<Mutex<HashSet<String>>>, key: String) -> Option<Self> {
         let mut g = set.lock().ok()?;
         if g.contains(&key) {
@@ -2463,6 +2256,7 @@ impl RecentlySeenGuard {
     /// Mark the slot as "successfully consumed". `Drop` becomes a
     /// no-op; the caller takes responsibility for the eventual TTL
     /// cleanup of the key.
+    #[allow(dead_code)]
     fn commit(mut self) {
         self.committed = true;
     }
@@ -2516,44 +2310,6 @@ impl DispatchRequest {
 // narrow trait object.
 #[allow(dead_code)]
 fn _route_repo_marker<R: RouteRepo>(_r: &R) {}
-
-/// Render the worker codex's first user message from the dispatcher
-/// payload. Becomes both the `payload.prompt` field (so
-/// `legacy auto-submit` fires the composer `\r`) and codex's positional
-/// `[PROMPT]` arg (so the composer mounts pre-filled). Mirrors the spec
-/// card path in `routes::waves::create_wave` which feeds the wave title
-/// through the same channel; the system prompt
-/// (`WORKER_SYSTEM_PROMPT_PLACEHOLDER` in `spec_card.rs`) tells the
-/// worker to read goal/context/acceptance-criteria, so we render them
-/// here in a predictable shape. Context is pretty-printed JSON so the
-/// worker can parse it back when it carries structured data.
-fn render_worker_prompt(
-    goal: &str,
-    context: &serde_json::Value,
-    acceptance_criteria: Option<&str>,
-) -> String {
-    let mut out = String::new();
-    out.push_str("Goal:\n");
-    out.push_str(goal);
-
-    let context_str = match context {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::String(s) if s.trim().is_empty() => String::new(),
-        serde_json::Value::Object(m) if m.is_empty() => String::new(),
-        serde_json::Value::Array(a) if a.is_empty() => String::new(),
-        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
-    };
-    if !context_str.is_empty() {
-        out.push_str("\n\nContext:\n");
-        out.push_str(&context_str);
-    }
-
-    if let Some(ac) = acceptance_criteria.map(str::trim).filter(|s| !s.is_empty()) {
-        out.push_str("\n\nAcceptance criteria:\n");
-        out.push_str(ac);
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -2704,59 +2460,6 @@ mod tests {
             crate::error::CalmError::Conflict("x".into()).code(),
             "conflict"
         );
-    }
-
-    // ---------------------------------------------------------------
-    // `render_worker_prompt` — turns dispatcher payload fields into the
-    // worker codex's first composer message. Each empty/non-empty
-    // combination is exercised so a future refactor that drops a
-    // section trips loudly. The non-empty output is the source of
-    // truth for both `payload.prompt` (consumed by `legacy auto-submit`)
-    // and codex's `[PROMPT]` argv (rendered via `shell_single_quote`),
-    // so a regression here breaks the worker hand-off end-to-end.
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn render_worker_prompt_goal_only() {
-        let out = render_worker_prompt("fix the bug", &serde_json::Value::Null, None);
-        assert_eq!(out, "Goal:\nfix the bug");
-    }
-
-    #[test]
-    fn render_worker_prompt_goal_plus_context() {
-        let ctx = serde_json::json!({ "issue": 42, "title": "x" });
-        let out = render_worker_prompt("fix it", &ctx, None);
-        assert!(out.starts_with("Goal:\nfix it"));
-        assert!(out.contains("\n\nContext:\n"));
-        assert!(out.contains("\"issue\": 42"));
-        assert!(out.contains("\"title\": \"x\""));
-        assert!(!out.contains("Acceptance criteria"));
-    }
-
-    #[test]
-    fn render_worker_prompt_goal_plus_context_plus_ac() {
-        let ctx = serde_json::json!({ "pr": 7 });
-        let out = render_worker_prompt("ship", &ctx, Some("tests pass"));
-        assert!(out.contains("Goal:\nship"));
-        assert!(out.contains("\n\nContext:\n"));
-        assert!(out.contains("\"pr\": 7"));
-        assert!(out.ends_with("Acceptance criteria:\ntests pass"));
-    }
-
-    #[test]
-    fn render_worker_prompt_skips_empty_context_object() {
-        let out = render_worker_prompt("g", &serde_json::json!({}), Some("ac"));
-        assert!(
-            !out.contains("Context"),
-            "empty {{}} should be skipped: {out}"
-        );
-        assert!(out.contains("Acceptance criteria:\nac"));
-    }
-
-    #[test]
-    fn render_worker_prompt_skips_blank_ac() {
-        let out = render_worker_prompt("g", &serde_json::Value::Null, Some("   "));
-        assert_eq!(out, "Goal:\ng");
     }
 
     // ---------------------------------------------------------------
