@@ -70,7 +70,7 @@ async fn serve_resolution_then_hook(listener: TcpListener, captured: oneshot::Se
         "resolution request was:\n{get_req}"
     );
     let body =
-        r#"{"thread_id":"thread-abc","card_id":"card-from-thread","role":"plain","wave_id":null}"#;
+        r#"{"thread_id":"thread-abc","card_id":"card-from-thread","role":"worker","wave_id":null}"#;
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
