@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 
 // Hoisted mock for the api client. Only the wave-report endpoint is
 // exercised here; we still need to passthrough `CalmApiError` because
@@ -26,6 +27,12 @@ vi.mock('../../api/calm', async () => {
     updateWaveReport: vi.fn(),
   };
 });
+
+vi.mock('./wave-report-sidebar', () => ({
+  WaveReportSidebar: ({ fallback }: { fallback?: ReactNode }) => (
+    <div data-testid="mock-wave-report-sidebar">{fallback}</div>
+  ),
+}));
 
 import { WaveReportEntry, parseSections, type WaveReportCardData } from './wave-report';
 import { WaveContext } from '../../shared/components/WaveContext';

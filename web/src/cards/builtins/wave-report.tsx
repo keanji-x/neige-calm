@@ -39,6 +39,7 @@ import {
   WAVE_REPORT_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
 } from './schemaVersions';
+import { WaveReportSidebar } from './wave-report-sidebar';
 import type { CardEntry } from '../registry';
 
 declare module '../../types' {
@@ -538,6 +539,11 @@ function WaveReportCardImpl({
             setOverride({ summary: next.summary, body: next.body });
             setEditing(false);
           }}
+        />
+      ) : waveId !== null ? (
+        <WaveReportSidebar
+          waveId={waveId}
+          fallback={<ReadOnlyView summary={summary} body={body} waveId={waveId} />}
         />
       ) : (
         <ReadOnlyView summary={summary} body={body} waveId={waveId} />

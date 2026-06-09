@@ -2,6 +2,7 @@
 // over `fetch` that throws on non-2xx with the server's `{error, code}` body.
 
 import { fireUnauthorized } from './onUnauthorized';
+import type { paths } from './generated';
 import type {
   CardPatchBody,
   CovePatchBody,
@@ -27,6 +28,11 @@ import type {
   SettingsPutBody,
   WavePatchBody,
 } from './wire';
+
+export type WaveFsEntry =
+  paths['/api/waves/{id}/files/ls']['get']['responses'][200]['content']['application/json'][number];
+export type WaveFsContent =
+  paths['/api/waves/{id}/files/cat']['get']['responses'][200]['content']['application/json'];
 
 export class CalmApiError extends Error {
   status: number;
@@ -198,6 +204,24 @@ export const updateWaveReport = (
     `/api/waves/${encodeURIComponent(id)}/report`,
     b,
   );
+
+export const listWaveFiles = (waveId: string, path?: string | null) => {
+  const qs = new URLSearchParams();
+  if (path != null && path.length > 0) qs.set('path', path);
+  const tail = qs.toString();
+  return request<WaveFsEntry[]>(
+    'GET',
+    `/api/waves/${encodeURIComponent(waveId)}/files/ls${tail ? `?${tail}` : ''}`,
+  );
+};
+
+export const catWaveFile = (waveId: string, path: string) => {
+  const qs = new URLSearchParams({ path });
+  return request<WaveFsContent>(
+    'GET',
+    `/api/waves/${encodeURIComponent(waveId)}/files/cat?${qs.toString()}`,
+  );
+};
 
 // ---------------- cards ----------------
 

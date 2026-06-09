@@ -62,11 +62,21 @@ function runtimeCardContextKeys(
   return waveId ? [queryKeys.waveDetail(waveId)] : [];
 }
 
+const waveFilesKey = (waveId: unknown): QueryKey =>
+  typeof waveId === 'string' && waveId.length > 0
+    ? queryKeys.waveFiles(waveId)
+    : ['wave-files'];
+
 const waveMutationKeys = (ev: EventOf<'wave.updated'> | EventOf<'wave.lifecycle_changed'>) => [
   queryKeys.wavesInCove(ev.data.cove_id),
   queryKeys.waveDetail(ev.data.id),
+  waveFilesKey(ev.data.id),
   ['waves-range'],
 ];
+
+const cardMutationKeys = (
+  ev: EventOf<'card.added'> | EventOf<'card.updated'> | EventOf<'card.deleted'>,
+) => [queryKeys.waveDetail(ev.data.wave_id), waveFilesKey(ev.data.wave_id)];
 
 export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } = definePolicies({
   'cove.updated': {
@@ -101,13 +111,13 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     keys: waveMutationKeys,
   },
   'card.added': {
-    keys: (ev) => [queryKeys.waveDetail(ev.data.wave_id)],
+    keys: cardMutationKeys,
   },
   'card.updated': {
-    keys: (ev) => [queryKeys.waveDetail(ev.data.wave_id)],
+    keys: cardMutationKeys,
   },
   'card.deleted': {
-    keys: (ev) => [queryKeys.waveDetail(ev.data.wave_id)],
+    keys: cardMutationKeys,
   },
   'runtime.started': {
     requiresContext: runtimeCardContextKeys,
@@ -132,9 +142,11 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'harness.transcript.cleared': noop(
     'Spec ChatTimeline card-topic consumers reset local transcript state directly.',
   ),
-  'wave.report_edited': noop(
-    'Companion card.updated invalidates the report card projection.',
-  ),
+  'wave.report_edited': {
+    keys: (ev) => [waveFilesKey(ev.data.wave_id)],
+    reason:
+      'report.md in the wave file projection changes when the report is edited.',
+  },
   'overlay.set': {
     keys: overlayInvalidationKeys,
     requiresContext: cardOverlayContextKeys,

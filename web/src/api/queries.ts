@@ -44,6 +44,10 @@ import type {
   WavePatchBody,
 } from './wire';
 
+type WaveFileQueryOpts = {
+  enabled?: boolean;
+};
+
 // ---------------- Query key factory ----------------
 //
 // One place to construct keys so the invalidation bridge can't typo a
@@ -53,6 +57,11 @@ export const queryKeys = {
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveFiles: (waveId: string) => ['wave-files', waveId] as const,
+  waveFileList: (waveId: string, path: string | null | undefined) =>
+    waveFileListQueryKey(waveId, path),
+  waveFileContent: (waveId: string, path: string | null | undefined) =>
+    waveFileContentQueryKey(waveId, path),
   /** Global wave/card overlay snapshot — populated by the Sidebar so
    *  per-wave status indicators stay accurate without detail fetches. */
   overlaysByKind: (entity_kind: 'wave' | 'card') =>
@@ -72,6 +81,16 @@ export const queryKeys = {
   wavesRange: (since: number, until: number) =>
     ['waves-range', since, until] as const,
 };
+
+export const waveFileListQueryKey = (
+  waveId: string,
+  path: string | null | undefined,
+) => ['wave-files', waveId, 'ls', path ?? ''] as const;
+
+export const waveFileContentQueryKey = (
+  waveId: string,
+  path: string | null | undefined,
+) => ['wave-files', waveId, 'cat', path ?? ''] as const;
 
 // ---------------- Query option factories ----------------
 //
@@ -174,6 +193,30 @@ export function useWaveDetailQuery(
     enabled: !!waveId,
     placeholderData: keepPreviousData,
     ...opts,
+  });
+}
+
+export function useWaveFileList(
+  waveId: string | undefined | null,
+  path?: string | null,
+  opts?: WaveFileQueryOpts,
+) {
+  return useQuery<api.WaveFsEntry[], Error>({
+    queryKey: waveFileListQueryKey(waveId ?? '', path),
+    queryFn: () => api.listWaveFiles(waveId ?? '', path),
+    enabled: !!waveId && (opts?.enabled ?? true),
+  });
+}
+
+export function useWaveFileContent(
+  waveId: string | undefined | null,
+  path: string | null | undefined,
+  opts?: WaveFileQueryOpts,
+) {
+  return useQuery<api.WaveFsContent, Error>({
+    queryKey: waveFileContentQueryKey(waveId ?? '', path),
+    queryFn: () => api.catWaveFile(waveId ?? '', path ?? ''),
+    enabled: !!waveId && !!path && (opts?.enabled ?? true),
   });
 }
 
