@@ -291,7 +291,18 @@ const BUS_CAPACITY: usize = 1024;
 /// `syncEventVersion` so the web client can refuse to replay a log it
 /// doesn't understand. Sync event log is a Tier-A persistence contract per
 /// `docs/upgrade-stability.md`.
-pub const SYNC_EVENT_VERSION: u32 = 1;
+///
+/// Version history:
+/// * `1` — initial envelope shape; added by migration 0006.
+/// * `2` — dispatcher request event rename (issue #581). Wire kinds
+///   `codex.job_requested` / `terminal.job_requested` are renamed to
+///   `*.worker_requested`. An open v1-tab whose per-frame gate was
+///   set to `syncEventVersion=1` at mount must drop new `eventVersion=2`
+///   frames WITHOUT advancing the cursor; if we kept SYNC_EVENT_VERSION
+///   at 1, those tabs would silently fail zod and advance past
+///   invalidation frames. Old rows backfill to `1` via the migration
+///   0006 column default.
+pub const SYNC_EVENT_VERSION: u32 = 2;
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
