@@ -883,6 +883,10 @@ pub fn topics(ev: &Event) -> Vec<String> {
             format!("wave:{}", wave_id),
             "*".into(),
         ],
+        // Runtime payloads intentionally route by card only: the §F payloads do
+        // not carry wave_id, and today's web client subscribes with ["*"].
+        // Future wave-only subscribers can revisit by threading EventScope into
+        // topics() or adding wave_id to these payloads.
         Event::RuntimeStarted { card_id, .. }
         | Event::RuntimeStatusChanged { card_id, .. }
         | Event::RuntimeSuperseded { card_id, .. } => {
@@ -1902,6 +1906,60 @@ mod scope_tests {
         assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
         assert!(t.iter().any(|s| s == "wave:w-1"), "topics={t:?}");
         assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
+    }
+
+    #[test]
+    fn runtime_started_topics_card_only() {
+        let ev = Event::RuntimeStarted {
+            runtime_id: "rt-1".into(),
+            card_id: "card-1".into(),
+            kind: crate::runtime_repo::RuntimeKind::CodexCard,
+            agent_provider: Some(crate::runtime_repo::AgentProvider::Codex),
+            status: crate::runtime_repo::RunStatus::Starting,
+        };
+        let t = topics(&ev);
+        assert_eq!(t.len(), 2, "topics={t:?}");
+        assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
+        assert!(
+            !t.iter().any(|s| s.starts_with("wave:")),
+            "topics must not include wave: scope; topics={t:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_status_changed_topics_card_only() {
+        let ev = Event::RuntimeStatusChanged {
+            runtime_id: "rt-1".into(),
+            card_id: "card-1".into(),
+            old_status: crate::runtime_repo::RunStatus::Starting,
+            new_status: crate::runtime_repo::RunStatus::Running,
+        };
+        let t = topics(&ev);
+        assert_eq!(t.len(), 2, "topics={t:?}");
+        assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
+        assert!(
+            !t.iter().any(|s| s.starts_with("wave:")),
+            "topics must not include wave: scope; topics={t:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_superseded_topics_card_only() {
+        let ev = Event::RuntimeSuperseded {
+            old_runtime_id: "rt-old".into(),
+            new_runtime_id: "rt-new".into(),
+            card_id: "card-1".into(),
+        };
+        let t = topics(&ev);
+        assert_eq!(t.len(), 2, "topics={t:?}");
+        assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
+        assert!(
+            !t.iter().any(|s| s.starts_with("wave:")),
+            "topics must not include wave: scope; topics={t:?}"
+        );
     }
 
     fn wave_report_edited_sample() -> Event {
