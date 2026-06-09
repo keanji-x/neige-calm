@@ -229,10 +229,14 @@ async fn codex_mcp_double_call_both_complete() {
     );
     struct Root(std::path::PathBuf);
     impl AsRef<std::path::Path> for Root {
-        fn as_ref(&self) -> &std::path::Path { &self.0 }
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
     }
     impl Root {
-        fn path(&self) -> &std::path::Path { &self.0 }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
     }
     let root = Root(root_path);
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

@@ -84,13 +84,6 @@ path = "tests/fixtures/osc-probe-child/main.rs"
 name = "cooked-shell-child"
 path = "tests/fixtures/cooked-shell-child/main.rs"
 
-# #569 true E2E — expose the real stdio shim source as a calm-server test
-# binary so integration tests can use `CARGO_BIN_EXE_neige-mcp-stdio-shim`.
-[[bin]]
-name = "neige-mcp-stdio-shim"
-path = "../neige-mcp-stdio-shim/src/main.rs"
-required-features = ["fixtures"]
-
 [dependencies]
 # HTTP / WS
 axum = { version = "0.8", features = ["ws", "macros"] }

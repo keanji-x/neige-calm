@@ -28,7 +28,22 @@ use tempfile::TempDir;
 use tokio::io::BufReader;
 use tokio::process::Command;
 
-const SHIM_BIN: &str = env!("CARGO_BIN_EXE_neige-mcp-stdio-shim");
+fn shim_bin() -> std::path::PathBuf {
+    // CARGO_BIN_EXE_<name> is only set for bins in the SAME package; this
+    // test lives in calm-server but the shim bin lives in
+    // crates/neige-mcp-stdio-shim. Resolve it via the workspace target dir:
+    // cargo puts the bin next to the integration-test binary
+    // (target/{debug,release}/neige-mcp-stdio-shim).
+    let mut p = std::env::current_exe().expect("current_exe");
+    p.pop(); // .../deps/
+    p.pop(); // .../debug/ or .../release/
+    p.push("neige-mcp-stdio-shim");
+    assert!(
+        p.exists(),
+        "neige-mcp-stdio-shim not found at {p:?}; ensure `cargo test -p calm-server` triggers a workspace build of the shim crate"
+    );
+    p
+}
 
 struct Boot {
     server: Arc<McpServer>,
@@ -168,7 +183,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
 async fn shim_round_trip_initialize_and_tools_call_completes() {
     let boot = boot().await;
 
-    let mut child = Command::new(SHIM_BIN)
+    let mut child = Command::new(shim_bin())
         .env("NEIGE_MCP_SOCKET", &boot.socket_path)
         .env("NEIGE_MCP_TOKEN", &boot.raw_token)
         .env_remove("NEIGE_MCP_DAEMON_TOKEN")
@@ -193,7 +208,10 @@ async fn shim_round_trip_initialize_and_tools_call_completes() {
         .await
         .expect("initialize response within 5s");
     assert_eq!(resp1["id"], json!(1), "initialize id round-trips");
-    assert!(resp1.get("error").is_none(), "initialize succeeded: {resp1:#?}");
+    assert!(
+        resp1.get("error").is_none(),
+        "initialize succeeded: {resp1:#?}"
+    );
 
     let call = json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -208,7 +226,10 @@ async fn shim_round_trip_initialize_and_tools_call_completes() {
         .await
         .expect("tools/call response within 5s -- REGRESSION if this times out");
     assert_eq!(resp2["id"], json!(2), "tools/call id round-trips");
-    assert!(resp2.get("error").is_none(), "tools/call succeeded: {resp2:#?}");
+    assert!(
+        resp2.get("error").is_none(),
+        "tools/call succeeded: {resp2:#?}"
+    );
     assert_eq!(resp2["result"]["isError"], json!(false));
     let structured = &resp2["result"]["structuredContent"];
     assert_eq!(structured["wave"]["title"], json!("renamed-by-e2e"));
