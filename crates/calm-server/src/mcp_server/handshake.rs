@@ -6,7 +6,7 @@
 //!
 //!   1. Reads the per-card token from `params._meta["dev.neige/auth"].token`
 //!      (matching the slot the codex CLI populates from
-//!      `NEIGE_MCP_TOKEN` — see [`crate::spec_card::build_codex_env_map`]).
+//!      `NEIGE_MCP_TOKEN`).
 //!   2. Hashes it (SHA-256 hex) and looks the hash up in
 //!      `card_mcp_tokens`.
 //!   3. Verifies via constant-time compare (defense-in-depth over the

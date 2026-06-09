@@ -475,8 +475,8 @@ async fn smuggled_card_id_in_args_is_ignored() {
 // proc-supervisor socket the orphan card would land in `cards_by_wave`
 // and be observable. PR #312 (which fixes #310) flips that ordering:
 // the two-stage spawn defers `CardAdded` emission until after the
-// renderer entry is registered, AND `rollback_orphan_worker` actively
-// DELETEs the pre-committed card row when the spawn errors out.
+// renderer entry is registered, AND worker compensation actively DELETEs
+// the pre-committed card row when the spawn errors out.
 //
 // Under the new semantics, driving `calm.dispatch_request[codex]`
 // against a missing proc-supervisor socket must:
@@ -549,8 +549,8 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
     // (a) MCP tool itself succeeds — it merely enqueued the request.
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
 
-    // (b) Wait for the dispatcher to drain, fail the spawn, run
-    // `rollback_orphan_worker`, and emit `TaskFailed` for our key.
+    // (b) Wait for the dispatcher to drain, fail the spawn, run worker
+    // compensation, and emit `TaskFailed` for our key.
     let deadline = tokio::time::Instant::now() + TEST_BUDGET;
     let mut saw_failed = false;
     while tokio::time::Instant::now() < deadline {

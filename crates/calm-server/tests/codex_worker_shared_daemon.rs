@@ -473,12 +473,11 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     }
     failed.expect("task.failed");
 
-    // After PR7b-worker R3: shared-worker turn_start failure runs
-    // rollback_orphan_worker which DELETES the card + terminal rows entirely.
+    // Shared-worker turn_start failure runs worker compensation, which
+    // deletes the card + terminal rows entirely.
     // The card with idempotency_key="turn-fail-1" should not exist anywhere
     // (cards_by_wave returns no row with that key). This clears the
-    // idempotency_key so a retry of the same job can succeed (vs. being
-    // short-circuited by find_card_by_idempotency_key_tx as already-done).
+    // card-payload idempotency key so no orphaned worker row remains.
     // We poll briefly because the dispatcher's rollback happens async after
     // task.failed is emitted.
     let leftover = wait_for(Duration::from_secs(2), || async {

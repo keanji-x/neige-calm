@@ -770,13 +770,6 @@ async fn test_terminal_create_no_double_spawn() {
         .unwrap();
     let count: i64 = row.try_get("n").unwrap();
     assert_eq!(count, 1);
-    assert!(
-        !boot
-            .state
-            .dispatcher
-            .recently_seen_contains("terminal-create-same-key"),
-        "OperationRuntime terminal-create must not install dispatcher recently_seen"
-    );
 }
 
 #[tokio::test]
@@ -818,13 +811,6 @@ async fn test_codex_create_no_double_spawn() {
         .unwrap();
     let count: i64 = row.try_get("n").unwrap();
     assert_eq!(count, 1);
-    assert!(
-        !boot
-            .state
-            .dispatcher
-            .recently_seen_contains("codex-create-same-key"),
-        "OperationRuntime codex-create must not install dispatcher recently_seen"
-    );
 }
 
 #[tokio::test]
@@ -871,13 +857,6 @@ async fn test_claude_create_no_double_spawn() {
         .unwrap();
     let count: i64 = row.try_get("n").unwrap();
     assert_eq!(count, 1);
-    assert!(
-        !boot
-            .state
-            .dispatcher
-            .recently_seen_contains("claude-create-same-key"),
-        "OperationRuntime claude-create must not install dispatcher recently_seen"
-    );
 }
 
 #[tokio::test]

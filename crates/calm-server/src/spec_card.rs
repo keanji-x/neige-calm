@@ -19,8 +19,6 @@
 //! `Event::WaveUpdated` / `Event::CardAdded` envelopes are produced in a
 //! single `write_with_events_typed` transaction.
 
-use crate::state::CodexClient;
-
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
 /// that documents the role; PR7a/PR7b will expand this with explicit
 /// instructions for the `wave_state.update` / `wave_state.get` MCP tools
@@ -266,88 +264,6 @@ cross-wave reads are forbidden.
 /// PR7+ can extend the substitution set without rewriting call sites.
 pub(crate) fn render_system_prompt(template: &str, wave_id: &str) -> String {
     template.replace("{wave_id}", wave_id)
-}
-
-/// Assemble the env map a per-card codex daemon needs:
-///   * `CODEX_HOME` — per-card directory; auth, hooks, config.toml.
-///   * `NEIGE_CARD_ID` — surfaced to plugins/MCP for write attribution.
-///   * `NEIGE_CALM_BASE_URL` — codex hook + MCP ingest URL.
-///   * `HTTP(S)_PROXY` / lowercase variants when settings have a non-
-///     empty proxy override.
-///   * `NEIGE_MCP_TOKEN` — per-card raw MCP token (PR7a). Only set
-///     when `mcp_token` is `Some(...)`; the codex daemon's
-///     `[mcp_servers.calm].env` block forwards this to the spawned
-///     `neige-mcp-stdio-shim` so the shim's `initialize` request
-///     embeds it under `_meta["dev.neige/auth"].token`. Plain cards
-///     receive `None` here and have no MCP server block in their
-///     config.toml.
-///   * `NEIGE_MCP_SOCKET` — kernel-as-MCP-server UDS path (PR7a).
-///     Same gating as `NEIGE_MCP_TOKEN`: only emitted when MCP is
-///     wired up for this card.
-///
-/// Settings-driven proxy override matches `routes::codex_cards`
-/// semantics: only write proxy env when the override is non-empty (an
-/// empty override would *clear* the container default, the opposite of
-/// user intent). The settings are read at the call site — the helper
-/// takes the resolved values so it can stay sync-only.
-pub(crate) fn build_codex_env_map(
-    codex: &CodexClient,
-    card_id: &str,
-    http_proxy: Option<&str>,
-    https_proxy: Option<&str>,
-    mcp_token: Option<&str>,
-    mcp_socket_path: Option<&std::path::Path>,
-) -> serde_json::Value {
-    let codex_home_path = codex.codex_home_dir().to_string_lossy().to_string();
-    let mut env_map = serde_json::Map::new();
-    env_map.insert(
-        "CODEX_HOME".to_string(),
-        serde_json::Value::String(codex_home_path),
-    );
-    env_map.insert(
-        "NEIGE_CARD_ID".to_string(),
-        serde_json::Value::String(card_id.to_string()),
-    );
-    env_map.insert(
-        "NEIGE_CALM_BASE_URL".to_string(),
-        serde_json::Value::String(codex.ingest_url.clone()),
-    );
-    if let Some(p) = http_proxy.filter(|s| !s.is_empty()) {
-        env_map.insert(
-            "HTTP_PROXY".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-        env_map.insert(
-            "http_proxy".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-    }
-    if let Some(p) = https_proxy.filter(|s| !s.is_empty()) {
-        env_map.insert(
-            "HTTPS_PROXY".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-        env_map.insert(
-            "https_proxy".to_string(),
-            serde_json::Value::String(p.to_string()),
-        );
-    }
-    // PR7a — wire per-card MCP token + socket path. Both must be
-    // `Some` together: a token without a socket is unusable, and a
-    // socket without a token can't initialize. The caller threads
-    // them in only for Spec/Worker cards (Plain cards don't mint a
-    // token row and don't get an MCP server block in config.toml).
-    if let (Some(token), Some(socket)) = (mcp_token, mcp_socket_path) {
-        env_map.insert(
-            "NEIGE_MCP_TOKEN".to_string(),
-            serde_json::Value::String(token.to_string()),
-        );
-        env_map.insert(
-            "NEIGE_MCP_SOCKET".to_string(),
-            serde_json::Value::String(socket.to_string_lossy().to_string()),
-        );
-    }
-    serde_json::Value::Object(env_map)
 }
 
 /// Roles that legitimately need role-specific Codex setup.
