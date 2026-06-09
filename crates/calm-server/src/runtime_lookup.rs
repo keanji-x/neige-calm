@@ -1,4 +1,4 @@
-//! Runtime-first lookup helpers with legacy fallback during the PR2b read switch.
+//! Runtime lookup helpers.
 
 use std::collections::HashMap;
 
@@ -12,35 +12,22 @@ use crate::runtime_repo::{
 use serde_json::Value;
 
 /// Resolve an active codex thread for a card. Runtime rows are the source of
-/// truth; `card_codex_threads` is a transitional fallback for pre-backfill
-/// rows and tracked edge cases.
+/// truth.
 pub async fn resolve_active_thread_for_card(
     repo: &dyn RouteRepo,
     card_id: &str,
 ) -> Result<Option<String>> {
-    let active = repo
+    let Some(runtime) = repo
         .runtime_get_active_for_card(&card_id.to_string())
-        .await?;
-    if let Some(runtime) = active.as_ref()
-        && let Some(thread_id) = non_empty(runtime.thread_id.as_deref())
-    {
-        return Ok(Some(thread_id.to_string()));
-    }
-
-    let legacy = repo.card_codex_thread_get_by_card(card_id).await?;
-    tracing::warn!(
-        target: "runtime_lookup::fallback",
-        card_id,
-        runtime_id = active.as_ref().map(|runtime| runtime.id.as_str()),
-        legacy_hit = legacy.is_some(),
-        "runtime card->thread lookup missed; falling back to card_codex_threads"
-    );
-    Ok(legacy.map(|row| row.thread_id))
+        .await?
+    else {
+        return Ok(None);
+    };
+    Ok(non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned))
 }
 
 /// Resolve the owning card for a provider thread id. Runtime rows are the
-/// source of truth; `card_codex_threads` is a transitional fallback for
-/// pre-backfill rows and tracked edge cases.
+/// source of truth.
 pub async fn resolve_card_for_thread(
     repo: &dyn RouteRepo,
     provider: AgentProvider,
@@ -56,30 +43,7 @@ pub async fn resolve_card_for_thread(
                 .await?
         }
     };
-    if let Some(runtime) = active.as_ref() {
-        return Ok(Some(runtime.card_id.clone()));
-    }
-
-    if provider != AgentProvider::Codex {
-        tracing::warn!(
-            target: "runtime_lookup::fallback",
-            thread_id,
-            provider = ?provider,
-            legacy_hit = false,
-            "runtime thread->card lookup missed; no legacy fallback for provider"
-        );
-        return Ok(None);
-    }
-
-    let legacy = repo.card_codex_thread_get_by_thread(thread_id).await?;
-    tracing::warn!(
-        target: "runtime_lookup::fallback",
-        thread_id,
-        provider = ?provider,
-        legacy_hit = legacy.is_some(),
-        "runtime thread->card lookup missed; falling back to card_codex_threads"
-    );
-    Ok(legacy.map(|row| row.card_id))
+    Ok(active.map(|runtime| runtime.card_id))
 }
 
 /// Resolve a Claude session for a card. Runtime rows are the source of truth;
@@ -117,47 +81,15 @@ pub async fn resolve_claude_session_for_card(
     Ok(legacy_session)
 }
 
-/// Merge active shared codex thread attribution from runtime rows and legacy
-/// `card_codex_threads` rows. Runtime rows are the source of truth; legacy rows
-/// only fill cards that still have no active runtime attribution.
+/// Return active shared codex thread attribution from runtime rows.
 pub async fn merge_active_shared_thread_attribution(
     repo: &dyn RouteRepo,
 ) -> Result<HashMap<String, String>> {
     let runtime_rows = repo.runtime_active_shared_thread_attribution().await?;
-    let legacy_rows = repo.card_codex_threads_active_shared_only().await?;
-
     let mut merged = HashMap::new();
     for (thread_id, card_id) in runtime_rows {
         merged.insert(card_id, thread_id);
     }
-
-    let mut legacy_fallbacks = 0usize;
-    for row in legacy_rows {
-        match merged.get(&row.card_id) {
-            Some(runtime_thread) if runtime_thread != &row.thread_id => {
-                tracing::warn!(
-                    target = "runtime_lookup::merge_conflict",
-                    card_id = %row.card_id,
-                    runtime_thread = %runtime_thread,
-                    legacy_thread = %row.thread_id,
-                    "runtime and legacy shared thread attribution disagree; using runtime"
-                );
-            }
-            Some(_) => {}
-            None => {
-                legacy_fallbacks += 1;
-                merged.insert(row.card_id, row.thread_id);
-            }
-        }
-    }
-    if legacy_fallbacks > 0 {
-        tracing::warn!(
-            target: "runtime_lookup::fallback",
-            count = legacy_fallbacks,
-            "runtime shared thread attribution missed rows; merged legacy card_codex_threads fallback"
-        );
-    }
-
     Ok(merged)
 }
 

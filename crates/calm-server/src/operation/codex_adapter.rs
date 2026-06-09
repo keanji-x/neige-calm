@@ -351,8 +351,10 @@ impl ProviderAdapter for CodexAdapter {
             {
                 Some(thread_id) => thread_id,
                 None => {
-                    if let Some(row) = self.repo.card_codex_thread_get_by_card(&card_id).await? {
-                        row.thread_id
+                    if let Some(runtime) = self.repo.runtime_get_active_for_card(&card_id).await?
+                        && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
+                    {
+                        thread_id
                     } else {
                         self.shared_codex_appserver
                             .thread_start_mint_for_card(
@@ -498,10 +500,6 @@ impl ProviderAdapter for CodexAdapter {
                 }),
             ));
             steps.push(step(
-                "delete_card_codex_thread",
-                json!({ "card_id": card_id.clone() }),
-            ));
-            steps.push(step(
                 "runtime_set_status_failed_for_card",
                 json!({ "card_id": card_id }),
             ));
@@ -546,11 +544,6 @@ impl ProviderAdapter for CodexAdapter {
                 }
                 Ok(())
             }
-            "delete_card_codex_thread" => {
-                let card_id = step_arg_string(step, "card_id")?;
-                ctx.repo.card_codex_thread_delete_by_card(&card_id).await?;
-                Ok(())
-            }
             "interrupt_shared_codex_turn" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 let thread_id =
@@ -558,9 +551,9 @@ impl ProviderAdapter for CodexAdapter {
                         Some(thread_id.to_string())
                     } else {
                         ctx.repo
-                            .card_codex_thread_get_by_card(&card_id)
+                            .runtime_get_active_for_card(&card_id)
                             .await?
-                            .map(|row| row.thread_id)
+                            .and_then(|runtime| non_empty_string(runtime.thread_id.as_deref()))
                     };
                 if let Some(thread_id) = thread_id
                     && let Err(e) = self
@@ -601,6 +594,13 @@ impl ProviderAdapter for CodexAdapter {
                     Ok(()) | Err(CalmError::NotFound(_)) => Ok(()),
                     Err(e) => Err(e),
                 }
+            }
+            "delete_card_codex_thread" => {
+                tracing::warn!(
+                    target = "codex_adapter::compensation",
+                    "skipping legacy delete_card_codex_thread step (table dropped post #552)"
+                );
+                Ok(())
             }
             other => Err(CalmError::Internal(format!(
                 "unknown codex compensation op {other}"
@@ -860,6 +860,13 @@ fn project_codex_runtime_fields_for_response(
 fn insert_payload_string(map: &mut serde_json::Map<String, Value>, key: &str, value: &str) {
     map.entry(key.to_string())
         .or_insert_with(|| Value::String(value.to_string()));
+}
+
+fn non_empty_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 fn validate_optional_color(value: Option<&str>, field: &str) -> Result<()> {

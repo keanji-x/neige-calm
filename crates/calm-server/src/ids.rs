@@ -21,13 +21,6 @@
 //! `export type CoveId = string;` so the frontend's generated TS keeps
 //! working unchanged.
 //!
-//! ## `ActorId` has zero call sites in PR1
-//!
-//! It's declared here so PR2/PR3 can wire it into `EventScope` /
-//! `enforce_role`. PR1 is pure refactor — the existing
-//! `actor::Actor(pub String)` plumbing (which carries the declared
-//! `X-Calm-Actor` value through the request stack) is untouched.
-
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

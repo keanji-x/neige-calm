@@ -20,11 +20,17 @@ use std::time::Duration;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, runtime_bind_attribution_tx,
+    runtime_get_active_for_card_tx, runtime_start_tx,
+};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
+use calm_server::runtime_repo::{
+    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -128,14 +134,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
     tx.commit().await.unwrap();
     let raw_token = mcp_token.expect("Spec/Worker card must mint a token");
     let thread_id = format!("thread-{card_id}");
-    repo.card_codex_thread_upsert(
-        card_id.as_str(),
-        thread_id.as_str(),
-        role,
-        Some(wave.id.as_str()),
-    )
-    .await
-    .unwrap();
+    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     let events = EventBus::new();
     let registry = build_default_registry();
@@ -164,6 +163,50 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         socket_path,
         _tmp: tmp,
     }
+}
+
+async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    if let Some(runtime) = runtime_get_active_for_card_tx(&mut tx, card_id)
+        .await
+        .unwrap()
+    {
+        runtime_bind_attribution_tx(
+            &mut tx,
+            &runtime.id,
+            ThreadAttribution {
+                runtime_id: runtime.id.clone(),
+                provider: AgentProvider::Codex,
+                thread_id: Some(thread_id.to_string()),
+                session_id: None,
+                active_turn_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    } else {
+        runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: calm_server::model::new_id(),
+                card_id: card_id.to_string(),
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.to_string()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
 }
 
 async fn connect(

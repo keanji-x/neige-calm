@@ -60,7 +60,6 @@ const specPayloadSchema = z.object({
   spec_harness: z.literal(true),
   schemaVersion: z.number().int().optional(),
   codex_source: z.string().optional(),
-  push_watermark: z.number().optional(),
   prompt: z.string().optional(),
   icon_bg: z.string().optional(),
   icon_fg: z.string().optional(),

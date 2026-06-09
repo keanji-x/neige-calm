@@ -96,9 +96,8 @@ writes are transactional.
    * Record verdicts via `calm.update_task_meta(status=...)` when worker \
      output is ready to validate.
    * Keep the wave report current (see below).
-3. **END YOUR TURN.** Do NOT poll, do NOT call `calm.wait_for_events` \
-   (it no longer exists), do NOT loop waiting for the next event. The \
-   kernel pushes the next observation as a fresh turn the moment it \
+3. **END YOUR TURN.** Do NOT poll or loop waiting for the next event. \
+   The kernel pushes the next observation as a fresh turn the moment it \
    arrives — you will be re-invoked automatically. If there is nothing \
    left to do this turn, just stop; if the wave is `done`/`failed`/ \
    `blocked` and you're waiting on the user, stop and wait to be \
@@ -409,29 +408,16 @@ mod tests {
     }
 
     /// #293 cutover — the spec prompt must be push-native, not pull. It must
-    /// NOT instruct the agent to poll via `calm.wait_for_events`, and it must
     /// carry the turn-reactive guidance (driven by pushed observations, end
-    /// the turn, no looping). The only allowed mention of `wait_for_events`
-    /// is the explicit "do NOT call it" instruction.
+    /// the turn, no looping).
     #[test]
     fn spec_prompt_is_push_native_not_pull() {
         let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
 
-        // No pull loop. The single permitted occurrence of the old tool
-        // name is the explicit prohibition; it must never be presented as
-        // a thing to call (e.g. `calm.wait_for_events(...)` with args).
-        assert!(
-            !p.contains("calm.wait_for_events(timeout_ms"),
-            "prompt must not tell the spec to poll wait_for_events with a timeout"
-        );
+        // No pull loop.
         assert!(
             !p.contains("long-poll"),
             "prompt must not describe a long-poll loop"
-        );
-        // The one mention that remains is the "do NOT call" guidance.
-        assert!(
-            p.contains("do NOT call `calm.wait_for_events`"),
-            "prompt should explicitly tell the agent wait_for_events is gone"
         );
 
         // Turn-reactive guidance present.
@@ -448,7 +434,7 @@ mod tests {
             "prompt must explain the kernel re-invokes the agent per observation"
         );
         assert!(
-            p.contains("Do NOT poll") && p.contains("do NOT loop"),
+            p.contains("Do NOT poll or loop"),
             "prompt must forbid polling / looping"
         );
         // Reads go through the shell CLI; writes still go through MCP.

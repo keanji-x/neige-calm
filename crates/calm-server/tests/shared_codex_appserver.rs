@@ -650,56 +650,6 @@ async fn takeover_rebuilds_thread_cache_from_db() {
 }
 
 #[tokio::test]
-async fn thread_cache_rebuild_runtime_wins_on_conflict() {
-    let root = tempfile::tempdir().unwrap();
-    let repo = repo().await;
-    let card_id = seed_card(&repo, 1).await;
-    seed_runtime_thread_with_kind(&repo, &card_id, "thread-old", RuntimeKind::SharedSpec).await;
-    repo.card_codex_thread_upsert(&card_id, "thread-new", CardRole::Plain, None)
-        .await
-        .unwrap();
-
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
-
-    assert_eq!(
-        daemon.cached_card_for_thread("thread-old"),
-        Some(card_id.clone())
-    );
-    assert_eq!(daemon.cached_card_for_thread("thread-new"), None);
-}
-
-#[tokio::test]
-async fn thread_cache_rebuild_merges_runtime_only_cards() {
-    let root = tempfile::tempdir().unwrap();
-    let repo = repo().await;
-    let runtime_card_id = seed_card(&repo, 1).await;
-    seed_runtime_thread_with_kind(
-        &repo,
-        &runtime_card_id,
-        "thread-runtime",
-        RuntimeKind::SharedSpec,
-    )
-    .await;
-    let legacy_card_id = seed_card(&repo, 2).await;
-    repo.card_codex_thread_upsert(&legacy_card_id, "thread-legacy", CardRole::Plain, None)
-        .await
-        .unwrap();
-
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
-
-    assert_eq!(
-        daemon.cached_card_for_thread("thread-runtime"),
-        Some(runtime_card_id)
-    );
-    assert_eq!(
-        daemon.cached_card_for_thread("thread-legacy"),
-        Some(legacy_card_id)
-    );
-}
-
-#[tokio::test]
 async fn restart_resumes_rollout_backed_threads() {
     let _guard = ENV_LOCK.lock().await;
 
@@ -711,9 +661,7 @@ async fn restart_resumes_rollout_backed_threads() {
 
     let repo = repo().await;
     let card_id = seed_card(&repo, 1).await;
-    repo.card_codex_thread_upsert(&card_id, "thread-resume", CardRole::Plain, None)
-        .await
-        .unwrap();
+    seed_runtime_thread_with_kind(&repo, &card_id, "thread-resume", RuntimeKind::SharedSpec).await;
 
     let daemon = server(&root, repo.clone()).await;
     daemon.start_or_takeover().await.unwrap();
@@ -757,12 +705,6 @@ async fn thread_start_mint_for_card_respects_needs_respawn_flag() {
     assert_eq!(
         daemon.cached_card_for_thread("fake-thread-0001"),
         Some(card_id.clone())
-    );
-    assert!(
-        repo.card_codex_thread_get_by_card(&card_id)
-            .await
-            .unwrap()
-            .is_none()
     );
 }
 

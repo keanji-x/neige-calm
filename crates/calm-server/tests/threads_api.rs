@@ -144,9 +144,7 @@ async fn resolve_card_for_thread_prefers_runtime_mapping() {
 async fn resolve_card_for_thread_returns_mapping() {
     let (app, repo, wave_id) = fresh().await;
     let card_id = create_card(&repo, &wave_id, CardRole::Plain).await;
-    repo.card_codex_thread_upsert(&card_id, "thread-hit", CardRole::Plain, None)
-        .await
-        .unwrap();
+    bind_runtime_thread(&repo, &card_id, "thread-hit").await;
 
     let (status, body) = get(app, "thread-hit").await;
     assert_eq!(status, StatusCode::OK, "body={body:?}");
@@ -165,9 +163,7 @@ async fn resolve_card_for_thread_404s_for_missing_thread() {
 async fn resolve_card_for_thread_preserves_role() {
     let (app, repo, wave_id) = fresh().await;
     let card_id = create_card(&repo, &wave_id, CardRole::Worker).await;
-    repo.card_codex_thread_upsert(&card_id, "thread-worker", CardRole::Worker, Some(&wave_id))
-        .await
-        .unwrap();
+    bind_runtime_thread(&repo, &card_id, "thread-worker").await;
 
     let (status, body) = get(app, "thread-worker").await;
     assert_eq!(status, StatusCode::OK, "body={body:?}");
@@ -178,9 +174,7 @@ async fn resolve_card_for_thread_preserves_role() {
 async fn resolve_card_for_thread_preserves_wave_id() {
     let (app, repo, wave_id) = fresh().await;
     let card_id = create_card(&repo, &wave_id, CardRole::Spec).await;
-    repo.card_codex_thread_upsert(&card_id, "thread-spec", CardRole::Spec, Some(&wave_id))
-        .await
-        .unwrap();
+    bind_runtime_thread(&repo, &card_id, "thread-spec").await;
 
     let (status, body) = get(app, "thread-spec").await;
     assert_eq!(status, StatusCode::OK, "body={body:?}");

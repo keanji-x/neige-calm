@@ -20,9 +20,8 @@
 //! ## Durability
 //!
 //! The cache itself is in-memory only. Current harness recovery persists
-//! the durable watermark in runtime handle state; the old
-//! `payload.push_watermark` surface remains only as a boot fallback. The
-//! in-memory cache and recovered watermark serve different roles:
+//! the durable watermark in runtime handle state. The in-memory cache and
+//! recovered watermark serve different roles:
 //!   * **in-memory cursor** — per-process dedup hint, bumped after a push
 //!     has been accepted by the live runtime.
 //!   * **recovered watermark** — recovery floor for cross-restart catch-up.

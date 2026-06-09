@@ -17,20 +17,6 @@ import { z } from 'zod';
 // ---------------- Entity schemas (mirror model.rs) ----------------
 
 /**
- * PR3 of #136 — `model::CardRole`. The server-side authorization label
- * persisted on `cards.role`. Frontend doesn't consume this today; the
- * schema is exported so a future UI surface (PR6+ may surface "this is
- * the wave's spec card" indicators) can validate against the same wire
- * shape without a duplicate definition.
- *
- * Wire values are lowercase via `#[serde(rename_all = "lowercase")]` on
- * the Rust enum. ts-rs will emit the matching union in
- * `generated-events.ts`; this zod schema is the runtime validator.
- */
-export const cardRoleSchema = z.enum(['plain', 'spec', 'worker']);
-export type CardRole = z.infer<typeof cardRoleSchema>;
-
-/**
  * Issue #175 — `model::CoveKind`. Marks whether a cove is part of the
  * user-visible workspace (`'user'`) or is the kernel-owned singleton that
  * hosts the default Today terminal's wave (`'system'`). The kernel already
@@ -411,10 +397,10 @@ export const claudeHookSchema = z.object({
 
 // ---------------- PR4 of #136: dispatcher + task-lifecycle variants ----
 //
-// Schema-only PR — no kernel emitters today. PR5 (Dispatcher) and PR8
-// (wait_for_events) wire them. The four schemas below pin the wire shape
-// the kernel will start emitting once PR5 lands, so the runtime
-// validator at the WS boundary doesn't drop frames on the floor.
+// Schema-only PR — no kernel emitters today. PR5 (Dispatcher) wires them.
+// The four schemas below pin the wire shape the kernel will start emitting
+// once PR5 lands, so the runtime validator at the WS boundary doesn't drop
+// frames on the floor.
 //
 // `ArtifactRef` is a transparent newtype on the server (#129 placeholder);
 // ts-rs emits `export type ArtifactRef = string;` so on the wire each
@@ -423,9 +409,9 @@ export const claudeHookSchema = z.object({
 /**
  * `Event::CodexJobRequested` — spec/worker card asks the kernel
  * dispatcher to spawn a codex worker card. PR5's `Dispatcher` consumes
- * via `EventBus::subscribe(kinds=["*.requested"])`; PR8's
- * `wait_for_events` correlates the eventual `task.completed` /
- * `task.failed` back to the requester via `idempotency_key`.
+ * via `EventBus::subscribe(kinds=["*.requested"])` and correlates the
+ * eventual `task.completed` / `task.failed` back to the requester via
+ * `idempotency_key`.
  *
  * `context` is opaque `serde_json::Value` (working-dir hints, prior turn
  * history, model preference) — kernel never inspects, dispatcher
@@ -456,8 +442,7 @@ export const terminalJobRequestedSchema = z.object({
 });
 
 /**
- * `Event::TaskCompleted` — worker card reports task completion. PR8's
- * `wait_for_events` delivers this to the requesting spec card.
+ * `Event::TaskCompleted` — worker card reports task completion.
  * `idempotency_key` echoes the matching `*.job_requested` key so the
  * spec can correlate without parsing the worker card's identity.
  *
@@ -486,27 +471,6 @@ export const taskFailedSchema = z.object({
   data: z.object({
     idempotency_key: z.string(),
     reason: z.string(),
-  }),
-});
-
-/**
- * Issue #318 INV-1 (b) — `Event::SpecPushAbandoned`. Emitted exactly once
- * when the dispatcher's push path takes over an inert spec daemon and
- * drops the queued envelope tail (`last_envelope_id` is the highest
- * envelope id that was abandoned). Wave-scoped (routes to `wave:<id>`
- * and `cove:<cove_id>` topics, mirrors `wave.deleted`'s topic mapping).
- *
- * Strictly additive on the wire: old frontends see an unknown `ev` tag
- * and skip; the runtime validator here is the conformance-test pin that
- * keeps the zod union in lockstep with the ts-rs generated `Event`
- * union.
- */
-export const specPushAbandonedSchema = z.object({
-  ev: z.literal('spec_push.abandoned'),
-  data: z.object({
-    wave_id: z.string(),
-    cove_id: z.string(),
-    last_envelope_id: z.number(),
   }),
 });
 
@@ -571,7 +535,6 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalJobRequestedSchema,
   taskCompletedSchema,
   taskFailedSchema,
-  specPushAbandonedSchema,
 ]);
 
 // ---------------- Inferred types ----------------
@@ -611,6 +574,5 @@ export type CodexJobRequestedEvent = z.infer<typeof codexJobRequestedSchema>;
 export type TerminalJobRequestedEvent = z.infer<typeof terminalJobRequestedSchema>;
 export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
-export type SpecPushAbandonedEvent = z.infer<typeof specPushAbandonedSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;

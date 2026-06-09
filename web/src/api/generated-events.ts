@@ -271,7 +271,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.job_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, } } | { "ev": "terminal.job_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, } } | { "ev": "spec_push.abandoned", "data": { wave_id: WaveId, cove_id: CoveId, last_envelope_id: number, } };
+payload: unknown, } } | { "ev": "codex.job_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, } } | { "ev": "terminal.job_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, } };
 
 /**
  * Where an event lives in the cove → wave → card hierarchy.

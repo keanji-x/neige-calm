@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
@@ -97,6 +97,16 @@ async fn start_runtime_for_card(
     terminal_id: &str,
     runtime_kind: RuntimeKind,
 ) -> String {
+    start_runtime_for_card_with_thread(repo, card_id, terminal_id, runtime_kind, None).await
+}
+
+async fn start_runtime_for_card_with_thread(
+    repo: &SqlxRepo,
+    card_id: &str,
+    terminal_id: &str,
+    runtime_kind: RuntimeKind,
+    thread_id: Option<&str>,
+) -> String {
     let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     repo.runtime_start_tx(
@@ -108,7 +118,7 @@ async fn start_runtime_for_card(
             agent_provider: Some(AgentProvider::Codex),
             status: RunStatus::TurnPending,
             terminal_run_id: Some(terminal_id.to_string()),
-            thread_id: None,
+            thread_id: thread_id.map(str::to_owned),
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
@@ -190,18 +200,6 @@ async fn register_and_bind_in_arrival_order() {
         .expect("runtime b");
     assert_eq!(runtime_a.thread_id.as_deref(), Some("T-1"));
     assert_eq!(runtime_b.thread_id.as_deref(), Some("T-2"));
-    assert!(
-        repo.card_codex_thread_get_by_card(&a)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        repo.card_codex_thread_get_by_card(&b)
-            .await
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[tokio::test]
@@ -248,14 +246,6 @@ async fn bind_persists_to_runtime_and_projects_payload() {
         .unwrap();
 
     registry.on_thread_started("T-bind").await.unwrap();
-
-    assert!(
-        repo.card_codex_thread_get_by_card(&card_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "pending bind must not upsert card_codex_threads"
-    );
 
     let card = repo.card_get(&card_id).await.unwrap().expect("card row");
     assert!(card.payload.get("codex_thread_id").is_none());
@@ -365,13 +355,6 @@ async fn on_thread_started_re_parks_entry_when_runtime_missing() {
             .unwrap()
             .is_none()
     );
-    assert!(
-        repo.card_codex_thread_get_by_card(&card_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "missing-runtime bind must not recreate legacy attribution"
-    );
 }
 
 #[tokio::test]
@@ -407,13 +390,6 @@ async fn on_thread_started_succeeds_after_runtime_reappears() {
     assert_eq!(runtime.status, RunStatus::Running);
     assert!(runtime.terminal_run_id.is_none());
     assert_eq!(runtime.thread_id.as_deref(), Some("T-retry"));
-    assert!(
-        repo.card_codex_thread_get_by_card(&card_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "retry bind must persist to runtime SOT, not legacy attribution"
-    );
 }
 
 #[tokio::test]
@@ -544,21 +520,14 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
     );
     let dead = projected_card(&repo, &dead_card).await;
     assert_eq!(dead.payload["codex_thread_status"], "failed_to_spawn");
-    assert!(
-        repo.card_codex_thread_get_by_card(&dead_card)
-            .await
-            .unwrap()
-            .is_none()
-    );
     // The live card is still pending — it'll receive its OWN thread/started later.
     assert_eq!(registry.pending_count().await, 1);
-    assert!(
-        repo.card_codex_thread_get_by_card(&live_card)
-            .await
-            .unwrap()
-            .is_none(),
-        "live card must NOT receive the dead card's thread_id"
-    );
+    let live_runtime = repo
+        .runtime_get_active_for_card(&live_card)
+        .await
+        .unwrap()
+        .expect("live runtime");
+    assert_eq!(live_runtime.thread_id, None);
     // When the live card's OWN thread/started arrives, it binds correctly.
     let next = registry.on_thread_started("T-live-own").await.unwrap();
     assert_eq!(next.as_deref(), Some(live_card.as_str()));
@@ -568,12 +537,6 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
         .unwrap()
         .expect("live runtime");
     assert_eq!(runtime.thread_id.as_deref(), Some("T-live-own"));
-    assert!(
-        repo.card_codex_thread_get_by_card(&live_card)
-            .await
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[tokio::test]
@@ -655,9 +618,17 @@ async fn unknown_thread_started_when_no_pending() {
 async fn already_mapped_thread_does_not_consume_pending() {
     let (repo, registry, server, wave_id) = boot_pending_server().await;
     let mapped = seed_card(&repo, &wave_id, "term-mapped").await;
-    repo.card_codex_thread_upsert(&mapped, "T-mapped", CardRole::Plain, Some(&wave_id))
+    repo.runtime_complete_for_card(&mapped, RunStatus::Failed)
         .await
         .unwrap();
+    start_runtime_for_card_with_thread(
+        &repo,
+        &mapped,
+        "term-mapped",
+        RuntimeKind::CodexCard,
+        Some("T-mapped"),
+    )
+    .await;
     let pending_card = seed_pending(&repo, &registry, &wave_id, "term-empty").await;
 
     assert!(
@@ -672,12 +643,12 @@ async fn already_mapped_thread_does_not_consume_pending() {
         server.cached_card_for_thread("T-mapped").as_deref(),
         Some(mapped.as_str())
     );
-    assert!(
-        repo.card_codex_thread_get_by_card(&pending_card)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    let pending_runtime = repo
+        .runtime_get_active_for_card(&pending_card)
+        .await
+        .unwrap()
+        .expect("pending runtime");
+    assert_eq!(pending_runtime.thread_id, None);
 }
 
 #[tokio::test]
@@ -697,12 +668,12 @@ async fn kernel_initiated_threads_bypass_pending_registry() {
     );
 
     assert_eq!(registry.pending_count().await, 1);
-    assert!(
-        repo.card_codex_thread_get_by_card(&card_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    let runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(runtime.thread_id, None);
 }
 
 #[tokio::test]
@@ -733,12 +704,6 @@ async fn tui_fresh_start_thread_binds_to_pending_after_kernel_initiated_skipped(
         .unwrap()
         .expect("runtime");
     assert_eq!(runtime.thread_id.as_deref(), Some("T-tui"));
-    assert!(
-        repo.card_codex_thread_get_by_card(&card_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[tokio::test]

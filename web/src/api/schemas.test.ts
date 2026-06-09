@@ -204,8 +204,8 @@ describe('spec harness transcript lifecycle events', () => {
 // Schema-only PR. These tests pin the wire shape the parser accepts/rejects
 // for each of the four new variants. Two per variant: a happy-path parse,
 // and a `safeParse` confirming a missing required field fails. PR5's
-// Dispatcher and PR8's wait_for_events will emit these payloads — these
-// tests are the contract they're emitting against.
+// Dispatcher will emit these payloads — these tests are the contract
+// they're emitting against.
 describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   it('parses a valid codex.job_requested', () => {
     const parsed = wireEventSchema.parse({
@@ -295,42 +295,6 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     const result = wireEventSchema.safeParse({
       ev: 'task.failed',
       data: { idempotency_key: 'idem-4' },
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-// ---- Issue #318 INV-1 (b): spec_push.abandoned ------------------------
-//
-// Wave-scoped notification emitted when the dispatcher's push path takes
-// over an inert spec daemon and abandons the queued envelope tail. The
-// frontend doesn't dispatch on it today, but the runtime validator must
-// accept it on the firehose subscription so the WS handler doesn't drop
-// frames with a parse warning. Pair with the ts-rs conformance check
-// above — if the Rust variant drifts, both this happy-path parse and
-// the `expectTypeOf` assertion light up.
-describe('Issue #318: spec_push.abandoned', () => {
-  it('parses a valid spec_push.abandoned envelope', () => {
-    const parsed = wireEventSchema.parse({
-      ev: 'spec_push.abandoned',
-      data: {
-        wave_id: 'wave_1',
-        cove_id: 'cove_1',
-        last_envelope_id: 42,
-      },
-    });
-    expect(parsed.ev).toBe('spec_push.abandoned');
-    if (parsed.ev === 'spec_push.abandoned') {
-      expect(parsed.data.wave_id).toBe('wave_1');
-      expect(parsed.data.cove_id).toBe('cove_1');
-      expect(parsed.data.last_envelope_id).toBe(42);
-    }
-  });
-
-  it('rejects spec_push.abandoned missing last_envelope_id', () => {
-    const result = wireEventSchema.safeParse({
-      ev: 'spec_push.abandoned',
-      data: { wave_id: 'wave_1', cove_id: 'cove_1' },
     });
     expect(result.success).toBe(false);
   });

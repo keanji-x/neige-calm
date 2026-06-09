@@ -136,9 +136,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
             wave_id: wave_id.clone(),
             kind: "codex".into(),
             sort: None,
-            payload: serde_json::json!({
-                "push_watermark": 0,
-            }),
+            payload: serde_json::json!({}),
         })
         .await
         .expect("create spec card");

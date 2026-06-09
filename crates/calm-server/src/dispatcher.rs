@@ -463,9 +463,8 @@ struct Inner {
     /// only assert on card creation. Terminal workers don't read this
     /// (they don't run codex).
     mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
-    /// Harness-backed shared specs are driven by the same dispatcher
-    /// observations, but through `SpecHarness::observe` instead of the
-    /// legacy `SpecPushHandle` registry.
+    /// Harness-backed shared specs are driven by dispatcher observations
+    /// through the active harness registry.
     harness: HarnessRegistry,
     /// PR4 shared codex daemon. Worker codex cards start through this daemon.
     shared_codex_appserver: Arc<SharedCodexAppServer>,

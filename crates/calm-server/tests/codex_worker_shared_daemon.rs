@@ -337,13 +337,6 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     assert_eq!(card.payload["codex_thread_id"], "fake-thread-0001");
     assert_eq!(card.payload["appserver_sock"], boot.shared.remote_uri());
     assert!(card.payload.get("appserver_pgid").is_none());
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(card.id.as_str())
-            .await
-            .unwrap()
-            .is_none()
-    );
     // Use projectable (broadened to include terminal-status rows) so the
     // assertion is robust to CI-only timing where the codex TUI fixture
     // exits quickly → attach_reader marks runtime Exited before this read.
@@ -479,8 +472,7 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     // After PR7b-worker R3: shared-worker turn_start failure runs
     // rollback_orphan_worker which DELETES the card + terminal rows entirely.
     // The card with idempotency_key="turn-fail-1" should not exist anywhere
-    // (cards_by_wave returns no row with that key), and no worker-role
-    // card_codex_threads mapping should remain. This clears the
+    // (cards_by_wave returns no row with that key). This clears the
     // idempotency_key so a retry of the same job can succeed (vs. being
     // short-circuited by find_card_by_idempotency_key_tx as already-done).
     // We poll briefly because the dispatcher's rollback happens async after

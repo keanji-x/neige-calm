@@ -916,14 +916,6 @@ async fn codex_empty_concurrent_creates_bind_fifo_to_spawn_order() {
 
     for card_id in [&card_a, &card_b] {
         let expected_thread_id = format!("thread-for-{card_id}");
-        assert!(
-            boot.repo
-                .card_codex_thread_get_by_card(card_id)
-                .await
-                .unwrap()
-                .is_none(),
-            "runtime-only codex-create must not persist a legacy mapping"
-        );
         assert_active_codex_runtime_thread(&boot, card_id, &expected_thread_id).await;
         let mut card = boot
             .repo
@@ -969,17 +961,6 @@ async fn assert_projected_codex_thread(
         .unwrap();
     assert_eq!(card.payload["codex_thread_id"], expected_thread_id);
     assert_eq!(card.payload["codex_thread_status"], expected_status);
-}
-
-async fn assert_no_legacy_codex_thread_mapping(boot: &Boot, card_id: &str) {
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(card_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "runtime-only codex-create must not persist a legacy mapping"
-    );
 }
 
 async fn assert_raw_payload_has_no_codex_thread_id(boot: &Boot, card_id: &str) {
@@ -1555,7 +1536,6 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
     let phase: String = row.try_get("phase").unwrap();
     assert_eq!(phase, "succeeded");
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
-    assert_no_legacy_codex_thread_mapping(&boot, card.id.as_str()).await;
     assert_raw_payload_has_no_codex_thread_id(&boot, card.id.as_str()).await;
     assert_projected_codex_thread(&boot, card.id.as_str(), "fake-thread-0001", "started").await;
 }
@@ -1566,15 +1546,17 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
     let card_id = new_id();
     let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
-    boot.repo
-        .card_codex_thread_upsert(
-            card.id.as_str(),
-            "T-original",
-            CardRole::Plain,
-            Some(&boot.wave_id),
-        )
-        .await
-        .unwrap();
+    sqlx::query(
+        r#"UPDATE runtimes
+           SET status = 'running',
+               agent_provider = 'codex',
+               thread_id = 'T-original'
+           WHERE card_id = ?1"#,
+    )
+    .bind(card.id.as_str())
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
     let mut output = TxOutput::new(
         "runtime",
         Some(runtime_id.clone()),
@@ -1656,12 +1638,11 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
     assert_eq!(phase, "succeeded");
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
     assert_active_codex_runtime_thread(&boot, card.id.as_str(), "T-original").await;
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_thread("fake-thread-0001")
-            .await
-            .unwrap()
-            .is_none(),
+    assert_eq!(
+        boot.state
+            .shared_codex_appserver
+            .cached_card_for_thread("fake-thread-0001"),
+        None,
         "recovery must not mint a second shared thread"
     );
     assert_projected_codex_thread(&boot, card.id.as_str(), "T-original", "started").await;
@@ -1673,10 +1654,6 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
     let card_id = new_id();
     let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
-    boot.repo
-        .card_codex_thread_upsert(card.id.as_str(), "t1", CardRole::Plain, Some(&boot.wave_id))
-        .await
-        .unwrap();
     let mut payload = card.payload.clone();
     payload["codex_thread_id"] = json!("t1");
     let card = boot
@@ -1799,10 +1776,6 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
     let card_id = new_id();
     let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
-    boot.repo
-        .card_codex_thread_upsert(card.id.as_str(), "t1", CardRole::Plain, Some(&boot.wave_id))
-        .await
-        .unwrap();
     let mut payload = card.payload.clone();
     payload["codex_thread_id"] = json!("t1");
     let card = boot
@@ -1931,10 +1904,6 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
     let card_id = new_id();
     let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
-    boot.repo
-        .card_codex_thread_upsert(card.id.as_str(), "t1", CardRole::Plain, Some(&boot.wave_id))
-        .await
-        .unwrap();
     let mut payload = card.payload.clone();
     payload["codex_thread_id"] = json!("t1");
     let card = boot

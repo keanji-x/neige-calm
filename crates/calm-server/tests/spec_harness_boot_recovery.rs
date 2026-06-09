@@ -196,7 +196,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
 }
 
 #[tokio::test]
-async fn boot_recovery_replays_events_since_original_watermark_after_queue_rehydrate() {
+async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let cove = repo
         .cove_create(NewCove {
@@ -222,7 +222,7 @@ async fn boot_recovery_replays_events_since_original_watermark_after_queue_rehyd
             wave_id: wave.id.clone(),
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "push_watermark": 0}),
+            payload: json!({"schemaVersion": 1}),
         })
         .await
         .unwrap();
@@ -277,19 +277,6 @@ async fn boot_recovery_replays_events_since_original_watermark_after_queue_rehyd
         )
         .await
         .unwrap();
-    repo.spec_card_enqueue_observation(
-        card.id.as_str(),
-        queued_id,
-        &serde_json::to_string(&Observation::ReportEdited {
-            wave_id: wave.id.clone(),
-            body_sha256: "queued-sha".into(),
-            body: "queued body".into(),
-        })
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -341,121 +328,6 @@ async fn boot_recovery_replays_events_since_original_watermark_after_queue_rehyd
     assert!(stored.pending_queue.iter().any(|obs| {
         matches!(obs, Observation::ReportEdited { body, .. } if body == "missed body")
     }));
-    assert!(
-        repo.spec_card_queued_observations(card.id.as_str())
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    let handle = registry.get(&runtime_id).expect("recovered harness");
-    handle.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn boot_recovery_replays_durable_queue_rows_behind_watermark() {
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
-            name: "boot-watermark-gap".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
-            cove_id: cove.id.clone(),
-            title: "boot-watermark-gap".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            wave_id: wave.id.clone(),
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "push_watermark": 10}),
-        })
-        .await
-        .unwrap();
-    let queued_obs = Observation::TaskCompleted {
-        idempotency_key: "queued-5".into(),
-        result: json!({"ok": 5}),
-    };
-    repo.spec_card_enqueue_observation(
-        card.id.as_str(),
-        5,
-        &serde_json::to_string(&queued_obs).unwrap(),
-    )
-    .await
-    .unwrap();
-
-    let runtime_id = new_id();
-    let mut snapshot = HarnessSnapshot::initial(
-        10,
-        vec![Observation::TaskCompleted {
-            idempotency_key: "delivered-10".into(),
-            result: json!({"ok": 10}),
-        }],
-    );
-    snapshot.pending_envelope_ids = vec![Some(10)];
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some("thread-recovered".into());
-    let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
-        &mut tx,
-        RuntimeInit {
-            id: runtime_id.clone(),
-            card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
-            agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
-            terminal_run_id: None,
-            thread_id: Some("thread-recovered".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let registry = HarnessRegistry::new();
-    let recovered = recover_harnesses_on_boot(
-        repo.clone(),
-        EventBus::new(),
-        calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
-        daemon,
-        &registry,
-    )
-    .await
-    .unwrap();
-    assert_eq!(recovered, 1);
-    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
-    let stored: HarnessSnapshot =
-        serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
-    assert_eq!(stored.push_watermark, 10);
-    assert_eq!(stored.pending_queue.len(), 2);
-    assert_eq!(stored.pending_envelope_ids, vec![Some(10), Some(5)]);
-    assert!(stored.pending_queue.iter().any(|obs| {
-        matches!(obs, Observation::TaskCompleted { idempotency_key, .. } if idempotency_key == "queued-5")
-    }));
-    assert!(
-        repo.spec_card_queued_observations(card.id.as_str())
-            .await
-            .unwrap()
-            .is_empty()
-    );
     let handle = registry.get(&runtime_id).expect("recovered harness");
     handle.shutdown().await.unwrap();
 }

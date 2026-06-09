@@ -62,12 +62,6 @@ const codexCard: CodexCardData = {
   terminalId: 'term_spec',
 };
 
-const claudeCard: ClaudeCardData = {
-  type: 'claude',
-  id: 'card_claude',
-  terminalId: 'term_claude',
-};
-
 type AgentCardData = CodexCardData | ClaudeCardData;
 
 function Wrap({
@@ -130,28 +124,6 @@ describe('Codex card controller behavior', () => {
     mocks.refresh.mockClear();
     mocks.dlog.mockClear();
     mocks.xtermUnmount.mockClear();
-  });
-
-  it('does not render legacy spec-session actions for Codex cards', () => {
-    renderAgentCard(codexCard, { deletable: false });
-
-    expect(
-      screen.queryByRole('button', { name: 'Refresh terminal' }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Reset spec session' }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('does not render legacy spec-session actions for Claude cards', () => {
-    renderAgentCard(claudeCard, { deletable: false });
-
-    expect(
-      screen.queryByRole('button', { name: 'Refresh terminal' }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Reset spec session' }),
-    ).not.toBeInTheDocument();
   });
 
   it('lifecycle refresh emits through the controller and refreshes XtermView', async () => {

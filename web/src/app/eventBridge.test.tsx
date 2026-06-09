@@ -625,29 +625,6 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('spec_push.abandoned invalidates the cove list, wave detail, and range cache', () => {
-    const client = makeClient();
-    const invalidate = vi.spyOn(client, 'invalidateQueries');
-    const Wrapper = wrap(client);
-    render(
-      <Wrapper>
-        <EventBridge syncEventVersion={1} />
-      </Wrapper>,
-    );
-    fakeStream.emit({
-      ev: 'spec_push.abandoned',
-      data: {
-        wave_id: 'wave_1',
-        cove_id: 'cove_1',
-        last_envelope_id: 42,
-      },
-    });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['waves', 'cove_1'] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['waves-range'] });
-    cleanup();
-  });
-
   it('an event with an unmapped `ev` is ignored without throwing', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');

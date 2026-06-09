@@ -8,17 +8,15 @@
 //! (`calm.dispatch_request`, `calm.task_completed`, `calm.task_failed`);
 //! PR7b registers `calm.update_wave_state` / `calm.get_wave_state` /
 //! `calm.update_task_meta` and #229 PR B the three `calm.report.*` tools.
-//! (The old `calm.wait_for_events` pull tool was removed in the #293
-//! cutover.) Each handler is `Send + Sync + 'static` and receives:
+//! Each handler is `Send + Sync + 'static` and receives:
 //!
 //!   * an [`AppContext`] — repo, event bus, role cache, and the codex
 //!     home parent (already on `AppState`, factored down to the minimum
 //!     surface the MCP server needs so the registry doesn't take a
 //!     full `AppState` clone);
 //!   * a [`ToolCallIdentity`] — resolved for each `tools/call` from
-//!     `_meta.threadId` via `card_codex_threads`, with a temporary
-//!     legacy token fallback while older clients and worker launches
-//!     catch up.
+//!     `_meta.threadId` via runtime thread attribution, with a token
+//!     fallback for calls that have no thread metadata.
 
 use crate::db::RouteRepo;
 use crate::event::EventBus;

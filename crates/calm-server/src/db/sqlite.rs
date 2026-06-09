@@ -32,9 +32,8 @@ use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{
-    CardCodexThreadRow, Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw,
-    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithEventFn,
-    WriteWithEventsFn,
+    Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonRecord,
+    SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithEventFn, WriteWithEventsFn,
 };
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
@@ -1548,50 +1547,6 @@ pub async fn card_mcp_token_set_tx(
     Ok(())
 }
 
-/// Deprecated legacy compatibility helper.
-///
-/// PR3 write-demotes `card_codex_threads`: normal runtime identity writes
-/// must go to `runtimes` instead. Keep this for migrations, tests, and
-/// rollback paths that intentionally preserve pre-PR3 semantics.
-pub async fn card_codex_thread_upsert_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    card_id: &str,
-    thread_id: &str,
-    role: CardRole,
-    wave_id: Option<&str>,
-) -> Result<()> {
-    let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO card_codex_threads
-               (thread_id, card_id, role, wave_id, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-           ON CONFLICT(card_id) DO UPDATE SET
-               thread_id  = excluded.thread_id,
-               role       = excluded.role,
-               wave_id    = excluded.wave_id,
-               updated_at = excluded.updated_at"#,
-    )
-    .bind(thread_id)
-    .bind(card_id)
-    .bind(role)
-    .bind(wave_id)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
-
-pub async fn card_codex_thread_delete_by_card_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    card_id: &str,
-) -> Result<()> {
-    sqlx::query("DELETE FROM card_codex_threads WHERE card_id = ?1")
-        .bind(card_id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
 fn runtime_kind_to_db(kind: &RuntimeKind) -> &'static str {
     match kind {
         RuntimeKind::Terminal => "terminal",
@@ -2681,109 +2636,6 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    async fn card_codex_thread_get_by_thread(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<CardCodexThreadRow>> {
-        let row = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
-            r#"SELECT thread_id, card_id, role, wave_id, created_at, updated_at
-               FROM card_codex_threads
-               WHERE thread_id = ?1"#,
-        )
-        .bind(thread_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(
-            |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
-                thread_id,
-                card_id,
-                role,
-                wave_id,
-                created_at,
-                updated_at,
-            },
-        ))
-    }
-
-    async fn card_codex_thread_get_by_card(
-        &self,
-        card_id: &str,
-    ) -> Result<Option<CardCodexThreadRow>> {
-        let row = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
-            r#"SELECT thread_id, card_id, role, wave_id, created_at, updated_at
-               FROM card_codex_threads
-               WHERE card_id = ?1"#,
-        )
-        .bind(card_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(
-            |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
-                thread_id,
-                card_id,
-                role,
-                wave_id,
-                created_at,
-                updated_at,
-            },
-        ))
-    }
-
-    async fn card_codex_threads_active(&self) -> Result<Vec<CardCodexThreadRow>> {
-        let rows = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
-            r#"SELECT thread_id, card_id, role, wave_id, created_at, updated_at
-               FROM card_codex_threads
-               ORDER BY created_at ASC, card_id ASC"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
-                    thread_id,
-                    card_id,
-                    role,
-                    wave_id,
-                    created_at,
-                    updated_at,
-                },
-            )
-            .collect())
-    }
-
-    async fn card_codex_threads_active_shared_only(&self) -> Result<Vec<CardCodexThreadRow>> {
-        // Deprecated fallback for PR2b's runtime-first read switch. New
-        // callers should prefer `RuntimeRepo::runtime_active_shared_thread_attribution`.
-        let rows = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
-            r#"SELECT ct.thread_id,
-                      ct.card_id,
-                      ct.role,
-                      ct.wave_id,
-                      ct.created_at,
-                      ct.updated_at
-               FROM card_codex_threads ct
-               JOIN cards c ON c.id = ct.card_id
-               WHERE COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
-               ORDER BY ct.created_at ASC, ct.card_id ASC"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
-                    thread_id,
-                    card_id,
-                    role,
-                    wave_id,
-                    created_at,
-                    updated_at,
-                },
-            )
-            .collect())
-    }
-
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
         let row = sqlx::query_as::<
             _,
@@ -2929,11 +2781,11 @@ impl RepoRead for SqlxRepo {
         // on_thread_started's stale-front-drop catches it). This was the
         // R7 P2 #1 followup; CI reproduced it because the terminal gets
         // reaped before the next boot's takeover query runs.
-        let rows: Vec<(String, String, String, Option<i64>)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
             r#"SELECT c.id,
                       c.wave_id,
                       r.terminal_run_id,
-                      json_extract(c.payload, '$.push_watermark')
+                      0
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
                JOIN runtimes r ON r.card_id = c.id
@@ -2952,44 +2804,6 @@ impl RepoRead for SqlxRepo {
                           AND hr.status IN ('starting', 'running', 'idle', 'turn_pending')
                           AND hr.handle_state_json IS NOT NULL
                           AND json_extract(hr.handle_state_json, '$.mode') = 'harness'
-                 )
-                 AND NOT EXISTS (
-                       SELECT 1
-                         FROM card_codex_threads ct
-                        WHERE ct.card_id = c.id
-                 )
-                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
-               ORDER BY c.created_at ASC, c.id ASC"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(card_id, wave_id, terminal_id, watermark)| {
-                (card_id, wave_id, terminal_id, watermark.unwrap_or(0))
-            })
-            .collect())
-    }
-
-    async fn legacy_spec_cards_for_boot_cleanup(&self) -> Result<Vec<Card>> {
-        let rows = sqlx::query_as::<_, Card>(
-            r#"SELECT c.id,
-                      c.wave_id,
-                      c.kind,
-                      c.sort,
-                      c.payload,
-                      c.deletable,
-                      c.created_at,
-                      c.updated_at
-               FROM cards c
-               JOIN waves w ON w.id = c.wave_id
-               WHERE c.role = 'spec'
-                 AND NOT EXISTS (
-                       SELECT 1
-                         FROM runtimes r
-                        WHERE r.card_id = c.id
-                          AND r.kind = 'shared-spec'
-                          AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
                  )
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
                ORDER BY c.created_at ASC, c.id ASC"#,
@@ -3602,79 +3416,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()> {
-        // JSON merge so we only touch `payload.push_watermark` — never clobber
-        // `appserver_sock` / any other field.
-        // `json_set(p, '$.k', v)` upserts the key in place.
-        // A missing row is silently a no-op (the wave was deleted between
-        // the dispatcher's bump and the persist; nothing to do).
-        //
-        // #313 problem #1 round-3 (N1) — MONOTONIC GUARD via the WHERE
-        // clause. Two persisters can race to this UPDATE:
-        //
-        //   * `Dispatcher::push_to_spec` on a successful `Issued` —
-        //     persists `max_envelope_id` (highest id of the just-issued
-        //     coalesced turn), under the per-wave push lock.
-        //   * The consumer task's `flush_push_queue` via the installed
-        //     [`WatermarkSink`] — persists the max id from the drained
-        //     queue, NOT under the same lock (the queue lock is
-        //     different).
-        //
-        // Both happen during normal operation. If `flush_push_queue`'s
-        // SQL is slow enough that a later `Issued` for a higher
-        // `max_envelope_id` lands AND persists FIRST, an unguarded
-        // `json_set` here could LOWER the stored watermark — a regression
-        // that boot catch-up would then mistake for "we never delivered
-        // ids in [old, new]" and re-push.
-        //
-        // The `CASE` preserves the stored watermark when it is already
-        // at-or-above the proposed one. SQLite evaluates the WHERE and CASE
-        // atomically under the same row lock, so the read-modify-write race
-        // is closed.
-        let now = now_ms();
-        let _ = sqlx::query(
-            r#"UPDATE cards
-                  SET payload    = json_set(
-                                      COALESCE(payload, '{}'),
-                                      '$.push_watermark',
-                                      CASE
-                                          WHEN COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1
-                                          THEN ?1
-                                          ELSE COALESCE(json_extract(payload, '$.push_watermark'), 0)
-                                      END
-                                   ),
-                      updated_at = ?2
-                WHERE id = ?3
-                  AND COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1"#,
-        )
-        .bind(watermark)
-        .bind(now)
-        .bind(card_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn card_codex_thread_upsert(
-        &self,
-        card_id: &str,
-        thread_id: &str,
-        role: CardRole,
-        wave_id: Option<&str>,
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        card_codex_thread_upsert_tx(&mut tx, card_id, thread_id, role, wave_id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn card_codex_thread_delete_by_card(&self, card_id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()> {
         let now = now_ms();
         let start_time = update
@@ -3733,94 +3474,6 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(last_error)
         .execute(&self.pool)
         .await?;
-        Ok(())
-    }
-
-    // ---- spec push queue (#318 INV-3 / R2-B1) ---------------------------
-
-    async fn spec_card_enqueue_observation(
-        &self,
-        card_id: &str,
-        envelope_id: i64,
-        text: &str,
-    ) -> Result<i64> {
-        // Persist-first: the caller (`SpecPusher::push_observation`)
-        // INSERTs here BEFORE pushing the in-memory `VecDeque` entry and
-        // BEFORE returning `Ok(PushOutcome::Enqueued)`, so a crash
-        // between the persist and the in-memory push leaves a row that
-        // boot-takeover's `spec_card_queued_observations` can rehydrate.
-        //
-        // The FK (`card_id REFERENCES cards(id) ON DELETE CASCADE`) is
-        // enforced by `PRAGMA foreign_keys = ON` (set per-connection in
-        // `SqlxRepo::open`); an INSERT against a non-existent card_id
-        // fails with `SQLITE_CONSTRAINT_FOREIGNKEY` rather than silently
-        // orphaning a row.
-        // #325 — no `enqueued_at`/wall-clock column on `spec_push_queue`:
-        // nothing reads it (FIFO is established by the AUTOINCREMENT `id`),
-        // so persisting a `now_ms()` per row was dead bytes. See the
-        // migration header for the followup story.
-        let row = sqlx::query(
-            r#"INSERT INTO spec_push_queue (card_id, envelope_id, text)
-               VALUES (?1, ?2, ?3)
-               RETURNING id"#,
-        )
-        .bind(card_id)
-        .bind(envelope_id)
-        .bind(text)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.get::<i64, _>("id"))
-    }
-
-    async fn spec_card_queued_observations(
-        &self,
-        card_id: &str,
-    ) -> Result<Vec<(i64, i64, String)>> {
-        // Ordered by id so the caller's rehydrated in-memory queue
-        // preserves the original enqueue order. The composite index
-        // `idx_spec_push_queue_card_id_id` covers this scan.
-        let rows = sqlx::query(
-            r#"SELECT id, envelope_id, text
-                 FROM spec_push_queue
-                WHERE card_id = ?1
-                ORDER BY id ASC"#,
-        )
-        .bind(card_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                (
-                    r.get::<i64, _>("id"),
-                    r.get::<i64, _>("envelope_id"),
-                    r.get::<String, _>("text"),
-                )
-            })
-            .collect())
-    }
-
-    async fn spec_card_dequeue_observations(&self, ids: &[i64]) -> Result<()> {
-        // Empty-input fast path so callers don't have to special-case
-        // "nothing drained".
-        if ids.is_empty() {
-            return Ok(());
-        }
-        // Variadic `?, ?, …` placeholder list. The queue is per-card and
-        // batch sizes are bounded by what fit into one coalesced
-        // `turn/start` (small — observations are wave events), so the
-        // dynamic SQL stays well under any `SQLITE_MAX_COMPOUND_SELECT`
-        // / parameter-count limit. A single batched DELETE keeps the
-        // flush path to one round-trip.
-        let placeholders = std::iter::repeat_n("?", ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!("DELETE FROM spec_push_queue WHERE id IN ({placeholders})");
-        let mut q = sqlx::query(&sql);
-        for id in ids {
-            q = q.bind(id);
-        }
-        let _ = q.execute(&self.pool).await?;
         Ok(())
     }
 
@@ -4499,26 +4152,6 @@ impl RepoEventWrite for SqlxRepo {
         let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM events")
             .fetch_one(&self.pool)
             .await?;
-        Ok(row.0)
-    }
-
-    async fn events_latest_id_for_wave(&self, wave_id: &str) -> Result<Option<i64>> {
-        // `MAX(id) … WHERE scope_wave = ?1`. Filters on the dedicated
-        // column added in migration 0007. Rows whose `scope_kind` is
-        // `'card'` are included automatically — the `EventScope::from_row`
-        // contract puts the card's parent wave in `scope_wave` for any
-        // card-scoped event, so the dispatcher's catch-up filter and this
-        // query agree on "events in scope for this wave".
-        //
-        // `MAX()` over an empty filtered set returns one `NULL` row,
-        // surfaced as `None` here — the call site maps that to `0` (the
-        // `events.id` "no row" sentinel) on the
-        // `SpecPushAbandoned.last_envelope_id` payload.
-        let row: (Option<i64>,) =
-            sqlx::query_as("SELECT MAX(id) FROM events WHERE scope_wave = ?1")
-                .bind(wave_id)
-                .fetch_one(&self.pool)
-                .await?;
         Ok(row.0)
     }
 }

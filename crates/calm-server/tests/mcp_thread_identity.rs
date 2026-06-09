@@ -12,6 +12,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
+    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_start_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::auth;
@@ -19,8 +20,11 @@ use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, require_role,
 };
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
+use calm_server::runtime_repo::{
+    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -35,7 +39,6 @@ const TEST_BUDGET: Duration = Duration::from_secs(5);
 
 struct Boot {
     server: Arc<McpServer>,
-    repo: Arc<dyn Repo>,
     sqlx_repo: Arc<SqlxRepo>,
     card_role_cache: CardRoleCache,
     socket_path: PathBuf,
@@ -128,7 +131,6 @@ async fn boot_with_registry_and_daemon_hash(
 
     Boot {
         server,
-        repo,
         sqlx_repo,
         card_role_cache,
         socket_path,
@@ -179,11 +181,48 @@ fn test_descriptor(name: &str) -> ToolDescriptor {
     }
 }
 
-async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, role: CardRole) {
-    boot.repo
-        .card_codex_thread_upsert(card_id, thread_id, role, Some(boot.wave_id.as_str()))
+async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRole) {
+    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    if let Some(runtime) = runtime_get_active_for_card_tx(&mut tx, card_id)
+        .await
+        .unwrap()
+    {
+        runtime_bind_attribution_tx(
+            &mut tx,
+            &runtime.id,
+            ThreadAttribution {
+                runtime_id: runtime.id.clone(),
+                provider: AgentProvider::Codex,
+                thread_id: Some(thread_id.to_string()),
+                session_id: None,
+                active_turn_id: None,
+            },
+        )
         .await
         .unwrap();
+    } else {
+        runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: calm_server::model::new_id(),
+                card_id: card_id.to_string(),
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.to_string()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
 }
 
 async fn seed_card_with_legacy_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> LegacyCard {
