@@ -208,6 +208,26 @@ async fn issuing_turn_snapshot_with_turn_id_restores_resumed() {
 }
 
 #[tokio::test]
+async fn recovered_harness_shutdown_interrupts_last_known_turn() {
+    let repo = fresh_repo().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::TurnRunning;
+    snapshot.last_thread_id = Some("TH1".into());
+    snapshot.last_turn_id = Some("T1".into());
+    let (harness, _runtime_id) = harness_from_snapshot(repo, daemon.clone(), snapshot).await;
+    assert!(daemon.active_turn_id_for_thread("TH1").is_none());
+
+    harness.shutdown().await.unwrap();
+
+    assert!(
+        daemon
+            .interrupted_turns_for_test()
+            .contains(&("TH1".to_string(), "T1".to_string()))
+    );
+}
+
+#[tokio::test]
 async fn issuing_turn_snapshot_without_turn_id_restores_retryable_completed() {
     let repo = fresh_repo().await;
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);

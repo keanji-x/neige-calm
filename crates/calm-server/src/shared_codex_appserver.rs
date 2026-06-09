@@ -209,6 +209,7 @@ pub struct SharedCodexAppServer {
 pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
+    interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 #[cfg(feature = "fixtures")]
@@ -217,6 +218,7 @@ impl FakeSharedCodexAppServer {
         Self {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
+            interrupted_turns: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -536,7 +538,11 @@ impl SharedCodexAppServer {
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
         #[cfg(feature = "fixtures")]
-        if self.fake.is_some() {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.interrupted_turns
+                .lock()
+                .expect("fake shared codex interrupted turns mutex poisoned")
+                .push((thread_id.to_string(), turn_id.to_string()));
             self.active_turns
                 .remove_if(thread_id, |_, active| active == turn_id);
             return Ok(());
@@ -662,6 +668,19 @@ impl SharedCodexAppServer {
             .as_ref()
             .map(|fake| fake.next_turn.load(Ordering::SeqCst).saturating_sub(1))
             .unwrap_or(0)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn interrupted_turns_for_test(&self) -> Vec<(String, String)> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.interrupted_turns
+                    .lock()
+                    .expect("fake shared codex interrupted turns mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
     }
 
     #[cfg(feature = "fixtures")]

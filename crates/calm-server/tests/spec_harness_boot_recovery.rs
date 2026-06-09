@@ -3,15 +3,41 @@ use std::time::Duration;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, recover_harnesses_on_boot,
 };
 use calm_server::ids::ActorId;
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
+
+fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
+    let events = EventBus::new();
+    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
+    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo,
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events,
+            WriteContext::new(role_cache.clone(), cove_cache.clone()),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(role_cache),
+        Some(cove_cache),
+    )
+}
 
 #[tokio::test]
 async fn boot_recovery_respawns_harness_with_snapshot() {
@@ -96,6 +122,84 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     assert_eq!(restored.pending_queue.len(), 1);
     assert_eq!(restored.last_turn_id.as_deref(), Some("turn-recovered"));
     handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "boot-unavailable".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "boot-unavailable".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+    let runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(
+        11,
+        vec![Observation::WaveGoal {
+            text: "wait for daemon".into(),
+        }],
+    );
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some("thread-unavailable".into());
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread-unavailable".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let state = app_state_for_boot_test(repo.clone());
+    let recovered = calm_server::recover_harnesses_after_daemon_boot(
+        &state,
+        Err(CalmError::CodexAppServer("daemon unavailable".into())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered, 0);
+    assert!(state.harness.get(&runtime_id).is_none());
+    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    let stored: HarnessSnapshot =
+        serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
+    assert_eq!(stored.pending_queue.len(), 1);
 }
 
 #[tokio::test]

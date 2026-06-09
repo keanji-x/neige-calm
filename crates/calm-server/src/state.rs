@@ -454,8 +454,11 @@ impl AppState {
         ));
         let spec_harness_interrupt_adapter =
             Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
-        let spec_harness_shutdown_adapter =
-            Arc::new(SpecHarnessShutdownAdapter::new(harness.clone()));
+        let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
+            harness.clone(),
+            shared_codex_appserver.clone(),
+            repo.clone(),
+        ));
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
             vec![
@@ -585,8 +588,11 @@ impl AppState {
         ));
         let spec_harness_interrupt_adapter =
             Arc::new(SpecHarnessInterruptAdapter::new(self.harness.clone()));
-        let spec_harness_shutdown_adapter =
-            Arc::new(SpecHarnessShutdownAdapter::new(self.harness.clone()));
+        let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
+            self.harness.clone(),
+            self.shared_codex_appserver.clone(),
+            self.raw.clone(),
+        ));
         let runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo,
             vec![
@@ -793,8 +799,11 @@ impl AppState {
         ));
         let spec_harness_interrupt_adapter =
             Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
-        let spec_harness_shutdown_adapter =
-            Arc::new(SpecHarnessShutdownAdapter::new(harness.clone()));
+        let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
+            harness.clone(),
+            shared_codex_appserver.clone(),
+            repo.clone(),
+        ));
         let operation_runtime = Arc::new(
             OperationRuntime::new(
                 operation_repo,

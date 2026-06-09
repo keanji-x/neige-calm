@@ -50,14 +50,7 @@ async fn main() -> anyhow::Result<()> {
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
     // only codex app-server path; failures are logged so boot can still bind
     // and routes surface the daemon failure when a codex card is used.
-    if let Err(e) = state.shared_codex_appserver.start_or_takeover().await {
-        tracing::error!(
-            error = %e,
-            "shared codex app-server start/takeover failed; continuing boot"
-        );
-    }
-
-    if let Err(e) = state.recover_harnesses_on_boot().await {
+    if let Err(e) = calm_server::boot_harnesses(&state).await {
         tracing::warn!(
             error = %e,
             "spec harness boot recovery failed; continuing without recovered harness tasks"
