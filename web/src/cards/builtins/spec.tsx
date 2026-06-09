@@ -69,10 +69,9 @@ function SpecAgentLogo({ bg, fg }: { bg?: string; fg?: string }) {
   const style: SpecLogoStyle = {
     '--agent-card-logo-bg': bg ?? 'var(--agent-card-codex-logo-bg)',
     '--agent-card-logo-fg': fg ?? 'var(--agent-card-codex-logo-fg)',
-    fontSize: 'var(--text-xs)',
   };
   return (
-    <span className="agent-card-logo" style={style} aria-hidden="true">
+    <span className="agent-card-logo spec-logo" style={style} aria-hidden="true">
       S
     </span>
   );
@@ -129,45 +128,12 @@ function HarnessStateChip({
   phase: string | null;
 }) {
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        flexDirection: 'column',
-        alignItems: 'flex-end',
-        gap: 3,
-      }}
-    >
-      <span
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          color: 'var(--text-2)',
-          background: 'var(--paper-2)',
-          border: '1px solid var(--hairline)',
-          borderRadius: 'var(--radius-pill)',
-          padding: '3px 8px',
-          fontSize: 'var(--text-xs)',
-          fontWeight: 600,
-          letterSpacing: 0,
-          lineHeight: 'var(--leading-none)',
-        }}
-      >
+    <span className="spec-status">
+      <span className="spec-status-pill">
         <CardStatusDot state={state} title={`Spec ${rawState}`} />
         <span>{humanizeToken(rawState)}</span>
       </span>
-      {phase && (
-        <span
-          style={{
-            color: 'var(--text-3)',
-            fontSize: 'var(--text-xs)',
-            letterSpacing: 0,
-            lineHeight: 'var(--leading-none)',
-          }}
-        >
-          {humanizeToken(phase)}
-        </span>
-      )}
+      {phase && <span className="spec-status-phase">{humanizeToken(phase)}</span>}
     </span>
   );
 }
@@ -175,8 +141,8 @@ function HarnessStateChip({
 function GoalBanner({ goal }: { goal?: string }) {
   const text = goal?.trim() || 'No goal captured';
   return (
-    <div className="wave-report-summary" aria-label="Spec goal">
-      <strong style={{ color: 'var(--text)' }}>Goal:</strong>{' '}
+    <div className="spec-goal-strip" aria-label="Spec goal">
+      <strong className="spec-goal-label">Goal:</strong>{' '}
       <span>{text}</span>
     </div>
   );
@@ -387,36 +353,12 @@ async function fetchHarnessItems(
 }
 
 function TimelinePre({ children }: { children: string }) {
-  return (
-    <pre
-      style={{
-        margin: 0,
-        padding: 'var(--space-3)',
-        borderRadius: 'var(--radius-sm)',
-        background: 'var(--surface-chip)',
-        color: 'var(--text-1)',
-        fontFamily: 'var(--font-code)',
-        fontSize: 'var(--text-sm)',
-        lineHeight: 'var(--leading-loose)',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        overflow: 'auto',
-      }}
-    >
-      {children}
-    </pre>
-  );
+  return <pre className="spec-tool-output">{children}</pre>;
 }
 
 function SpecMarkdown({ children }: { children: string }) {
   return (
-    <div
-      className="wave-report-section-body"
-      style={{
-        color: 'var(--text-1)',
-        overflowWrap: 'anywhere',
-      }}
-    >
+    <div className="spec-prose">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
     </div>
   );
@@ -431,34 +373,16 @@ function TimelineBubble({
   tone?: 'default' | 'muted' | 'user';
   attribution?: string;
 }) {
-  const isMuted = tone === 'muted';
-  const isUser = tone === 'user';
+  const className =
+    tone === 'muted'
+      ? 'spec-bubble spec-bubble--muted'
+      : tone === 'user'
+        ? 'spec-bubble spec-bubble--user'
+        : 'spec-bubble';
   return (
-    <div
-      style={{
-        maxWidth: '100%',
-        padding: 'var(--space-3) var(--space-4)',
-        borderRadius: 'var(--radius-md)',
-        border: `1px solid ${isUser ? 'var(--hairline-strong)' : 'var(--hairline)'}`,
-        background: isMuted || isUser ? 'var(--paper-2)' : 'var(--paper)',
-        color: isMuted ? 'var(--text-3)' : 'var(--text-1)',
-        fontSize: 'var(--text-sm)',
-        lineHeight: 'var(--leading-loose)',
-      }}
-    >
+    <div className={className}>
       {attribution ? (
-        <div
-          style={{
-            marginBottom: 'var(--space-1)',
-            color: 'var(--text-3)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 700,
-            letterSpacing: 0,
-            textTransform: 'uppercase',
-          }}
-        >
-          {attribution}
-        </div>
+        <div className="spec-bubble-attribution">{attribution}</div>
       ) : null}
       {children}
     </div>
@@ -496,27 +420,10 @@ function HarnessItemView({ row }: { row: HarnessItem }) {
     case 'reasoning': {
       const text = itemText(item) ?? itemOutput(item);
       return (
-        <details
-          style={{
-            border: '1px solid var(--hairline)',
-            borderRadius: 'var(--radius-md)',
-            background: 'var(--paper-2)',
-            padding: 'var(--space-3) var(--space-4)',
-          }}
-        >
-          <summary
-            style={{
-              cursor: 'pointer',
-              color: 'var(--text-2)',
-              fontSize: 'var(--text-sm)',
-              fontWeight: 600,
-              letterSpacing: 0,
-            }}
-          >
-            Reasoning
-          </summary>
+        <details className="spec-reasoning">
+          <summary className="spec-reasoning-summary">Reasoning</summary>
           {text ? (
-            <div style={{ marginTop: 'var(--space-3)' }}>
+            <div className="spec-reasoning-body">
               <SpecMarkdown>{text}</SpecMarkdown>
             </div>
           ) : null}
@@ -559,27 +466,11 @@ function HarnessItemView({ row }: { row: HarnessItem }) {
         <>
           <TimelineBubble attribution="MCP">
             <strong>{server}/{tool}</strong>
-            <span
-              style={{
-                marginLeft: 'var(--space-2)',
-                color: 'var(--text-3)',
-                fontSize: 'var(--text-xs)',
-              }}
-            >
-              {statusLabel}
-            </span>
+            <span className="spec-mcp-status">{statusLabel}</span>
             {showArgs ? (
               <>
                 {' '}
-                <code
-                  style={{
-                    whiteSpace: 'pre-wrap',
-                    overflowWrap: 'anywhere',
-                    maxWidth: '100%',
-                  }}
-                >
-                  {formatUnknown(args)}
-                </code>
+                <code className="spec-mcp-args">{formatUnknown(args)}</code>
               </>
             ) : null}
           </TimelineBubble>
@@ -739,27 +630,20 @@ export function ChatTimeline({ cardId }: { cardId?: string }) {
       aria-label="Spec chat timeline"
       ref={scrollRef}
       onScroll={onScroll}
-      style={{
-        height: '100%',
-        overflow: 'auto',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--space-3)',
-        paddingBottom: 'var(--space-4)',
-      }}
+      className="spec-chat-timeline"
     >
       {loading && rows.length === 0 && (
-        <div className="wave-report-empty" style={{ padding: 0 }}>
+        <div className="spec-empty spec-empty--flush">
           <em>Loading conversation...</em>
         </div>
       )}
       {error && rows.length === 0 && (
-        <div className="wave-report-empty" role="alert" style={{ padding: 0 }}>
+        <div className="spec-empty spec-empty--flush" role="alert">
           {error}
         </div>
       )}
       {!loading && !error && rows.length === 0 && (
-        <div className="wave-report-empty" style={{ padding: 0 }}>
+        <div className="spec-empty spec-empty--flush">
           <em>No conversation items yet.</em>
         </div>
       )}
@@ -780,7 +664,7 @@ function UnsupportedSpecCard({
   onClose?: () => void;
 }) {
   return (
-    <div className="wave-report-card wave-report-card-unsupported-version">
+    <div className="spec-card spec-card--unsupported">
       <CardHead
         card={{ type: 'spec', goal: '' }}
         className="card-drag-handle"
@@ -788,7 +672,7 @@ function UnsupportedSpecCard({
         onClose={onClose}
         closeAriaLabel="Remove panel"
       />
-      <div className="wave-report-empty">
+      <div className="spec-empty">
         Unsupported card payload version (got {version}, frontend supports{' '}
         {SPEC_PAYLOAD_SCHEMA_VERSION}); please refresh.
       </div>
@@ -879,7 +763,7 @@ function SpecCardImpl({
   };
 
   return (
-    <div className="wave-report-card">
+    <div className="spec-card">
       <CardHead
         card={card}
         className="card-drag-handle"
@@ -890,7 +774,7 @@ function SpecCardImpl({
         status={<HarnessStateChip state={fsm} rawState={rawState} phase={phase} />}
       />
       <GoalBanner goal={card.goal} />
-      <div className="wave-report-body">
+      <div className="spec-body">
         <ChatTimeline key={`${cardId ?? 'pending'}:${timelineVersion}`} cardId={cardId} />
       </div>
       <ConfirmDialog
@@ -905,7 +789,7 @@ function SpecCardImpl({
               undone.
             </p>
             {resetError && (
-              <p role="alert" style={{ color: 'var(--warn)', marginTop: 8 }}>
+              <p role="alert" className="spec-reset-error">
                 {resetError}
               </p>
             )}
