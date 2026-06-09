@@ -1,3 +1,61 @@
+//! True E2E reproduction for #569's "MCP stuck in running…" symptom.
+//!
+//! ## What this test does
+//!
+//! Boots a real `SharedCodexAppServer` (codex 0.13x daemon) + a real
+//! `McpServer` (kernel-as-MCP-server) + the real `neige-mcp-stdio-shim`
+//! binary. Starts a Spec card thread, sends ONE turn with an explicit
+//! prompt forcing two `calm.update_wave_state` calls. Counts
+//! `mcpToolCall` `item/started` vs `item/completed` notifications for
+//! 90 s. Asserts both calls complete.
+//!
+//! ## Current status: FAILS (codex-side bug, captured 2026-06-09)
+//!
+//! Reproduces the exact user-visible symptom from the docker preview:
+//!
+//!   - kernel MCP server gets `initialize` (daemon trust) ✓
+//!   - kernel returns `tools/list` (11 tools, including
+//!     `calm.update_wave_state`) ✓
+//!   - LLM returns `function_call name="calm_update_wave_state"
+//!     namespace="mcp__calm"` ✓
+//!   - codex emits `McpToolCallBegin` → `item/started` ✓
+//!   - codex **never sends `tools/call` to the kernel** — the dispatch
+//!     path silently drops between `ToolCall:` log and the JSON-RPC
+//!     write. The daemon goes idle (only inotify file-watch noise after
+//!     `response.completed`).
+//!   - no `McpToolCallEnd`, no `item/completed`, turn times out.
+//!
+//! Reproduced with codex **0.133.0** AND **0.137.0** — not a recent
+//! regression on either side. The mcp-shim-round-trip integration test
+//! (`tests/mcp_shim_round_trip.rs`) proves the shim + kernel handle
+//! `initialize` + `tools/call` correctly when driven directly, so the
+//! gap is in codex's MCP dispatch (probably the sanitized name
+//! `calm_update_wave_state` → original `calm.update_wave_state`
+//! reverse-mapping; codex's session log shows the bizarre joined name
+//! `mcp__calmcalm_update_wave_state` in its `ToolCall:` info line).
+//!
+//! ## Why ship it failing
+//!
+//! Deterministic, single-shot, headless reproduction lets us iterate
+//! against a fix without driving the live preview each time. The
+//! `#[ignore]` gate keeps it out of normal `cargo test` runs.
+//! Operator workflow:
+//!
+//! ```sh
+//! NEIGE_CODEX_BIN=/path/to/codex \
+//!   cargo test --features codex-e2e -p calm-server \
+//!     --test codex_e2e_mcp_double_call -- --ignored --nocapture
+//! ```
+//!
+//! Post-mortem debug root persists at `/tmp/neige-mcp-double-call-debug`:
+//!   - `codex-home/sessions/.../*.jsonl` (codex's turn rollout)
+//!   - `codex-home/logs_2.sqlite` (codex's structured `logs` table)
+//!   - `logs/shared-codex-appserver/stderr.log` (codex stderr stream)
+//!
+//! Once the codex-side dispatch is fixed (upstream patch or workaround
+//! we land in the kernel), drop the FAIL framing and the test becomes
+//! the permanent regression gate.
+
 #![cfg(all(unix, feature = "codex-e2e"))]
 
 use std::path::Path;
@@ -34,11 +92,11 @@ fn codex_available(codex_bin: &str) -> bool {
         .is_ok()
 }
 
-fn cfg(root: &tempfile::TempDir, codex_bin: &str) -> Config {
+fn cfg(root: &std::path::Path, codex_bin: &str) -> Config {
     Config::parse_from(vec![
         "calm-server".to_string(),
         "--data-dir".to_string(),
-        root.path().to_str().unwrap().to_string(),
+        root.to_str().unwrap().to_string(),
         "--codex-bin".to_string(),
         codex_bin.to_string(),
     ])
@@ -152,7 +210,31 @@ async fn codex_mcp_double_call_both_complete() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_test_writer()
+        .try_init();
+
+    // Pin a known root so codex's session + daemon logs survive panic for
+    // post-mortem. Hardcoded path lets the operator just `tail` it.
+    let root_path = std::path::PathBuf::from("/tmp/neige-mcp-double-call-debug");
+    let _ = std::fs::remove_dir_all(&root_path);
+    std::fs::create_dir_all(&root_path).expect("mkdir debug root");
+    eprintln!(
+        "[double-call] DEBUG root persisted at {} — codex-home/sessions, app-server-daemon/app-server.stderr.log live here",
+        root_path.display(),
+    );
+    struct Root(std::path::PathBuf);
+    impl AsRef<std::path::Path> for Root {
+        fn as_ref(&self) -> &std::path::Path { &self.0 }
+    }
+    impl Root {
+        fn path(&self) -> &std::path::Path { &self.0 }
+    }
+    let root = Root(root_path);
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let card_role_cache = CardRoleCache::new();
@@ -193,7 +275,7 @@ async fn codex_mcp_double_call_both_complete() {
         mcp_server.shim_config.shim_bin.display()
     );
 
-    let cfg = cfg(&root, &codex_bin);
+    let cfg = cfg(root.path(), &codex_bin);
     let home = Arc::new(SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
