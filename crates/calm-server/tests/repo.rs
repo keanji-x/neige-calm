@@ -848,7 +848,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
         "bash".into(),
         "/tmp".into(),
         json!({"FOO": "bar"}),
-        calm_server::model::CardRole::Plain,
+        calm_server::model::CardRole::Worker,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -914,7 +914,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         "bash".into(),
         "/tmp".into(),
         json!({}),
-        calm_server::model::CardRole::Plain,
+        calm_server::model::CardRole::Worker,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -957,7 +957,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         "bash".into(),
         "/tmp".into(),
         json!({}),
-        calm_server::model::CardRole::Plain,
+        calm_server::model::CardRole::Worker,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -992,7 +992,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         "bash".into(),
         "/tmp".into(),
         json!({}),
-        calm_server::model::CardRole::Plain,
+        calm_server::model::CardRole::Worker,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1070,8 +1070,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     // PR7a (#136) — third tuple slot is the raw per-card MCP token;
-    // `CardRole::Plain` always returns `None` (the helper only mints
-    // a token for Spec / Worker cards).
+    // Worker codex cards mint one so user-facing agents can call MCP.
     let (card, term, mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
@@ -1083,7 +1082,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
         None,
         Some("#111111".into()),
         Some("#ffffff".into()),
-        calm_server::model::CardRole::Plain,
+        calm_server::model::CardRole::Worker,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1093,8 +1092,8 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     tx.commit().await.unwrap();
 
     assert!(
-        mcp_token.is_none(),
-        "Plain cards must not mint an MCP token (PR7a invariant); got {mcp_token:?}"
+        mcp_token.is_some(),
+        "Worker codex cards must mint an MCP token"
     );
     assert_eq!(card.id.as_str(), card_id, "caller-supplied id must persist");
     let got_card = repo
@@ -1158,7 +1157,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         None,
         None,
         None,
-        calm_server::model::CardRole::Plain,
+        calm_server::model::CardRole::Worker,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1190,7 +1189,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     // PR7a (#136) — third tuple slot is the raw per-card MCP token;
-    // unused here (Plain card path).
+    // unused here.
     let (card, _term, _mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id,
@@ -1202,7 +1201,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         None,
         None,
         None,
-        calm_server::model::CardRole::Plain,
+        calm_server::model::CardRole::Worker,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),

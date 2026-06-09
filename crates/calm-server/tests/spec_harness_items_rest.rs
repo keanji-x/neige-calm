@@ -20,7 +20,7 @@ struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     spec_card: Card,
-    plain_card: Card,
+    worker_card: Card,
 }
 
 async fn boot() -> Boot {
@@ -64,7 +64,7 @@ async fn boot() -> Boot {
     )
     .await
     .unwrap();
-    let plain_card = card_create_with_id_tx(
+    let worker_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
@@ -73,7 +73,7 @@ async fn boot() -> Boot {
             sort: None,
             payload: json!({"schemaVersion": 1}),
         },
-        CardRole::Plain,
+        CardRole::Worker,
         true,
         &role_cache,
     )
@@ -108,7 +108,7 @@ async fn boot() -> Boot {
         app,
         repo,
         spec_card,
-        plain_card,
+        worker_card,
     }
 }
 
@@ -260,7 +260,7 @@ async fn harness_items_route_rejects_non_spec_card() {
     let boot = boot().await;
     let (status, body) = get(
         boot.app,
-        format!("/api/cards/{}/harness/items", boot.plain_card.id.as_str()),
+        format!("/api/cards/{}/harness/items", boot.worker_card.id.as_str()),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");

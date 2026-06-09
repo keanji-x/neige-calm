@@ -101,10 +101,9 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    // Manually pin the roles. In production, `card_create` doesn't
-    // touch the role column (it lands at `Plain`); the tx-suffixed
-    // mint helpers do the cache write-through. For this test, we mock
-    // the post-mint state.
+    // Manually pin the roles. The tx-suffixed mint helpers do the cache
+    // write-through in production; for this test, we mock the post-mint
+    // state.
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
 

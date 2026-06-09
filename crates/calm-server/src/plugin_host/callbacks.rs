@@ -442,7 +442,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                     tx,
                     card_id_for_tx,
                     new,
-                    CardRole::Plain,
+                    CardRole::Worker,
                     true,
                     write_for_tx.role_cache(),
                 )
@@ -1033,10 +1033,10 @@ mod tests {
             let mcp = stub_mcp_client().await;
             let subs = Arc::new(Mutex::new(Vec::new()));
 
-            // PR3 (#136): seed a fresh role cache from the in-memory
-            // repo so card_create dispatch tests see Plain roles for
-            // the cards they create. Going through the trait method
-            // keeps the harness pool-agnostic.
+            // Seed a fresh role cache from the in-memory repo so
+            // card_create dispatch tests see the roles for the cards they
+            // create. Going through the trait method keeps the harness
+            // pool-agnostic.
             let card_role_cache = CardRoleCache::new();
             repo.seed_card_role_cache(&card_role_cache)
                 .await
@@ -1388,7 +1388,7 @@ mod tests {
                 sort: None,
                 payload: json!({}),
             },
-            CardRole::Plain,
+            CardRole::Worker,
             false, // ← kernel-owned bit
             &cache,
         )

@@ -269,11 +269,11 @@ pub(crate) fn render_system_prompt(template: &str, wave_id: &str) -> String {
 /// Roles that legitimately need role-specific Codex setup.
 /// Carved out of [`crate::model::CardRole`] so the seeding helper can
 /// only ever be handed a value that maps to a system-prompt template
-/// (no `Plain` arm to silently fall through). PR6 followup of issue
-/// #136 — note 3 from the original review.
+/// (no general Worker path to silently fall through). PR6 followup of
+/// issue #136 — note 3 from the original review.
 ///
-/// `Plain` cards still flow through `routes::codex_cards`'s simpler
-/// seed path (which writes a no-prompt config.toml inline); they
+/// User-facing Worker cards still flow through `routes::codex_cards`'s
+/// simpler seed path (which writes a no-prompt config.toml inline); they
 /// must not reach this helper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SeededCardRole {

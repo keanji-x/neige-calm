@@ -108,9 +108,9 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     // Mint the spec card + wave-report card the same way
-    // `routes::waves::create_wave` does. Plain `card_create` here
-    // doesn't tag the role; the `CardRoleCache` below carries the role
-    // pin so the MCP tools' role gate sees Spec / ReportCard correctly.
+    // `routes::waves::create_wave` does. The `CardRoleCache` below
+    // carries the role pin so the MCP tools' role gate sees Spec /
+    // ReportCard correctly.
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),

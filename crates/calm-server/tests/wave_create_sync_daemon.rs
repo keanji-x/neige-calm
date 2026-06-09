@@ -298,8 +298,8 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
 ///      absent, leaving the spec agent without the wave title.
 ///
 ///   2. The spec card's `payload.prompt` round-trips through the same
-///      `card_with_codex_create_tx` writer plain hands-free codex cards
-///      use; trim normalization is part of the writer so an empty /
+///      `card_with_codex_create_tx` writer user-facing codex cards use;
+///      trim normalization is part of the writer so an empty /
 ///      whitespace-only title still falls through to the no-prompt
 ///      path (the route enforces non-empty title at parse time but
 ///      defense-in-depth is cheap).
@@ -309,7 +309,7 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
 /// would need to either ptrace the child or instrument `spawn_terminal_for`
 /// to capture it. The payload assertion is the contract that matters at
 /// this layer: it's the same shape `codex_hands_free.rs::auto_submit_*`
-/// tests use to lock down the auto-submit gate for plain cards.
+/// tests use to lock down the auto-submit gate for worker cards.
 #[tokio::test]
 async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
     let boot = boot().await;

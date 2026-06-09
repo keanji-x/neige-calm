@@ -45,7 +45,7 @@ struct Boot {
     raw_token: String,
     wave_id: String,
     spec_card_id: String,
-    plain_card_id: String,
+    worker_card_id: String,
     _tmp: TempDir,
 }
 
@@ -104,7 +104,7 @@ async fn boot_with_registry_and_daemon_hash(
     .unwrap();
     tx.commit().await.unwrap();
 
-    let plain = repo
+    let worker = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id.clone(),
             kind: "terminal".into(),
@@ -113,7 +113,7 @@ async fn boot_with_registry_and_daemon_hash(
         })
         .await
         .unwrap();
-    card_role_cache.insert(plain.id.clone(), CardRole::Plain, wave.id.clone());
+    card_role_cache.insert(worker.id.clone(), CardRole::Worker, wave.id.clone());
 
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
@@ -137,7 +137,7 @@ async fn boot_with_registry_and_daemon_hash(
         raw_token: mcp_token.unwrap(),
         wave_id: wave.id.as_str().to_string(),
         spec_card_id: spec_card_id.as_str().to_string(),
-        plain_card_id: plain.id.as_str().to_string(),
+        worker_card_id: worker.id.as_str().to_string(),
         _tmp: tmp,
     }
 }
@@ -623,17 +623,26 @@ async fn tools_call_with_unknown_thread_id_falls_back_to_legacy_token_identity()
 #[tokio::test]
 async fn tools_call_thread_id_drives_role_gate() {
     let boot = boot_with_registry(role_gate_registry()).await;
-    seed_thread(&boot, &boot.plain_card_id, "plain-thread", CardRole::Plain).await;
+    seed_thread(
+        &boot,
+        &boot.worker_card_id,
+        "worker-thread",
+        CardRole::Worker,
+    )
+    .await;
     seed_thread(&boot, &boot.spec_card_id, "spec-thread", CardRole::Spec).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
         &mut wr,
-        tools_call_frame(2, "test.spec_only", Some("plain-thread"), json!({})),
+        tools_call_frame(2, "test.spec_only", Some("worker-thread"), json!({})),
     )
     .await;
-    let plain_resp = recv_frame(&mut rd).await;
-    assert_eq!(plain_resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
+    let worker_resp = recv_frame(&mut rd).await;
+    assert_eq!(
+        worker_resp["error"]["code"],
+        json!(RpcError::INVALID_PARAMS)
+    );
 
     send_frame(
         &mut wr,
@@ -715,10 +724,11 @@ async fn tools_call_without_thread_id_and_without_legacy_token_rejects() {
 #[tokio::test]
 async fn legacy_identity_does_not_bypass_role_gate() {
     let boot = boot_with_registry(build_default_registry()).await;
-    let plain = seed_card_with_legacy_mcp_token(&boot, "c-plain-legacy", CardRole::Plain).await;
+    let report =
+        seed_card_with_legacy_mcp_token(&boot, "c-report-legacy", CardRole::ReportCard).await;
     let resp = call_with_token(
         &boot,
-        &plain.legacy_token,
+        &report.legacy_token,
         "calm.get_wave_state",
         None,
         json!({}),
@@ -726,16 +736,24 @@ async fn legacy_identity_does_not_bypass_role_gate() {
     .await;
     assert!(
         resp.get("error").is_some(),
-        "Plain must still be rejected via legacy: {resp:#?}"
+        "ReportCard must still be rejected via legacy: {resp:#?}"
     );
     assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
     let _ = &boot.server;
 }
 
 #[tokio::test]
-async fn tools_call_plain_role_rejected_by_documented_role_gates() {
+async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
     let boot = boot_with_registry(build_default_registry()).await;
-    seed_thread(&boot, &boot.plain_card_id, "plain-thread", CardRole::Plain).await;
+    let report =
+        seed_card_with_legacy_mcp_token(&boot, "c-report-thread", CardRole::ReportCard).await;
+    seed_thread(
+        &boot,
+        &report.card_id,
+        "report-thread",
+        CardRole::ReportCard,
+    )
+    .await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     let cases = [
@@ -743,18 +761,18 @@ async fn tools_call_plain_role_rejected_by_documented_role_gates() {
             "calm.dispatch_request",
             json!({
                 "kind": "codex",
-                "idempotency_key": "plain-dispatch",
+                "idempotency_key": "report-dispatch",
                 "goal": "should not run"
             }),
         ),
         (
             "calm.task_completed",
-            json!({ "idempotency_key": "plain-completed" }),
+            json!({ "idempotency_key": "report-completed" }),
         ),
         (
             "calm.task_failed",
             json!({
-                "idempotency_key": "plain-failed",
+                "idempotency_key": "report-failed",
                 "reason": "should not run"
             }),
         ),
@@ -762,7 +780,7 @@ async fn tools_call_plain_role_rejected_by_documented_role_gates() {
         (
             "calm.update_task_meta",
             json!({
-                "idempotency_key": "plain-meta",
+                "idempotency_key": "report-meta",
                 "status": "accepted"
             }),
         ),
@@ -771,14 +789,14 @@ async fn tools_call_plain_role_rejected_by_documented_role_gates() {
     for (idx, (tool, args)) in cases.into_iter().enumerate() {
         send_frame(
             &mut wr,
-            tools_call_frame(idx as i64 + 2, tool, Some("plain-thread"), args),
+            tools_call_frame(idx as i64 + 2, tool, Some("report-thread"), args),
         )
         .await;
         let resp = recv_frame(&mut rd).await;
         assert_eq!(
             resp["error"]["code"],
             json!(RpcError::INVALID_PARAMS),
-            "tool {tool}: Plain role must be rejected, got {resp:#?}",
+            "tool {tool}: ReportCard role must be rejected, got {resp:#?}",
         );
     }
 
@@ -789,19 +807,25 @@ async fn tools_call_plain_role_rejected_by_documented_role_gates() {
 async fn initialize_does_not_bind_card_identity() {
     let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
-    seed_thread(&boot, &boot.plain_card_id, "plain-thread", CardRole::Plain).await;
+    seed_thread(
+        &boot,
+        &boot.worker_card_id,
+        "worker-thread",
+        CardRole::Worker,
+    )
+    .await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
         &mut wr,
-        tools_call_frame(2, "test.capture_identity", Some("plain-thread"), json!({})),
+        tools_call_frame(2, "test.capture_identity", Some("worker-thread"), json!({})),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
     let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, boot.plain_card_id);
-    assert_eq!(identity.role, CardRole::Plain);
+    assert_eq!(identity.card_id, boot.worker_card_id);
+    assert_eq!(identity.role, CardRole::Worker);
     let _ = &boot.server;
 }
 

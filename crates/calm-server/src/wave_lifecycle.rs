@@ -88,10 +88,8 @@ pub enum ActorKind {
 ///     actually `Spec` (a misnamed AiSpec carrying a non-Spec card is
 ///     refused upstream before this function runs).
 ///   * `ActorId::AiCodex(_)` / `ActorId::AiClaude(_)` is `Worker`
-///     regardless of cached role.
-///     Even a hypothetical worker actor bound to a `Plain`-roled card is
-///     refused at the lifecycle layer: cards that wear the worker
-///     wire actor have no lifecycle authority by construction.
+///     regardless of cached role and has no lifecycle authority by
+///     construction.
 pub fn actor_kind(actor: &ActorId) -> ActorKind {
     match actor {
         ActorId::User => ActorKind::User,

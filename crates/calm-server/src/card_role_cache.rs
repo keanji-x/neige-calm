@@ -183,12 +183,12 @@ mod tests {
     fn insert_get_remove_round_trip() {
         let c = CardRoleCache::new();
         assert!(c.is_empty());
-        c.insert(cid("a"), CardRole::Plain, wid("w1"));
+        c.insert(cid("a"), CardRole::Worker, wid("w1"));
         c.insert(cid("b"), CardRole::Spec, wid("w1"));
         c.insert(cid("c"), CardRole::Worker, wid("w2"));
         assert_eq!(c.len(), 3);
 
-        assert_eq!(c.get(&cid("a")), Some(CardRole::Plain));
+        assert_eq!(c.get(&cid("a")), Some(CardRole::Worker));
         assert_eq!(c.get(&cid("b")), Some(CardRole::Spec));
         assert_eq!(c.get(&cid("c")), Some(CardRole::Worker));
         assert_eq!(c.get(&cid("missing")), None);
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn insert_overwrites_existing() {
         let c = CardRoleCache::new();
-        c.insert(cid("a"), CardRole::Plain, wid("w1"));
+        c.insert(cid("a"), CardRole::Worker, wid("w1"));
         c.insert(cid("a"), CardRole::Spec, wid("w2"));
         assert_eq!(c.get(&cid("a")), Some(CardRole::Spec));
         assert_eq!(c.wave_of(&cid("a")), Some(wid("w2")));
@@ -234,6 +234,8 @@ mod tests {
     async fn seed_from_db_loads_existing_rows() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         // Mini schema: just enough to satisfy `seed_from_db`'s query.
+        // The default mirrors migration 0008; rows still bind role
+        // explicitly and migration 0037 rewrites legacy `plain` rows.
         sqlx::query(
             r#"CREATE TABLE cards (
                 id TEXT PRIMARY KEY,
@@ -246,7 +248,7 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO cards (id, wave_id, role) VALUES \
-                ('a', 'w1', 'plain'), \
+                ('a', 'w1', 'worker'), \
                 ('b', 'w1', 'spec'), \
                 ('c', 'w2', 'worker')",
         )
@@ -257,7 +259,7 @@ mod tests {
         let cache = CardRoleCache::new();
         cache.seed_from_db(&pool).await.unwrap();
         assert_eq!(cache.len(), 3);
-        assert_eq!(cache.get(&cid("a")), Some(CardRole::Plain));
+        assert_eq!(cache.get(&cid("a")), Some(CardRole::Worker));
         assert_eq!(cache.get(&cid("b")), Some(CardRole::Spec));
         assert_eq!(cache.get(&cid("c")), Some(CardRole::Worker));
         assert_eq!(cache.wave_of(&cid("a")), Some(wid("w1")));

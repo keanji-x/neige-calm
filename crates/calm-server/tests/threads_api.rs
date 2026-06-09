@@ -143,7 +143,7 @@ async fn resolve_card_for_thread_prefers_runtime_mapping() {
 #[tokio::test]
 async fn resolve_card_for_thread_returns_mapping() {
     let (app, repo, wave_id) = fresh().await;
-    let card_id = create_card(&repo, &wave_id, CardRole::Plain).await;
+    let card_id = create_card(&repo, &wave_id, CardRole::Worker).await;
     bind_runtime_thread(&repo, &card_id, "thread-hit").await;
 
     let (status, body) = get(app, "thread-hit").await;

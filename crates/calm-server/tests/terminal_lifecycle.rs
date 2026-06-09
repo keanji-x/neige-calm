@@ -492,7 +492,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
 
 #[tokio::test]
 async fn card_delete_succeeds_when_card_has_no_terminal() {
-    // Plain (non-terminal) cards must still delete cleanly — eager
+    // Non-terminal cards must still delete cleanly — eager
     // teardown must not bail when `terminal_get_by_card` returns None.
     let state = fresh_state().await;
     let raw = state.raw_repo();

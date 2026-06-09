@@ -20,15 +20,15 @@
 //!   1. Cove → wave → codex card seeded. The wave-create route
 //!      mints a spec card with `CardRole::Spec`; we add a second
 //!      `kind: 'codex'` card via the route surface to get a worker-
-//!      adjacent `CardRole::Plain` row whose `card_id` is valid for
+//!      adjacent `CardRole::Worker` row whose `card_id` is valid for
 //!      the `/internal/codex/hook` ingest.
-//!   2. POST `/internal/codex/hook?card_id=<plain>` with
+//!   2. POST `/internal/codex/hook?card_id=<worker>` with
 //!      `X-Calm-Actor: ai:codex` succeeds (204), and the resulting
 //!      `hook.codex.*` events row records:
 //!        * `actor = "ai:codex"` (middleware + scope-β reattribution)
 //!        * `scope` resolves to `Card` (codex.rs scope derivation
 //!          followed `card → wave → cove` correctly).
-//!   3. POST `/internal/codex/hook?card_id=<plain>` WITHOUT the
+//!   3. POST `/internal/codex/hook?card_id=<worker>` WITHOUT the
 //!      `X-Calm-Actor` header lands `actor = "user"` (middleware
 //!      default), and the gate accepts it — `ActorId::User` is the
 //!      unrestricted path. This pins the documented contract for
@@ -223,7 +223,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "spec card's role lives in the cache after wave create",
     );
 
-    // Seed a plain `kind: 'codex'` card so we have a card_id the codex
+    // Seed a worker `kind: 'codex'` card so we have a card_id the codex
     // bridge ingest can resolve. We POST through the cards route (not
     // `Repo::card_create`) so the role-cache write-through populates
     // the SAME `CardRoleCache` instance that the route + role gate
@@ -240,22 +240,22 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "codex card create returns 201");
-    let plain_codex_id = card_body
+    let worker_codex_id = card_body
         .get("id")
         .and_then(|v| v.as_str())
         .expect("card response carries id")
         .to_string();
     assert_eq!(
         boot.card_role_cache
-            .get(&calm_server::ids::CardId::from(plain_codex_id.as_str())),
-        Some(CardRole::Plain),
-        "freshly-created codex card defaults to CardRole::Plain via write-through",
+            .get(&calm_server::ids::CardId::from(worker_codex_id.as_str())),
+        Some(CardRole::Worker),
+        "freshly-created codex card defaults to CardRole::Worker via write-through",
     );
 
     let baseline = event_count(&boot.repo).await;
 
     // ---- 2. Valid AiCodex ingest with a resolvable card_id.
-    let uri_ok = format!("/internal/codex/hook?card_id={}", plain_codex_id);
+    let uri_ok = format!("/internal/codex/hook?card_id={}", worker_codex_id);
     let (status, body) = post_with_actor(
         boot.app.clone(),
         &uri_ok,
@@ -304,7 +304,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     );
     assert_eq!(
         actor_json.get("id").and_then(|v| v.as_str()),
-        Some(plain_codex_id.as_str()),
+        Some(worker_codex_id.as_str()),
         "ActorId::AiCodex carries the card_id from the route's query param"
     );
     assert_eq!(row.1, "codex.hook");
@@ -321,7 +321,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     );
     assert_eq!(
         row.3.as_deref(),
-        Some(plain_codex_id.as_str()),
+        Some(worker_codex_id.as_str()),
         "scope_card must point at the codex card we POSTed against",
     );
     assert!(row.4.is_some(), "scope_wave populated for card scope");

@@ -205,9 +205,6 @@ pub fn enforce_role(
     //     one level up). Cove is immutable per wave so the lookup is
     //     stable for the card's lifetime.
     //
-    // Plain-role worker cards (the path users hit today before the
-    // dispatcher introduces Worker cards in earnest) have no extra
-    // scope restriction.
     if let ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) = actor {
         match cache.get(card_id) {
             None => {
@@ -246,18 +243,11 @@ pub fn enforce_role(
                     ),
                 });
             }
-            // Plain: no extra restrictions from this arm. Wave-update
-            // was already handled in step (2) above.
-            Some(CardRole::Plain) => {}
-            // Issue #229 PR A — ReportCard behaves like Plain for the
-            // gate's purposes: it has no scope-broadening authority
-            // beyond its own card. The wave-update branch above
-            // already refuses any AiCodex actor (which is what a
-            // report-card-bound MCP connection would surface as) from
-            // emitting `WaveUpdated`, so we don't need a separate
-            // check here. PR B introduces the actual card kind and
-            // payload; until then this arm only exists to satisfy
-            // exhaustiveness.
+            // Issue #229 PR A — ReportCard has no wave-level authority.
+            // The wave-update branch above already refuses any AiCodex
+            // actor (which is what a report-card-bound MCP connection
+            // would surface as) from emitting `WaveUpdated`, so the
+            // existing report-card gate behavior remains unchanged here.
             Some(CardRole::ReportCard) => {}
         }
     }
@@ -459,12 +449,12 @@ mod tests {
 
     #[test]
     fn ai_spec_without_spec_role_cannot_update_wave() {
-        // An AiSpec actor whose cached role is `Plain` (mismatch
+        // An AiSpec actor whose cached role is `Worker` (mismatch
         // between wire claim + persisted truth) is denied.
         let cache = CardRoleCache::new();
         let wcc = WaveCoveCache::new();
         let id = CardId::from("c1");
-        cache.insert(id.clone(), CardRole::Plain, WaveId::from("w"));
+        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
         let res = enforce_role(
             &ActorId::AiSpec(id),
             &wave_updated(),
@@ -867,28 +857,6 @@ mod tests {
             &wcc,
         );
         assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
-    }
-
-    #[test]
-    fn plain_codex_card_unrestricted_in_card_scope() {
-        // The pre-PR5 flow: codex cards exist with role=Plain (PR5
-        // will introduce dispatcher-spawned Worker cards). Plain
-        // codex cards can emit anything in their own scope. The
-        // gate's job at this stage is to *catch* the PR5+ role
-        // transitions, not to lock down the existing pre-PR5
-        // behavior.
-        let cache = CardRoleCache::new();
-        let wcc = seeded_wcc();
-        let id = CardId::from("codex-plain");
-        cache.insert(id.clone(), CardRole::Plain, WaveId::from("w"));
-        let res = enforce_role(
-            &ActorId::AiCodex(id.clone()),
-            &cove_updated(),
-            &card_scope(id.as_str(), "w", "c"),
-            &cache,
-            &wcc,
-        );
-        assert!(res.is_ok(), "plain codex card in own scope: {res:?}");
     }
 
     #[test]

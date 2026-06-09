@@ -733,7 +733,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
         respawning_daemon
             .thread_start_for_card(
                 &respawning_card_id,
-                CardRole::Plain,
+                CardRole::Worker,
                 None,
                 SharedThreadStartParams {
                     cwd: "/tmp".into(),
@@ -785,7 +785,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
         daemon
             .thread_start_for_card(
                 &card_id,
-                CardRole::Plain,
+                CardRole::Worker,
                 None,
                 SharedThreadStartParams {
                     cwd: "/tmp".into(),
@@ -1127,7 +1127,7 @@ async fn turn_start_seeds_active_turns_synchronously() {
     let thread_id = daemon
         .thread_start_for_card(
             &card_id,
-            CardRole::Plain,
+            CardRole::Worker,
             None,
             SharedThreadStartParams {
                 cwd: "/tmp".into(),
@@ -1171,7 +1171,7 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
     let thread_id = daemon
         .thread_start_for_card(
             &card_id,
-            CardRole::Plain,
+            CardRole::Worker,
             None,
             SharedThreadStartParams {
                 cwd: "/tmp".into(),
@@ -1212,7 +1212,7 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
     let thread_id = daemon
         .thread_start_for_card(
             &card_id,
-            CardRole::Plain,
+            CardRole::Worker,
             None,
             SharedThreadStartParams {
                 cwd: "/tmp".into(),

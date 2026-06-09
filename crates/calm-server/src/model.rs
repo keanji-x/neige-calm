@@ -23,26 +23,24 @@ pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 /// `role_gate::enforce_role` — *inside* the transaction, before the event
 /// row is appended. Violations roll the txn back; nothing is broadcast.
 ///
-///   * [`CardRole::Plain`] is the default for every existing card and
-///     every PR3-era card insert. The kernel places no extra restrictions
-///     beyond what the wave/cove already provides.
 ///   * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards
 ///     may emit `WaveUpdated`; this is the structural choke point that
 ///     keeps AI workers from rewriting wave-level metadata.
-///   * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.
-///     Its events are scoped to the card itself and never broaden.
+///   * [`CardRole::Worker`] is the default for user-facing card inserts
+///     and dispatcher-spawned worker cards. Its events are scoped to the
+///     card itself and never broaden.
 ///   * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated
 ///     report card. Same kernel-ownership profile as `Spec` — minted by
 ///     the wave-create path (PR B), one per wave (partial unique index
 ///     in migration 0013), undeletable from REST / plugin-callback paths.
-///     Role-gate-wise it behaves like `Plain`: it only emits `CardUpdated`
+///     Role-gate-wise it behaves like `Worker`: it only emits `CardUpdated`
 ///     for its own scope; it does **not** emit `WaveUpdated` (only `Spec`
 ///     does — preserving the #136 contract).
 ///
 /// Persisted as a lowercase string in `cards.role` (migration 0008). The
 /// serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
-/// stable; ts-rs exports the matching TS union (`"plain" | "spec" |
-/// "worker" | "reportcard"`) into `web/src/api/generated-events.ts` so the
+/// stable; ts-rs exports the matching TS union (`"spec" | "worker" |
+/// "reportcard"`) into `web/src/api/generated-events.ts` so the
 /// frontend can adopt the enum once any UI lands.
 #[derive(
     Debug,
@@ -63,9 +61,8 @@ pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum CardRole {
     #[default]
-    Plain,
-    Spec,
     Worker,
+    Spec,
     /// Issue #229 PR A — wave-report card role. See struct docs above
     /// for the kernel-ownership contract. Stored as `"reportcard"`
     /// (lowercase, no hyphen — matches the existing variant naming
@@ -729,13 +726,11 @@ mod card_role_tests {
     #[test]
     fn serde_round_trip_pinned_lowercase() {
         // Wire shape is locked: serde + sqlx storage both emit the
-        // lowercase variant name. Migration 0008 inserts the literal
-        // `'plain'` string for existing rows; changing the rename
-        // strategy here would silently desync code-vs-DB.
+        // lowercase variant name. Changing the rename strategy here would
+        // silently desync code-vs-DB.
         for (role, json) in [
-            (CardRole::Plain, "\"plain\""),
-            (CardRole::Spec, "\"spec\""),
             (CardRole::Worker, "\"worker\""),
+            (CardRole::Spec, "\"spec\""),
             // Issue #229 PR A — wave-report card role. Lowercase, no
             // hyphen, matches the existing variant style. Migration
             // 0013's partial unique index hardcodes the same literal.
@@ -749,8 +744,8 @@ mod card_role_tests {
     }
 
     #[test]
-    fn default_is_plain() {
-        assert_eq!(CardRole::default(), CardRole::Plain);
+    fn default_is_worker() {
+        assert_eq!(CardRole::default(), CardRole::Worker);
     }
 }
 

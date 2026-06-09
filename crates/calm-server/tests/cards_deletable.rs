@@ -10,7 +10,7 @@
 //!      `deletable = false` after migration 0013 runs, even though no
 //!      caller passed the bit explicitly through the wire.
 //!   3. **REST DELETE guard** — `DELETE /api/cards/:id` returns 403 on
-//!      an undeletable (spec) card; 204 on a deletable (plain) card.
+//!      an undeletable (spec) card; 204 on a deletable worker card.
 //!   4. **Wave delete cascade** — `DELETE /api/waves/:id` still
 //!      cascades through to undeletable cards; the guard is scoped to
 //!      `/api/cards/:id` only.
@@ -162,7 +162,7 @@ async fn patch(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value)
 
 #[tokio::test]
 async fn card_create_with_id_tx_round_trips_deletable_bit() {
-    // Both `true` (default for plain user cards) and `false` (kernel
+    // Both `true` (default for user-facing Worker cards) and `false` (kernel
     // owned) round-trip cleanly through INSERT → SELECT and through
     // both repo accessors (`card_get`, `cards_by_wave`).
     let repo = SqlxRepo::open("sqlite::memory:")
@@ -200,14 +200,14 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
             sort: None,
             payload: json!({}),
         },
-        CardRole::Plain,
+        CardRole::Worker,
         true,
         &cache,
     )
     .await
     .unwrap();
 
-    // Undeletable card. Note the role is Plain here — the test isolates
+    // Undeletable card. Note the role is Worker here — the test isolates
     // the `deletable` axis from the role axis. Production callers wire
     // `false` only on kernel-owned cards (Spec / ReportCard).
     let undeletable_card = calm_server::db::sqlite::card_create_with_id_tx(
@@ -219,7 +219,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
             sort: None,
             payload: json!({}),
         },
-        CardRole::Plain,
+        CardRole::Worker,
         false,
         &cache,
     )
@@ -352,9 +352,9 @@ async fn delete_card_returns_403_for_undeletable_spec_card() {
 }
 
 #[tokio::test]
-async fn delete_card_returns_204_for_deletable_plain_card() {
+async fn delete_card_returns_204_for_deletable_worker_card() {
     let boot = boot().await;
-    // Wave + plain user card.
+    // Wave + user-facing Worker card.
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
@@ -373,19 +373,19 @@ async fn delete_card_returns_204_for_deletable_plain_card() {
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "plain card create body: {body}"
+        "worker card create body: {body}"
     );
-    let plain_card_id = body["id"].as_str().unwrap().to_string();
+    let worker_card_id = body["id"].as_str().unwrap().to_string();
 
-    let status = delete(boot.app.clone(), &format!("/api/cards/{plain_card_id}")).await;
+    let status = delete(boot.app.clone(), &format!("/api/cards/{worker_card_id}")).await;
     assert_eq!(
         status,
         StatusCode::NO_CONTENT,
-        "plain user-deletable card delete returns 204"
+        "worker user-deletable card delete returns 204"
     );
 
-    let after = boot.repo.card_get(&plain_card_id).await.unwrap();
-    assert!(after.is_none(), "plain card row removed");
+    let after = boot.repo.card_get(&worker_card_id).await.unwrap();
+    assert!(after.is_none(), "worker card row removed");
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +447,7 @@ async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
             wave_id: wave_id.clone().into(),
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"title": "plain"}),
+            payload: json!({"title": "worker"}),
         })
         .await
         .unwrap();
@@ -520,7 +520,7 @@ async fn patch_card_with_deletable_returns_400() {
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "plain card create body: {body}"
+        "worker card create body: {body}"
     );
     let card_id = body["id"].as_str().unwrap().to_string();
 
