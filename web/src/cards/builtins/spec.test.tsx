@@ -259,6 +259,13 @@ describe('SpecCard chat timeline', () => {
         arguments: { phase: 'bad' },
         error: { message: 'invalid phase' },
       }),
+      harnessRow(11, 'mcpToolCall', {
+        id: 'mcp_3',
+        server: 'neige',
+        tool: 'spec_set_phase',
+        status: 'inProgress',
+        arguments: { phase: 'collapse' },
+      }),
     ]);
 
     expect(await screen.findByText('please update the PR UI')).toBeInTheDocument();
@@ -276,8 +283,9 @@ describe('SpecCard chat timeline', () => {
     expect(screen.getByText('[mystery_item]')).toBeInTheDocument();
     expect(screen.queryByText('[mcpToolCall]')).not.toBeInTheDocument();
     expect(screen.queryByText('[mcp_tool_call]')).not.toBeInTheDocument();
-    expect(screen.getAllByText('neige/spec_set_phase')).toHaveLength(2);
+    expect(screen.getAllByText('neige/spec_set_phase')).toHaveLength(3);
     expect(screen.getByText('completed')).toBeInTheDocument();
+    expect(screen.getByText('running...')).toBeInTheDocument();
     expect(screen.getByText('failed')).toBeInTheDocument();
     expect(screen.getByText(/invalid phase/)).toBeInTheDocument();
   });

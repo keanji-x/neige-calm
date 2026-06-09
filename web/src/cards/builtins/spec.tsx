@@ -547,7 +547,7 @@ function HarnessItemView({ row }: { row: HarnessItem }) {
       const server = stringField(item, 'server') ?? 'mcp';
       const tool = stringField(item, 'tool') ?? 'tool';
       const status = stringField(item, 'status') ?? 'unknown';
-      const statusLabel = status === 'in_progress' ? 'running...' : status;
+      const statusLabel = status === 'inProgress' ? 'running...' : status;
       const args = item?.arguments;
       const showArgs =
         args !== null &&
@@ -571,7 +571,15 @@ function HarnessItemView({ row }: { row: HarnessItem }) {
             {showArgs ? (
               <>
                 {' '}
-                <code>{formatUnknown(args)}</code>
+                <code
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    maxWidth: '100%',
+                  }}
+                >
+                  {formatUnknown(args)}
+                </code>
               </>
             ) : null}
           </TimelineBubble>
