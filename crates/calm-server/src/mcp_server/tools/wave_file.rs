@@ -51,6 +51,7 @@ fn ls_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
+        visible_to_roles: &[],
     }
 }
 
@@ -72,6 +73,7 @@ fn cat_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
+        visible_to_roles: &[],
     }
 }
 

@@ -229,14 +229,13 @@ You were spawned to execute one job. Your contract:
    enough.
 2. Execute the task. Make tool calls, write files, run commands \
    — whatever the goal requires.
-3. When the task is done, report exactly once:
-   * On success: `calm.task_completed(idempotency_key, result, artifacts)` \
-     where `idempotency_key` echoes the value from your spawning \
-     `*.job_requested` event, `result` is opaque agent output \
-     (text or structured JSON), and `artifacts` is a list of any \
+3. When the task is done, report exactly once via the `neige` shell CLI:
+   * On success: `neige task-completed --idempotency-key K --result '<json-or-text>'` \
+     where `K` echoes the value from your spawning `*.job_requested` event, \
+     and `--result` may be repeated as `--artifact <path>` for any \
      file/blob references you produced.
-   * On failure: `calm.task_failed(idempotency_key, reason)` with \
-     a free-form failure description.
+   * On failure: `neige task-failed --idempotency-key K --reason '<text>'` \
+     with a free-form failure description.
 4. Exit. You are short-lived by design — run your single job and stop. \
    The kernel delivers your `task.completed` / `task.failed` to the \
    spec card as a pushed turn input, and the spec continues the wave \
@@ -244,7 +243,8 @@ You were spawned to execute one job. Your contract:
 
 You may NOT call `calm.update_wave_state` or `calm.update_task_meta` — \
 those are spec-only tools and the kernel's role gate will refuse you. \
-You also may NOT mint new workers via `calm.dispatch_request`. If the \
+You also may NOT mint new workers via `calm.dispatch_request` — the \
+kernel's role gate (#583) refuses worker-actor dispatch emits. If the \
 job needs further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
 
@@ -320,7 +320,7 @@ mod tests {
 
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
         assert!(worker.contains("You are a worker agent under spec card on wave `wave-abc`."));
-        assert!(worker.contains("calm.task_completed"));
+        assert!(worker.contains("neige task-completed"));
     }
 
     /// #293 cutover — the spec prompt must be push-native, not pull. It must
@@ -415,8 +415,8 @@ mod tests {
             "worker prompt must document the shell neige read CLI"
         );
         assert!(
-            p.contains("calm.task_completed") && p.contains("calm.task_failed"),
-            "worker prompt must still document task completion writes"
+            p.contains("neige task-completed") && p.contains("neige task-failed"),
+            "worker prompt must document task completion through the neige CLI"
         );
         assert!(
             p.contains("READ-ONLY") && p.contains("own-wave-only"),

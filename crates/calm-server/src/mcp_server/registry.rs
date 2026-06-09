@@ -182,6 +182,13 @@ pub struct ToolDescriptor {
     /// `mcp_tool_call.rs:1953`). Set explicitly per tool to avoid that
     /// default landing on every call.
     pub annotations: Option<Value>,
+    /// Which roles see this tool in `tools/list`. Wire-level `tools/call`
+    /// still routes by name regardless - this only controls discovery.
+    /// Default to spec-only for write tools; explicit `&[]` for tools that
+    /// must not appear in any role's tools/list (e.g. read tools served
+    /// only via `neige` CLI, worker self-reports invoked only by `neige`).
+    /// See issue #588.
+    pub visible_to_roles: &'static [CardRole],
 }
 
 pub fn read_only_annotations() -> Value {
@@ -240,6 +247,14 @@ impl ToolRegistry {
     /// registry across an await.
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {
         self.by_name.values().map(|(d, _)| d.clone()).collect()
+    }
+
+    pub fn descriptors_for_role(&self, role: CardRole) -> Vec<ToolDescriptor> {
+        self.by_name
+            .values()
+            .map(|(d, _)| d.clone())
+            .filter(|d| d.visible_to_roles.contains(&role))
+            .collect()
     }
 }
 

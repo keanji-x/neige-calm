@@ -179,6 +179,7 @@ fn test_descriptor(name: &str) -> ToolDescriptor {
         description: "test tool".into(),
         input_schema: json!({ "type": "object", "properties": {} }),
         annotations: None,
+        visible_to_roles: &[CardRole::Spec],
     }
 }
 

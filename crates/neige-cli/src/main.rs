@@ -3,10 +3,9 @@
 //! The CLI is intentionally tiny. It inherits the per-card MCP socket and raw
 //! token from the terminal environment, initializes the existing kernel MCP
 //! server with the token under `params._meta["dev.neige/auth"].token`, then
-//! performs one `tools/call` for `calm.wave.ls`, `calm.wave.cat`, or
-//! `calm.get_wave_state`. `NEIGE_MCP_DAEMON_TOKEN` is for the stdio shim only;
-//! the CLI requires `NEIGE_MCP_TOKEN` because its tool calls do not carry
-//! thread metadata.
+//! performs one `tools/call` for wave reads or worker task reports.
+//! `NEIGE_MCP_DAEMON_TOKEN` is for the stdio shim only; the CLI requires
+//! `NEIGE_MCP_TOKEN` because its tool calls do not carry thread metadata.
 
 use std::env;
 use std::io::{self, Write};
@@ -21,6 +20,8 @@ const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
 const TOOL_WAVE_LS: &str = "calm.wave.ls";
 const TOOL_WAVE_CAT: &str = "calm.wave.cat";
 const TOOL_GET_WAVE_STATE: &str = "calm.get_wave_state";
+const TOOL_TASK_COMPLETED: &str = "calm.task_completed";
+const TOOL_TASK_FAILED: &str = "calm.task_failed";
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 #[tokio::main(flavor = "current_thread")]
@@ -63,6 +64,18 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         Command::Ls { json_output, .. } => render_ls(&raw, json_output, cli.json_errors()),
         Command::Cat { .. } => render_cat(&raw, cli.json_errors()),
         Command::State { json_output } => render_state(&raw, json_output, cli.json_errors()),
+        Command::TaskCompleted { .. } | Command::TaskFailed { .. } => {
+            let serialized = serde_json::to_string(&raw).map_err(|e| {
+                AppError::new(
+                    format!("serialize task report JSON: {e}"),
+                    4,
+                    cli.json_errors(),
+                    json!({ "kind": "shape", "message": e.to_string() }),
+                )
+            })?;
+            println!("{serialized}");
+            Ok(())
+        }
     }
 }
 
@@ -110,6 +123,30 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
         Command::Ls { path, .. } => (TOOL_WAVE_LS, json!({ "path": path })),
         Command::Cat { path, .. } => (TOOL_WAVE_CAT, json!({ "path": path })),
         Command::State { .. } => (TOOL_GET_WAVE_STATE, json!({})),
+        Command::TaskCompleted {
+            idempotency_key,
+            result,
+            artifacts,
+            ..
+        } => (
+            TOOL_TASK_COMPLETED,
+            json!({
+                "idempotency_key": idempotency_key,
+                "result": result.clone().unwrap_or(Value::Null),
+                "artifacts": artifacts,
+            }),
+        ),
+        Command::TaskFailed {
+            idempotency_key,
+            reason,
+            ..
+        } => (
+            TOOL_TASK_FAILED,
+            json!({
+                "idempotency_key": idempotency_key,
+                "reason": reason,
+            }),
+        ),
     };
     let call = json!({
         "jsonrpc": "2.0",
@@ -369,7 +406,10 @@ impl Cli {
             iter.next();
         }
         let command = iter.next().ok_or_else(|| {
-            AppError::usage("missing command; expected `ls`, `cat`, or `state`", json)
+            AppError::usage(
+                "missing command; expected `ls`, `cat`, `state`, `task-completed`, or `task-failed`",
+                json,
+            )
         })?;
         match command.as_str() {
             "ls" => {
@@ -424,6 +464,152 @@ impl Cli {
                     command: Command::State { json_output: json },
                 })
             }
+            "task-completed" => {
+                let mut idempotency_key: Option<String> = None;
+                let mut result: Option<Value> = None;
+                let mut artifacts: Vec<String> = Vec::new();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--json" => json = true,
+                        "--idempotency-key" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage(
+                                    "task-completed requires a value after --idempotency-key",
+                                    json,
+                                )
+                            })?;
+                            if value.is_empty() {
+                                return Err(AppError::usage(
+                                    "task-completed requires a non-empty --idempotency-key",
+                                    json,
+                                ));
+                            }
+                            if idempotency_key.replace(value).is_some() {
+                                return Err(AppError::usage(
+                                    "task-completed accepts --idempotency-key once",
+                                    json,
+                                ));
+                            }
+                        }
+                        "--result" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage(
+                                    "task-completed requires a value after --result",
+                                    json,
+                                )
+                            })?;
+                            let parsed = serde_json::from_str(&value).map_err(|e| {
+                                AppError::usage(
+                                    format!("task-completed --result must be JSON: {e}"),
+                                    json,
+                                )
+                            })?;
+                            if result.replace(parsed).is_some() {
+                                return Err(AppError::usage(
+                                    "task-completed accepts --result once",
+                                    json,
+                                ));
+                            }
+                        }
+                        "--artifact" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage(
+                                    "task-completed requires a value after --artifact",
+                                    json,
+                                )
+                            })?;
+                            artifacts.push(value);
+                        }
+                        other if other.starts_with('-') => {
+                            return Err(AppError::usage(format!("unknown option `{other}`"), json));
+                        }
+                        other => {
+                            return Err(AppError::usage(
+                                format!("unexpected argument `{other}`"),
+                                json,
+                            ));
+                        }
+                    }
+                }
+                let idempotency_key = idempotency_key.ok_or_else(|| {
+                    AppError::usage("task-completed requires --idempotency-key", json)
+                })?;
+                Ok(Self {
+                    command: Command::TaskCompleted {
+                        idempotency_key,
+                        result,
+                        artifacts,
+                        json_errors: json,
+                    },
+                })
+            }
+            "task-failed" => {
+                let mut idempotency_key: Option<String> = None;
+                let mut reason: Option<String> = None;
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--json" => json = true,
+                        "--idempotency-key" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage(
+                                    "task-failed requires a value after --idempotency-key",
+                                    json,
+                                )
+                            })?;
+                            if value.is_empty() {
+                                return Err(AppError::usage(
+                                    "task-failed requires a non-empty --idempotency-key",
+                                    json,
+                                ));
+                            }
+                            if idempotency_key.replace(value).is_some() {
+                                return Err(AppError::usage(
+                                    "task-failed accepts --idempotency-key once",
+                                    json,
+                                ));
+                            }
+                        }
+                        "--reason" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage("task-failed requires a value after --reason", json)
+                            })?;
+                            if value.is_empty() {
+                                return Err(AppError::usage(
+                                    "task-failed requires a non-empty --reason",
+                                    json,
+                                ));
+                            }
+                            if reason.replace(value).is_some() {
+                                return Err(AppError::usage(
+                                    "task-failed accepts --reason once",
+                                    json,
+                                ));
+                            }
+                        }
+                        other if other.starts_with('-') => {
+                            return Err(AppError::usage(format!("unknown option `{other}`"), json));
+                        }
+                        other => {
+                            return Err(AppError::usage(
+                                format!("unexpected argument `{other}`"),
+                                json,
+                            ));
+                        }
+                    }
+                }
+                let idempotency_key = idempotency_key.ok_or_else(|| {
+                    AppError::usage("task-failed requires --idempotency-key", json)
+                })?;
+                let reason =
+                    reason.ok_or_else(|| AppError::usage("task-failed requires --reason", json))?;
+                Ok(Self {
+                    command: Command::TaskFailed {
+                        idempotency_key,
+                        reason,
+                        json_errors: json,
+                    },
+                })
+            }
             other if other.starts_with('-') => {
                 Err(AppError::usage(format!("unknown option `{other}`"), json))
             }
@@ -436,15 +622,36 @@ impl Cli {
             Command::Ls { json_output, .. } => json_output,
             Command::Cat { json_errors, .. } => json_errors,
             Command::State { json_output } => json_output,
+            Command::TaskCompleted { json_errors, .. } => json_errors,
+            Command::TaskFailed { json_errors, .. } => json_errors,
         }
     }
 }
 
 #[derive(Debug)]
 enum Command {
-    Ls { path: String, json_output: bool },
-    Cat { path: String, json_errors: bool },
-    State { json_output: bool },
+    Ls {
+        path: String,
+        json_output: bool,
+    },
+    Cat {
+        path: String,
+        json_errors: bool,
+    },
+    State {
+        json_output: bool,
+    },
+    TaskCompleted {
+        idempotency_key: String,
+        result: Option<Value>,
+        artifacts: Vec<String>,
+        json_errors: bool,
+    },
+    TaskFailed {
+        idempotency_key: String,
+        reason: String,
+        json_errors: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -478,7 +685,7 @@ impl AppError {
             json,
             json!({
                 "kind": "usage",
-                "usage": "neige [--json] ls [path] | neige cat <path> | neige state",
+                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige task-completed --idempotency-key K [--result <json>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text>",
             }),
         )
     }
@@ -521,6 +728,7 @@ mod tests {
             }
             Command::Cat { .. } => panic!("expected ls"),
             Command::State { .. } => panic!("expected ls"),
+            Command::TaskCompleted { .. } | Command::TaskFailed { .. } => panic!("expected ls"),
         }
     }
 
@@ -529,7 +737,10 @@ mod tests {
         let cli = Cli::parse(["state"].into_iter().map(String::from)).expect("parse");
         match cli.command {
             Command::State { json_output } => assert!(!json_output),
-            Command::Ls { .. } | Command::Cat { .. } => panic!("expected state"),
+            Command::Ls { .. }
+            | Command::Cat { .. }
+            | Command::TaskCompleted { .. }
+            | Command::TaskFailed { .. } => panic!("expected state"),
         }
 
         let err = Cli::parse(["state", "extra"].into_iter().map(String::from))
@@ -545,5 +756,52 @@ mod tests {
         let err = Cli::parse(["--token", "secret", "ls"].into_iter().map(String::from))
             .expect_err("token flag must not parse");
         assert!(err.message.contains("--token"), "err = {err:?}");
+    }
+
+    #[test]
+    fn task_completed_parses_json_result_and_artifacts() {
+        let cli = Cli::parse(
+            [
+                "task-completed",
+                "--idempotency-key",
+                "k1",
+                "--result",
+                r#"{"ok":true}"#,
+                "--artifact",
+                "out.log",
+                "--json",
+            ]
+            .into_iter()
+            .map(String::from),
+        )
+        .expect("parse");
+        match cli.command {
+            Command::TaskCompleted {
+                idempotency_key,
+                result,
+                artifacts,
+                json_errors,
+            } => {
+                assert_eq!(idempotency_key, "k1");
+                assert_eq!(result.unwrap(), serde_json::json!({ "ok": true }));
+                assert_eq!(artifacts, vec!["out.log"]);
+                assert!(json_errors);
+            }
+            Command::Ls { .. } | Command::Cat { .. } | Command::State { .. } => {
+                panic!("expected task-completed")
+            }
+            Command::TaskFailed { .. } => panic!("expected task-completed"),
+        }
+    }
+
+    #[test]
+    fn task_failed_requires_reason() {
+        let err = Cli::parse(
+            ["task-failed", "--idempotency-key", "k1"]
+                .into_iter()
+                .map(String::from),
+        )
+        .expect_err("reason required");
+        assert!(err.message.contains("--reason"), "err = {err:?}");
     }
 }

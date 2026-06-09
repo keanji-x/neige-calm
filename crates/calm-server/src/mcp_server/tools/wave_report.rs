@@ -100,6 +100,7 @@ fn read_descriptor() -> ToolDescriptor {
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
+        visible_to_roles: &[],
     }
 }
 
@@ -142,6 +143,7 @@ fn write_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[CardRole::Spec],
     }
 }
 
@@ -207,6 +209,7 @@ fn edit_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[CardRole::Spec],
     }
 }
 

@@ -378,8 +378,10 @@ async fn dispatch_request(
             // Codex's `tools/list` expects `{ "tools": [...] }`. Each
             // entry is `{ name, description, inputSchema }`, optionally
             // carrying MCP `annotations` when a descriptor provides them.
-            let tools: Vec<Value> = registry
-                .descriptors()
+            let descriptors = legacy_identity
+                .map(|identity| registry.descriptors_for_role(identity.role))
+                .unwrap_or_default();
+            let tools: Vec<Value> = descriptors
                 .into_iter()
                 .map(|d| {
                     let mut obj = serde_json::Map::new();
