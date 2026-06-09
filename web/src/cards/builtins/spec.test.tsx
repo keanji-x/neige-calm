@@ -242,6 +242,23 @@ describe('SpecCard chat timeline', () => {
       harnessRow(8, 'mystery_item', {
         id: 'mystery_1',
       }),
+      harnessRow(9, 'mcpToolCall', {
+        id: 'mcp_1',
+        server: 'neige',
+        tool: 'spec_set_phase',
+        status: 'completed',
+        arguments: { phase: 'expand' },
+        result: { content: [{ type: 'text', text: 'ok' }] },
+        durationMs: 42,
+      }),
+      harnessRow(10, 'mcpToolCall', {
+        id: 'mcp_2',
+        server: 'neige',
+        tool: 'spec_set_phase',
+        status: 'failed',
+        arguments: { phase: 'bad' },
+        error: { message: 'invalid phase' },
+      }),
     ]);
 
     expect(await screen.findByText('please update the PR UI')).toBeInTheDocument();
@@ -257,6 +274,12 @@ describe('SpecCard chat timeline', () => {
     expect(screen.getByText('Searched: playwright fixtures')).toBeInTheDocument();
     expect(screen.getByText(/\$ echo hi/)).toBeInTheDocument();
     expect(screen.getByText('[mystery_item]')).toBeInTheDocument();
+    expect(screen.queryByText('[mcpToolCall]')).not.toBeInTheDocument();
+    expect(screen.queryByText('[mcp_tool_call]')).not.toBeInTheDocument();
+    expect(screen.getAllByText('neige/spec_set_phase')).toHaveLength(2);
+    expect(screen.getByText('completed')).toBeInTheDocument();
+    expect(screen.getByText('failed')).toBeInTheDocument();
+    expect(screen.getByText(/invalid phase/)).toBeInTheDocument();
   });
 
   it('merges a live item that arrives while the initial REST load is in flight', async () => {
