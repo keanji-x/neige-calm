@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { useSession } from '../../app/SessionProvider';
@@ -289,7 +289,11 @@ export function Sidebar({
                 ? { kind: 'muted' as const, n: cw.length }
                 : null;
           return (
-            <Fragment key={cove.id}>
+            <div
+              key={cove.id}
+              className="cove-block"
+              style={{ '--cove-color': cove.color } as React.CSSProperties}
+            >
               <div className="cove-row" role="group">
                 <button
                   type="button"
@@ -365,7 +369,7 @@ export function Sidebar({
                   })}
                 </div>
               )}
-            </Fragment>
+            </div>
           );
         })}
       </nav>
