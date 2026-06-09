@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -26,6 +26,9 @@ use calm_server::wave_cove_cache::WaveCoveCache;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tracing_subscriber::layer::Context as TracingContext;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{Layer, registry as tracing_registry};
 
 /// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
 /// (or any other process env read by the fake codex shim). Peer test
@@ -40,6 +43,23 @@ impl Drop for EnvGuard {
         unsafe {
             std::env::remove_var(self.0);
         }
+    }
+}
+
+struct TargetCaptureLayer {
+    targets: Arc<Mutex<Vec<String>>>,
+}
+
+impl<S> Layer<S> for TargetCaptureLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: TracingContext<'_, S>) {
+        self.targets.lock().unwrap().push(format!(
+            "{}:{}",
+            event.metadata().level(),
+            event.metadata().target()
+        ));
     }
 }
 
@@ -721,6 +741,105 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
             .cached_card_for_thread("fake-thread-0002")
             .is_none(),
         "recovery must reuse runtime thread_id instead of minting another spec thread"
+    );
+}
+
+#[tokio::test]
+async fn reusable_thread_without_token_logs_warning() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: Some("adapter goal".into()),
+        reset_harness_items: false,
+        force_new_thread: false,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    assert!(card_mcp_hash(&repo, &card_id).await.is_some());
+
+    sqlx::query("DELETE FROM card_mcp_tokens WHERE card_id = ?1")
+        .bind(&card_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert!(card_mcp_hash(&repo, &card_id).await.is_none());
+    let active = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("active runtime before reusable-thread recovery");
+    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+
+    let (tx_output_json,): (String,) =
+        sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let mut output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
+    output
+        .data
+        .as_object_mut()
+        .expect("operation output data")
+        .remove("codex_thread_id");
+
+    sqlx::query(
+        r#"UPDATE operations
+              SET phase = 'app_server_interact',
+                  phase_detail_json = ?1,
+                  tx_output_json = ?2,
+                  lease_owner = NULL,
+                  lease_until_ms = NULL,
+                  completed_at_ms = NULL
+            WHERE id = ?3"#,
+    )
+    .bind(
+        serde_json::to_string(&serde_json::json!({
+            "kind": "mint_and_await",
+            "thread_id": Value::Null,
+        }))
+        .unwrap(),
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(&op_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    let targets = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_registry().with(TargetCaptureLayer {
+        targets: targets.clone(),
+    });
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("install reusable-thread invariant tracing capture subscriber");
+    state.operation_runtime.drive().await.unwrap();
+
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let observed_targets = targets.lock().unwrap().clone();
+    assert!(
+        observed_targets
+            .iter()
+            .any(|target| target == "WARN:spec_harness::reusable_thread_invariant"),
+        "expected spec reusable-thread invariant warning; observed targets: {observed_targets:?}"
     );
 }
 

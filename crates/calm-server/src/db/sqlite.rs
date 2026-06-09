@@ -2933,6 +2933,15 @@ impl RepoRead for SqlxRepo {
         .await?;
         Ok(row)
     }
+
+    async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as(r#"SELECT 1 FROM card_mcp_tokens WHERE card_id = ?1 LIMIT 1"#)
+                .bind(card_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.is_some())
+    }
 }
 
 #[async_trait]
