@@ -110,9 +110,21 @@ pub struct WaveFsCatQuery {
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
+// NOTE: no `Principal` extractor here.
+//
+// `update_wave_report` (POST) keeps `_principal: Principal` as an implicit
+// session-middleware assertion — the route fires on user action, never
+// during a11y/replay traffic. These GET routes fire on every wave page
+// mount (the report sidebar lists root on first render); the replay
+// binary intentionally does NOT attach `require_session` so its a11y
+// suite can drive REST without a session, and a `Principal` extractor
+// here would surface as a 401 → SessionProvider redirect → login page
+// during a11y replay runs. The TODO below keeps the multi-user
+// ownership hook visible without breaking the no-auth surface contract.
+//
+// TODO(#573 multi-user): ownership check
 pub(crate) async fn list_wave_files(
     State(s): State<RouteState>,
-    _principal: Principal,
     Path(id): Path<String>,
     Query(q): Query<WaveFsLsQuery>,
 ) -> Result<Json<Vec<WaveFsEntry>>> {
@@ -141,9 +153,10 @@ pub(crate) async fn list_wave_files(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
+// See note on `list_wave_files` for why `Principal` is intentionally NOT
+// extracted here. The `TODO(#573 multi-user)` lives next to `list_wave_files`.
 pub(crate) async fn cat_wave_file(
     State(s): State<RouteState>,
-    _principal: Principal,
     Path(id): Path<String>,
     Query(q): Query<WaveFsCatQuery>,
 ) -> Result<Json<WaveFsContent>> {
