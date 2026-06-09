@@ -1783,6 +1783,9 @@ mod tests {
                     "set": {
                         "NEIGE_MCP_SOCKET": "/tmp/x.sock",
                         "NEIGE_MCP_TOKEN": "secret-abcdef",
+                    },
+                    "append": {
+                        "SOME_KEY": "some_value",
                     }
                 }
             })),
@@ -1790,6 +1793,7 @@ mod tests {
 
         let rendered = format!("{params:?}");
         assert!(!rendered.contains("secret-abcdef"));
+        assert!(!rendered.contains("some_value"));
         assert!(rendered.contains("\"[REDACTED]\""));
     }
 

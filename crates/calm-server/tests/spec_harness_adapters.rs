@@ -469,8 +469,13 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
     assert_ne!(first_token, second_token);
 }
 
+/// drive_mutex serializes ops per-process today, but the outcome invariant -
+/// last thread/start token's hash equals the final card_mcp_tokens hash - is
+/// what we care about and what the per-card mint lock guarantees once parallel
+/// drive lands. See PerCardMintLockGuard unit tests for actual contention
+/// coverage.
 #[tokio::test]
-async fn same_card_concurrent_starts_keep_token_hash_consistent() {
+async fn same_card_back_to_back_starts_keep_token_hash_consistent() {
     let _guard = ENV_LOCK.lock().await;
     let tmp = TempDir::new().unwrap();
     let capture_file = tmp.path().join("requests.ndjson");

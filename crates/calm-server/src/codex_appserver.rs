@@ -183,12 +183,18 @@ pub(crate) fn redact_thread_start_config(cfg: &Option<serde_json::Value>) -> ser
         return Value::Null;
     };
     let mut redacted = cfg.clone();
-    if let Some(set) = redacted
-        .pointer_mut("/shell_environment_policy/set")
+    if let Some(policy) = redacted
+        .pointer_mut("/shell_environment_policy")
         .and_then(Value::as_object_mut)
     {
-        for value in set.values_mut() {
-            *value = Value::String("[REDACTED]".into());
+        for value in policy.values_mut() {
+            if let Value::Object(map) = value {
+                for value in map.values_mut() {
+                    if value.is_string() {
+                        *value = Value::String("[REDACTED]".into());
+                    }
+                }
+            }
         }
     }
     redacted
@@ -1038,6 +1044,9 @@ mod tests {
                     "set": {
                         "NEIGE_MCP_SOCKET": "/tmp/x.sock",
                         "NEIGE_MCP_TOKEN": "secret-abcdef",
+                    },
+                    "append": {
+                        "SOME_KEY": "some_value",
                     }
                 }
             })),
@@ -1045,7 +1054,29 @@ mod tests {
 
         let rendered = format!("{params:?}");
         assert!(!rendered.contains("secret-abcdef"));
+        assert!(!rendered.contains("some_value"));
         assert!(rendered.contains("\"[REDACTED]\""));
+    }
+
+    #[test]
+    fn thread_start_config_redactor_preserves_inherit_key_names() {
+        let redacted = redact_thread_start_config(&Some(json!({
+            "shell_environment_policy": {
+                "set": {
+                    "NEIGE_MCP_TOKEN": "secret-abcdef",
+                },
+                "inherit": ["KEEP_ME"],
+            }
+        })));
+
+        assert_eq!(
+            redacted.pointer("/shell_environment_policy/inherit"),
+            Some(&json!(["KEEP_ME"]))
+        );
+        assert_eq!(
+            redacted.pointer("/shell_environment_policy/set/NEIGE_MCP_TOKEN"),
+            Some(&json!("[REDACTED]"))
+        );
     }
 
     #[tokio::test]

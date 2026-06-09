@@ -3,10 +3,10 @@
 //! PR7a (#136) — when a Spec/Worker codex card is minted, the kernel
 //! generates a fresh 32-byte hex token and stores `SHA-256(token)` in
 //! `card_mcp_tokens.hashed_token`. The raw token is handed to the
-//! codex daemon via the `NEIGE_MCP_TOKEN` env var (see
-//! `spec_card::build_codex_env_map` (worker cards) or
-//! `SpecHarnessStartAdapter::app_server_interact` (spec card AI shell,
-//! per-thread injection — #555 Phase B)); from there, a tiny
+//! codex daemon via the `NEIGE_MCP_TOKEN` env var. For worker cards
+//! see `spec_card::build_codex_env_map`; for the spec card AI shell,
+//! `SpecHarnessStartAdapter::app_server_interact` does per-thread
+//! injection (#555 Phase B). From there, a tiny
 //! `neige-mcp-stdio-shim` binary inherits the env, connects to the
 //! kernel's UDS, and embeds the raw token in `initialize.params._meta`
 //! so the kernel can resolve which card is on the other end of the

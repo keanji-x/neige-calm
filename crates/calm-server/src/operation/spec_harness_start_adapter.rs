@@ -51,12 +51,28 @@ struct PerCardMintLockGuard {
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
+// Transient stale entries are possible if a waiter is canceled between
+// strong_count snapshots; same-card mints will reuse a stale entry safely.
 impl Drop for PerCardMintLockGuard {
     fn drop(&mut self) {
         let _ = self.guard.take();
         self.locks.remove_if(&self.card_id, |_, existing| {
             Arc::ptr_eq(existing, &self.lock) && Arc::strong_count(existing) == 2
         });
+    }
+}
+
+async fn lock_card(locks: &PerCardMintLocks, card_id: &str) -> PerCardMintLockGuard {
+    let lock = locks
+        .entry(card_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let guard = lock.clone().lock_owned().await;
+    PerCardMintLockGuard {
+        card_id: card_id.to_string(),
+        lock,
+        locks: locks.clone(),
+        guard: Some(guard),
     }
 }
 
@@ -102,19 +118,12 @@ impl SpecHarnessStartAdapter {
         }
     }
 
+    /// Defense-in-depth: today OperationRuntime drives serially under
+    /// drive_mutex, but if drive ever shifts to per-card-lease parallelism,
+    /// this lock keeps card_mcp_token rotation atomic with the thread/start
+    /// RPC that ships the matching raw token.
     async fn lock_card_mint(&self, card_id: &str) -> PerCardMintLockGuard {
-        let lock = self
-            .per_card_mint_locks
-            .entry(card_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-        let guard = lock.clone().lock_owned().await;
-        PerCardMintLockGuard {
-            card_id: card_id.to_string(),
-            lock,
-            locks: self.per_card_mint_locks.clone(),
-            guard: Some(guard),
-        }
+        lock_card(&self.per_card_mint_locks, card_id).await
     }
 
     fn mcp_socket_path_for_thread(&self) -> Result<String> {
@@ -325,18 +334,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 thread_id: existing,
             });
         }
+        let mint_lock_guard = self.lock_card_mint(&card_id).await;
         let reusable_thread_id = if force_new_thread {
             None
         } else if let Some(runtime) = self.repo.runtime_get_active_for_card(&card_id).await?
             && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
         {
             Some(thread_id)
-        } else {
-            None
-        };
-        let should_start_fresh_thread = reusable_thread_id.is_none();
-        let mint_lock_guard = if should_start_fresh_thread {
-            Some(self.lock_card_mint(&card_id).await)
         } else {
             None
         };
@@ -901,4 +905,49 @@ fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
                 step.op
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn per_card_mint_locks_block_same_card_only_and_cleanup() {
+        let locks: PerCardMintLocks = Arc::new(DashMap::new());
+        let first_a = lock_card(&locks, "card-A").await;
+
+        let locks_for_a = locks.clone();
+        let same_card = async move {
+            let mut second_a = Box::pin(lock_card(&locks_for_a, "card-A"));
+            tokio::select! {
+                _guard = &mut second_a => {
+                    panic!("same-card lock acquired while the first card-A guard was held");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+
+            drop(first_a);
+            let second_guard = tokio::time::timeout(Duration::from_secs(1), &mut second_a)
+                .await
+                .expect("same-card lock should complete after first guard drops");
+            drop(second_guard);
+        };
+
+        let locks_for_b = locks.clone();
+        let other_card = async move {
+            let guard =
+                tokio::time::timeout(Duration::from_millis(50), lock_card(&locks_for_b, "card-B"))
+                    .await
+                    .expect("card-B lock should not wait behind card-A");
+            drop(guard);
+        };
+
+        tokio::join!(same_card, other_card);
+        assert!(
+            !locks.contains_key("card-A"),
+            "card-A lock entry should be removed once all guards drop"
+        );
+    }
 }
