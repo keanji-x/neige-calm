@@ -364,27 +364,27 @@ impl PendingThreadStartRegistry {
                         },
                     )
                     .await?;
-                    runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                    if old_status != RunStatus::Running {
+                        runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                    }
                     // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
                     if runtime.kind == RuntimeKind::SharedSpec {
                         runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
                     }
                     let card = card_for_event;
-                    Ok((
-                        card.clone(),
-                        vec![
-                            (scope.clone(), Event::CardUpdated(card)),
-                            (
-                                scope,
-                                Event::RuntimeStatusChanged {
-                                    runtime_id,
-                                    card_id: card_id_for_tx,
-                                    old_status,
-                                    new_status: RunStatus::Running,
-                                },
-                            ),
-                        ],
-                    ))
+                    let mut events = vec![(scope.clone(), Event::CardUpdated(card.clone()))];
+                    if old_status != RunStatus::Running {
+                        events.push((
+                            scope,
+                            Event::RuntimeStatusChanged {
+                                runtime_id,
+                                card_id: card_id_for_tx,
+                                old_status,
+                                new_status: RunStatus::Running,
+                            },
+                        ));
+                    }
+                    Ok((card, events))
                 })
             },
         )

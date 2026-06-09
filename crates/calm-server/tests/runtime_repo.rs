@@ -577,6 +577,35 @@ async fn runtime_set_status_superseded_rejected() {
 }
 
 #[tokio::test]
+async fn runtime_set_status_same_running_rejected() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Running,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let err = runtime_set_status_tx(&mut tx, &runtime.id, RunStatus::Running)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        RuntimeRepoError::IllegalStatusTransition {
+            attempted: RunStatus::Running,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
 async fn runtime_bind_attribution_transitions_pending_to_running() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;

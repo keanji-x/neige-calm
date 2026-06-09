@@ -797,7 +797,9 @@ async fn persist_pending_thread_status(
                 let terminal_id_for_projection = runtime.terminal_run_id.clone();
                 let old_status = runtime.status.clone();
                 let runtime_id = runtime.id.clone();
-                runtime_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
+                if old_status != RunStatus::TurnPending {
+                    runtime_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
+                }
                 let card = project_codex_runtime_fields_for_response(
                     card_for_event,
                     terminal_id_for_projection.as_deref(),
@@ -815,21 +817,19 @@ async fn persist_pending_thread_status(
                     &checkpoint_output,
                 )
                 .await?;
-                Ok((
-                    card.clone(),
-                    vec![
-                        (scope.clone(), Event::CardUpdated(card)),
-                        (
-                            scope,
-                            Event::RuntimeStatusChanged {
-                                runtime_id,
-                                card_id: card_id_for_tx,
-                                old_status,
-                                new_status: RunStatus::TurnPending,
-                            },
-                        ),
-                    ],
-                ))
+                let mut events = vec![(scope.clone(), Event::CardUpdated(card.clone()))];
+                if old_status != RunStatus::TurnPending {
+                    events.push((
+                        scope,
+                        Event::RuntimeStatusChanged {
+                            runtime_id,
+                            card_id: card_id_for_tx,
+                            old_status,
+                            new_status: RunStatus::TurnPending,
+                        },
+                    ));
+                }
+                Ok((card, events))
             })
         },
     )

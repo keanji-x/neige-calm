@@ -451,6 +451,15 @@ impl ProviderAdapter for ClaudeAdapter {
         match handle {
             Ok(handle) => {
                 let status_result: Result<()> = async {
+                    let existing = ctx.repo.runtime_get_active_for_card(&card_id).await?;
+                    let needs_status_write = existing
+                        .as_ref()
+                        .map(|runtime| runtime.status != RunStatus::Running)
+                        .unwrap_or(true);
+                    if !needs_status_write {
+                        return Ok(());
+                    }
+
                     let wave_id = if let Some(wave_id) =
                         output.data.get("wave_id").and_then(Value::as_str)
                     {
@@ -487,6 +496,7 @@ impl ProviderAdapter for ClaudeAdapter {
                                             ))
                                         })?;
                                 let old_status = runtime.status.clone();
+                                let runtime_id = runtime.id.clone();
                                 runtime_set_status_tx(tx, &runtime.id, RunStatus::Running)
                                     .await?;
                                 Ok((
@@ -494,7 +504,7 @@ impl ProviderAdapter for ClaudeAdapter {
                                     vec![(
                                         scope,
                                         Event::RuntimeStatusChanged {
-                                            runtime_id: runtime.id,
+                                            runtime_id,
                                             card_id: card_id_for_tx,
                                             old_status,
                                             new_status: RunStatus::Running,
