@@ -153,7 +153,7 @@
      consumers read `var(--overlay-scrim)` which is var(), not rgba(). */
   --overlay-scrim: rgba(20, 30, 55, 0.32);
   --cal-event-waiting-bg: oklch(97% 0.018 30);
-  --error-text: oklch(60% 0.15 25);  /* form validation, dirpicker errors */
+  --error-text: oklch(50% 0.18 25);  /* form validation, dirpicker errors — L lowered from 60% to 50% to clear WCAG 2 AA 4.5:1 on the paper background; axe flagged 4.1 at 60%. */
   --warn-border: oklch(85% 0.05 30); /* .attn.warn accent border */
 
   /* Prose / code surfaces (slice 3c of #137). Two concrete surface tokens

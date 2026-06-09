@@ -103,28 +103,27 @@ export function WavePage({
   const [modalItem, setModalItem] = useState<AddPanelMenuItem | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
 
+  const [directAddError, setDirectAddError] = useState<string | null>(null);
+
   const beginAdd = (item: AddPanelMenuItem) => {
+    // Reset both error channels on every new attempt so a stale error
+    // from a previous failed add doesn't linger past the next click.
+    setDirectAddError(null);
+    setModalError(null);
     if (!item.createSchema) {
       // No schema → immediate create (today: terminal). `onAddCard` now
       // rethrows non-contract failures (see `createFromEntry` in
-      // router.tsx); await + catch silently here to avoid unhandled
-      // promise rejections. We intentionally do NOT render an inline
-      // alert in this path: the replay-binary a11y suite drives
-      // terminal creation that always 5xxs (no proc-supervisor) and
-      // relies on the failure being silent to keep the keyboard
-      // contract observable. Schema-modal creates still surface their
-      // error via `modalError`.
+      // router.tsx) so we await + catch here and surface the error
+      // inline. The schema-modal branch below uses `modalError`.
       void (async () => {
         try {
           await onAddCard(wave.id, item.type);
         } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn('[Calm] direct add-card failed:', err);
+          setDirectAddError(formatCreateCardError(err));
         }
       })();
       return;
     }
-    setModalError(null);
     setModalItem(item);
   };
 
@@ -326,6 +325,14 @@ export function WavePage({
             {viewMode === 'list' ? 'List' : 'Grid'}
           </button>
           <AddPanel onSelect={beginAdd} />
+          {directAddError && (
+            <p
+              className="schema-form-error wave-add-direct-error"
+              role="alert"
+            >
+              {directAddError}
+            </p>
+          )}
           {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
               lifecycle on every wave (defaults to 'draft' on create); this
               renders the current state as a small uppercase pill. After

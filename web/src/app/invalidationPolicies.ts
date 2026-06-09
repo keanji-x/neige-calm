@@ -73,7 +73,8 @@ type WaveFilesDerivedEvent =
   | EventOf<'codex.job_requested'>
   | EventOf<'terminal.job_requested'>
   | EventOf<'task.completed'>
-  | EventOf<'task.failed'>;
+  | EventOf<'task.failed'>
+  | EventOf<'terminal.deleted'>;
 
 function waveFilesDerivedEventKeys(
   ev: WaveFilesDerivedEvent,
@@ -177,9 +178,11 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     keys: overlayInvalidationKeys,
     requiresContext: cardOverlayContextKeys,
   },
-  'terminal.deleted': noop(
-    "Terminal rows are not read directly by the calendar, sidebar, or wave-list views.",
-  ),
+  'terminal.deleted': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason:
+      "cards/<id>/payload.json projects terminal runtime status; reaping a terminal invalidates that projection.",
+  },
   'plugin.state': noop('No plugin list query exists yet.'),
   'codex.hook': {
     requiresContext: waveFilesDerivedEventKeys,
