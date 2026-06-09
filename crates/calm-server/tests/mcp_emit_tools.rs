@@ -348,6 +348,36 @@ async fn dispatch_request_codex_emits_codex_job_requested() {
 }
 
 #[tokio::test]
+async fn dispatch_request_rejects_worker_identity() {
+    let b = boot_with_role(CardRole::Worker).await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            50,
+            "calm.dispatch_request",
+            &b.thread_id,
+            json!({"kind": "codex", "idempotency_key": "dr-w-1", "goal": "x"}),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    let err = resp
+        .get("error")
+        .expect("worker dispatch_request must be rejected");
+    let code = err
+        .get("code")
+        .and_then(|v| v.as_i64())
+        .expect("error has code");
+    // require_role surfaces as InvalidParams (-32602) — matches the soft
+    // role gate convention used by other spec-only MCP tools.
+    assert_eq!(code, -32602, "expected spec-only soft gate; got {err:#?}");
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
 async fn task_completed_emits_task_completed_with_worker_actor() {
     let b = boot_with_role(CardRole::Worker).await;
     let mut rx = b.events.subscribe_filtered();
