@@ -174,14 +174,31 @@ impl SpecHarness {
         self.inner.shutting_down.store(true, Ordering::SeqCst);
         let _ = self.inner.shutdown.send(());
         self.persist_snapshot().await?;
-        if let Some(thread_id) = self.inner.thread_id.read().await.clone()
-            && let Err(e) = self.inner.daemon.interrupt_active_turn(&thread_id).await
-        {
-            tracing::warn!(
-                thread_id,
-                error = %e,
-                "spec harness shutdown thread interrupt failed"
-            );
+        if let Some(thread_id) = self.inner.thread_id.read().await.clone() {
+            let last_turn_id = self.inner.last_turn_id.lock().await.clone();
+            let active_turn_id = self.inner.daemon.active_turn_id_for_thread(&thread_id);
+            if let Err(e) = self.inner.daemon.interrupt_active_turn(&thread_id).await {
+                tracing::warn!(
+                    thread_id,
+                    error = %e,
+                    "spec harness shutdown thread interrupt failed"
+                );
+            }
+            if active_turn_id.is_none()
+                && let Some(last_turn_id) = last_turn_id
+                && let Err(e) = self
+                    .inner
+                    .daemon
+                    .turn_interrupt(&thread_id, &last_turn_id)
+                    .await
+            {
+                tracing::warn!(
+                    thread_id,
+                    turn_id = %last_turn_id,
+                    error = %e,
+                    "spec harness shutdown last-known turn interrupt failed"
+                );
+            }
         }
         let abort = self
             .inner

@@ -4,17 +4,17 @@ use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::HarnessState;
 use calm_server::ids::CardId;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id, now_ms};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use calm_server::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use calm_server::operation::{OperationKey, OperationOutcome, TxOutput};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::RunStatus;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -200,6 +200,64 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
     let stored = repo.runtime_get_by_id(&runtime.id).await.unwrap().unwrap();
     assert_eq!(stored.status, RunStatus::Superseded);
     assert!(state.harness.get(&runtime.id).is_none());
+}
+
+#[tokio::test]
+async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+    let runtime_id = new_id();
+    let thread_id = "thread-crash-replay".to_string();
+    let turn_id = "turn-crash-replay".to_string();
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id,
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Superseded,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: Some(turn_id.clone()),
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(state.harness.get(&runtime_id).is_none());
+
+    let shutdown_id = state
+        .operation_runtime
+        .submit(
+            "spec-harness-shutdown",
+            key(),
+            serde_json::to_value(SpecHarnessShutdownOperationPayload {
+                runtime_id: runtime_id.clone(),
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        wait_op(&state, &shutdown_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    assert!(
+        state
+            .shared_codex_appserver
+            .interrupted_turns_for_test()
+            .contains(&(thread_id.clone(), turn_id.clone()))
+    );
 }
 
 #[tokio::test]

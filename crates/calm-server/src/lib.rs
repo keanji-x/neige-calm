@@ -692,17 +692,36 @@ pub mod wave_report;
 pub mod wave_report_doc;
 pub mod ws;
 
+pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {
+    let daemon_start = state.shared_codex_appserver.start_or_takeover().await;
+    recover_harnesses_after_daemon_boot(state, daemon_start).await
+}
+
+pub async fn recover_harnesses_after_daemon_boot(
+    state: &state::AppState,
+    daemon_start: error::Result<()>,
+) -> error::Result<usize> {
+    match daemon_start {
+        Ok(()) => state.recover_harnesses_on_boot().await,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "shared codex app-server start/takeover failed; continuing boot"
+            );
+            tracing::warn!("skipping spec harness recovery; daemon unavailable");
+            Ok(0)
+        }
+    }
+}
+
 #[cfg(test)]
 mod boot_order_tests {
     #[test]
     fn main_boot_order_harness_supervisor_runtimes_operations() {
         let main_rs = include_str!("main.rs");
-        let daemon_start = main_rs
-            .find("shared_codex_appserver.start_or_takeover().await")
-            .expect("main boot starts shared codex app-server");
-        let harness_recover = main_rs
-            .find("recover_harnesses_on_boot")
-            .expect("main boot recovers spec harnesses");
+        let boot_harnesses = main_rs
+            .find("boot_harnesses(&state).await")
+            .expect("main boot starts daemon and gates spec harness recovery");
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
             .expect("main boot calls reconcile_supervisor_on_boot");
@@ -712,8 +731,7 @@ mod boot_order_tests {
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
-        assert!(daemon_start < harness_recover);
-        assert!(harness_recover < reconcile);
+        assert!(boot_harnesses < reconcile);
         assert!(reconcile < runtimes);
         assert!(runtimes < recover);
     }
