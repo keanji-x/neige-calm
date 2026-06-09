@@ -1,4 +1,4 @@
-//! PR5 (#136) — `Dispatcher` integration tests.
+//! Dispatcher integration tests.
 //!
 //! Coverage:
 //!
@@ -11,8 +11,8 @@
 //!      the idempotency key, and a single `card.added` event in the
 //!      log.
 //!   3. **Idempotency** — emit the same `CodexJobRequested` (same
-//!      `idempotency_key`) twice rapid-fire; only one worker card is
-//!      created, the second is short-circuited.
+//!      `idempotency_key`) twice rapid-fire; the operation-table unique
+//!      key allows only one worker operation/card.
 //!   4. **Semaphore cap** — with `NEIGE_DISPATCHER_PERMITS = 2`, emit
 //!      five `*.Requested` events; observe the global permit count
 //!      stays bounded by 2.
@@ -20,10 +20,8 @@
 //!      `EventScope::System` (the dispatcher needs a wave scope to mint
 //!      a card); assert a `task.failed` event lands in the events log.
 //!
-//! Tests run against an in-memory `SqlxRepo` and a stubbed
-//! `CodexClient` / `DaemonClient` — PR5 keeps daemon spawn deferred
-//! (worker card + role write-through is the testable surface), so we
-//! never actually call `spawn_terminal_for`.
+//! Tests run against an in-memory `SqlxRepo` and stubbed worker spawn
+//! dependencies.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -419,25 +417,16 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 // 3. Dispatcher idempotency.
 // ---------------------------------------------------------------------------
 
-/// PR6 followup (issue #136, note 1): the dispatcher's spawn path
-/// catches `CalmError::IdempotencyCollision` and treats it as a
-/// success short-circuit (the **second** emit produces no `task.failed`
-/// from the catch arm). A real `CalmError::Conflict` from the helper
-/// chain would now propagate as a failure — verifying the *positive*
-/// case here (the dedup arm is silent) gives us the end-to-end signal
-/// that the typed-variant catch arm is wired correctly. The negative
-/// case (real Conflict propagates) is unit-tested in the in-module
-/// `idempotency_collision_distinct_from_conflict` test.
+/// Operation idempotency treats the second emit as a duplicate of the
+/// first worker operation. The duplicate path is silent: it must not mint
+/// a second worker card or emit `task.failed`.
 ///
-/// Note (#310 followup): the dispatcher now rolls back the worker card
-/// + terminal row when the post-commit `spawn_terminal_with_parts` step
-/// fails — see `rollback_orphan_worker`. That means a failing
-/// proc-supervisor connection is the WRONG fixture to test the dedup
-/// invariant against: the
-/// orphan no longer persists and the "exactly one card stays" signal
-/// disappears. We use the fixture-backed proc supervisor so the first
-/// dispatch succeeds end-to-end (no rollback, no task.failed) and the
-/// dedup'd second emit silently short-circuits as it should.
+/// Note (#310 followup): adapter compensation deletes the worker card +
+/// terminal row when the spawn step fails. A failing proc-supervisor
+/// connection is therefore the wrong fixture for the positive dedup
+/// invariant: the card would be compensated away. We use the
+/// fixture-backed proc supervisor so the first dispatch succeeds
+/// end-to-end and the duplicate emit reuses that result.
 // ---------------------------------------------------------------------------
 // 4. Semaphore cap.
 // ---------------------------------------------------------------------------
@@ -571,13 +560,11 @@ fn artifact_ref_smoke() {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // 11. Issue #310 — same ordering contract as test 10, but for the
-//     terminal-worker path (`spawn_terminal_worker`). The pre-fix bug
-//     existed on BOTH spawn helpers: each emitted `CardAdded` inside the
-//     row-creation tx, so a hot subscriber saw the card frame before
-//     `spawn_terminal_with_parts` populated `renderer entry`. The fix
-//     deferred the broadcast in both helpers; this test guards the
-//     terminal half so a future refactor that reverts ONLY the terminal
-//     change (leaving the codex test green) still trips a regression.
+//     terminal-worker operation path. The pre-fix bug existed on both
+//     worker paths: each emitted `CardAdded` inside the row-creation tx,
+//     so a hot subscriber saw the card frame before the renderer entry was
+//     populated. This test guards the terminal half so a future refactor
+//     that reverts only the terminal change still trips a regression.
 //
 //     Mirrors `dispatcher_codex_card_added_after_renderer_entry_set_issue_310`
 //     in shape — see that test's doc comment for the full bug rationale.
@@ -662,6 +649,121 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
     );
 }
 
+#[tokio::test]
+async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    let tmp_path = tempfile::TempDir::new()
+        .expect("tempdir for daemon sockets")
+        .keep();
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp_path,
+        proc_supervisor_sock: None,
+    });
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        codex,
+        daemon,
+        None,
+        stub_shared(&repo),
+        4,
+    );
+
+    let idem = "terminal-cwd-normalized-idem";
+    let cmd = "printf cwd-normalized\n";
+    let scope = wave_scope(&wave_id, &cove_id);
+    let mut rx = events.subscribe();
+
+    repo.log_pure_event(
+        ActorId::User,
+        scope.clone(),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalJobRequested {
+            idempotency_key: idem.into(),
+            cmd: cmd.into(),
+            cwd: None,
+        },
+    )
+    .await
+    .unwrap();
+    repo.log_pure_event(
+        ActorId::User,
+        scope,
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalJobRequested {
+            idempotency_key: idem.into(),
+            cmd: cmd.into(),
+            cwd: Some(String::new()),
+        },
+    )
+    .await
+    .unwrap();
+
+    let pool = repo
+        .sqlite_pool()
+        .expect("dispatcher test repo should be sqlite-backed");
+    wait_for(Duration::from_secs(5), || {
+        let pool = pool.clone();
+        async move {
+            let (op_count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM operations WHERE kind = 'terminal-worker' AND idempotency_key = ?1",
+            )
+            .bind(idem)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            (op_count == 1).then_some(())
+        }
+    })
+    .await
+    .expect("terminal-worker operation row");
+
+    let mut saw_task_failed = false;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key, ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    saw_task_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        !saw_task_failed,
+        "duplicate terminal-worker request with equivalent cwd must reuse idempotency instead of emitting task.failed"
+    );
+
+    let (op_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM operations WHERE kind = 'terminal-worker' AND idempotency_key = ?1",
+    )
+    .bind(idem)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        op_count, 1,
+        "None and blank cwd terminal-worker retries must share one operation row"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 12. Issue #310 followup (codex's P2 escalation) — orphan-row rollback on
 //     post-commit spawn failure.
@@ -670,24 +772,17 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 //     row-creation tx committed (real failure modes: missing daemon
 //     binary, fd exhaustion, permission denied, readiness failure), the
 //     dispatcher returned the error WITHOUT cleaning up the card +
-//     terminal row. The orphan row carried the `idempotency_key`, so a
-//     retry with the same key short-circuited on the abandoned row —
-//     the user could never re-dispatch. Strictly worse than pre-#310:
-//     pre-fix at least `CardAdded` fired at tx-commit, so the card was
-//     visible/closeable; post-fix it was invisible AND idempotency-locked.
+//     terminal row.
 //
-//     The fix: on spawn failure, open a separate tx that DELETEs both
-//     the terminal row (`ON DELETE RESTRICT` since #11 means terminal
-//     first) and the card row, THEN propagate the spawn error so
-//     `run_one` emits `TaskFailed`. A retry with the same key now goes
-//     through fresh.
+//     The fix: operation adapter compensation reaps terminal artifacts,
+//     deletes both worker rows, and lets the dispatcher emit `TaskFailed`
+//     from the failed operation result.
 //
 //     This test pins all three legs of the contract:
 //        a) dispatch returns Err → task.failed fires.
 //        b) no card with that idempotency_key remains in the DB.
-//        c) A re-dispatch with the SAME idempotency_key (this time with
-//           a working proc-supervisor fixture) succeeds — proves the orphan row
-//           is not blocking retries.
+//        c) a duplicate with the SAME idempotency_key reuses the failed
+//           operation row and does not mint a second worker card.
 //
 //     We provoke spawn failure by pointing `DaemonClient.proc_supervisor_sock`
 //     at a nonexistent path (same trick `stub_daemon()` uses) — the
@@ -705,9 +800,8 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 //     Same three-leg contract as test 12:
 //        a) dispatch returns Err → task.failed fires.
 //        b) no card with that idempotency_key remains in the DB.
-//        c) A re-dispatch with the SAME idempotency_key (this time
-//           with a working proc-supervisor fixture) succeeds — proves
-//           the orphan row is not blocking retries.
+//        c) a duplicate with the SAME idempotency_key reuses the failed
+//           operation row and does not mint a second worker card.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310() {
@@ -783,10 +877,10 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     );
 
     // Leg (c): retry with the SAME idempotency_key against a fresh
-    // dispatcher whose proc-supervisor fixture accepts EnsureProc. See
-    // test 12's leg (c) doc comment for the full rationale (including
-    // why a fresh `EventBus` is needed to avoid the failing dispatcher
-    // racing the success dispatcher on the retry envelope).
+    // dispatcher whose proc-supervisor fixture would accept EnsureProc.
+    // Operation-table idempotency now owns the key, so the duplicate
+    // request reuses the failed operation result instead of spawning a
+    // second worker card.
     drop(dispatcher_fail);
     let events_retry = calm_server::event::EventBus::new();
     // Intentionally leak the tempdir — see test 12's note for the
@@ -809,6 +903,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         stub_shared(&repo),
         4,
     );
+    let mut rx_retry = events_retry.subscribe();
 
     let req_retry = Event::TerminalJobRequested {
         idempotency_key: idem.into(),
@@ -827,25 +922,52 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     .await
     .unwrap();
 
-    // The retry should mint a card carrying our idempotency_key. If
-    // the rollback didn't fire, the orphan row would short-circuit and
-    // no NEW card lands — `wait_for` returns None and we panic.
-    let card = wait_for(Duration::from_secs(5), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let env = rx_retry.recv().await.unwrap();
+            if let Event::TaskFailed {
+                idempotency_key, ..
+            } = env.event
+                && idempotency_key == idem
+            {
+                break;
+            }
+        }
     })
     .await
-    .expect(
-        "retry with the same idempotency_key MUST succeed in spawning a fresh terminal worker \
-         card — if this times out, the orphan row from the failed first attempt is short-\
-         circuiting the retry (the rollback didn't fire or didn't remove the row)",
-    );
+    .expect("duplicate failed terminal-worker operation should emit task.failed");
 
+    let pool = repo
+        .sqlite_pool()
+        .expect("dispatcher test repo should be sqlite-backed");
+    let (op_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM operations WHERE kind = 'terminal-worker' AND idempotency_key = ?1",
+    )
+    .bind(idem)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        op_count, 1,
+        "duplicate failed terminal-worker request must reuse the existing operation row"
+    );
+    let (phase,): (String,) = sqlx::query_as(
+        "SELECT phase FROM operations WHERE kind = 'terminal-worker' AND idempotency_key = ?1",
+    )
+    .bind(idem)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(phase, "failed");
+
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let leftovers: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
     assert!(
-        repo.card_get(card.id.as_ref()).await.unwrap().is_some(),
-        "the retry's card must be live in the DB",
+        leftovers.is_empty(),
+        "duplicate failed terminal-worker request must not mint a replacement card"
     );
 }
 
@@ -856,8 +978,8 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 //     already issued EnsureProc + persisted `pid` + inserted the renderer
 //     entry but before readiness succeeded (real failure mode: the child
 //     hangs during setup until the backstop fires),
-//     `rollback_orphan_worker` deleted the rows but left the
-//     supervised process leaking — the sweeper's SQL excludes
+//     compensation deleted the rows but left the supervised process
+//     leaking — the sweeper's SQL excludes
 //     terminals still referenced by a card row, but we just deleted the
 //     card, so the sweeper *also* never sees the orphan. Result: a
 //     proc-supervisor entry with no DB row to anchor cleanup, until the
@@ -903,9 +1025,8 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
     );
 
     // Use the terminal-worker path: simpler (no codex env / MCP
-    // plumbing) but exercises the same `rollback_orphan_worker` call
-    // site as the codex path. Both paths funnel through the same
-    // helper, so reap-on-rollback proven for one path holds for both.
+    // plumbing) but exercises the same worker compensation helper as the
+    // codex path. Reap-on-rollback proven for one path holds for both.
     let idem = "reap-on-rollback-1";
     let req = Event::TerminalJobRequested {
         idempotency_key: idem.into(),
@@ -972,10 +1093,10 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
 //     turning a completed worker into `task.failed` with no card/output
 //     for the user to inspect.
 //
-//     The fix discriminates inside `rollback_orphan_worker`: when the
-//     renderer attach reader has persisted a clean exit, the helper
-//     returns `Preserved` (no row delete). The caller then broadcasts
-//     `CardAdded` and returns Ok(()) instead of the spawn Err.
+//     The fix discriminates inside adapter compensation: when the renderer
+//     attach reader has persisted a clean exit, the worker rows are
+//     preserved. The caller then broadcasts `CardAdded` and returns Ok(())
+//     instead of the spawn Err.
 //
 //     This test pins that preservation contract:
 //

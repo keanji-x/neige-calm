@@ -170,9 +170,9 @@ pub type WriteWithEventsFn<'a> = Box<
 ///   * The terminal-sweeper will NOT reap the orphan while the runtime
 ///     row is active: its SQL excludes terminals still referenced by
 ///     `runtimes.terminal_run_id`.
-///   * The `idempotency_key` short-circuits future retries — a user
-///     who re-dispatches with the same key gets the silent-skip path
-///     in `find_card_by_idempotency_key_tx`.
+///   * The operation idempotency row owns future retries — a user
+///     who re-dispatches with the same key observes the existing
+///     operation result instead of a fresh worker spawn.
 ///
 /// The dispatcher's `TaskFailed` emission only fires on a returned
 /// error from a live spawn, not on a process death mid-spawn, so the
