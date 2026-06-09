@@ -29,8 +29,27 @@ vi.mock('../../api/calm', async () => {
 });
 
 vi.mock('./wave-report-sidebar', () => ({
-  WaveReportSidebar: ({ fallback }: { fallback?: ReactNode }) => (
-    <div data-testid="mock-wave-report-sidebar">{fallback}</div>
+  WaveReportSidebar: ({
+    selectedPath,
+    onSelectedPathChange,
+    fallback,
+  }: {
+    selectedPath: string | null;
+    onSelectedPathChange: (path: string | null) => void;
+    fallback?: ReactNode;
+  }) => (
+    <div data-testid="mock-wave-report-sidebar" data-selected-path={selectedPath ?? ''}>
+      <button
+        type="button"
+        onClick={() => onSelectedPathChange('cards/card_1/payload.json')}
+      >
+        Select payload
+      </button>
+      <button type="button" onClick={() => onSelectedPathChange('report.md')}>
+        Select report.md
+      </button>
+      {fallback}
+    </div>
   ),
 }));
 
@@ -341,6 +360,35 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
     // Edit affordance present, body textarea is not.
     expect(screen.getByLabelText('Edit report')).toBeTruthy();
     expect(screen.queryByLabelText('Wave report body')).toBeNull();
+  });
+
+  it('shows the edit affordance when the default report view is selected', () => {
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'initial summary',
+      body: '# Goal\n\nbody\n',
+    });
+    expect(screen.getByTestId('mock-wave-report-sidebar')).toHaveAttribute(
+      'data-selected-path',
+      '',
+    );
+    expect(screen.getByLabelText('Edit report')).toBeTruthy();
+  });
+
+  it('hides the edit affordance when a non-report file is selected', () => {
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'initial summary',
+      body: '# Goal\n\nbody\n',
+    });
+    fireEvent.click(screen.getByText('Select payload'));
+    expect(screen.getByTestId('mock-wave-report-sidebar')).toHaveAttribute(
+      'data-selected-path',
+      'cards/card_1/payload.json',
+    );
+    expect(screen.queryByLabelText('Edit report')).toBeNull();
   });
 
   it('omits the edit button when no WaveContext is provided', () => {

@@ -9,6 +9,7 @@ import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
 import { WaveLifecycleBadge } from '../shared/components/WaveLifecycleBadge';
 import { WaveContext } from '../shared/components/WaveContext';
+import { CalmApiError } from '../api/calm';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
 import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
@@ -45,6 +46,20 @@ const VIEW_MODE_DEFAULT: ViewModeOverlay = { mode: 'grid' };
  *  string drifting in from a future server schema. */
 function isViewMode(s: unknown): s is ViewMode {
   return s === 'grid' || s === 'list';
+}
+
+function formatCreateCardError(err: unknown): string {
+  if (err instanceof CalmApiError) {
+    const message = err.message.trim();
+    if (message.length > 0) return message;
+    return err.status >= 500
+      ? 'Failed to create card'
+      : `Request failed (${err.status})`;
+  }
+  if (err instanceof Error && err.message.trim().length > 0) {
+    return err.message;
+  }
+  return 'Failed to create card';
 }
 
 // ============================================================
@@ -86,6 +101,7 @@ export function WavePage({
   // Schema-driven AddPanel selections open a modal SchemaForm — kept in
   // local state, never reaches the kernel until submit.
   const [modalItem, setModalItem] = useState<AddPanelMenuItem | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   const beginAdd = (item: AddPanelMenuItem) => {
     if (!item.createSchema) {
@@ -93,16 +109,23 @@ export function WavePage({
       onAddCard(wave.id, item.type);
       return;
     }
+    setModalError(null);
     setModalItem(item);
   };
 
-  const closeModal = () => setModalItem(null);
+  const closeModal = () => {
+    setModalError(null);
+    setModalItem(null);
+  };
   const submitModal = async (values: Record<string, string>) => {
     if (!modalItem) return;
+    setModalError(null);
     try {
       await onCreateCardWithBody?.(wave.id, modalItem.type, values);
-    } finally {
+      setModalError(null);
       setModalItem(null);
+    } catch (err) {
+      setModalError(formatCreateCardError(err));
     }
   };
 
@@ -357,6 +380,11 @@ export function WavePage({
                 onSelect={(path) => submitModal({ [soleDir.key]: path })}
                 selectLabel="Create here"
               />
+              {modalError && (
+                <p className="schema-form-error schema-form-error-inset" role="alert">
+                  {modalError}
+                </p>
+              )}
             </Dialog>
           );
         }
@@ -366,6 +394,11 @@ export function WavePage({
             onClose={closeModal}
             title={`New ${modalItem.label.replace(/^New\s+/i, '')}`}
           >
+            {modalError && (
+              <p className="schema-form-error" role="alert">
+                {modalError}
+              </p>
+            )}
             {modalItem.createSchema && (
               <SchemaForm
                 schema={modalItem.createSchema}

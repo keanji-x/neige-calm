@@ -1915,6 +1915,16 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .schema-form-submit { background: var(--text); color: var(--paper); border-color: var(--text); }
 .schema-form-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+.schema-form-error {
+  margin: var(--space-0);
+  font-size: var(--text-sm);
+  color: var(--error-text);
+}
+.schema-form-error-inset {
+  padding: var(--space-3) var(--space-7);
+  border-top: 1px solid var(--hairline);
+  background: var(--paper);
+}
 
 /* ===== NewTaskForm — #250 PR 3 inline configuration card =====
    Used by CovePage's `+ New wave` (this PR) and the calendar empty-

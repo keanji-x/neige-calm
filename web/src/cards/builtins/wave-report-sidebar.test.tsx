@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { WaveReportSidebar } from './wave-report-sidebar';
+import { useState } from '../../shared/state';
 
 vi.mock('../../app/theme', () => ({
   useTheme: () => ({ resolved: 'light' }),
@@ -34,6 +35,27 @@ function renderWithClient(ui: ReactNode) {
   const client = makeClient();
   return render(
     <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
+}
+
+function ControlledWaveReportSidebar({
+  waveId,
+  fallback,
+}: {
+  waveId: string;
+  fallback?: ReactNode;
+}) {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  useEffect(() => {
+    setSelectedPath(null);
+  }, [waveId]);
+  return (
+    <WaveReportSidebar
+      waveId={waveId}
+      selectedPath={selectedPath}
+      onSelectedPathChange={setSelectedPath}
+      fallback={fallback}
+    />
   );
 }
 
@@ -98,7 +120,7 @@ describe('WaveReportSidebar', () => {
       },
     });
 
-    renderWithClient(<WaveReportSidebar waveId="wave_1" />);
+    renderWithClient(<ControlledWaveReportSidebar waveId="wave_1" />);
 
     expect(await screen.findByRole('treeitem', { name: /index\.md/ })).toBeTruthy();
     expect(screen.getByRole('treeitem', { name: /cards\// })).toBeTruthy();
@@ -149,7 +171,7 @@ describe('WaveReportSidebar', () => {
     const client = makeClient();
     const view = render(
       <QueryClientProvider client={client}>
-        <WaveReportSidebar waveId="wave_1" />
+        <ControlledWaveReportSidebar waveId="wave_1" />
       </QueryClientProvider>,
     );
 
@@ -165,7 +187,7 @@ describe('WaveReportSidebar', () => {
 
     view.rerender(
       <QueryClientProvider client={client}>
-        <WaveReportSidebar waveId="wave_2" />
+        <ControlledWaveReportSidebar waveId="wave_2" />
       </QueryClientProvider>,
     );
 
@@ -194,7 +216,7 @@ describe('WaveReportSidebar', () => {
       },
     });
 
-    renderWithClient(<WaveReportSidebar waveId="wave_1" />);
+    renderWithClient(<ControlledWaveReportSidebar waveId="wave_1" />);
 
     const cards = await screen.findByRole('treeitem', { name: /cards\// });
     cards.focus();
@@ -226,7 +248,7 @@ describe('WaveReportSidebar', () => {
       },
     });
 
-    renderWithClient(<WaveReportSidebar waveId="wave_1" />);
+    renderWithClient(<ControlledWaveReportSidebar waveId="wave_1" />);
 
     const report = await screen.findByRole('treeitem', { name: /report\.md/ });
     const wave = screen.getByRole('treeitem', { name: /wave\.json/ });
@@ -247,7 +269,7 @@ describe('WaveReportSidebar', () => {
       '/api/waves/wave_1/files/ls': { body: [] },
     });
 
-    renderWithClient(<WaveReportSidebar waveId="wave_1" />);
+    renderWithClient(<ControlledWaveReportSidebar waveId="wave_1" />);
 
     expect(await screen.findByText('No files')).toBeTruthy();
   });
@@ -260,7 +282,7 @@ describe('WaveReportSidebar', () => {
       },
     });
 
-    renderWithClient(<WaveReportSidebar waveId="wave_1" />);
+    renderWithClient(<ControlledWaveReportSidebar waveId="wave_1" />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'wave fs unavailable',
@@ -280,7 +302,7 @@ describe('WaveReportSidebar', () => {
       },
     });
 
-    renderWithClient(<WaveReportSidebar waveId="wave_1" />);
+    renderWithClient(<ControlledWaveReportSidebar waveId="wave_1" />);
 
     fireEvent.click(await screen.findByRole('treeitem', { name: /report\.md/ }));
 

@@ -26,7 +26,7 @@
 // row through every card. If the context is missing (e.g. unit tests
 // that render the card in isolation) the badge silently omits.
 
-import { useContext } from 'react';
+import { useContext, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useState } from '../../shared/state';
@@ -474,6 +474,11 @@ function WaveReportCardImpl({
     summary: string;
     body: string;
   } | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedPath(null);
+  }, [waveId]);
 
   // Prefer the locally-applied save projection over the prop. If the
   // prop later catches up (server-pushed event) we'd ideally drop
@@ -483,7 +488,8 @@ function WaveReportCardImpl({
   const summary = override ? override.summary : card.summary;
   const body = override ? override.body : card.body;
 
-  const canEdit = waveId !== null;
+  const canEdit =
+    waveId !== null && (selectedPath === null || selectedPath === 'report.md');
 
   return (
     <div className="wave-report-card">
@@ -500,8 +506,8 @@ function WaveReportCardImpl({
         {/* Edit pencil — sits between the title slot and the status
             badge so the close button (absolutely positioned by
             CardHead) doesn't overlap it. Hidden when we have no
-            wave id (defensive — the headless-test renders without
-            WaveContext, and there's no wave to POST against). */}
+            wave id, or when the file sidebar is projecting a
+            non-report file. */}
         {canEdit && !editing && (
           <button
             type="button"
@@ -543,6 +549,8 @@ function WaveReportCardImpl({
       ) : waveId !== null ? (
         <WaveReportSidebar
           waveId={waveId}
+          selectedPath={selectedPath}
+          onSelectedPathChange={setSelectedPath}
           fallback={<ReadOnlyView summary={summary} body={body} waveId={waveId} />}
         />
       ) : (

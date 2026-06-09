@@ -12,16 +12,35 @@ import { CodePane } from './file-viewer-codemirror';
 
 export interface WaveReportSidebarProps {
   waveId: string;
+  selectedPath: string | null;
+  onSelectedPathChange: (path: string | null) => void;
   fallback?: ReactNode;
 }
 
-export function WaveReportSidebar({ waveId, fallback }: WaveReportSidebarProps) {
-  return <WaveReportSidebarState key={waveId} waveId={waveId} fallback={fallback} />;
+export function WaveReportSidebar({
+  waveId,
+  selectedPath,
+  onSelectedPathChange,
+  fallback,
+}: WaveReportSidebarProps) {
+  return (
+    <WaveReportSidebarState
+      key={waveId}
+      waveId={waveId}
+      selectedPath={selectedPath}
+      onSelectedPathChange={onSelectedPathChange}
+      fallback={fallback}
+    />
+  );
 }
 
-function WaveReportSidebarState({ waveId, fallback }: WaveReportSidebarProps) {
+function WaveReportSidebarState({
+  waveId,
+  selectedPath,
+  onSelectedPathChange,
+  fallback,
+}: WaveReportSidebarProps) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const treeRef = useRef<HTMLUListElement>(null);
   const rootQ = useWaveFileList(waveId, '');
@@ -97,7 +116,7 @@ function WaveReportSidebarState({ waveId, fallback }: WaveReportSidebarProps) {
     if (event.key === 'Enter') {
       event.preventDefault();
       if (isDir) toggleDir(path);
-      else setSelectedPath(path);
+      else onSelectedPathChange(path);
     }
   };
 
@@ -123,7 +142,7 @@ function WaveReportSidebarState({ waveId, fallback }: WaveReportSidebarProps) {
           defaultFocusedPath={defaultFocusedPath}
           cardKinds={cardKinds}
           onToggleDir={toggleDir}
-          onSelectFile={setSelectedPath}
+          onSelectFile={onSelectedPathChange}
           onFocusItem={setFocusedPath}
           onItemKeyDown={handleTreeItemKeyDown}
         />

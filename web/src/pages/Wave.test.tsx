@@ -16,12 +16,14 @@
 // path that hasn't changed shape).
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act, fireEvent } from '@testing-library/react';
+import { render, screen, act, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { WavePage } from './Wave';
 import type { Cove, Wave } from '../types';
+import * as api from '../api/calm';
+import { DARK_THEME_RGB } from '../api/themeRgb';
 
 // WaveGrid is lazy-loaded via React.lazy + an internal dynamic import.
 // For these tests we never actually render any cards, but the Suspense
@@ -37,20 +39,59 @@ vi.mock('../WaveList', () => ({
   WaveList: () => <div data-testid="wave-list-stub" />,
 }));
 
-// AddPanel pulls in the full card registry and a heavy menu DOM tree; we
-// don't need its internals for rename-keyboard testing.
+// AddPanel pulls in the full card registry and a heavy menu DOM tree. The
+// mock keeps rename tests lightweight and exposes one codex trigger for
+// the create-error modal coverage below.
 vi.mock('../shared/components/AddPanel', () => ({
-  AddPanel: () => <div data-testid="add-panel-stub" />,
+  AddPanel: ({
+    onSelect,
+  }: {
+    onSelect: (item: {
+      type: string;
+      label: string;
+      createSchema?: {
+        fields: Array<{ key: string; label: string; type: 'directory' }>;
+      };
+    }) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="add-panel-stub"
+      onClick={() =>
+        onSelect({
+          type: 'codex',
+          label: 'codex',
+          createSchema: {
+            fields: [{ key: 'cwd', label: 'Working directory', type: 'directory' }],
+          },
+        })
+      }
+    >
+      Add codex
+    </button>
+  ),
 }));
 
 // Mock the calm-server REST client so the view-mode overlay query that
 // `WavePage` now mounts (Slice 9) doesn't hit the network in jsdom. It
 // resolves to "no overlay rows", which puts the page in its default
 // grid mode — matching every existing test's expectation.
-vi.mock('../api/calm', () => ({
-  listOverlays: vi.fn().mockResolvedValue([]),
-  upsertOverlay: vi.fn().mockResolvedValue({}),
-}));
+vi.mock('../api/calm', async () => {
+  const actual = await vi.importActual<typeof import('../api/calm')>(
+    '../api/calm',
+  );
+  return {
+    ...actual,
+    listOverlays: vi.fn().mockResolvedValue([]),
+    upsertOverlay: vi.fn().mockResolvedValue({}),
+    listDir: vi.fn().mockResolvedValue({
+      path: '/tmp/project',
+      parent: '/tmp',
+      entries: [],
+    }),
+    createCodexCard: vi.fn(),
+  };
+});
 
 // `WavePage` calls `useOverlayState` for the per-wave view-mode toggle
 // (Slice 9 of issue #56). The hook reads `useQueryClient()` — without a
@@ -263,5 +304,57 @@ describe('WavePage rename keyboard entry', () => {
     // the display span still appears with the original label.
     const restored = screen.getByRole('button', { name: 'Migrate auth' });
     expect(document.activeElement).toBe(restored);
+  });
+});
+
+describe('WavePage schema card create errors', () => {
+  it('shows a codex create 500 inline and keeps the modal open', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listDir).mockResolvedValue({
+      path: '/tmp/project',
+      parent: '/tmp',
+      entries: [],
+    });
+    vi.mocked(api.createCodexCard).mockRejectedValueOnce(
+      new api.CalmApiError(
+        500,
+        'internal',
+        'internal: shared codex app-server is not running',
+      ),
+    );
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onCreateCardWithBody={async (waveId, _type, values) => {
+            await api.createCodexCard(waveId, {
+              cwd: values.cwd,
+              theme: DARK_THEME_RGB,
+            });
+          }}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add codex' }));
+    const createHere = await screen.findByRole('button', { name: 'Create here' });
+    await waitFor(() => expect(createHere).not.toBeDisabled());
+    await user.click(createHere);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'internal: shared codex app-server is not running',
+    );
+    expect(screen.getByRole('dialog', { name: 'New codex' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create here' })).toBeInTheDocument();
+    expect(api.createCodexCard).toHaveBeenCalledWith('w1', {
+      cwd: '/tmp/project',
+      theme: DARK_THEME_RGB,
+    });
   });
 });
