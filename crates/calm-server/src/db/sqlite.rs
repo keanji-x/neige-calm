@@ -3802,7 +3802,8 @@ impl RepoEventWrite for SqlxRepo {
         write: &crate::state::WriteContext,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         // Run the caller-supplied entity write.
         let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
         let event = match fut.await {
@@ -3859,7 +3860,8 @@ impl RepoEventWrite for SqlxRepo {
         write: &crate::state::WriteContext,
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>> {
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         // Run the caller-supplied entity write — closure returns one
         // or more (scope, event) pairs for this tx.
         let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
@@ -3933,7 +3935,8 @@ impl RepoEventWrite for SqlxRepo {
         wave_cove_cache: &WaveCoveCache,
         event: Event,
     ) -> Result<i64> {
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         // PR3 (#136) — gate. Pure events don't have an entity write to
         // populate the cache from, so the role lookup uses the cache's
         // current contents. `log_pure_event` callers (codex hook
@@ -3972,7 +3975,8 @@ impl RepoEventWrite for SqlxRepo {
     /// broadcasting any downstream event via `log_pure_event` after
     /// this returns. See [`crate::db::WriteInTxFn`] for the rationale.
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
         match fut.await {
             Ok(()) => {}
