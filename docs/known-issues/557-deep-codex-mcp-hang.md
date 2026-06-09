@@ -89,3 +89,33 @@ WORKING 同样是 `role=spec` 的卡,Stop 能写进 DB,所以 role_gate **不会
 下一步实证(不写代码改动,只加临时日志):
 - 在 `crates/calm-server/src/routes/codex.rs:163-217` `ingest_provider_hook` 顶部和 `log_pure_event` 调用前后各加一条 `tracing::info!`,带 `hook_event_name + card_id + hook_idempotency_key`,重启 dev 容器后**复现 STUCK 一次**,查这条 Stop 走没走完整路径。
 - 在 `crates/calm-server/src/db/sqlite.rs:3934-3940` `enforce_role` 失败分支加 `tracing::warn!(?violation, ?actor, ?event)`,看 STUCK Stop 是不是被 role_gate 静悄悄 forbid 掉了(用 `let _ = tx.rollback()`)。
+
+## 重大更正(claude 自我修正,基于 patched binary 复现)
+
+**先前结论"Stop 进了 broadcast 但没进 DB"几乎确定是测量错误**。复现实验:
+
+1. 在 `repro/557-codex-stop-hook-missing` 分支加 9 处 `tracing::info!`/`warn!`(commit `4d95db40`),覆盖 ingest 路径每一个分支
+2. 编译进 dev 容器 `neige-calm-569`(`12:38:28` 重启)
+3. POST 创建两张新 spec 卡(`3d17b314`、`7ae53403`)
+4. 等 5+ 分钟
+
+**结果**:两张卡都卡在 `hook.codex.permission_request` 之后,**永远不再有 hook**(包括 Stop)。tracing 显示:
+- 每条 hook 都走完 `pre_log_pure_event → committed_emitting → logged` 三步,没有 `enforce_role_violation`,没有 `append_failed`
+- 没有"广播了但没持久化"的现象
+
+**回头看原始观察的漏洞**:`/tmp/neige569-now.db` 是 `docker exec ... cat /var/lib/neige-calm/calm.db > /tmp/...` 拷的,**没拷 `calm.db-wal` 边车**。SQLite WAL 模式下,主 `.db` 只是 header(4096 字节),recent commits 全在 `.db-wal`。读 snapshot 时 sqlite 不会去找不存在的 wal,所以最近几秒~几分钟的 commits 看不到。
+
+也就是说原始 `12:09:02 dispatcher saw Stop` + "DB 无行" 真相极可能是:**Stop 已经 commit 到 WAL,但我的 snapshot 没拷 WAL,所以读不到**。dispatcher 看到 broadcast 是因为 `log_pure_event` 的 commit-then-emit 不变式确实成立了,只是我量错了。
+
+## 真实根因(修正后)
+
+唯一可重复实证的现象:**codex 0.137 共享 daemon 跑 spec card 时,`approval_policy=Never` 下 MCP 写工具(`calm_update_wave_state`、`calm_report_write` 等)依然会触发 `permission_request`,并永远等不到应答 → turn loop 卡在 tool future drain → never `if !needs_follow_up` → Stop hook 不发 → spec runtime 永远 `phase=turn_running`**。
+
+读工具(`calm_get_wave_state`、`calm_wave_cat`)能正常完成。区别可能在 codex 上游对写类工具的特殊处理(`SkillMcpDependencyInstall` / `GuardianApproval` feature),需要再核。
+
+## 重新分类的下一步
+- 不再追"Stop 持久化丢失"假象(不存在)
+- 集中在"MCP 写工具的 permission_request 为何在 Never policy 下不自动决议":
+  - 看 codex `permission_request_hook` 的 handler 是否需要回复
+  - 看 calm-server MCP server 是否应该 inline 应答 permission_request
+  - 看 `[mcp_servers.calm].auto_approve` 类配置是否被生成在 per-card config.toml
