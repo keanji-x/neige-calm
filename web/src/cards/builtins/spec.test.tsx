@@ -409,6 +409,77 @@ describe('SpecCard chat timeline', () => {
     );
   });
 
+  it('dedupes mcpToolCall by item_uuid: inProgress is replaced by completed', async () => {
+    const started = harnessRow(
+      1,
+      'mcpToolCall',
+      {
+        id: 'mcp_call_x',
+        server: 'neige',
+        tool: 'calm.wave.cat',
+        status: 'inProgress',
+        arguments: { path: 'report.md' },
+      },
+      { method: 'item/started', item_uuid: 'mcp_call_x' },
+    );
+    const completed = harnessRow(
+      2,
+      'mcpToolCall',
+      {
+        id: 'mcp_call_x',
+        server: 'neige',
+        tool: 'calm.wave.cat',
+        status: 'completed',
+        arguments: { path: 'report.md' },
+        result: { content: [{ type: 'text', text: 'final report body' }] },
+        durationMs: 120,
+      },
+      { method: 'item/completed', item_uuid: 'mcp_call_x' },
+    );
+
+    // First REST fetch returns only the started row, then the live event
+    // causes a REST reload whose completed row replaces it by item_uuid.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response([started]))
+      .mockResolvedValueOnce(response([started, completed]));
+    vi.stubGlobal('fetch', fetchMock);
+    const Component = SpecEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'spec',
+          id: 'card_spec_1',
+          goal: 'Ship the spec UI',
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('running...')).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.fakeStream.emit({
+        ev: 'harness.item.added',
+        data: {
+          runtime_id: 'runtime_1',
+          card_id: 'card_spec_1',
+          wave_id: 'wave_1',
+          item_db_id: 2,
+          item_uuid: 'mcp_call_x',
+          item_type: 'mcpToolCall',
+          turn_id: 'turn_1',
+          method: 'item/completed',
+        },
+      });
+    });
+
+    expect(await screen.findByText('completed')).toBeInTheDocument();
+    expect(screen.queryByText('running...')).not.toBeInTheDocument();
+    expect(screen.getAllByText('neige/calm.wave.cat')).toHaveLength(1);
+    expect(screen.getByText(/final report body/)).toBeInTheDocument();
+    expect(screen.queryByText('[mcpToolCall]')).not.toBeInTheDocument();
+  });
+
   it('drops a stale started item when its completed item already exists', async () => {
     const completed = harnessRow(
       2,
