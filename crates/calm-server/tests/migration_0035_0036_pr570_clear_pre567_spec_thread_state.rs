@@ -1,4 +1,4 @@
-//! #570 P2-C — migration 0035 nulls reusable pre-PR #567 spec thread ids.
+//! #570 P2-C — migrations 0035/0036 clear reusable pre-PR #567 spec thread state.
 
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use std::str::FromStr;
@@ -138,6 +138,8 @@ const MIGRATIONS_UP_TO_0034: &[(&str, &str)] = &[
 
 const MIGRATION_0035_SQL: &str =
     include_str!("../migrations/0035_pr567_null_pre567_spec_thread_ids.sql");
+const MIGRATION_0036_SQL: &str =
+    include_str!("../migrations/0036_pr570_clear_pre567_spec_snapshot_last_thread_id.sql");
 
 async fn apply_sql(pool: &SqlitePool, name: &str, sql: &str) {
     let stripped = sql
@@ -380,6 +382,12 @@ async fn nulls_only_spec_runtime_thread_ids_without_per_card_token_rows() {
         &pool,
         "0035_pr567_null_pre567_spec_thread_ids",
         MIGRATION_0035_SQL,
+    )
+    .await;
+    apply_sql(
+        &pool,
+        "0036_pr570_clear_pre567_spec_snapshot_last_thread_id",
+        MIGRATION_0036_SQL,
     )
     .await;
 

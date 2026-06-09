@@ -11,7 +11,6 @@
 
 UPDATE runtimes
    SET thread_id = NULL,
-       handle_state_json = json_remove(handle_state_json, '$.last_thread_id'),
        updated_at_ms = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
  WHERE thread_id IS NOT NULL
    AND thread_id <> ''
