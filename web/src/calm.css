@@ -578,7 +578,6 @@ select:-webkit-autofill {
   padding: var(--space-5) var(--space-5) var(--space-6);
   color: var(--color-nav-primary);
 }
-.side .nav-today.active { font-weight: 700; }
 [data-theme="dark"] .side .nav-item.active { background: var(--overlay-hover-strong); }
 .side .nav-item .ico {
   width: 18px; height: 18px;
@@ -932,6 +931,10 @@ select:-webkit-autofill {
 }
 [data-theme="dark"] .side .cove-nav.active { background: var(--overlay-active); }
 .side .cove-nav:active { background: var(--overlay-active); color: var(--text); }
+/* `.swatch-wrap` is kept (even though `.swatch` is hidden) so the
+   chevron alignment math at `.cove-nav { padding-left: ... + 22px }`
+   above stays valid. Removing the wrap would shift the cove label
+   left and break visual alignment with inline waves underneath. */
 .side .cove-nav .swatch-wrap {
   position: relative;
   width: 12px; height: 12px;
