@@ -88,6 +88,7 @@ fn dispatch_request_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[CardRole::Spec],
     }
 }
 
@@ -182,6 +183,7 @@ fn task_completed_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[],
     }
 }
 
@@ -236,6 +238,7 @@ fn task_failed_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[],
     }
 }
 

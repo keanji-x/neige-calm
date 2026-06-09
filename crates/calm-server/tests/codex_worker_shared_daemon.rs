@@ -648,9 +648,8 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     );
     // The shared worker must be started with the Worker-role developer
     // instructions — otherwise the agent on the shared daemon behaves like
-    // a plain prompt session and skips the calm.task_completed /
-    // calm.task_failed reporting contract the legacy per-card path enforces
-    // via CODEX_HOME/config.toml. Assert thread/start carried them.
+    // a plain prompt session and skips the neige task reporting contract.
+    // Assert thread/start carried them.
     let thread_start = rows
         .iter()
         .find(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
@@ -669,7 +668,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
         "developer_instructions must be the Worker prompt: {developer_instructions}"
     );
     assert!(
-        developer_instructions.contains("calm.task_completed"),
+        developer_instructions.contains("neige task-completed"),
         "developer_instructions must include the task reporting contract: {developer_instructions}"
     );
 }

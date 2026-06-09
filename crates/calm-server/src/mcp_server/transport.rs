@@ -375,11 +375,26 @@ async fn dispatch_request(
 ) -> Result<Value, RpcError> {
     match method {
         "tools/list" => {
+            // Resolve role per-call so shared-daemon connections (one socket,
+            // many thread identities) get the right per-thread tools/list. The
+            // per-card legacy-token path keeps working via `legacy_identity`.
+            let top_meta = request_meta_outcome(request_meta.as_ref());
+            let params_meta = extract_request_meta_outcome(&params);
+            let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
+            let role = match thread_id {
+                Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list").await {
+                    Ok(identity) => Some(identity.role),
+                    Err(_) => legacy_identity.map(|identity| identity.role),
+                },
+                None => legacy_identity.map(|identity| identity.role),
+            };
             // Codex's `tools/list` expects `{ "tools": [...] }`. Each
             // entry is `{ name, description, inputSchema }`, optionally
             // carrying MCP `annotations` when a descriptor provides them.
-            let tools: Vec<Value> = registry
-                .descriptors()
+            let descriptors = role
+                .map(|role| registry.descriptors_for_role(role))
+                .unwrap_or_default();
+            let tools: Vec<Value> = descriptors
                 .into_iter()
                 .map(|d| {
                     let mut obj = serde_json::Map::new();
