@@ -4,7 +4,9 @@
 //! generates a fresh 32-byte hex token and stores `SHA-256(token)` in
 //! `card_mcp_tokens.hashed_token`. The raw token is handed to the
 //! codex daemon via the `NEIGE_MCP_TOKEN` env var (see
-//! `spec_card::build_codex_env_map`); from there, a tiny
+//! `spec_card::build_codex_env_map` (worker cards) or
+//! `SpecHarnessStartAdapter::app_server_interact` (spec card AI shell,
+//! per-thread injection — #555 Phase B)); from there, a tiny
 //! `neige-mcp-stdio-shim` binary inherits the env, connects to the
 //! kernel's UDS, and embeds the raw token in `initialize.params._meta`
 //! so the kernel can resolve which card is on the other end of the

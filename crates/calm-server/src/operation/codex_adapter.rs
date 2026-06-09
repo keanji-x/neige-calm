@@ -359,6 +359,7 @@ impl ProviderAdapter for CodexAdapter {
                         self.shared_codex_appserver
                             .thread_start_mint_for_card(
                                 &card_id,
+                                // Worker daemons inherit NEIGE_MCP_TOKEN from the per-card spawn env, so no per-thread override is needed.
                                 SharedThreadStartParams {
                                     cwd: cwd.clone(),
                                     approval_policy: "never".into(),

@@ -21,6 +21,10 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
+/// (or any other process env read by the fake codex shim). Peer test
+/// binaries keep their own `ENV_LOCK` because each test binary is a separate
+/// process.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn fake_codex_bin() -> &'static str {

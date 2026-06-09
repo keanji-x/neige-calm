@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -41,6 +42,35 @@ const START_PHASES: &[PhaseTag] = &[
     PhaseTag::Succeeded,
 ];
 
+type PerCardMintLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+struct PerCardMintLockGuard {
+    card_id: String,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    locks: PerCardMintLocks,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for PerCardMintLockGuard {
+    fn drop(&mut self) {
+        let _ = self.guard.take();
+        self.locks.remove_if(&self.card_id, |_, existing| {
+            Arc::ptr_eq(existing, &self.lock) && Arc::strong_count(existing) == 2
+        });
+    }
+}
+
+#[cfg(feature = "fixtures")]
+pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
+
+#[cfg(feature = "fixtures")]
+pub(crate) fn fixture_socket_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "{FIXTURE_SOCKET_PREFIX}{}.sock",
+        std::process::id()
+    ))
+}
+
 #[derive(Clone)]
 pub struct SpecHarnessStartAdapter {
     repo: Arc<dyn Repo>,
@@ -49,6 +79,7 @@ pub struct SpecHarnessStartAdapter {
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
     mcp_socket_path: Option<PathBuf>,
+    per_card_mint_locks: PerCardMintLocks,
 }
 
 impl SpecHarnessStartAdapter {
@@ -67,6 +98,22 @@ impl SpecHarnessStartAdapter {
             card_role_cache,
             wave_cove_cache,
             mcp_socket_path,
+            per_card_mint_locks: Arc::new(DashMap::new()),
+        }
+    }
+
+    async fn lock_card_mint(&self, card_id: &str) -> PerCardMintLockGuard {
+        let lock = self
+            .per_card_mint_locks
+            .entry(card_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let guard = lock.clone().lock_owned().await;
+        PerCardMintLockGuard {
+            card_id: card_id.to_string(),
+            lock,
+            locks: self.per_card_mint_locks.clone(),
+            guard: Some(guard),
         }
     }
 
@@ -77,8 +124,7 @@ impl SpecHarnessStartAdapter {
 
         #[cfg(feature = "fixtures")]
         {
-            let path =
-                std::env::temp_dir().join(format!("neige-mcp-fixture-{}.sock", std::process::id()));
+            let path = fixture_socket_path();
             Ok(path.to_string_lossy().to_string())
         }
         #[cfg(not(feature = "fixtures"))]
@@ -106,6 +152,26 @@ pub struct SpecHarnessStartOperationPayload {
     pub reset_harness_items: bool,
     #[serde(default)]
     pub force_new_thread: bool,
+}
+
+#[derive(Serialize)]
+struct SpecThreadEnvSet<'a> {
+    #[serde(rename = "NEIGE_MCP_SOCKET")]
+    neige_mcp_socket: &'a str,
+    #[serde(rename = "NEIGE_MCP_TOKEN")]
+    neige_mcp_token: &'a str,
+}
+
+#[derive(Serialize)]
+struct SpecThreadEnvPolicy<'a> {
+    #[serde(rename = "set")]
+    set: SpecThreadEnvSet<'a>,
+}
+
+#[derive(Serialize)]
+struct SpecThreadStartConfig<'a> {
+    #[serde(rename = "shell_environment_policy")]
+    shell_environment_policy: SpecThreadEnvPolicy<'a>,
 }
 
 #[async_trait]
@@ -268,6 +334,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         } else {
             None
         };
+        let should_start_fresh_thread = reusable_thread_id.is_none();
+        let mint_lock_guard = if should_start_fresh_thread {
+            Some(self.lock_card_mint(&card_id).await)
+        } else {
+            None
+        };
         let mut new_mcp_token_hash = None;
         let thread_id = if let Some(thread_id) = reusable_thread_id {
             thread_id
@@ -280,14 +352,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             let hashed = crate::mcp_server::auth::hash_token(raw.as_str());
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
-            let cfg = json!({
-                "shell_environment_policy": {
-                    "set": {
-                        "NEIGE_MCP_SOCKET": socket_path,
-                        "NEIGE_MCP_TOKEN": raw.as_str(),
-                    }
-                }
-            });
+            let cfg = serde_json::to_value(SpecThreadStartConfig {
+                shell_environment_policy: SpecThreadEnvPolicy {
+                    set: SpecThreadEnvSet {
+                        neige_mcp_socket: socket_path.as_str(),
+                        neige_mcp_token: raw.as_str(),
+                    },
+                },
+            })?;
             let params = SharedThreadStartParams {
                 cwd,
                 approval_policy: "never".into(),
@@ -440,6 +512,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             },
         )
         .await?;
+        drop(mint_lock_guard);
         card = updated_card;
         if let Some(old_runtime_id) = old_runtime_id {
             set_output_data(output, "old_runtime_id", json!(old_runtime_id))?;

@@ -25,6 +25,7 @@ use tokio::task::JoinHandle;
 
 use crate::codex_appserver::{
     ClientInfo, CodexAppServer, InputItem, Notification, ThreadStartParams,
+    redact_thread_start_config,
 };
 use crate::config::Config;
 use crate::db::{Repo, SharedCodexDaemonUpdate};
@@ -96,13 +97,25 @@ pub struct SharedDaemonStatus {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SharedThreadStartParams {
     pub cwd: String,
     pub approval_policy: String,
     pub sandbox_mode: String,
     pub developer_instructions: Option<String>,
     pub config: Option<serde_json::Value>,
+}
+
+impl std::fmt::Debug for SharedThreadStartParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedThreadStartParams")
+            .field("cwd", &self.cwd)
+            .field("approval_policy", &self.approval_policy)
+            .field("sandbox_mode", &self.sandbox_mode)
+            .field("developer_instructions", &self.developer_instructions)
+            .field("config", &redact_thread_start_config(&self.config))
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -1757,6 +1770,28 @@ pub fn drop_spawned_child_guard_for_test(child: Child, pgid: i32) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn shared_thread_start_params_debug_scrubs_neige_mcp_token() {
+        let params = SharedThreadStartParams {
+            cwd: "/workspace".into(),
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            developer_instructions: None,
+            config: Some(json!({
+                "shell_environment_policy": {
+                    "set": {
+                        "NEIGE_MCP_SOCKET": "/tmp/x.sock",
+                        "NEIGE_MCP_TOKEN": "secret-abcdef",
+                    }
+                }
+            })),
+        };
+
+        let rendered = format!("{params:?}");
+        assert!(!rendered.contains("secret-abcdef"));
+        assert!(rendered.contains("\"[REDACTED]\""));
+    }
 
     #[test]
     fn thread_id_from_started_accepts_real_codex_object_shape() {

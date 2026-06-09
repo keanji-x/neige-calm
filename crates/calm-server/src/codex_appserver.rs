@@ -157,13 +157,41 @@ pub enum InputItem {
     Text { text: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ThreadStartParams {
     pub cwd: String,
     pub approval_policy: String,
     pub sandbox_mode: String,
     pub developer_instructions: Option<String>,
     pub config: Option<serde_json::Value>,
+}
+
+impl std::fmt::Debug for ThreadStartParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreadStartParams")
+            .field("cwd", &self.cwd)
+            .field("approval_policy", &self.approval_policy)
+            .field("sandbox_mode", &self.sandbox_mode)
+            .field("developer_instructions", &self.developer_instructions)
+            .field("config", &redact_thread_start_config(&self.config))
+            .finish()
+    }
+}
+
+pub(crate) fn redact_thread_start_config(cfg: &Option<serde_json::Value>) -> serde_json::Value {
+    let Some(cfg) = cfg else {
+        return Value::Null;
+    };
+    let mut redacted = cfg.clone();
+    if let Some(set) = redacted
+        .pointer_mut("/shell_environment_policy/set")
+        .and_then(Value::as_object_mut)
+    {
+        for value in set.values_mut() {
+            *value = Value::String("[REDACTED]".into());
+        }
+    }
+    redacted
 }
 
 impl InputItem {
@@ -996,6 +1024,28 @@ mod tests {
         let h = harness().await;
         let client = h.client.with_request_timeout(Duration::from_millis(5));
         assert_eq!(client.request_timeout(), Duration::from_millis(5));
+    }
+
+    #[test]
+    fn thread_start_params_debug_scrubs_neige_mcp_token() {
+        let params = ThreadStartParams {
+            cwd: "/workspace".into(),
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            developer_instructions: None,
+            config: Some(json!({
+                "shell_environment_policy": {
+                    "set": {
+                        "NEIGE_MCP_SOCKET": "/tmp/x.sock",
+                        "NEIGE_MCP_TOKEN": "secret-abcdef",
+                    }
+                }
+            })),
+        };
+
+        let rendered = format!("{params:?}");
+        assert!(!rendered.contains("secret-abcdef"));
+        assert!(rendered.contains("\"[REDACTED]\""));
     }
 
     #[tokio::test]

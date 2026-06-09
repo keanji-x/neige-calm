@@ -27,6 +27,10 @@ use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
+/// (or any other process env read by the fake codex shim). Peer test
+/// binaries keep their own `ENV_LOCK` because each test binary is a separate
+/// process.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct EnvGuard(&'static str);
@@ -463,6 +467,71 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
     let second_token = thread_start_token(starts[1]);
     assert_eq!(auth::hash_token(second_token), second_hash);
     assert_ne!(first_token, second_token);
+}
+
+#[tokio::test]
+async fn same_card_concurrent_starts_keep_token_hash_consistent() {
+    let _guard = ENV_LOCK.lock().await;
+    let tmp = TempDir::new().unwrap();
+    let capture_file = tmp.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
+
+    let (state, repo, role_cache) = state_with_live_daemon(&tmp).await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+
+    let payload = |goal: &str| {
+        serde_json::to_value(SpecHarnessStartOperationPayload {
+            actor: calm_server::ids::ActorId::User,
+            wave_id: wave.id.to_string(),
+            spec_card_id: CardId::from(card_id.clone()),
+            report_card_id: None,
+            sort: None,
+            cwd: wave.cwd.clone(),
+            goal: Some(goal.into()),
+            reset_harness_items: false,
+            force_new_thread: true,
+        })
+        .unwrap()
+    };
+    let first_payload = payload("adapter goal a");
+    let second_payload = payload("adapter goal b");
+
+    let runtime_a = state.operation_runtime.clone();
+    let runtime_b = state.operation_runtime.clone();
+    let (first_op, second_op) = tokio::join!(
+        async move {
+            runtime_a
+                .submit("spec-harness-start", key(), first_payload)
+                .await
+                .unwrap()
+        },
+        async move {
+            runtime_b
+                .submit("spec-harness-start", key(), second_payload)
+                .await
+                .unwrap()
+        },
+    );
+    let (first, second) = tokio::join!(wait_op(&state, &first_op), wait_op(&state, &second_op));
+    assert!(matches!(first, OperationOutcome::Succeeded { .. }));
+    assert!(matches!(second, OperationOutcome::Succeeded { .. }));
+
+    let rows = wait_for_requests(&capture_file, 3).await;
+    let starts = rows
+        .iter()
+        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 2, "captured requests: {rows:?}");
+    let last_token = thread_start_token(starts.last().expect("last thread/start"));
+    let final_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("concurrent starts store final card MCP hash");
+    assert_eq!(auth::hash_token(last_token), final_hash);
 }
 
 #[tokio::test]
