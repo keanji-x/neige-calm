@@ -451,6 +451,7 @@ impl AppState {
             harness.clone(),
             card_role_cache.clone(),
             wave_cove_cache.clone(),
+            None,
         ));
         let spec_harness_interrupt_adapter =
             Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
@@ -585,6 +586,9 @@ impl AppState {
             self.harness.clone(),
             self.card_role_cache.clone(),
             self.wave_cove_cache.clone(),
+            self.mcp_server
+                .as_ref()
+                .map(|server| server.shim_config.socket_path.clone()),
         ));
         let spec_harness_interrupt_adapter =
             Arc::new(SpecHarnessInterruptAdapter::new(self.harness.clone()));
@@ -796,6 +800,7 @@ impl AppState {
             harness.clone(),
             card_role_cache.clone(),
             wave_cove_cache.clone(),
+            Some(mcp_server.shim_config.socket_path.clone()),
         ));
         let spec_harness_interrupt_adapter =
             Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));

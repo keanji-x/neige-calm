@@ -296,6 +296,7 @@ fn install_failing_spec_start_runtime(boot: &mut Boot) {
             boot.state.harness.clone(),
             boot.state.card_role_cache.clone(),
             boot.state.wave_cove_cache.clone(),
+            None,
         ),
     });
     let runtime = Arc::new(OperationRuntime::new_unchecked(

@@ -102,6 +102,7 @@ pub struct SharedThreadStartParams {
     pub approval_policy: String,
     pub sandbox_mode: String,
     pub developer_instructions: Option<String>,
+    pub config: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -209,6 +210,7 @@ pub struct SharedCodexAppServer {
 pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
+    fail_next_thread_start: AtomicBool,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
 }
 
@@ -218,6 +220,7 @@ impl FakeSharedCodexAppServer {
         Self {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
+            fail_next_thread_start: AtomicBool::new(false),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -455,6 +458,11 @@ impl SharedCodexAppServer {
     ) -> Result<String> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
+            if fake.fail_next_thread_start.swap(false, Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "forced thread/start failure".into(),
+                ));
+            }
             let n = fake.next_thread.fetch_add(1, Ordering::SeqCst);
             let thread_id = format!("fake-thread-{n:04}");
             self.kernel_initiated_threads
@@ -473,6 +481,7 @@ impl SharedCodexAppServer {
                 approval_policy: params.approval_policy,
                 sandbox_mode: params.sandbox_mode,
                 developer_instructions: params.developer_instructions,
+                config: params.config,
             })
             .await?;
         let thread_id = thread
@@ -681,6 +690,13 @@ impl SharedCodexAppServer {
                     .clone()
             })
             .unwrap_or_default()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn fail_next_thread_start_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.fail_next_thread_start.store(true, Ordering::SeqCst);
+        }
     }
 
     #[cfg(feature = "fixtures")]

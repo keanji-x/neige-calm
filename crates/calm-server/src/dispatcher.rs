@@ -1994,6 +1994,7 @@ async fn spawn_codex_worker_via_shared_daemon(
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: Some(worker_instructions),
+                config: None,
             },
         )
         .await
