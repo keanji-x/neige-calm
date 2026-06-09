@@ -33,6 +33,24 @@ services:
         no_proxy: ${CALM_BUILD_NO_PROXY:-}
     image: neige-calm-server:local
     init: true
+    # Codex (0.13x+) wraps every local_shell tool call in bubblewrap. Docker's
+    # default seccomp + AppArmor filter blocks the CLONE_NEWUSER syscall bwrap
+    # needs, so without these relaxations every AI shell command dies before
+    # producing output. Capability + security-opt set matches codex's upstream
+    # `.devcontainer/devcontainer.secure.json` recipe for the same scenario.
+    # The container already runs as the host user with $HOME bind-mounted
+    # rw, so these relaxations do not materially widen blast radius.
+    cap_add:
+      - SYS_ADMIN
+      - SYS_CHROOT
+      - SETUID
+      - SETGID
+      - SYS_PTRACE
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
     # Let the container and child processes reach host services such as the
     # developer's HTTP proxy via host.docker.internal.
     extra_hosts:
