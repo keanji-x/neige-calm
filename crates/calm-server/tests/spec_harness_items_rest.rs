@@ -265,3 +265,77 @@ async fn harness_items_route_rejects_non_spec_card() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
+
+#[tokio::test]
+async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
+    let boot = boot().await;
+    let started_id = boot
+        .repo
+        .harness_item_insert(
+            "runtime-mcp",
+            boot.spec_card.id.as_str(),
+            boot.spec_card.wave_id.as_str(),
+            "thread-mcp",
+            Some("turn-mcp-1"),
+            Some("mcp-1"),
+            Some("mcpToolCall"),
+            "item/started",
+            &json!({
+                "item": {
+                    "id": "mcp-1",
+                    "type": "mcpToolCall",
+                    "status": "inProgress",
+                    "server": "neige",
+                    "tool": "calm.wave.cat"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+    let completed_id = boot
+        .repo
+        .harness_item_insert(
+            "runtime-mcp",
+            boot.spec_card.id.as_str(),
+            boot.spec_card.wave_id.as_str(),
+            "thread-mcp",
+            Some("turn-mcp-1"),
+            Some("mcp-1"),
+            Some("mcpToolCall"),
+            "item/completed",
+            &json!({
+                "item": {
+                    "id": "mcp-1",
+                    "type": "mcpToolCall",
+                    "status": "completed",
+                    "server": "neige",
+                    "tool": "calm.wave.cat",
+                    "result": { "content": [{ "type": "text", "text": "ok" }] }
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = get(
+        boot.app.clone(),
+        format!("/api/cards/{}/harness/items", boot.spec_card.id.as_str()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![started_id, completed_id]
+    );
+
+    assert_eq!(rows[0].item_type.as_deref(), Some("mcpToolCall"));
+    let started_params: Value = serde_json::from_str(&rows[0].params).unwrap();
+    assert_eq!(started_params["item"]["status"], "inProgress");
+
+    assert_eq!(rows[1].item_type.as_deref(), Some("mcpToolCall"));
+    let completed_params: Value = serde_json::from_str(&rows[1].params).unwrap();
+    assert_eq!(completed_params["item"]["status"], "completed");
+}
