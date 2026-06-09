@@ -14,17 +14,19 @@ use calm_server::db::sqlite::{
 };
 use calm_server::db::write_in_tx_typed;
 use calm_server::error::{CalmError, Result as CalmResult};
-use calm_server::event::{BroadcastEnvelope, EventBus};
+use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::{Card, CardPatch, CardRole, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::claude_adapter::{
     ClaudeAdapter, ClaudeCreateOperationPayload, PreparedClaudeCreateRequest,
 };
 use calm_server::operation::codex_adapter::{
-    CodexAdapter, CodexCreateOperationPayload, NormalizedCodexCreateRequest,
+    CodexAdapter, CodexCreateOperationPayload, CodexWorkerAdapter, CodexWorkerOperationPayload,
+    NormalizedCodexCreateRequest,
 };
 use calm_server::operation::terminal_adapter::{
     TerminalAdapter, TerminalCreateOperationPayload, TerminalCreateRequestPayload,
+    TerminalWorkerAdapter, TerminalWorkerOperationPayload,
 };
 use calm_server::operation::{
     CompensationStateVersioned, Operation, OperationKey, OperationOutcome, OperationRepo,
@@ -51,6 +53,12 @@ struct Boot {
     spawn_count: Arc<AtomicUsize>,
     _tmp: TempDir,
 }
+
+type TestTerminalWorkerSpawnHook = Arc<
+    dyn Fn(String, String, String, Value) -> BoxFuture<'static, CalmResult<SpawnHandle>>
+        + Send
+        + Sync,
+>;
 
 struct DriveErrorOnceRepo {
     inner: SqlxOperationRepo,
@@ -2260,6 +2268,284 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
 }
 
 #[tokio::test]
+async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
+    let mut boot = boot_with_counted_spawn().await;
+    let spawn_attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_hook = spawn_attempts.clone();
+    let hook = Arc::new(
+        move |_terminal_id: String,
+              _program: String,
+              _cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let attempts = attempts_for_hook.clone();
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(CalmError::Internal("unexpected worker respawn".into()))
+            })
+        },
+    );
+    let adapter = install_terminal_worker_runtime_with_hook(&mut boot, hook);
+
+    let idem = "terminal-worker-recovery-exited";
+    let payload = terminal_worker_payload(&boot.wave_id, idem);
+    let op = pending_operation("terminal-worker", &boot.wave_id, payload.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    tx.commit().await.unwrap();
+    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
+    boot.repo
+        .terminal_set_exit(&terminal_id, Some(0), false)
+        .await
+        .unwrap();
+
+    let op_id = new_id();
+    let now = now_ms();
+    let target_type = output.target_type.clone();
+    let target_id = output.target_id.clone();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, 'terminal-worker', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'spawn_started', ?10, ?11, ?12, ?12)"#,
+    )
+    .bind(&op_id)
+    .bind("terminal-worker-recovery-exited-op")
+    .bind(idem)
+    .bind("terminal-worker-recovery-exited-hash")
+    .bind(&target_type)
+    .bind(target_id.as_deref())
+    .bind(serde_json::to_string(&json!({ "type": target_type, "id": target_id })).unwrap())
+    .bind(serde_json::to_string(&payload).unwrap())
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind("dead-process")
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let mut rx = boot.state.events.subscribe();
+    let plan = boot
+        .state
+        .operation_runtime
+        .recover_on_boot()
+        .await
+        .unwrap();
+    assert_eq!(plan.items.len(), 1);
+    assert!(matches!(
+        &plan.items[0],
+        RecoveryItem::Recover {
+            op_id: planned,
+            from_phase: Phase::SpawnStarted,
+            ..
+        } if planned == &op_id
+    ));
+    boot.state
+        .operation_runtime
+        .apply_recovery(plan)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        spawn_attempts.load(Ordering::SeqCst),
+        0,
+        "recorded terminal exit must suppress recovery respawn"
+    );
+    assert_terminal_worker_succeeded(&boot, &op_id).await;
+    let term = boot
+        .repo
+        .terminal_get(&terminal_id)
+        .await
+        .unwrap()
+        .expect("terminal row preserved");
+    assert_eq!(term.exit_code, Some(0));
+    assert!(!term.signal_killed);
+    assert_eq!(event_kind_count(&boot.repo, "card.added").await, 1);
+    let (added, failed) = drain_worker_event_counts(&mut rx, idem).await;
+    assert_eq!(added, 1, "subscribers must see exactly one CardAdded");
+    assert_eq!(failed, 0, "recovery preservation must not emit TaskFailed");
+
+    let mut boot = boot_with_counted_spawn().await;
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let codex_adapter = Arc::new(CodexWorkerAdapter::new(
+        route_repo.clone(),
+        boot.state.codex.clone(),
+        SharedCodexAppServer::new_stub(boot.repo.clone()),
+        None,
+        boot.state.card_role_cache.clone(),
+        boot.state.wave_cove_cache.clone(),
+    ));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![codex_adapter.clone()],
+        boot.state.events.clone(),
+        SpawnCtx::new(
+            route_repo,
+            boot.state.daemon.clone(),
+            boot.state.terminal_renderer.clone(),
+            boot.state.events.clone(),
+        ),
+    ));
+    boot.state = boot.state.clone().with_operation_runtime(runtime);
+
+    let idem = "codex-worker-recovery-exited";
+    let payload = codex_worker_payload(&boot.wave_id, idem);
+    let op = pending_operation("codex-worker", &boot.wave_id, payload.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    let output = codex_adapter
+        .prepare_tx(&mut tx, &payload, &op)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
+    boot.repo
+        .terminal_set_exit(&terminal_id, Some(0), false)
+        .await
+        .unwrap();
+
+    let op_id = new_id();
+    let now = now_ms();
+    let target_type = output.target_type.clone();
+    let target_id = output.target_id.clone();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, 'codex-worker', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'spawn_started', ?10, ?11, ?12, ?12)"#,
+    )
+    .bind(&op_id)
+    .bind("codex-worker-recovery-exited-op")
+    .bind(idem)
+    .bind("codex-worker-recovery-exited-hash")
+    .bind(&target_type)
+    .bind(target_id.as_deref())
+    .bind(serde_json::to_string(&json!({ "type": target_type, "id": target_id })).unwrap())
+    .bind(serde_json::to_string(&payload).unwrap())
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind("dead-process")
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let mut rx = boot.state.events.subscribe();
+    let plan = boot
+        .state
+        .operation_runtime
+        .recover_on_boot()
+        .await
+        .unwrap();
+    assert_eq!(plan.items.len(), 1);
+    assert!(matches!(
+        &plan.items[0],
+        RecoveryItem::Recover {
+            op_id: planned,
+            from_phase: Phase::SpawnStarted,
+            ..
+        } if planned == &op_id
+    ));
+    boot.state
+        .operation_runtime
+        .apply_recovery(plan)
+        .await
+        .unwrap();
+
+    assert_terminal_worker_succeeded(&boot, &op_id).await;
+    let term = boot
+        .repo
+        .terminal_get(&terminal_id)
+        .await
+        .unwrap()
+        .expect("codex worker terminal row preserved");
+    assert_eq!(term.exit_code, Some(0));
+    assert!(!term.signal_killed);
+    assert_eq!(event_kind_count(&boot.repo, "card.added").await, 1);
+    let (added, failed) = drain_worker_event_counts(&mut rx, idem).await;
+    assert_eq!(added, 1, "codex worker recovery must emit CardAdded");
+    assert_eq!(failed, 0, "codex worker recovery must not emit TaskFailed");
+}
+
+#[tokio::test]
+async fn worker_spawn_error_then_fast_exit_finalizes_as_success() {
+    let mut boot = boot_with_counted_spawn().await;
+    let spawn_attempts = Arc::new(AtomicUsize::new(0));
+    let repo_for_hook = boot.repo.clone();
+    let attempts_for_hook = spawn_attempts.clone();
+    let hook = Arc::new(
+        move |terminal_id: String,
+              _program: String,
+              _cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let repo = repo_for_hook.clone();
+            let attempts = attempts_for_hook.clone();
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                repo.terminal_set_exit(&terminal_id, Some(0), false).await?;
+                Err(CalmError::Internal(
+                    "forced spawn failure after recorded exit".into(),
+                ))
+            })
+        },
+    );
+    install_terminal_worker_runtime_with_hook(&mut boot, hook);
+
+    let idem = "terminal-worker-spawn-error-fast-exit";
+    let payload = terminal_worker_payload(&boot.wave_id, idem);
+    let mut rx = boot.state.events.subscribe();
+    let op_id = boot
+        .state
+        .operation_runtime
+        .submit(
+            "terminal-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(idem.into()),
+                payload_hash: "terminal-worker-spawn-error-fast-exit-hash".into(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let outcome = boot
+        .state
+        .operation_runtime
+        .wait(&op_id)
+        .await
+        .unwrap()
+        .outcome;
+    assert!(
+        matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "spawn error with recorded exit must finalize as success: {outcome:?}"
+    );
+
+    assert_eq!(spawn_attempts.load(Ordering::SeqCst), 1);
+    assert_terminal_worker_succeeded(&boot, &op_id).await;
+    let output = operation_tx_output(&boot.repo, &op_id).await;
+    let terminal_id = output.data["terminal_id"].as_str().unwrap();
+    let term = boot
+        .repo
+        .terminal_get(terminal_id)
+        .await
+        .unwrap()
+        .expect("terminal row preserved");
+    assert_eq!(term.exit_code, Some(0));
+    assert!(!term.signal_killed);
+    assert_eq!(event_kind_count(&boot.repo, "card.added").await, 1);
+    assert_eq!(event_kind_count(&boot.repo, "task.failed").await, 0);
+    let (added, failed) = drain_worker_event_counts(&mut rx, idem).await;
+    assert_eq!(added, 1, "fast-exit preservation must emit CardAdded");
+    assert_eq!(failed, 0, "fast-exit preservation must not emit TaskFailed");
+}
+
+#[tokio::test]
 async fn apply_recovery_continues_after_drive_error_between_items() {
     let mut boot = boot_with_counted_spawn().await;
     let bad_op_id = new_id();
@@ -2523,6 +2809,56 @@ fn terminal_payload(wave_id: &str) -> Value {
     .unwrap()
 }
 
+fn terminal_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {
+    serde_json::to_value(TerminalWorkerOperationPayload {
+        actor: ActorId::User,
+        wave_id: wave_id.to_string(),
+        idempotency_key: idempotency_key.to_string(),
+        cmd: "printf done\n".into(),
+        cwd: Some("/tmp".into()),
+    })
+    .unwrap()
+}
+
+fn codex_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {
+    serde_json::to_value(CodexWorkerOperationPayload {
+        actor: ActorId::User,
+        wave_id: wave_id.to_string(),
+        idempotency_key: idempotency_key.to_string(),
+        goal: "recover completed codex worker".into(),
+        context: json!({ "from": "no-double-spawn" }),
+        acceptance_criteria: None,
+    })
+    .unwrap()
+}
+
+fn install_terminal_worker_runtime_with_hook(
+    boot: &mut Boot,
+    hook: TestTerminalWorkerSpawnHook,
+) -> Arc<TerminalWorkerAdapter> {
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let adapter = Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
+        route_repo.clone(),
+        boot.state.card_role_cache.clone(),
+        boot.state.wave_cove_cache.clone(),
+        hook,
+    ));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![adapter.clone()],
+        boot.state.events.clone(),
+        SpawnCtx::new(
+            route_repo,
+            boot.state.daemon.clone(),
+            boot.state.terminal_renderer.clone(),
+            boot.state.events.clone(),
+        ),
+    ));
+    boot.state = boot.state.clone().with_operation_runtime(runtime);
+    adapter
+}
+
 fn codex_payload(wave_id: &str, prompt: Option<&str>) -> Value {
     serde_json::to_value(CodexCreateOperationPayload {
         actor: ActorId::User,
@@ -2635,6 +2971,64 @@ async fn assert_minted_runtime(repo: &SqlxRepo, output: TxOutput, kind: RuntimeK
         .expect("minted runtime row");
     assert_eq!(runtime.id, runtime_id);
     assert_eq!(runtime.kind, kind);
+}
+
+async fn assert_terminal_worker_succeeded(boot: &Boot, op_id: &str) {
+    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+        .bind(op_id)
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(phase, "succeeded");
+}
+
+async fn operation_tx_output(repo: &SqlxRepo, op_id: &str) -> TxOutput {
+    let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id = ?1")
+        .bind(op_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+async fn event_kind_count(repo: &SqlxRepo, kind: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
+        .bind(kind)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn drain_worker_event_counts(
+    rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+    idempotency_key: &str,
+) -> (usize, usize) {
+    let mut added = 0;
+    let mut failed = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(25), rx.recv()).await {
+            Ok(Ok(env)) => match env.event {
+                Event::CardAdded(card)
+                    if card.payload.get("idempotency_key").and_then(Value::as_str)
+                        == Some(idempotency_key) =>
+                {
+                    added += 1;
+                }
+                Event::TaskFailed {
+                    idempotency_key: failed_key,
+                    ..
+                } if failed_key == idempotency_key => {
+                    failed += 1;
+                }
+                _ => {}
+            },
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+            Err(_) => {}
+        }
+    }
+    (added, failed)
 }
 
 async fn wait_for_notification_receivers(shared: &SharedCodexAppServer, min: usize) {

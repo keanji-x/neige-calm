@@ -58,6 +58,8 @@ pub struct TerminalWorkerAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
+    #[cfg(feature = "fixtures")]
+    spawn_hook: Option<SpawnHook>,
 }
 
 impl TerminalAdapter {
@@ -124,6 +126,23 @@ impl TerminalWorkerAdapter {
             repo,
             card_role_cache,
             wave_cove_cache,
+            #[cfg(feature = "fixtures")]
+            spawn_hook: None,
+        }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn new_with_spawn_hook(
+        repo: Arc<dyn crate::db::RouteRepo>,
+        card_role_cache: CardRoleCache,
+        wave_cove_cache: WaveCoveCache,
+        spawn_hook: SpawnHook,
+    ) -> Self {
+        Self {
+            repo,
+            card_role_cache,
+            wave_cove_cache,
+            spawn_hook: Some(spawn_hook),
         }
     }
 }
@@ -646,6 +665,37 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         let cmd = output_string(output, "cmd")?;
         let cwd = output_string(output, "cwd")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+        let existing_term = ctx
+            .repo
+            .terminal_get(&terminal_id)
+            .await?
+            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
+        if existing_term.exit_code.is_some() || existing_term.signal_killed {
+            tracing::info!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                exit_code = ?existing_term.exit_code,
+                signal_killed = existing_term.signal_killed,
+                "terminal-worker recovery: worker already exited; skipping respawn",
+            );
+            log_terminal_worker_card_added(
+                ctx,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+                &card_id,
+                &wave_id,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    card_id = %card_id,
+                    wave_id = %wave_id,
+                    error = %e,
+                    "terminal worker CardAdded append failed after recovery exit preservation; continuing"
+                );
+            });
+            return Ok(SpawnHandle::NoOp);
+        }
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         let term = ctx
             .repo
@@ -653,7 +703,16 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
-        match ctx.spawn_terminal(&term, &cmd, &cwd, &env).await {
+        #[cfg(feature = "fixtures")]
+        let spawn_result = if let Some(hook) = &self.spawn_hook {
+            hook(terminal_id.clone(), cmd.clone(), cwd.clone(), env.clone()).await
+        } else {
+            ctx.spawn_terminal(&term, &cmd, &cwd, &env).await
+        };
+        #[cfg(not(feature = "fixtures"))]
+        let spawn_result = ctx.spawn_terminal(&term, &cmd, &cwd, &env).await;
+
+        match spawn_result {
             Ok(handle) => {
                 if let Err(e) = ctx
                     .repo

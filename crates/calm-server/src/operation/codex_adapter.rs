@@ -797,6 +797,38 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let rendered_prompt = output_string(output, "prompt")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
+        let term = ctx
+            .repo
+            .terminal_get(&terminal_id)
+            .await?
+            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
+        if term.exit_code.is_some() || term.signal_killed {
+            tracing::info!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                exit_code = ?term.exit_code,
+                signal_killed = term.signal_killed,
+                "codex-worker recovery: worker already exited; skipping respawn",
+            );
+            log_worker_card_added(
+                ctx,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+                &card_id,
+                &wave_id,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    card_id = %card_id,
+                    wave_id = %wave_id,
+                    error = %e,
+                    "codex worker CardAdded append failed after recovery exit preservation; continuing"
+                );
+            });
+            return Ok(SpawnHandle::NoOp);
+        }
+
         if !self.shared_codex_appserver.is_running() {
             return Err(CalmError::Internal(
                 "shared codex app-server is not running".into(),
@@ -808,11 +840,6 @@ impl ProviderAdapter for CodexWorkerAdapter {
             .card_get(&card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-        let term = ctx
-            .repo
-            .terminal_get(&terminal_id)
-            .await?
-            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
         let mcp_token = mint_card_mcp_token(ctx, &card_id).await?;
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {

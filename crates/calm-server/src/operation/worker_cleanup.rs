@@ -43,12 +43,13 @@ pub(crate) async fn compensate_worker_rows(
 
     if let Some(term) = latest.as_ref() {
         if term.exit_code.is_some() || term.signal_killed {
-            tracing::info!(
+            tracing::error!(
                 card_id = %card_id,
                 terminal_id = %terminal_id,
                 exit_code = ?term.exit_code,
                 signal_killed = term.signal_killed,
-                "worker compensation: preserving worker card with recorded terminal exit",
+                "worker compensation: reached preserved branch after spawn failure; \
+                 this should be unreachable because adapters convert fast-exit evidence to success",
             );
             return WorkerCleanupOutcome::Preserved;
         }
