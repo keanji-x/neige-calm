@@ -1,12 +1,15 @@
 #!/bin/sh
 set -u
 
-container=neige-calm-569-server-1
+default_container=neige-calm-569-server-1
+container=
+container_set=0
+db_file=
 window_secs=1800
 tmp_db=/tmp/diagnose-557-$$.db
 
 usage() {
-  echo "usage: $0 [--container NAME] [--window-secs N]" >&2
+  echo "usage: $0 [--container NAME | --db-file PATH] [--window-secs N]" >&2
 }
 
 cleanup() {
@@ -19,6 +22,12 @@ while [ "$#" -gt 0 ]; do
     --container)
       [ "$#" -ge 2 ] || { usage; exit 64; }
       container=$2
+      container_set=1
+      shift 2
+      ;;
+    --db-file)
+      [ "$#" -ge 2 ] || { usage; exit 64; }
+      db_file=$2
       shift 2
       ;;
     --window-secs)
@@ -45,62 +54,84 @@ done
 
 [ "$window_secs" -gt 0 ] || { usage; exit 64; }
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "error: docker is not available" >&2
-  exit 2
-fi
-
 if ! command -v python3 >/dev/null 2>&1; then
   echo "error: python3 is not available on the host" >&2
   exit 2
 fi
 
-db_path=$(
-  docker exec "$container" sh -c '
-    url=${CALM_DB_URL:-sqlite:///var/lib/neige-calm/calm.db?mode=rwc}
-    case "$url" in
-      sqlite://*)
-        path=${url#sqlite://}
-        path=${path%%\?*}
-        printf "%s\n" "$path"
-        ;;
-      *)
-        printf "%s\n" /var/lib/neige-calm/calm.db
-        ;;
-    esac
-  ' 2>/dev/null
-)
-
-if [ -z "$db_path" ]; then
-  echo "error: cannot inspect container '$container'" >&2
-  exit 2
+if [ "$container_set" -eq 1 ] && [ -n "$db_file" ]; then
+  usage
+  exit 64
 fi
 
-if ! docker exec "$container" sh -c 'test -r "$1"' sh "$db_path" >/dev/null 2>&1; then
-  echo "error: sqlite db is not readable in container '$container': $db_path" >&2
-  exit 2
-fi
-
-if ! docker exec "$container" sh -c 'cat "$1"' sh "$db_path" >"$tmp_db"; then
-  echo "error: failed to copy sqlite db from container '$container': $db_path" >&2
-  exit 2
-fi
-
-for suffix in -wal -shm; do
-  if docker exec "$container" sh -c 'test -r "$1"' sh "$db_path$suffix" >/dev/null 2>&1; then
-    docker exec "$container" sh -c 'cat "$1"' sh "$db_path$suffix" >"$tmp_db$suffix" || {
-      echo "error: failed to copy sqlite sidecar from container '$container': $db_path$suffix" >&2
-      exit 2
-    }
+if [ -n "$db_file" ]; then
+  if [ ! -r "$db_file" ]; then
+    echo "error: sqlite db is not readable: $db_file" >&2
+    exit 2
   fi
-done
 
-python3 - "$tmp_db" "$window_secs" "$container" "$db_path" <<'PY'
+  query_db=$db_file
+  display_container=
+  display_db_path=$db_file
+else
+  container=${container:-$default_container}
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "error: docker is not available" >&2
+    exit 2
+  fi
+
+  db_path=$(
+    docker exec "$container" sh -c '
+      url=${CALM_DB_URL:-sqlite:///var/lib/neige-calm/calm.db?mode=rwc}
+      case "$url" in
+        sqlite://*)
+          path=${url#sqlite://}
+          path=${path%%\?*}
+          printf "%s\n" "$path"
+          ;;
+        *)
+          printf "%s\n" /var/lib/neige-calm/calm.db
+          ;;
+      esac
+    ' 2>/dev/null
+  )
+
+  if [ -z "$db_path" ]; then
+    echo "error: cannot inspect container '$container'" >&2
+    exit 2
+  fi
+
+  if ! docker exec "$container" sh -c 'test -r "$1"' sh "$db_path" >/dev/null 2>&1; then
+    echo "error: sqlite db is not readable in container '$container': $db_path" >&2
+    exit 2
+  fi
+
+  if ! docker exec "$container" sh -c 'cat "$1"' sh "$db_path" >"$tmp_db"; then
+    echo "error: failed to copy sqlite db from container '$container': $db_path" >&2
+    exit 2
+  fi
+
+  for suffix in -wal -shm; do
+    if docker exec "$container" sh -c 'test -r "$1"' sh "$db_path$suffix" >/dev/null 2>&1; then
+      docker exec "$container" sh -c 'cat "$1"' sh "$db_path$suffix" >"$tmp_db$suffix" || {
+        echo "error: failed to copy sqlite sidecar from container '$container': $db_path$suffix" >&2
+        exit 2
+      }
+    fi
+  done
+
+  query_db=$tmp_db
+  display_container=$container
+  display_db_path=$db_path
+fi
+
+python3 - "$query_db" "$window_secs" "$display_container" "$display_db_path" <<'PY'
 import sqlite3
 import sys
 import time
 
-db_path, window_secs_raw, container, container_db_path = sys.argv[1:5]
+db_path, window_secs_raw, container, display_db_path = sys.argv[1:5]
 try:
     window_secs = int(window_secs_raw)
 except ValueError:
@@ -150,8 +181,9 @@ non_stop_count = sum(
 stop_count = counts.get("hook.codex.stop", 0)
 bug_present = non_stop_count > 0 and stop_count == 0
 
-print(f"Container: {container}")
-print(f"Database: {container_db_path}")
+if container:
+    print(f"Container: {container}")
+print(f"Database: {display_db_path}")
 print(f"Window seconds: {window_secs}")
 print()
 print("Codex hook counts:")
