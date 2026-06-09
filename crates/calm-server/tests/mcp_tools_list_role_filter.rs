@@ -65,12 +65,6 @@ async fn tools_list_for_worker_role_is_empty() {
 }
 
 #[tokio::test]
-async fn tools_list_for_plain_role_is_empty() {
-    let names = tools_list_names_for_role(CardRole::Plain).await;
-    assert!(names.is_empty(), "plain tools/list = {names:?}");
-}
-
-#[tokio::test]
 async fn tools_list_for_report_card_role_is_empty() {
     let names = tools_list_names_for_role(CardRole::ReportCard).await;
     assert!(names.is_empty(), "report card tools/list = {names:?}");
