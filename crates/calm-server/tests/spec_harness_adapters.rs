@@ -27,6 +27,10 @@ use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
+/// (or any other process env read by the fake codex shim). Peer test
+/// binaries keep their own `ENV_LOCK` because each test binary is a separate
+/// process.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct EnvGuard(&'static str);

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -41,6 +42,51 @@ const START_PHASES: &[PhaseTag] = &[
     PhaseTag::Succeeded,
 ];
 
+type PerCardMintLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+struct PerCardMintLockGuard {
+    card_id: String,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    locks: PerCardMintLocks,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+// Transient stale entries are possible if a waiter is canceled between
+// strong_count snapshots; same-card mints will reuse a stale entry safely.
+impl Drop for PerCardMintLockGuard {
+    fn drop(&mut self) {
+        let _ = self.guard.take();
+        self.locks.remove_if(&self.card_id, |_, existing| {
+            Arc::ptr_eq(existing, &self.lock) && Arc::strong_count(existing) == 2
+        });
+    }
+}
+
+async fn lock_card(locks: &PerCardMintLocks, card_id: &str) -> PerCardMintLockGuard {
+    let lock = locks
+        .entry(card_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let guard = lock.clone().lock_owned().await;
+    PerCardMintLockGuard {
+        card_id: card_id.to_string(),
+        lock,
+        locks: locks.clone(),
+        guard: Some(guard),
+    }
+}
+
+#[cfg(feature = "fixtures")]
+pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
+
+#[cfg(feature = "fixtures")]
+pub(crate) fn fixture_socket_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "{FIXTURE_SOCKET_PREFIX}{}.sock",
+        std::process::id()
+    ))
+}
+
 #[derive(Clone)]
 pub struct SpecHarnessStartAdapter {
     repo: Arc<dyn Repo>,
@@ -49,6 +95,7 @@ pub struct SpecHarnessStartAdapter {
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
     mcp_socket_path: Option<PathBuf>,
+    per_card_mint_locks: PerCardMintLocks,
 }
 
 impl SpecHarnessStartAdapter {
@@ -67,7 +114,16 @@ impl SpecHarnessStartAdapter {
             card_role_cache,
             wave_cove_cache,
             mcp_socket_path,
+            per_card_mint_locks: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Defense-in-depth: today OperationRuntime drives serially under
+    /// drive_mutex, but if drive ever shifts to per-card-lease parallelism,
+    /// this lock keeps card_mcp_token rotation atomic with the thread/start
+    /// RPC that ships the matching raw token.
+    async fn lock_card_mint(&self, card_id: &str) -> PerCardMintLockGuard {
+        lock_card(&self.per_card_mint_locks, card_id).await
     }
 
     fn mcp_socket_path_for_thread(&self) -> Result<String> {
@@ -77,8 +133,7 @@ impl SpecHarnessStartAdapter {
 
         #[cfg(feature = "fixtures")]
         {
-            let path =
-                std::env::temp_dir().join(format!("neige-mcp-fixture-{}.sock", std::process::id()));
+            let path = fixture_socket_path();
             Ok(path.to_string_lossy().to_string())
         }
         #[cfg(not(feature = "fixtures"))]
@@ -106,6 +161,26 @@ pub struct SpecHarnessStartOperationPayload {
     pub reset_harness_items: bool,
     #[serde(default)]
     pub force_new_thread: bool,
+}
+
+#[derive(Serialize)]
+struct SpecThreadEnvSet<'a> {
+    #[serde(rename = "NEIGE_MCP_SOCKET")]
+    neige_mcp_socket: &'a str,
+    #[serde(rename = "NEIGE_MCP_TOKEN")]
+    neige_mcp_token: &'a str,
+}
+
+#[derive(Serialize)]
+struct SpecThreadEnvPolicy<'a> {
+    #[serde(rename = "set")]
+    set: SpecThreadEnvSet<'a>,
+}
+
+#[derive(Serialize)]
+struct SpecThreadStartConfig<'a> {
+    #[serde(rename = "shell_environment_policy")]
+    shell_environment_policy: SpecThreadEnvPolicy<'a>,
 }
 
 #[async_trait]
@@ -259,6 +334,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 thread_id: existing,
             });
         }
+        let mint_lock_guard = self.lock_card_mint(&card_id).await;
         let reusable_thread_id = if force_new_thread {
             None
         } else if let Some(runtime) = self.repo.runtime_get_active_for_card(&card_id).await?
@@ -280,14 +356,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             let hashed = crate::mcp_server::auth::hash_token(raw.as_str());
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
-            let cfg = json!({
-                "shell_environment_policy": {
-                    "set": {
-                        "NEIGE_MCP_SOCKET": socket_path,
-                        "NEIGE_MCP_TOKEN": raw.as_str(),
-                    }
-                }
-            });
+            let cfg = serde_json::to_value(SpecThreadStartConfig {
+                shell_environment_policy: SpecThreadEnvPolicy {
+                    set: SpecThreadEnvSet {
+                        neige_mcp_socket: socket_path.as_str(),
+                        neige_mcp_token: raw.as_str(),
+                    },
+                },
+            })?;
             let params = SharedThreadStartParams {
                 cwd,
                 approval_policy: "never".into(),
@@ -440,6 +516,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             },
         )
         .await?;
+        drop(mint_lock_guard);
         card = updated_card;
         if let Some(old_runtime_id) = old_runtime_id {
             set_output_data(output, "old_runtime_id", json!(old_runtime_id))?;
@@ -828,4 +905,49 @@ fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
                 step.op
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn per_card_mint_locks_block_same_card_only_and_cleanup() {
+        let locks: PerCardMintLocks = Arc::new(DashMap::new());
+        let first_a = lock_card(&locks, "card-A").await;
+
+        let locks_for_a = locks.clone();
+        let same_card = async move {
+            let mut second_a = Box::pin(lock_card(&locks_for_a, "card-A"));
+            tokio::select! {
+                _guard = &mut second_a => {
+                    panic!("same-card lock acquired while the first card-A guard was held");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+
+            drop(first_a);
+            let second_guard = tokio::time::timeout(Duration::from_secs(1), &mut second_a)
+                .await
+                .expect("same-card lock should complete after first guard drops");
+            drop(second_guard);
+        };
+
+        let locks_for_b = locks.clone();
+        let other_card = async move {
+            let guard =
+                tokio::time::timeout(Duration::from_millis(50), lock_card(&locks_for_b, "card-B"))
+                    .await
+                    .expect("card-B lock should not wait behind card-A");
+            drop(guard);
+        };
+
+        tokio::join!(same_card, other_card);
+        assert!(
+            !locks.contains_key("card-A"),
+            "card-A lock entry should be removed once all guards drop"
+        );
+    }
 }
