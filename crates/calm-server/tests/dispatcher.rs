@@ -649,6 +649,121 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
     );
 }
 
+#[tokio::test]
+async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    let tmp_path = tempfile::TempDir::new()
+        .expect("tempdir for daemon sockets")
+        .keep();
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp_path,
+        proc_supervisor_sock: None,
+    });
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        codex,
+        daemon,
+        None,
+        stub_shared(&repo),
+        4,
+    );
+
+    let idem = "terminal-cwd-normalized-idem";
+    let cmd = "printf cwd-normalized\n";
+    let scope = wave_scope(&wave_id, &cove_id);
+    let mut rx = events.subscribe();
+
+    repo.log_pure_event(
+        ActorId::User,
+        scope.clone(),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalJobRequested {
+            idempotency_key: idem.into(),
+            cmd: cmd.into(),
+            cwd: None,
+        },
+    )
+    .await
+    .unwrap();
+    repo.log_pure_event(
+        ActorId::User,
+        scope,
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalJobRequested {
+            idempotency_key: idem.into(),
+            cmd: cmd.into(),
+            cwd: Some(String::new()),
+        },
+    )
+    .await
+    .unwrap();
+
+    let pool = repo
+        .sqlite_pool()
+        .expect("dispatcher test repo should be sqlite-backed");
+    wait_for(Duration::from_secs(5), || {
+        let pool = pool.clone();
+        async move {
+            let (op_count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM operations WHERE kind = 'terminal-worker' AND idempotency_key = ?1",
+            )
+            .bind(idem)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            (op_count == 1).then_some(())
+        }
+    })
+    .await
+    .expect("terminal-worker operation row");
+
+    let mut saw_task_failed = false;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key, ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    saw_task_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        !saw_task_failed,
+        "duplicate terminal-worker request with equivalent cwd must reuse idempotency instead of emitting task.failed"
+    );
+
+    let (op_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM operations WHERE kind = 'terminal-worker' AND idempotency_key = ?1",
+    )
+    .bind(idem)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        op_count, 1,
+        "None and blank cwd terminal-worker retries must share one operation row"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 12. Issue #310 followup (codex's P2 escalation) — orphan-row rollback on
 //     post-commit spawn failure.

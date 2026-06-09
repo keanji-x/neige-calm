@@ -873,7 +873,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
+        output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
@@ -888,11 +888,19 @@ impl ProviderAdapter for CodexWorkerAdapter {
         }
         let card_id = step_arg_string(step, "card_id")?;
         let terminal_id = step_arg_string(step, "terminal_id")?;
-        let thread_id = ctx
+        let runtime_id = output_string(output, "runtime_id")?;
+        let runtime_turn = ctx
             .repo
-            .runtime_get_active_for_card(&card_id)
+            .runtime_get_by_id(&runtime_id)
             .await?
-            .and_then(|runtime| non_empty_string(runtime.thread_id.as_deref()));
+            .and_then(|runtime| {
+                non_empty_string(runtime.thread_id.as_deref()).map(|thread_id| {
+                    (
+                        thread_id,
+                        non_empty_string(runtime.active_turn_id.as_deref()),
+                    )
+                })
+            });
         let outcome = compensate_worker_rows(
             ctx.repo.as_ref(),
             ctx.terminal_renderer.as_ref(),
@@ -902,19 +910,43 @@ impl ProviderAdapter for CodexWorkerAdapter {
         )
         .await;
         if outcome == WorkerCleanupOutcome::Deleted
-            && let Some(thread_id) = thread_id
-            && let Err(e) = self
+            && let Some((thread_id, persisted_turn)) = runtime_turn
+        {
+            let cached_turn = self
+                .shared_codex_appserver
+                .active_turn_id_for_thread(&thread_id);
+            if let Err(e) = self
                 .shared_codex_appserver
                 .interrupt_active_turn(&thread_id)
                 .await
-        {
-            tracing::warn!(
-                card_id = %card_id,
-                terminal_id = %terminal_id,
-                thread_id = %thread_id,
-                error = %e,
-                "codex worker compensation could not interrupt active shared turn"
-            );
+            {
+                let turn_id = cached_turn
+                    .as_deref()
+                    .or(persisted_turn.as_deref())
+                    .unwrap_or("");
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    thread_id = %thread_id,
+                    turn_id = %turn_id,
+                    error = %e,
+                    "worker compensation replay thread interrupt failed"
+                );
+            }
+            if cached_turn.is_none()
+                && let Some(persisted_turn) = persisted_turn.as_deref()
+                && let Err(e) = self
+                    .shared_codex_appserver
+                    .turn_interrupt(&thread_id, persisted_turn)
+                    .await
+            {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    thread_id = %thread_id,
+                    turn_id = persisted_turn,
+                    error = %e,
+                    "worker compensation replay persisted-turn interrupt failed"
+                );
+            }
         }
         Ok(())
     }

@@ -12,8 +12,10 @@ use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::model::{NewCove, NewWave, new_id};
-use calm_server::operation::codex_adapter::CodexWorkerOperationPayload;
-use calm_server::operation::{OperationKey, OperationOutcome, TxOutput};
+use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
+use calm_server::operation::{
+    Operation, OperationKey, OperationOutcome, Phase, PhaseTag, ProviderAdapter, SpawnCtx, TxOutput,
+};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_lookup::project_runtime_into_cards_payload;
 use calm_server::runtime_repo::RuntimeKind;
@@ -421,6 +423,124 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
             .cached_card_for_thread("fake-thread-0002")
             .is_none(),
         "spawn_started recovery must not mint a second shared worker thread"
+    );
+}
+
+#[tokio::test]
+async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
+    let _guard = ENV_LOCK.lock().await;
+    let (state, repo, wave_id) = app_state_with_fake_worker_daemon().await;
+    let idem = "worker-recovery-compensation-turn";
+    let payload = serde_json::to_value(CodexWorkerOperationPayload {
+        actor: ActorId::User,
+        wave_id: wave_id.to_string(),
+        idempotency_key: idem.to_string(),
+        goal: "recover and compensate with persisted turn".into(),
+        context: json!({"from": "spawn-started-compensation-recovery"}),
+        acceptance_criteria: None,
+    })
+    .unwrap();
+    let op = Operation {
+        id: new_id(),
+        operation_key: new_id(),
+        kind: "codex-worker".into(),
+        idempotency_key: Some(idem.into()),
+        payload_hash: "worker-recovery-compensation-turn-hash".into(),
+        target_type: "wave".into(),
+        target_id: Some(wave_id.to_string()),
+        target: json!({ "type": "wave", "id": wave_id }),
+        payload: payload.clone(),
+        tx_output: None,
+        phase: Phase::Pending,
+        phase_detail: None,
+        attempt: 0,
+        last_error: None,
+        compensation_state: None,
+        lease_owner: None,
+        lease_until_ms: None,
+    };
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let adapter = CodexWorkerAdapter::new(
+        route_repo.clone(),
+        state.codex.clone(),
+        state.shared_codex_appserver.clone(),
+        None,
+        state.card_role_cache.clone(),
+        state.wave_cove_cache.clone(),
+    );
+    let mut tx = repo.pool().begin().await.unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
+    let card_id = output.data["card_id"].as_str().unwrap().to_string();
+    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
+    let thread_id = "thread-crash-replay-worker";
+    let turn_id = "turn-crash-replay-worker";
+    sqlx::query(
+        r#"UPDATE runtimes
+              SET status = 'running',
+                  thread_id = ?1,
+                  active_turn_id = ?2,
+                  completed_at_ms = NULL
+            WHERE id = ?3"#,
+    )
+    .bind(thread_id)
+    .bind(turn_id)
+    .bind(&runtime_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    let recovered_shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    assert!(
+        recovered_shared
+            .active_turn_id_for_thread(thread_id)
+            .is_none(),
+        "fresh recovered daemon must start with an empty active_turns cache"
+    );
+    let recovered_adapter = CodexWorkerAdapter::new(
+        route_repo.clone(),
+        state.codex.clone(),
+        recovered_shared.clone(),
+        None,
+        state.card_role_cache.clone(),
+        state.wave_cove_cache.clone(),
+    );
+    let spawn_ctx = SpawnCtx::new(
+        route_repo,
+        state.daemon.clone(),
+        state.terminal_renderer.clone(),
+        state.events.clone(),
+    );
+    let compensation = recovered_adapter
+        .plan_compensation(
+            PhaseTag::SpawnStarted,
+            "forced replay failure",
+            &output,
+            &op,
+        )
+        .await
+        .unwrap();
+    assert_eq!(compensation.steps.len(), 1);
+    assert_eq!(
+        compensation.steps[0].args["card_id"].as_str(),
+        Some(card_id.as_str())
+    );
+    assert_eq!(
+        compensation.steps[0].args["terminal_id"].as_str(),
+        Some(terminal_id.as_str())
+    );
+
+    recovered_adapter
+        .compensate_step(&compensation.steps[0], &output, &op, &spawn_ctx)
+        .await
+        .unwrap();
+    assert!(
+        recovered_shared
+            .interrupted_turns_for_test()
+            .contains(&(thread_id.to_string(), turn_id.to_string())),
+        "recovered worker compensation must interrupt the persisted turn when active_turns is empty"
     );
 }
 

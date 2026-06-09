@@ -45,6 +45,7 @@ use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use crate::operation::terminal_adapter::{
     TerminalAdapter, TerminalWorkerAdapter, TerminalWorkerOperationPayload,
+    normalize_terminal_worker_cwd,
 };
 use crate::operation::{
     OperationKey, OperationOutcome, OperationResult, OperationRuntime, SpawnCtx, SqlxOperationRepo,
@@ -1003,6 +1004,7 @@ impl Inner {
                     );
                     return Ok(());
                 };
+                let cwd = Some(normalize_terminal_worker_cwd(cwd));
                 let payload = serde_json::to_value(TerminalWorkerOperationPayload {
                     actor,
                     wave_id: wave_id.to_string(),

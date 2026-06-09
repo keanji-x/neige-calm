@@ -170,6 +170,14 @@ pub fn normalize_terminal_create_request(
     request
 }
 
+pub(crate) fn normalize_terminal_worker_cwd(cwd: Option<String>) -> String {
+    cwd.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(default_cwd)
+}
+
 #[async_trait]
 impl ProviderAdapter for TerminalAdapter {
     fn kind(&self) -> &'static str {
@@ -553,13 +561,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());
-        let cwd = payload
-            .cwd
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(default_cwd);
+        let cwd = normalize_terminal_worker_cwd(payload.cwd.clone());
         let env = terminal_worker_env(self.repo.as_ref()).await?;
         let scope = card_scope(
             self.repo.as_ref(),
