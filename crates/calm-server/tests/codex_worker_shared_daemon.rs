@@ -11,11 +11,14 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewCove, NewWave, new_id};
+use calm_server::operation::codex_adapter::CodexWorkerOperationPayload;
+use calm_server::operation::{OperationKey, OperationOutcome, TxOutput};
+use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_lookup::project_runtime_into_cards_payload;
 use calm_server::runtime_repo::RuntimeKind;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::state::{CodexClient, DaemonClient};
+use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use clap::Parser;
 use serde_json::{Value, json};
@@ -227,6 +230,61 @@ async fn worker_card_count_with_prefix(boot: &Boot, prefix: &str) -> usize {
         .count()
 }
 
+async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId) {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "worker-recovery".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "worker recovery".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let events = EventBus::new();
+    let cache = CardRoleCache::new();
+    repo.seed_card_role_cache(&cache).await.unwrap();
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events,
+            WriteContext::new(cache.clone(), wcc.clone()),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(cache),
+        Some(wcc),
+    );
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    (state.with_shared_codex_appserver(shared), repo, wave.id)
+}
+
+fn codex_worker_key(idempotency_key: &str) -> OperationKey {
+    OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(idempotency_key.to_string()),
+        payload_hash: format!("payload-{idempotency_key}"),
+    }
+}
+
 #[tokio::test]
 async fn worker_via_shared_daemon_dedupes_same_idempotency_key() {
     let _guard = ENV_LOCK.lock().await;
@@ -274,6 +332,95 @@ async fn worker_via_shared_daemon_dedupes_under_real_concurrent_race() {
         worker_card_count_by_idem(&boot, idem).await,
         1,
         "concurrent duplicate shared-worker dispatches must not both mint cards"
+    );
+}
+
+#[tokio::test]
+async fn worker_recovery_reuses_persisted_thread_and_turn() {
+    let _guard = ENV_LOCK.lock().await;
+    let (state, repo, wave_id) = app_state_with_fake_worker_daemon().await;
+    let idem = "worker-recovery-thread";
+    let op_id = state
+        .operation_runtime
+        .submit(
+            "codex-worker",
+            codex_worker_key(idem),
+            serde_json::to_value(CodexWorkerOperationPayload {
+                actor: ActorId::User,
+                wave_id: wave_id.to_string(),
+                idempotency_key: idem.to_string(),
+                goal: "recover without duplicate worker".into(),
+                context: json!({"from": "spawn-started-recovery"}),
+                acceptance_criteria: None,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let initial_outcome = state.operation_runtime.wait(&op_id).await.unwrap().outcome;
+    assert!(
+        matches!(initial_outcome, OperationOutcome::Succeeded { .. }),
+        "initial codex-worker operation failed: {initial_outcome:?}"
+    );
+
+    let (tx_output_json,): (String,) =
+        sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
+    let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
+    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert_eq!(runtime.active_turn_id.as_deref(), Some("fake-turn-0001"));
+    assert_eq!(state.shared_codex_appserver.turn_start_count_for_test(), 1);
+
+    sqlx::query(
+        r#"UPDATE operations
+              SET phase = 'spawn_started',
+                  phase_detail_json = NULL,
+                  completed_at_ms = NULL,
+                  lease_owner = NULL,
+                  lease_until_ms = NULL,
+                  last_error = NULL
+            WHERE id = ?1"#,
+    )
+    .bind(&op_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE runtimes
+              SET status = 'running',
+                  completed_at_ms = NULL
+            WHERE id = ?1"#,
+    )
+    .bind(&runtime_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    state.operation_runtime.drive().await.unwrap();
+    assert!(matches!(
+        state.operation_runtime.wait(&op_id).await.unwrap().outcome,
+        OperationOutcome::Succeeded { .. }
+    ));
+
+    let recovered = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    assert_eq!(recovered.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert_eq!(recovered.active_turn_id.as_deref(), Some("fake-turn-0001"));
+    assert_eq!(
+        state.shared_codex_appserver.turn_start_count_for_test(),
+        1,
+        "spawn_started recovery must not start a duplicate worker turn"
+    );
+    assert!(
+        state
+            .shared_codex_appserver
+            .cached_card_for_thread("fake-thread-0002")
+            .is_none(),
+        "spawn_started recovery must not mint a second shared worker thread"
     );
 }
 

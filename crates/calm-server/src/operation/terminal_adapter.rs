@@ -673,7 +673,15 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                     &card_id,
                     &wave_id,
                 )
-                .await?;
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        card_id = %card_id,
+                        wave_id = %wave_id,
+                        error = %e,
+                        "terminal worker CardAdded append failed after live spawn; continuing"
+                    );
+                });
                 Ok(handle)
             }
             Err(e) if worker_spawn_failure_preserved(ctx.repo.as_ref(), &terminal_id).await? => {
@@ -691,7 +699,15 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                     &card_id,
                     &wave_id,
                 )
-                .await?;
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        card_id = %card_id,
+                        wave_id = %wave_id,
+                        error = %e,
+                        "terminal worker CardAdded append failed after fast-exit preservation; continuing"
+                    );
+                });
                 Ok(SpawnHandle::NoOp)
             }
             Err(e) => Err(e),

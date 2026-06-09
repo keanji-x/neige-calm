@@ -11,7 +11,7 @@ use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
     card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
     event_append_for_operation_tx, runtime_bind_attribution_tx, runtime_get_active_for_card_tx,
-    runtime_set_status_tx,
+    runtime_get_by_id_tx, runtime_set_status_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -790,6 +790,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnHandle> {
         let card_id = output_string(output, "card_id")?;
+        let runtime_id = output_string(output, "runtime_id")?;
         let terminal_id = output_string(output, "terminal_id")?;
         let wave_id = WaveId::from(output_string(output, "wave_id")?);
         let cwd = output_string(output, "cwd")?;
@@ -820,6 +821,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             mcp_server: self.mcp_server.as_deref(),
             card: &card,
             term: &term,
+            runtime_id: &runtime_id,
             wave_id: &wave_id,
             mcp_token: Some(mcp_token.as_str()),
             rendered_prompt: &rendered_prompt,
@@ -835,7 +837,15 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &card_id,
             &wave_id,
         )
-        .await?;
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                card_id = %card_id,
+                wave_id = %wave_id,
+                error = %e,
+                "codex worker CardAdded append failed after live spawn; continuing"
+            );
+        });
         Ok(handle)
     }
 
@@ -916,6 +926,7 @@ pub(crate) struct CodexWorkerSpawnCtx<'a> {
     pub(crate) mcp_server: Option<&'a McpServer>,
     pub(crate) card: &'a Card,
     pub(crate) term: &'a crate::model::Terminal,
+    pub(crate) runtime_id: &'a str,
     pub(crate) wave_id: &'a WaveId,
     pub(crate) mcp_token: Option<&'a str>,
     pub(crate) rendered_prompt: &'a str,
@@ -929,54 +940,87 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     let mut notifications = ctx.shared_codex_appserver.subscribe_notifications();
     let remote_uri = ctx.shared_codex_appserver.remote_uri();
     let card_id = ctx.card.id.as_str();
+    let runtime_id = ctx.runtime_id.to_string();
+    let runtime = ctx
+        .spawn_ctx
+        .repo
+        .runtime_get_by_id(&runtime_id)
+        .await?
+        .ok_or_else(|| CalmError::Internal(format!("worker runtime {runtime_id} vanished")))?;
+    let persisted_turn_id = non_empty_string(runtime.active_turn_id.as_deref());
     let worker_instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Worker.prompt_template(),
         ctx.wave_id.as_str(),
     );
-    let thread_id = ctx
-        .shared_codex_appserver
-        .thread_start_mint_for_card(
-            card_id,
-            SharedThreadStartParams {
-                cwd: ctx.cwd.to_string(),
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
-                developer_instructions: Some(worker_instructions),
-                config: None,
-            },
-        )
-        .await?;
-    tracing::info!(
-        target: "shared_codex_daemon::worker",
-        card_id,
-        wave_id = %ctx.wave_id,
-        thread_id = %thread_id,
-        "thread_start_succeeded"
-    );
-
-    persist_shared_worker_runtime_fields(ctx.spawn_ctx, ctx.card, &thread_id, &remote_uri).await?;
-
-    let initial_turn_result = async {
-        ctx.shared_codex_appserver
-            .turn_start(
-                &thread_id,
-                vec![InputItem::text(ctx.rendered_prompt.trim())],
+    let thread_id = if let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref()) {
+        thread_id
+    } else {
+        let thread_id = ctx
+            .shared_codex_appserver
+            .thread_start_mint_for_card(
+                card_id,
+                SharedThreadStartParams {
+                    cwd: ctx.cwd.to_string(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: Some(worker_instructions),
+                    config: None,
+                },
             )
             .await?;
-        await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
-        Ok::<(), CalmError>(())
-    }
-    .await;
-    if let Err(e) = initial_turn_result {
-        tracing::warn!(
+        tracing::info!(
             target: "shared_codex_daemon::worker",
             card_id,
             wave_id = %ctx.wave_id,
             thread_id = %thread_id,
-            error = %e,
-            "turn_start_failed"
+            "thread_start_succeeded"
         );
-        return Err(e);
+        thread_id
+    };
+
+    persist_shared_worker_runtime_fields(
+        ctx.spawn_ctx,
+        ctx.card,
+        ctx.runtime_id,
+        &thread_id,
+        &remote_uri,
+        persisted_turn_id.as_deref(),
+    )
+    .await?;
+
+    if persisted_turn_id.is_none() {
+        let initial_turn_result = async {
+            let turn_id = ctx
+                .shared_codex_appserver
+                .turn_start(
+                    &thread_id,
+                    vec![InputItem::text(ctx.rendered_prompt.trim())],
+                )
+                .await?;
+            persist_shared_worker_runtime_fields(
+                ctx.spawn_ctx,
+                ctx.card,
+                ctx.runtime_id,
+                &thread_id,
+                &remote_uri,
+                Some(&turn_id),
+            )
+            .await?;
+            await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
+            Ok::<(), CalmError>(())
+        }
+        .await;
+        if let Err(e) = initial_turn_result {
+            tracing::warn!(
+                target: "shared_codex_daemon::worker",
+                card_id,
+                wave_id = %ctx.wave_id,
+                thread_id = %thread_id,
+                error = %e,
+                "turn_start_failed"
+            );
+            return Err(e);
+        }
     }
 
     let mut env_for_spawn = ctx.legacy_env.clone();
@@ -1132,11 +1176,15 @@ async fn await_shared_worker_initial_turn_started(
 async fn persist_shared_worker_runtime_fields(
     ctx: &SpawnCtx,
     card: &Card,
+    runtime_id: &str,
     thread_id: &str,
     remote_uri: &str,
+    active_turn_id: Option<&str>,
 ) -> Result<()> {
     let card_id_for_tx = card.id.to_string();
+    let runtime_id_for_tx = runtime_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
+    let active_turn_id_for_tx = active_turn_id.map(ToOwned::to_owned);
     let remote_uri_for_tx = remote_uri.to_string();
     write_in_tx_typed::<Card, _>(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
@@ -1159,13 +1207,14 @@ async fn persist_shared_worker_runtime_fields(
                 },
             )
             .await?;
-            let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+            let runtime = runtime_get_by_id_tx(tx, &runtime_id_for_tx)
                 .await?
                 .ok_or_else(|| {
                     CalmError::Internal(format!(
-                        "worker card {card_id_for_tx} has no active runtime to bind"
+                        "worker runtime {runtime_id_for_tx} vanished before shared codex bind"
                     ))
                 })?;
+            let old_status = runtime.status.clone();
             runtime_bind_attribution_tx(
                 tx,
                 &runtime.id,
@@ -1174,11 +1223,13 @@ async fn persist_shared_worker_runtime_fields(
                     provider: AgentProvider::Codex,
                     thread_id: Some(thread_id_for_tx),
                     session_id: None,
-                    active_turn_id: None,
+                    active_turn_id: active_turn_id_for_tx,
                 },
             )
             .await?;
-            runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+            if old_status != RunStatus::Running {
+                runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+            }
             Ok(updated)
         })
     })

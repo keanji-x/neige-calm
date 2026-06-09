@@ -744,6 +744,7 @@ impl Inner {
                 idempotency_key: idem.clone(),
                 reason: format!("{e}"),
             };
+            // Allow on `WriteContext::role_cache()`/`cove_cache()` deprecation, not on `log_pure_event`.
             #[allow(deprecated)]
             let log_result = self
                 .repo
@@ -1149,12 +1150,6 @@ impl DispatchRequest {
         }
     }
 }
-
-// Suppress unused-trait-bounds lint: `RouteRepo` is left as a
-// reachable supertrait for downstream code paths that prefer the
-// narrow trait object.
-#[allow(dead_code)]
-fn _route_repo_marker<R: RouteRepo>(_r: &R) {}
 
 #[cfg(test)]
 mod tests {
