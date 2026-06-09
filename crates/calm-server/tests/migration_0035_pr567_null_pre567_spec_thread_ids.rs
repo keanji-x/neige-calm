@@ -202,7 +202,13 @@ async fn seed_card(pool: &SqlitePool, card_id: &str, wave_id: &str, role: Option
     }
 }
 
-async fn seed_runtime(pool: &SqlitePool, runtime_id: &str, card_id: &str, thread_id: &str) {
+async fn seed_runtime(
+    pool: &SqlitePool,
+    runtime_id: &str,
+    card_id: &str,
+    thread_id: &str,
+    handle_state_json: Option<&str>,
+) {
     sqlx::query(
         r#"INSERT INTO runtimes (
                id, card_id, kind, agent_provider, status, terminal_run_id,
@@ -211,11 +217,12 @@ async fn seed_runtime(pool: &SqlitePool, runtime_id: &str, card_id: &str, thread
                completed_at_ms
            )
            VALUES (?1, ?2, 'shared-spec', 'codex', 'idle', NULL,
-                   ?3, NULL, NULL, NULL, NULL, NULL, 1100, 1100, NULL)"#,
+                   ?3, NULL, NULL, ?4, NULL, NULL, 1100, 1100, NULL)"#,
     )
     .bind(runtime_id)
     .bind(card_id)
     .bind(thread_id)
+    .bind(handle_state_json)
     .execute(pool)
     .await
     .unwrap();
@@ -228,6 +235,27 @@ async fn thread_id(pool: &SqlitePool, runtime_id: &str) -> Option<String> {
         .await
         .unwrap();
     row.try_get::<Option<String>, _>("thread_id").unwrap()
+}
+
+async fn snapshot_last_thread_id(pool: &SqlitePool, runtime_id: &str) -> Option<String> {
+    let row = sqlx::query(
+        "SELECT json_extract(handle_state_json, '$.last_thread_id') AS last_thread_id FROM runtimes WHERE id = ?1",
+    )
+    .bind(runtime_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    row.try_get::<Option<String>, _>("last_thread_id").unwrap()
+}
+
+async fn handle_state_json_is_null(pool: &SqlitePool, runtime_id: &str) -> bool {
+    let row =
+        sqlx::query("SELECT handle_state_json IS NULL AS is_null FROM runtimes WHERE id = ?1")
+            .bind(runtime_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    row.try_get::<bool, _>("is_null").unwrap()
 }
 
 #[tokio::test]
@@ -248,15 +276,31 @@ async fn nulls_only_spec_runtime_thread_ids_without_per_card_token_rows() {
     .await
     .unwrap();
     seed_wave(&pool, "wave-spec-token").await;
+    seed_wave(&pool, "wave-spec-token-null-state").await;
     seed_wave(&pool, "wave-spec-no-token").await;
+    seed_wave(&pool, "wave-spec-no-token-null-state").await;
     seed_wave(&pool, "wave-worker-no-token").await;
-    seed_wave(&pool, "wave-plain-default-role").await;
+    seed_wave(&pool, "wave-plain").await;
 
     seed_card(&pool, "card-spec-token", "wave-spec-token", Some("spec")).await;
     seed_card(
         &pool,
+        "card-spec-token-null-state",
+        "wave-spec-token-null-state",
+        Some("spec"),
+    )
+    .await;
+    seed_card(
+        &pool,
         "card-spec-no-token",
         "wave-spec-no-token",
+        Some("spec"),
+    )
+    .await;
+    seed_card(
+        &pool,
+        "card-spec-no-token-null-state",
+        "wave-spec-no-token-null-state",
         Some("spec"),
     )
     .await;
@@ -267,13 +311,7 @@ async fn nulls_only_spec_runtime_thread_ids_without_per_card_token_rows() {
         Some("worker"),
     )
     .await;
-    seed_card(
-        &pool,
-        "card-plain-default-role",
-        "wave-plain-default-role",
-        None,
-    )
-    .await;
+    seed_card(&pool, "card-plain", "wave-plain", Some("plain")).await;
     sqlx::query(
         r#"INSERT INTO card_mcp_tokens (card_id, hashed_token, created_at)
            VALUES ('card-spec-token', 'hash-spec-token', 1200)"#,
@@ -281,13 +319,44 @@ async fn nulls_only_spec_runtime_thread_ids_without_per_card_token_rows() {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(
+        r#"INSERT INTO card_mcp_tokens (card_id, hashed_token, created_at)
+           VALUES ('card-spec-token-null-state', 'hash-spec-token-null-state', 1200)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
-    seed_runtime(&pool, "runtime-spec-token", "card-spec-token", "thread-A").await;
+    seed_runtime(
+        &pool,
+        "runtime-spec-token",
+        "card-spec-token",
+        "thread-A",
+        Some(r#"{"mode":"harness","last_thread_id":"thread-A","turn_counter":7}"#),
+    )
+    .await;
+    seed_runtime(
+        &pool,
+        "runtime-spec-token-null-state",
+        "card-spec-token-null-state",
+        "thread-A-null",
+        None,
+    )
+    .await;
     seed_runtime(
         &pool,
         "runtime-spec-no-token",
         "card-spec-no-token",
         "thread-B",
+        Some(r#"{"mode":"harness","last_thread_id":"thread-B","turn_counter":8}"#),
+    )
+    .await;
+    seed_runtime(
+        &pool,
+        "runtime-spec-no-token-null-state",
+        "card-spec-no-token-null-state",
+        "thread-B-null",
+        None,
     )
     .await;
     seed_runtime(
@@ -295,13 +364,15 @@ async fn nulls_only_spec_runtime_thread_ids_without_per_card_token_rows() {
         "runtime-worker-no-token",
         "card-worker-no-token",
         "thread-C",
+        Some(r#"{"mode":"harness","last_thread_id":"thread-C","turn_counter":9}"#),
     )
     .await;
     seed_runtime(
         &pool,
-        "runtime-plain-default-role",
-        "card-plain-default-role",
+        "runtime-plain",
+        "card-plain",
         "thread-D",
+        Some(r#"{"mode":"harness","last_thread_id":"thread-D","turn_counter":10}"#),
     )
     .await;
 
@@ -316,13 +387,45 @@ async fn nulls_only_spec_runtime_thread_ids_without_per_card_token_rows() {
         thread_id(&pool, "runtime-spec-token").await.as_deref(),
         Some("thread-A")
     );
+    assert_eq!(
+        snapshot_last_thread_id(&pool, "runtime-spec-token")
+            .await
+            .as_deref(),
+        Some("thread-A")
+    );
+    assert_eq!(
+        thread_id(&pool, "runtime-spec-token-null-state")
+            .await
+            .as_deref(),
+        Some("thread-A-null")
+    );
+    assert!(handle_state_json_is_null(&pool, "runtime-spec-token-null-state").await);
     assert_eq!(thread_id(&pool, "runtime-spec-no-token").await, None);
+    assert_eq!(
+        snapshot_last_thread_id(&pool, "runtime-spec-no-token").await,
+        None
+    );
+    assert_eq!(
+        thread_id(&pool, "runtime-spec-no-token-null-state").await,
+        None
+    );
+    assert!(handle_state_json_is_null(&pool, "runtime-spec-no-token-null-state").await);
     assert_eq!(
         thread_id(&pool, "runtime-worker-no-token").await.as_deref(),
         Some("thread-C")
     );
     assert_eq!(
-        thread_id(&pool, "runtime-plain-default-role")
+        snapshot_last_thread_id(&pool, "runtime-worker-no-token")
+            .await
+            .as_deref(),
+        Some("thread-C")
+    );
+    assert_eq!(
+        thread_id(&pool, "runtime-plain").await.as_deref(),
+        Some("thread-D")
+    );
+    assert_eq!(
+        snapshot_last_thread_id(&pool, "runtime-plain")
             .await
             .as_deref(),
         Some("thread-D")

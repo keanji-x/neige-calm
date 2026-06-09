@@ -826,8 +826,7 @@ async fn reusable_thread_without_token_logs_warning() {
     let subscriber = tracing_registry().with(TargetCaptureLayer {
         targets: targets.clone(),
     });
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("install reusable-thread invariant tracing capture subscriber");
+    let _guard = tracing::subscriber::set_default(subscriber);
     state.operation_runtime.drive().await.unwrap();
 
     assert!(matches!(
