@@ -4,7 +4,7 @@
 //!
 //! Two cases live in this file:
 //!
-//!   1. **Plain card** — passes today. Documents the working pipeline so a
+//!   1. **Worker card** — passes today. Documents the working pipeline so a
 //!      future regression that breaks the FSM or the aggregator surfaces
 //!      here instead of in a hand-tested UI bug report.
 //!
@@ -59,7 +59,7 @@ const OVERLAY_POLL: Duration = Duration::from_millis(50);
 /// (so the assertions can scope to it).
 ///
 /// The caller decides the card's role via `role`. We override the cache
-/// entry after the standard `card_create` (which seeds `Plain`) so we
+/// entry after the standard `card_create` (which seeds `Worker`) so we
 /// don't have to fan out to the `card_create_with_id_tx` machinery that
 /// the production spec-card mint uses. The role gate only reads the
 /// cache, so a cache override is sufficient to reproduce the gate
@@ -97,7 +97,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
 
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    // Override: `card_create` seeds `Plain`; for the Spec-card case we
+    // Override: `card_create` seeds `Worker`; for the Spec-card case we
     // need the cache to report `Spec`, mirroring what the real
     // `card_with_codex_create_tx` would have written.
     cache.insert(card.id.clone(), role, wave.id.clone());
@@ -238,8 +238,8 @@ async fn await_card_awaiting_input(repo: &Arc<dyn Repo>, card_id: &str) {
 }
 
 #[tokio::test]
-async fn plain_card_permission_request_flips_wave_needs_input() {
-    let (app, repo, card_id, wave_id) = setup(CardRole::Plain).await;
+async fn worker_card_permission_request_flips_wave_needs_input() {
+    let (app, repo, card_id, wave_id) = setup(CardRole::Worker).await;
 
     post_permission_request(&app, &card_id).await;
 
@@ -265,7 +265,7 @@ async fn spec_card_permission_request_flips_wave_needs_input() {
     // surfaces below.
     post_permission_request(&app, &card_id).await;
 
-    // Same assertions as the Plain case. With the bug in place, the
+    // Same assertions as the Worker case. With the bug in place, the
     // role gate refuses the write at `role_gate.rs:226-232`, the FSM
     // never sees the CodexHook event, and neither overlay flips —
     // the first await below times out with a descriptive message.

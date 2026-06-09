@@ -14,7 +14,7 @@
 //!   thread-mapped card's wave row + the wave's card list (id/kind/role) as
 //!   one JSON snapshot. No event emission. Workers occasionally peek wave
 //!   state before they report; the spec gets a full snapshot every loop
-//!   iteration. Plain cards are rejected at the MCP entry.
+//!   iteration.
 //!
 //! * `calm.update_wave_state` — Spec only. Patches the wave row
 //!   (`title` / `sort` / `archived_at`), stamps `updated_at`, and
@@ -639,13 +639,6 @@ mod tests {
             err.message.contains("Worker"),
             "error should mention got role: {err:?}"
         );
-    }
-
-    #[test]
-    fn require_role_rejects_plain_for_spec_tool() {
-        let id = identity_with_role(CardRole::Plain);
-        let err = require_role(&id, CardRole::Spec).expect_err("plain must be denied");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
     }
 
     #[test]

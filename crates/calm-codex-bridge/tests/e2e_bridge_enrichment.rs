@@ -55,7 +55,7 @@ async fn serve_resolution_then_hook(listener: TcpListener, captured: oneshot::Se
     let (mut resolve_stream, _) = listener.accept().await.expect("accept resolve conn");
     let _resolve_request = read_http_request(&mut resolve_stream).await;
     let body =
-        r#"{"thread_id":"test-session","card_id":"resolved-card","role":"plain","wave_id":null}"#;
+        r#"{"thread_id":"test-session","card_id":"resolved-card","role":"worker","wave_id":null}"#;
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),

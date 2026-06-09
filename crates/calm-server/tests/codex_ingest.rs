@@ -180,7 +180,9 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card = create_codex_card(repo.as_ref()).await;
     let cache = calm_server::card_role_cache::CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
 
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -194,14 +196,11 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(
-                cache.clone(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
-            ),
+            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
-        Some(calm_server::wave_cove_cache::WaveCoveCache::new()),
+        Some(wave_cove_cache),
     );
     // Scope β: the actor middleware must be present — the `ingest_hook`
     // handler now extracts `Actor` from request extensions to honor the

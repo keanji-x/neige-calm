@@ -95,7 +95,7 @@ async fn shared_appserver_two_threads_true_binary() {
     let t1 = d
         .thread_start_for_card(
             &card_id,
-            CardRole::Plain,
+            CardRole::Worker,
             None,
             SharedThreadStartParams {
                 cwd: "/tmp".into(),
@@ -111,7 +111,7 @@ async fn shared_appserver_two_threads_true_binary() {
     let t2 = d
         .thread_start_for_card(
             &card2,
-            CardRole::Plain,
+            CardRole::Worker,
             None,
             SharedThreadStartParams {
                 cwd: "/tmp".into(),
@@ -151,7 +151,7 @@ async fn shared_appserver_restart_resumes_thread() {
     let thread_id = d
         .thread_start_for_card(
             &card_id,
-            CardRole::Plain,
+            CardRole::Worker,
             None,
             SharedThreadStartParams {
                 cwd: "/tmp".into(),

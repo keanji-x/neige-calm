@@ -10,8 +10,8 @@
 //!   * an `AiCodex(other_card)` attempting the same write is refused
 //!     before the event row is appended — neither the events table
 //!     gains a row nor the broadcast goes out;
-//!   * the migration 0008 backfill (every existing card → 'plain') is
-//!     observable at the database level after `SqlxRepo::open` runs.
+//!   * the public card-create path writes the current default `worker`
+//!     role instead of relying on the legacy SQLite default.
 
 use std::sync::Arc;
 
@@ -160,8 +160,7 @@ async fn ai_codex_cannot_update_wave() {
         })
         .await
         .unwrap();
-    // Card stays Plain — PR3 never mints workers, but even a Plain
-    // codex card is denied for wave.updated.
+    // Worker codex cards are denied for wave.updated.
 
     let cache = CardRoleCache::new();
     let wcc = WaveCoveCache::new();
@@ -268,13 +267,10 @@ async fn empty_codex_card_id_rejected() {
     );
 }
 
-/// Migration smoke test: after `SqlxRepo::open` runs, every existing
-/// `cards` row carries `role = 'plain'`. We can't truly simulate a
-/// pre-PR3 database (the migration ladder must run forward); instead
-/// the assertion is that the migration's `DEFAULT 'plain'` is honored
-/// for every new card insert.
+/// Public create smoke test: user-facing cards bind the current role
+/// explicitly instead of relying on the legacy SQLite DEFAULT.
 #[tokio::test]
-async fn migration_backfills_role_plain_for_existing_cards() {
+async fn public_card_create_writes_worker_role() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     // Seed a card via the public API (uses the migrated column).
     let cove = repo
@@ -310,7 +306,7 @@ async fn migration_backfills_role_plain_for_existing_cards() {
         .fetch_one(repo.pool())
         .await
         .unwrap();
-    assert_eq!(row.0, "plain");
+    assert_eq!(row.0, "worker");
 }
 
 /// Migration smoke test: the partial unique index that constrains "one

@@ -251,7 +251,7 @@ impl ProviderAdapter for TerminalAdapter {
             program.clone(),
             cwd.clone(),
             env.clone(),
-            CardRole::Plain,
+            CardRole::Worker,
             true,
             &self.card_role_cache,
             payload.request.theme,

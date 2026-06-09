@@ -48,12 +48,6 @@ impl CardIdentity {
     ///
     /// * `CardRole::Spec`       → [`ActorId::AiSpec`]
     /// * `CardRole::Worker`     → [`ActorId::AiCodex`]
-    /// * `CardRole::Plain`      → unreachable here (Plain cards have no
-    ///   token row by construction; see `card_with_codex_create_tx`).
-    ///   We still map it to `AiCodex` for total-function-ness; the gate
-    ///   itself denies the empty-CardId case, and a Plain card reaching
-    ///   this code path would indicate a token-row leak we want surfaced
-    ///   as a clear `Forbidden` rather than a panic.
     /// * `CardRole::ReportCard` → unreachable here too (report cards are
     ///   read-only kernel-projected payload and don't get an MCP token).
     ///   Mapped to `AiCodex` for the same total-function reason — the
@@ -63,9 +57,7 @@ impl CardIdentity {
     pub fn to_actor_id(&self) -> ActorId {
         match self.role {
             CardRole::Spec => ActorId::AiSpec(self.card_id.clone()),
-            CardRole::Worker | CardRole::Plain | CardRole::ReportCard => {
-                ActorId::AiCodex(self.card_id.clone())
-            }
+            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodex(self.card_id.clone()),
         }
     }
 }
@@ -87,7 +79,7 @@ impl ToolCallIdentity {
         let card_id = CardId::from(self.card_id.clone());
         match self.role {
             CardRole::Spec => ActorId::AiSpec(card_id),
-            CardRole::Worker | CardRole::Plain | CardRole::ReportCard => ActorId::AiCodex(card_id),
+            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodex(card_id),
         }
     }
 }
@@ -271,20 +263,20 @@ mod tests {
 
     #[test]
     fn require_role_any_accepts_any_allowed_role_and_rejects_others() {
-        let allowed = [CardRole::Spec, CardRole::Worker];
+        let allowed = [CardRole::Spec, CardRole::ReportCard];
 
         assert!(require_role_any(&identity_with_role(CardRole::Spec), &allowed).is_ok());
-        assert!(require_role_any(&identity_with_role(CardRole::Worker), &allowed).is_ok());
+        assert!(require_role_any(&identity_with_role(CardRole::ReportCard), &allowed).is_ok());
 
-        let err = require_role_any(&identity_with_role(CardRole::Plain), &allowed)
-            .expect_err("plain must be denied");
+        let err = require_role_any(&identity_with_role(CardRole::Worker), &allowed)
+            .expect_err("worker must be denied");
         assert_eq!(err.code, RpcError::INVALID_PARAMS);
         assert!(
-            err.message.contains("Spec") && err.message.contains("Worker"),
+            err.message.contains("Spec") && err.message.contains("ReportCard"),
             "error should mention allowed roles: {err:?}"
         );
         assert!(
-            err.message.contains("Plain"),
+            err.message.contains("Worker"),
             "error should mention actual role: {err:?}"
         );
     }

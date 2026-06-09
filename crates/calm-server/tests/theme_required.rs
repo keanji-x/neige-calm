@@ -220,7 +220,7 @@ async fn post_codex_cards_without_theme_is_rejected_with_422() {
 }
 
 /// `POST /api/waves/:wave_id/terminal-cards` without theme must 422.
-/// Plain terminal-card route — same fail-loud contract.
+/// Terminal-card route — same fail-loud contract.
 #[tokio::test]
 async fn post_terminal_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;

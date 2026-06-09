@@ -370,12 +370,12 @@ async fn delete_empty(app: axum::Router, uri: &str) -> StatusCode {
     .status()
 }
 
-async fn seed_shared_plain_card(boot: &Boot, label: &str, thread_id: &str) -> Card {
+async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> Card {
     let card = boot
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
-            kind: "plugin:test:plain".into(),
+            kind: "plugin:test:worker".into(),
             sort: None,
             payload: json!({
                 "label": label,
@@ -384,7 +384,7 @@ async fn seed_shared_plain_card(boot: &Boot, label: &str, thread_id: &str) -> Ca
             }),
         })
         .await
-        .expect("seed shared plain card");
+        .expect("seed shared worker card");
     let mut tx = boot.repo.pool().begin().await.unwrap();
     runtime_start_tx(
         &mut tx,
@@ -405,7 +405,7 @@ async fn seed_shared_plain_card(boot: &Boot, label: &str, thread_id: &str) -> Ca
         },
     )
     .await
-    .expect("seed shared plain runtime");
+    .expect("seed shared worker runtime");
     tx.commit().await.unwrap();
     card
 }
@@ -463,7 +463,7 @@ async fn shared_card_delete_interrupts_active_turn() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot_shared().await;
-    let card = seed_shared_plain_card(&boot, "delete", "thread-delete").await;
+    let card = seed_shared_worker_card(&boot, "delete", "thread-delete").await;
     boot.state
         .shared_codex_appserver
         .set_active_turn_for_test("thread-delete", "turn-delete");
@@ -490,8 +490,8 @@ async fn shared_wave_delete_interrupts_all_child_turns() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot_shared().await;
-    let card_a = seed_shared_plain_card(&boot, "wave-a", "thread-wave-a").await;
-    let card_b = seed_shared_plain_card(&boot, "wave-b", "thread-wave-b").await;
+    let card_a = seed_shared_worker_card(&boot, "wave-a", "thread-wave-a").await;
+    let card_b = seed_shared_worker_card(&boot, "wave-b", "thread-wave-b").await;
     boot.state
         .shared_codex_appserver
         .set_active_turn_for_test("thread-wave-a", "turn-wave-a");
@@ -595,7 +595,7 @@ async fn reset_spec_card_returns_404_for_unknown_card() {
 }
 
 #[tokio::test]
-async fn reset_spec_card_rejects_plain_codex_card() {
+async fn reset_spec_card_rejects_worker_codex_card() {
     let boot = boot().await;
     let card = boot
         .repo
@@ -606,10 +606,10 @@ async fn reset_spec_card_rejects_plain_codex_card() {
             payload: json!({"schemaVersion": 1}),
         })
         .await
-        .expect("plain codex card");
+        .expect("worker codex card");
     boot.state.card_role_cache.insert(
         card.id.clone(),
-        CardRole::Plain,
+        CardRole::Worker,
         WaveId::from(boot.wave_id.clone()),
     );
 
@@ -633,7 +633,7 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
         .expect("report card");
     boot.state.card_role_cache.insert(
         card.id.clone(),
-        CardRole::Plain,
+        CardRole::Worker,
         WaveId::from(boot.wave_id.clone()),
     );
 

@@ -77,29 +77,27 @@ export type CardId = string;
  * `role_gate::enforce_role` — *inside* the transaction, before the event
  * row is appended. Violations roll the txn back; nothing is broadcast.
  *
- *   * [`CardRole::Plain`] is the default for every existing card and
- *     every PR3-era card insert. The kernel places no extra restrictions
- *     beyond what the wave/cove already provides.
  *   * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards
  *     may emit `WaveUpdated`; this is the structural choke point that
  *     keeps AI workers from rewriting wave-level metadata.
- *   * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.
- *     Its events are scoped to the card itself and never broaden.
+ *   * [`CardRole::Worker`] is the default for user-facing card inserts
+ *     and dispatcher-spawned worker cards. Its events are scoped to the
+ *     card itself and never broaden.
  *   * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated
  *     report card. Same kernel-ownership profile as `Spec` — minted by
  *     the wave-create path (PR B), one per wave (partial unique index
  *     in migration 0013), undeletable from REST / plugin-callback paths.
- *     Role-gate-wise it behaves like `Plain`: it only emits `CardUpdated`
+ *     Role-gate-wise it behaves like `Worker`: it only emits `CardUpdated`
  *     for its own scope; it does **not** emit `WaveUpdated` (only `Spec`
  *     does — preserving the #136 contract).
  *
  * Persisted as a lowercase string in `cards.role` (migration 0008). The
  * serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
- * stable; ts-rs exports the matching TS union (`"plain" | "spec" |
- * "worker" | "reportcard"`) into `web/src/api/generated-events.ts` so the
+ * stable; ts-rs exports the matching TS union (`"spec" | "worker" |
+ * "reportcard"`) into `web/src/api/generated-events.ts` so the
  * frontend can adopt the enum once any UI lands.
  */
-export type CardRole = "plain" | "spec" | "worker" | "reportcard";
+export type CardRole = "worker" | "spec" | "reportcard";
 
 export type CardRuntime = { id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, terminal_run_id: string | null, 
 /**

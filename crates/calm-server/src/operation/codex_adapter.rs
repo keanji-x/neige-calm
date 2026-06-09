@@ -312,7 +312,7 @@ impl ProviderAdapter for CodexAdapter {
             payload.request.prompt.clone(),
             payload.request.icon_bg.clone(),
             payload.request.icon_fg.clone(),
-            CardRole::Plain,
+            CardRole::Worker,
             true,
             &self.card_role_cache,
             payload.request.theme,

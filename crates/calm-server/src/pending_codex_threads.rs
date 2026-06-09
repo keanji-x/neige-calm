@@ -51,7 +51,7 @@ impl PendingEntry {
     pub fn new(card_id: String, wave_id: Option<String>, terminal_id: String) -> Self {
         Self {
             card_id,
-            role: CardRole::Plain,
+            role: CardRole::Worker,
             wave_id,
             terminal_id,
             pty_pid: None,

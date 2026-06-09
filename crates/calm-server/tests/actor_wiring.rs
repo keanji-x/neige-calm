@@ -138,7 +138,9 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
         .unwrap();
     let events = EventBus::new();
     let cache = calm_server::card_role_cache::CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let state = calm_server::state::AppState::from_parts(
         repo.clone() as Arc<dyn Repo>,
         events.clone(),
@@ -150,14 +152,11 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(
-                cache.clone(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
-            ),
+            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
-        Some(calm_server::wave_cove_cache::WaveCoveCache::new()),
+        Some(wave_cove_cache),
     );
     let app = app(state);
 

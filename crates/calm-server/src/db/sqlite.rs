@@ -364,7 +364,7 @@ pub async fn cove_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCove) -> Res
     // Issue #175: user-facing creates always land as `CoveKind::User`.
     // The `coves.kind` column was added in migration 0009 with DEFAULT
     // 'user'; we bind the variant explicitly here (mirroring the
-    // `card_create_with_id_tx` pattern that binds `CardRole::Plain`)
+    // `card_create_with_id_tx` pattern that binds `CardRole::Worker`)
     // so the storage shape stays self-documenting and a future kind
     // addition surfaces here as a compile error rather than silently
     // accepting the DB default. The system cove is minted exclusively
@@ -745,7 +745,7 @@ pub async fn card_create_with_id_tx(
     // wrong default at any future callsite (kernel-owned cards minted
     // as deletable would be a security regression). The three live
     // callers cover the policy:
-    //   * `card_create_tx`              → `true`  (plain user cards)
+    //   * `card_create_tx`              → `true`  (user-facing Worker cards)
     //   * dispatcher worker terminals    → `true`  (workers are user-facing)
     //   * `card_with_codex_create_tx`    → caller decides (`false` for spec)
     deletable: bool,
@@ -769,9 +769,8 @@ pub async fn card_create_with_id_tx(
     let now = now_ms();
     let payload_text = serde_json::to_string(&p.payload)?;
     // `role` lands in the `cards.role` column added by migration 0008
-    // (PR3, #136). PR3 callers always pass `CardRole::Plain`; PR6 will
-    // pass `CardRole::Spec` from the wave-create path, PR5 will pass
-    // `CardRole::Worker` from the dispatcher.
+    // (PR3, #136). User-facing card creation now uniformly passes
+    // `CardRole::Worker`; wave-create passes `CardRole::Spec`.
     //
     // `deletable` lands in the column added by migration 0013 (#229 PR A).
     // SQLite has no native bool; we encode as `1` / `0`, matching the
@@ -820,11 +819,11 @@ pub async fn card_create_tx(
     p: NewCard,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // Plain user cards are user-deletable by default — the user added
-    // them via REST and can remove them the same way. Spec / report
+    // User-facing Worker cards are user-deletable by default — the user
+    // added them via REST and can remove them the same way. Spec / report
     // cards take the explicit `false` route via
     // `card_with_codex_create_tx`.
-    card_create_with_id_tx(tx, new_id(), p, CardRole::Plain, true, card_role_cache).await
+    card_create_with_id_tx(tx, new_id(), p, CardRole::Worker, true, card_role_cache).await
 }
 
 pub async fn card_update_tx(
@@ -885,7 +884,7 @@ pub async fn card_update_tx(
 /// `wave_report_doc::ReportDoc::to_bytes`; the kernel never
 /// interprets the column outside of the round-trip via that module.
 ///
-/// This is a **wave-report-only** seam. Plain / terminal / codex /
+/// This is a **wave-report-only** seam. Terminal / codex /
 /// plugin cards continue going through `card_update_tx`, which never
 /// touches `body_crdt` — the column stays NULL on those rows forever.
 pub async fn card_update_with_crdt_tx(
@@ -1095,9 +1094,8 @@ pub async fn card_with_terminal_create_tx(
     // `write_with_event` can stamp `EventScope::Card { card, .. }` on
     // the audit row without racing the txn.
     //
-    // PR3 (#136): the user-facing `POST /api/waves/:id/terminal-cards`
-    // route passes `CardRole::Plain`; PR6 (#136) — the dispatcher's
-    // worker-terminal path passes `CardRole::Worker`. The cache
+    // User-facing terminal creation and dispatcher worker-terminal paths
+    // pass `CardRole::Worker`. The cache
     // write-through inside `card_create_with_id_tx` keeps the role
     // visible to `enforce_role` calls later in the same tx.
     let card = card_create_with_id_tx(
@@ -1250,10 +1248,10 @@ pub async fn card_with_terminal_rollback_tx(
 /// On any failure the surrounding transaction rolls back; a partial state
 /// (card without terminal, or terminal without runtime row) is impossible.
 /// PR7a (#136) — third return slot is `Some(raw_token)` for Spec/Worker
-/// cards, `None` for Plain. The caller is expected to thread the raw
-/// value into the codex daemon's `NEIGE_MCP_TOKEN` env var immediately
-/// and discard it — the hash is persisted in `card_mcp_tokens`, but the
-/// raw form is unrecoverable on a kernel restart (by design).
+/// cards. The caller is expected to thread the raw value into the codex
+/// daemon's `NEIGE_MCP_TOKEN` env var immediately and discard it — the
+/// hash is persisted in `card_mcp_tokens`, but the raw form is
+/// unrecoverable on a kernel restart (by design).
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_codex_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -1269,8 +1267,8 @@ pub async fn card_with_codex_create_tx(
     role: CardRole,
     // Issue #229 PR A — required deletable bit. The wave-create route
     // passes `false` (the spec card is kernel-owned, must survive
-    // direct REST / plugin-callback delete attempts). The plain
-    // user-facing `POST /api/waves/:id/codex-cards` route passes `true`.
+    // direct REST / plugin-callback delete attempts). The user-facing
+    // `POST /api/waves/:id/codex-cards` route passes `true`.
     deletable: bool,
     card_role_cache: &CardRoleCache,
     // #177 — host browser's theme RGB; written onto the terminal row
@@ -1281,12 +1279,10 @@ pub async fn card_with_codex_create_tx(
     // 1. Card row with placeholder payload — schemaVersion and UI hints
     //    are stamped in step 5 once we have the terminal row.
     //
-    // PR3 (#136): the user-facing `POST /api/waves/:id/codex-cards`
-    // route passes `CardRole::Plain`. PR6 (#136) — the wave-create
-    // route passes `CardRole::Spec` so the auto-minted spec card is
-    // recognized by `enforce_role` as a `WaveUpdated`-permitted
-    // emitter. PR5's dispatcher will pass `CardRole::Worker` once it
-    // moves off the standalone insert path. The cache write-through
+    // User-facing codex creation and dispatcher paths pass
+    // `CardRole::Worker`. The wave-create route passes `CardRole::Spec`
+    // so the auto-minted spec card is recognized by `enforce_role` as a
+    // `WaveUpdated`-permitted emitter. The cache write-through
     // inside `card_create_with_id_tx` keeps the role visible to
     // `enforce_role` calls later in the same tx.
     let card = card_create_with_id_tx(
@@ -1371,7 +1367,7 @@ pub async fn card_with_codex_create_tx(
     //    MCP token, store the hash in `card_mcp_tokens` inside the same tx
     //    (FK enforced — the card row above is the parent), and return the
     //    raw value to the caller so it can be threaded into the codex
-    //    daemon's `NEIGE_MCP_TOKEN` env var. Plain cards return `None`.
+    //    daemon's `NEIGE_MCP_TOKEN` env var.
     //
     //    Doing this here (rather than at the route layer) keeps the
     //    invariant atomic: a committed card row whose role is Spec/Worker

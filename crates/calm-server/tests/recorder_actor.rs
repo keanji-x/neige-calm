@@ -16,15 +16,13 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, WaveId};
-use calm_server::model::{CardRole, NewCove};
+use calm_server::ids::ActorId;
+use calm_server::model::NewCove;
 use calm_server::replay::spawn_session_recorder;
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
 /// Boot an in-memory repo, an event bus, and a tempfile-backed recorder.
-/// PR3 (#136): the cache is also returned so tests can pre-seed roles
-/// for `AiCodex(card_id)` actors used by the recorder coverage.
 async fn boot() -> (
     Arc<dyn Repo>,
     EventBus,
@@ -97,15 +95,6 @@ fn read_recorded(tmp: &NamedTempFile) -> Vec<Value> {
 #[tokio::test]
 async fn recorder_captures_real_actor_per_envelope() {
     let (repo, bus, cache, wcc, tmp) = boot().await;
-    // PR3 (#136) — pre-seed the role cache with the card the
-    // `AiCodex(...)` actor below references, so `enforce_role`'s
-    // unknown-card guard doesn't refuse the write.
-    cache.insert(
-        CardId::from("card-7"),
-        CardRole::Plain,
-        WaveId::from("wave-7"),
-    );
-
     // Three writes with three distinct actors that match the design doc's
     // grammar — exactly the shape RECORD_SESSION needs to preserve for
     // `replay --assert` to be useful as a bug-report artifact. PR2 of
@@ -113,12 +102,12 @@ async fn recorder_captures_real_actor_per_envelope() {
     // of [`ActorId`] (`{"kind":"User"}`, etc.) — round-trippable into
     // the new typed surface without ambiguity.
     let _id_user = create_cove_as(&*repo, &bus, &cache, &wcc, ActorId::User, "u").await;
-    let _id_ai = create_cove_as(
+    let _id_plugin = create_cove_as(
         &*repo,
         &bus,
         &cache,
         &wcc,
-        ActorId::AiCodex(CardId::from("card-7")),
+        ActorId::Plugin("plugin-7".into()),
         "a",
     )
     .await;
@@ -155,7 +144,7 @@ async fn recorder_captures_real_actor_per_envelope() {
     // Each line's `actor` is now the typed [`ActorId`] JSON shape.
     let actors: Vec<&Value> = lines.iter().map(|l| &l["actor"]).collect();
     assert_eq!(actors[0], &json!({"kind": "User"}));
-    assert_eq!(actors[1], &json!({"kind": "AiCodex", "id": "card-7"}));
+    assert_eq!(actors[1], &json!({"kind": "Plugin", "id": "plugin-7"}));
     assert_eq!(actors[2], &json!({"kind": "Kernel"}));
 
     // And no line should have the pre-#39 placeholder or the legacy
@@ -176,24 +165,19 @@ async fn envelope_carries_actor_alongside_event() {
     // Unit-level pin: the bus envelope itself carries `actor` so any
     // future subscriber (not just the recorder) can read it directly.
     let (repo, bus, cache, wcc, _tmp) = boot().await;
-    cache.insert(
-        CardId::from("card-1"),
-        CardRole::Plain,
-        WaveId::from("wave-1"),
-    );
     let mut sub = bus.subscribe();
     let event_id = create_cove_as(
         &*repo,
         &bus,
         &cache,
         &wcc,
-        ActorId::AiCodex(CardId::from("card-1")),
+        ActorId::Plugin("plugin-1".into()),
         "c",
     )
     .await;
     let env = sub.recv().await.expect("envelope delivered");
     assert_eq!(env.id, event_id);
-    assert_eq!(env.actor, ActorId::AiCodex(CardId::from("card-1")));
+    assert_eq!(env.actor, ActorId::Plugin("plugin-1".into()));
     match env.event {
         Event::CoveUpdated(_) => {}
         other => panic!("expected CoveUpdated, got {other:?}"),

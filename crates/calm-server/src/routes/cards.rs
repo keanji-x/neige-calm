@@ -306,7 +306,7 @@ pub(crate) async fn create_card(
         s.write(),
         move |tx| {
             Box::pin(async move {
-                // Issue #229 PR A — plain user-driven creates are
+                // Issue #585 — user-driven creates mint Worker cards and are
                 // user-deletable. The `false` path is reserved for
                 // kernel-owned cards minted by internal code (spec card
                 // here in PR A; report card in PR B).
@@ -314,7 +314,7 @@ pub(crate) async fn create_card(
                     tx,
                     card_id_for_tx,
                     new,
-                    CardRole::Plain,
+                    CardRole::Worker,
                     true,
                     write_for_tx.role_cache(),
                 )
@@ -457,7 +457,7 @@ async fn create_via_tool_call(
         s.write(),
         move |tx| {
             Box::pin(async move {
-                // Issue #229 PR A — plain user-driven creates are
+                // Issue #585 — user-driven creates mint Worker cards and are
                 // user-deletable. The `false` path is reserved for
                 // kernel-owned cards minted by internal code (spec card
                 // here in PR A; report card in PR B).
@@ -465,7 +465,7 @@ async fn create_via_tool_call(
                     tx,
                     card_id_for_tx,
                     new,
-                    CardRole::Plain,
+                    CardRole::Worker,
                     true,
                     write_for_tx.role_cache(),
                 )
@@ -759,8 +759,8 @@ pub(crate) async fn delete_card(
     // fails *before* the txn opens we surface 500; the row stays and
     // the sweeper retries on the next tick, so we don't end up with
     // a half-torn-down terminal. Spec cards (CardRole::Spec) take the
-    // same path: both plain and spec terminals live in the same
-    // `terminals` table with no role-specific cleanup divergence.
+    // same path: terminals share one table with no role-specific cleanup
+    // divergence.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;
     if let Some(t) = term.as_ref() {
         reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), t).await;

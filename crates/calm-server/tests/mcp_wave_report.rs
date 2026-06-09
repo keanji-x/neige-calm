@@ -96,10 +96,8 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     // The wave-report card row matching what `routes::waves::create_wave`
-    // (and migration 0014) mint. Plain `card_create` here writes the row
-    // with role=Plain and deletable=true — that's fine for these
-    // integration tests because the MCP tools look up the row by
-    // `kind == "wave-report"`, not by role/deletable. We pin the role
+    // (and migration 0014) mint. These integration tests look up the row
+    // by `kind == "wave-report"`, not by role/deletable. We pin the role
     // in the cache below to mirror production semantics.
     let report_card = repo
         .card_create(NewCard {
