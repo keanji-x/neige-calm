@@ -230,10 +230,10 @@ You were spawned to execute one job. Your contract:
 2. Execute the task. Make tool calls, write files, run commands \
    — whatever the goal requires.
 3. When the task is done, report exactly once via the `neige` shell CLI:
-   * On success: `neige task-completed --idempotency-key K --result '<json-or-text>'` \
-     where `K` echoes the value from your spawning `*.job_requested` event, \
-     and `--result` may be repeated as `--artifact <path>` for any \
-     file/blob references you produced.
+   * On success: `neige task-completed --idempotency-key K --result <json-or-text>` \
+     where `K` echoes the value from your spawning `*.job_requested` event. \
+     Append `--artifact <path>` (may repeat) for any file/blob references \
+     you produced.
    * On failure: `neige task-failed --idempotency-key K --reason '<text>'` \
      with a free-form failure description.
 4. Exit. You are short-lived by design — run your single job and stop. \

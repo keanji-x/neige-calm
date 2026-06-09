@@ -498,12 +498,11 @@ impl Cli {
                                     json,
                                 )
                             })?;
-                            let parsed = serde_json::from_str(&value).map_err(|e| {
-                                AppError::usage(
-                                    format!("task-completed --result must be JSON: {e}"),
-                                    json,
-                                )
-                            })?;
+                            // Try JSON first; fall back to a JSON string for
+                            // plain text so the worker prompt's
+                            // `<json-or-text>` contract matches the CLI.
+                            let parsed = serde_json::from_str(&value)
+                                .unwrap_or_else(|_| Value::String(value.clone()));
                             if result.replace(parsed).is_some() {
                                 return Err(AppError::usage(
                                     "task-completed accepts --result once",
@@ -786,6 +785,39 @@ mod tests {
                 assert_eq!(result.unwrap(), serde_json::json!({ "ok": true }));
                 assert_eq!(artifacts, vec!["out.log"]);
                 assert!(json_errors);
+            }
+            Command::Ls { .. } | Command::Cat { .. } | Command::State { .. } => {
+                panic!("expected task-completed")
+            }
+            Command::TaskFailed { .. } => panic!("expected task-completed"),
+        }
+    }
+
+    #[test]
+    fn task_completed_parses_plain_text_result() {
+        let cli = Cli::parse(
+            [
+                "task-completed",
+                "--idempotency-key",
+                "k1",
+                "--result",
+                "plain text",
+            ]
+            .into_iter()
+            .map(String::from),
+        )
+        .expect("parse");
+        match cli.command {
+            Command::TaskCompleted {
+                idempotency_key,
+                result,
+                artifacts,
+                json_errors,
+            } => {
+                assert_eq!(idempotency_key, "k1");
+                assert_eq!(result.unwrap(), serde_json::json!("plain text"));
+                assert!(artifacts.is_empty());
+                assert!(!json_errors);
             }
             Command::Ls { .. } | Command::Cat { .. } | Command::State { .. } => {
                 panic!("expected task-completed")

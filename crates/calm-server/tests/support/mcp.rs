@@ -33,12 +33,21 @@ pub struct CardBoot {
     /// identity binding ignores it.
     pub other_card_id: String,
     pub raw_token: String,
+    pub daemon_token: Option<String>,
     pub thread_id: String,
     pub socket_path: PathBuf,
     pub _tmp: TempDir,
 }
 
 pub async fn boot_with_role(role: CardRole) -> CardBoot {
+    boot_with_role_and_daemon_token(role, None).await
+}
+
+pub async fn boot_shared_daemon_with_spec_thread() -> CardBoot {
+    boot_with_role_and_daemon_token(CardRole::Spec, Some("mcp-test-daemon-token".to_string())).await
+}
+
+async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<String>) -> CardBoot {
     let tmp = TempDir::new().expect("tempdir for MCP socket");
     let socket_path = tmp.path().join("kernel.sock");
 
@@ -139,7 +148,9 @@ pub async fn boot_with_role(role: CardRole) -> CardBoot {
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
-        None,
+        daemon_token
+            .as_deref()
+            .map(calm_server::mcp_server::auth::hash_token),
     )
     .await
     .expect("spawn McpServer");
@@ -151,6 +162,7 @@ pub async fn boot_with_role(role: CardRole) -> CardBoot {
         card_id,
         other_card_id,
         raw_token,
+        daemon_token,
         thread_id,
         socket_path,
         _tmp: tmp,
@@ -248,6 +260,25 @@ pub async fn handshake(
     send_frame(wr, frame).await;
     let resp = recv_frame(rd).await;
     assert!(resp.get("error").is_none(), "initialize failed: {resp:#?}");
+}
+
+pub async fn handshake_daemon(
+    rd: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    wr: &mut tokio::net::unix::OwnedWriteHalf,
+    token: &str,
+) {
+    handshake(rd, wr, token).await;
+}
+
+pub fn tools_list_frame(id: i64, thread_id: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/list",
+        "params": {
+            "_meta": { "threadId": thread_id }
+        }
+    })
 }
 
 pub fn tools_call_frame(id: i64, name: &str, thread_id: &str, args: Value) -> Value {
