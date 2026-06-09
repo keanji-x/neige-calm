@@ -51,11 +51,13 @@ function cardOverlayContextKeys(
   return waveId ? [queryKeys.waveDetail(waveId)] : [];
 }
 
+type RuntimeCardEvent =
+  | EventOf<'runtime.started'>
+  | EventOf<'runtime.status_changed'>
+  | EventOf<'runtime.superseded'>;
+
 function runtimeCardContextKeys(
-  ev:
-    | EventOf<'runtime.started'>
-    | EventOf<'runtime.status_changed'>
-    | EventOf<'runtime.superseded'>,
+  ev: RuntimeCardEvent,
   ctx: InvalidationContext,
 ): QueryKey[] {
   const waveId = ctx.findWaveOwningCard(ev.data.card_id);
@@ -68,6 +70,7 @@ const waveFilesKey = (waveId: unknown): QueryKey =>
     : ['wave-files'];
 
 type WaveFilesDerivedEvent =
+  | RuntimeCardEvent
   | EventOf<'codex.hook'>
   | EventOf<'claude.hook'>
   | EventOf<'codex.job_requested'>
@@ -88,6 +91,16 @@ function waveFilesDerivedEventKeys(
     return [waveFilesKey(ctx.findWaveOwningCard(data.card_id))];
   }
   return [waveFilesKey(undefined)];
+}
+
+function runtimeContextKeys(
+  ev: RuntimeCardEvent,
+  ctx: InvalidationContext,
+): QueryKey[] {
+  return [
+    ...runtimeCardContextKeys(ev, ctx),
+    ...waveFilesDerivedEventKeys(ev, ctx),
+  ];
 }
 
 const waveMutationKeys = (ev: EventOf<'wave.updated'> | EventOf<'wave.lifecycle_changed'>) => [
@@ -143,15 +156,15 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     keys: cardMutationKeys,
   },
   'runtime.started': {
-    requiresContext: runtimeCardContextKeys,
+    requiresContext: runtimeContextKeys,
     keys: () => [queryKeys.overlaysByKind('card')],
   },
   'runtime.status_changed': {
-    requiresContext: runtimeCardContextKeys,
+    requiresContext: runtimeContextKeys,
     keys: () => [queryKeys.overlaysByKind('card')],
   },
   'runtime.superseded': {
-    requiresContext: runtimeCardContextKeys,
+    requiresContext: runtimeContextKeys,
     keys: () => [queryKeys.overlaysByKind('card')],
     // No runtime-detail cache key exists yet; old runtime id removal is a
     // no-op for now. The registry can refine this when a consumer appears.

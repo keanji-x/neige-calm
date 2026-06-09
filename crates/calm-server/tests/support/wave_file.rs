@@ -161,9 +161,14 @@ pub async fn boot() -> Boot {
         "calm-plugins-data-http-wave-file-{}",
         wave.id.as_str()
     ));
+    // Keep the HTTP router's dispatcher off the fixture bus used by
+    // `request_codex()`. These tests materialize worker cards manually;
+    // sharing the bus lets the background dispatcher race in and mint a
+    // second worker for the same request.
+    let app_events = EventBus::new();
     let state = AppState::from_parts(
         repo.clone(),
-        events,
+        app_events,
         Arc::new(DaemonClient::new_stub()),
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),

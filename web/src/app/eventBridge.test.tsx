@@ -384,7 +384,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('runtime.started invalidates owning wave detail and card overlays', () => {
+  it('runtime.started invalidates owning wave detail, card overlays, and wave files', () => {
     const client = makeClient();
     seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
@@ -406,10 +406,13 @@ describe('EventBridge', () => {
     });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-files', 'wave_1'],
+    });
     cleanup();
   });
 
-  it('runtime.status_changed invalidates owning wave detail and card overlays', () => {
+  it('runtime.status_changed invalidates owning wave detail, card overlays, and wave files', () => {
     const client = makeClient();
     seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
@@ -430,10 +433,13 @@ describe('EventBridge', () => {
     });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-files', 'wave_1'],
+    });
     cleanup();
   });
 
-  it('runtime.superseded invalidates owning wave detail and card overlays', () => {
+  it('runtime.superseded invalidates owning wave detail, card overlays, and wave files', () => {
     const client = makeClient();
     seedWaveDetailWithCard(client, 'wave_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
@@ -453,6 +459,9 @@ describe('EventBridge', () => {
     });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['overlays', 'card'] });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-files', 'wave_1'],
+    });
     cleanup();
   });
 

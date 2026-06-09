@@ -210,7 +210,7 @@ export function Menu({
                     tabIndex={tabIndex}
                     onKeyDown={onKeyDown}
                     onClick={() => activate(index)}
-                    onMouseEnter={() => setActiveIndex(index)}
+                    onMouseMove={() => setActiveIndex(index)}
                     aria-disabled={item.disabled || undefined}
                   >
                     {item.icon}
