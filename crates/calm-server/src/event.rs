@@ -2145,8 +2145,9 @@ mod scope_tests {
         // typed Event from the `(kind, payload)` columns. Pin that the
         // PR4 variants survive this path so the eventual sync-engine
         // replay doesn't strand them.
-        for (kind, payload) in [
+        for (kind, expected_kind, payload) in [
             (
+                "claude.hook",
                 "claude.hook",
                 serde_json::json!({
                     "card_id": "card-1",
@@ -2156,6 +2157,16 @@ mod scope_tests {
             ),
             (
                 "codex.worker_requested",
+                "codex.worker_requested",
+                serde_json::json!({
+                    "idempotency_key": "k",
+                    "goal": "g",
+                    "context": {},
+                }),
+            ),
+            (
+                "codex.job_requested",
+                "codex.worker_requested",
                 serde_json::json!({
                     "idempotency_key": "k",
                     "goal": "g",
@@ -2164,9 +2175,16 @@ mod scope_tests {
             ),
             (
                 "terminal.worker_requested",
+                "terminal.worker_requested",
                 serde_json::json!({ "idempotency_key": "k", "cmd": "ls" }),
             ),
             (
+                "terminal.job_requested",
+                "terminal.worker_requested",
+                serde_json::json!({ "idempotency_key": "k", "cmd": "ls" }),
+            ),
+            (
+                "task.completed",
                 "task.completed",
                 serde_json::json!({
                     "idempotency_key": "k",
@@ -2176,9 +2194,11 @@ mod scope_tests {
             ),
             (
                 "task.failed",
+                "task.failed",
                 serde_json::json!({ "idempotency_key": "k", "reason": "r" }),
             ),
             (
+                "runtime.started",
                 "runtime.started",
                 serde_json::json!({
                     "runtime_id": "runtime-1",
@@ -2190,6 +2210,7 @@ mod scope_tests {
             ),
             (
                 "runtime.status_changed",
+                "runtime.status_changed",
                 serde_json::json!({
                     "runtime_id": "runtime-1",
                     "card_id": "card-1",
@@ -2198,6 +2219,7 @@ mod scope_tests {
                 }),
             ),
             (
+                "runtime.superseded",
                 "runtime.superseded",
                 serde_json::json!({
                     "old_runtime_id": "runtime-1",
@@ -2208,7 +2230,16 @@ mod scope_tests {
         ] {
             let ev = Event::from_kind_and_payload(kind, payload)
                 .unwrap_or_else(|e| panic!("replay decode failed for {kind}: {e}"));
-            assert_eq!(ev.kind_tag(), kind, "round-trip kind mismatch");
+            assert_eq!(ev.kind_tag(), expected_kind, "round-trip kind mismatch");
+            match kind {
+                "codex.job_requested" => {
+                    assert!(matches!(ev, Event::CodexWorkerRequested { .. }))
+                }
+                "terminal.job_requested" => {
+                    assert!(matches!(ev, Event::TerminalWorkerRequested { .. }))
+                }
+                _ => {}
+            }
         }
     }
 }

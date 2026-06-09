@@ -156,12 +156,9 @@ fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
 
     card.runtime = Some(CardRuntimeView {
         runtime_id: runtime.id.clone(),
-        kind: runtime_kind_wire(&runtime.kind).to_string(),
-        status: run_status_wire(&runtime.status).to_string(),
-        provider: runtime
-            .agent_provider
-            .as_ref()
-            .map(|provider| agent_provider_wire(provider).to_string()),
+        kind: runtime.kind.clone(),
+        status: runtime.status.clone(),
+        provider: runtime.agent_provider.clone(),
         terminal_id: terminal_id.clone(),
         thread_id: thread_id.clone(),
         session_id: session_id.clone(),
@@ -197,34 +194,6 @@ fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
 
     if let Some(thread_status) = thread_status {
         map.insert("codex_thread_status".into(), Value::String(thread_status));
-    }
-}
-
-fn runtime_kind_wire(kind: &RuntimeKind) -> &'static str {
-    match kind {
-        RuntimeKind::Terminal => "terminal",
-        RuntimeKind::CodexCard => "codex",
-        RuntimeKind::ClaudeCard => "claude",
-        RuntimeKind::SharedSpec => "shared-spec",
-    }
-}
-
-fn agent_provider_wire(provider: &AgentProvider) -> &'static str {
-    match provider {
-        AgentProvider::Codex => "codex",
-        AgentProvider::Claude => "claude",
-    }
-}
-
-fn run_status_wire(status: &RunStatus) -> &'static str {
-    match status {
-        RunStatus::Starting => "starting",
-        RunStatus::Running => "running",
-        RunStatus::Idle => "idle",
-        RunStatus::TurnPending => "turn_pending",
-        RunStatus::Failed => "failed",
-        RunStatus::Exited => "exited",
-        RunStatus::Superseded => "superseded",
     }
 }
 

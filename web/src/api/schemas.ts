@@ -102,11 +102,28 @@ export const waveSchema = z.object({
   updated_at: z.number(),
 });
 
+export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec']);
+export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
+
+export const agentProviderSchema = z.enum(['codex', 'claude']);
+export type AgentProvider = z.infer<typeof agentProviderSchema>;
+
+export const runStatusSchema = z.enum([
+  'starting',
+  'running',
+  'idle',
+  'turn_pending',
+  'failed',
+  'exited',
+  'superseded',
+]);
+export type RunStatus = z.infer<typeof runStatusSchema>;
+
 export const cardRuntimeViewSchema = z.object({
   runtime_id: z.string(),
-  kind: z.string(),
-  status: z.string(),
-  provider: z.string().optional(),
+  kind: runtimeKindSchema,
+  status: runStatusSchema,
+  provider: agentProviderSchema.optional(),
   terminal_id: z.string().optional(),
   thread_id: z.string().optional(),
   session_id: z.string().optional(),
@@ -203,23 +220,6 @@ export const cardDeletedSchema = z.object({
   ev: z.literal('card.deleted'),
   data: z.object({ id: z.string(), wave_id: z.string() }),
 });
-
-export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec']);
-export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
-
-export const agentProviderSchema = z.enum(['codex', 'claude']);
-export type AgentProvider = z.infer<typeof agentProviderSchema>;
-
-export const runStatusSchema = z.enum([
-  'starting',
-  'running',
-  'idle',
-  'turn_pending',
-  'failed',
-  'exited',
-  'superseded',
-]);
-export type RunStatus = z.infer<typeof runStatusSchema>;
 
 export const runtimeStartedSchema = z.object({
   ev: z.literal('runtime.started'),

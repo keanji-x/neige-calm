@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use ts_rs::TS;
+use utoipa::ToSchema;
 
 pub type CardId = String;
 pub type RuntimeId = String;
@@ -13,7 +14,7 @@ pub type TimestampMs = i64;
 pub type Tx<'a> = Transaction<'a, Sqlite>;
 pub type Result<T> = std::result::Result<T, RuntimeRepoError>;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum RuntimeKind {
     #[serde(rename = "terminal")]
@@ -26,7 +27,7 @@ pub enum RuntimeKind {
     SharedSpec,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum AgentProvider {
     #[serde(rename = "codex")]
@@ -35,7 +36,7 @@ pub enum AgentProvider {
     Claude,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum RunStatus {

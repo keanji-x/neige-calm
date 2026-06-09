@@ -744,6 +744,8 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        AgentProvider: "codex" | "claude";
         Card: {
             /** Format: int64 */
             created_at: number;
@@ -1382,6 +1384,10 @@ export interface components {
              */
             path: string;
         };
+        /** @enum {string} */
+        RunStatus: "starting" | "running" | "idle" | "turn_pending" | "failed" | "exited" | "superseded";
+        /** @enum {string} */
+        RuntimeKind: "terminal" | "codex" | "claude" | "shared-spec";
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
          *     deterministic ordering in the response so the OpenAPI spec consumers

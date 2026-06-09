@@ -762,9 +762,9 @@ async fn runtime_start_tx_claude_records_session_when_present() {
         .unwrap();
     let runtime = stored.runtime.as_ref().expect("projected card runtime");
     assert_eq!(runtime.runtime_id, active.id);
-    assert_eq!(runtime.kind, "claude");
-    assert_eq!(runtime.status, "starting");
-    assert_eq!(runtime.provider.as_deref(), Some("claude"));
+    assert_eq!(runtime.kind, RuntimeKind::ClaudeCard);
+    assert_eq!(runtime.status, RunStatus::Starting);
+    assert_eq!(runtime.provider, Some(AgentProvider::Claude));
     assert_eq!(runtime.terminal_id.as_deref(), Some(term.id.as_str()));
     assert_eq!(runtime.session_id.as_deref(), Some(session_id.as_str()));
     assert!(runtime.thread_id.is_none());
@@ -937,9 +937,9 @@ async fn projection_overwrites_stale_legacy_keys_from_runtime() {
         .await
         .unwrap();
     let runtime = projected.runtime.as_ref().expect("projected card runtime");
-    assert_eq!(runtime.kind, "codex");
-    assert_eq!(runtime.status, "running");
-    assert_eq!(runtime.provider.as_deref(), Some("codex"));
+    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.provider, Some(AgentProvider::Codex));
     assert_eq!(runtime.terminal_id.as_deref(), Some("NEW"));
     assert_eq!(runtime.thread_id.as_deref(), Some("abc"));
     assert!(runtime.source.is_none());
@@ -987,9 +987,9 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
         .await
         .unwrap();
     let runtime = projected.runtime.as_ref().expect("projected card runtime");
-    assert_eq!(runtime.kind, "shared-spec");
-    assert_eq!(runtime.status, "running");
-    assert_eq!(runtime.provider.as_deref(), Some("codex"));
+    assert_eq!(runtime.kind, RuntimeKind::SharedSpec);
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.provider, Some(AgentProvider::Codex));
     assert!(runtime.terminal_id.is_none());
     assert_eq!(runtime.thread_id.as_deref(), Some("active-thread"));
     assert_eq!(runtime.source.as_deref(), Some("shared"));

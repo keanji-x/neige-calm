@@ -12,6 +12,7 @@ use ts_rs::TS;
 use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind};
 
 // ---------------- CardRole ----------------
 
@@ -446,15 +447,23 @@ pub struct WavePatch {
 
 // ---------------- Card ----------------
 
+/// Live runtime projection joined from the `runtimes` table when a card is
+/// fetched or serialized.
+///
+/// This view is not part of the idempotency contract: across retries the
+/// runtime row may have advanced, so `Card.runtime` may differ between the
+/// first POST response and a retry POST response returning the same operation
+/// result. Future cleanup (#581 item 4) will remove the legacy payload-key
+/// projection; this typed view is the forward-compatible reader path.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct CardRuntimeView {
     pub runtime_id: String,
-    pub kind: String,
-    pub status: String,
+    pub kind: RuntimeKind,
+    pub status: RunStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub provider: Option<String>,
+    pub provider: Option<AgentProvider>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub terminal_id: Option<String>,
