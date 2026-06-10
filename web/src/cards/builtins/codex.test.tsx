@@ -7,6 +7,8 @@ import type { ClaudeCardData, CodexCardData } from './codex';
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   dlog: vi.fn(),
+  getTerminalForCard: vi.fn(),
+  restartClaudeCard: vi.fn(),
   xtermUnmount: vi.fn(),
 }));
 
@@ -33,7 +35,8 @@ vi.mock('../../util/debug', () => ({
 }));
 
 vi.mock('../../api/calm', () => ({
-  getTerminalForCard: vi.fn().mockRejectedValue(new Error('no terminal seed')),
+  getTerminalForCard: mocks.getTerminalForCard,
+  restartClaudeCard: mocks.restartClaudeCard,
 }));
 
 vi.mock('../../api/events', () => ({
@@ -45,6 +48,7 @@ vi.mock('../../api/events', () => ({
 }));
 
 import { ClaudeEntry, CodexEntry } from './codex';
+import { restartClaudeCard } from '../../api/calm';
 import {
   __resetRegistryForTest,
   CardInstanceProvider,
@@ -123,6 +127,10 @@ describe('Codex card controller behavior', () => {
     registerCard(ClaudeEntry);
     mocks.refresh.mockClear();
     mocks.dlog.mockClear();
+    mocks.getTerminalForCard.mockReset();
+    mocks.getTerminalForCard.mockRejectedValue(new Error('no terminal seed'));
+    mocks.restartClaudeCard.mockReset();
+    mocks.restartClaudeCard.mockResolvedValue({});
     mocks.xtermUnmount.mockClear();
   });
 
@@ -154,5 +162,71 @@ describe('Codex card controller behavior', () => {
       visible: false,
     });
     expect(mocks.xtermUnmount).not.toHaveBeenCalled();
+  });
+
+  it('shows Restart for exited Claude cards and calls restartClaudeCard', async () => {
+    mocks.getTerminalForCard.mockResolvedValue({
+      exit_code: 0,
+      signal_killed: false,
+    });
+    const card: ClaudeCardData = {
+      type: 'claude',
+      id: 'card_claude',
+      terminalId: 'term_claude',
+    };
+
+    renderAgentCard(card, { deletable: false });
+
+    await screen.findByTestId('xterm-view-stub');
+    const restart = await screen.findByRole('button', { name: 'Restart' });
+    fireEvent.click(restart);
+
+    await waitFor(() =>
+      expect(restartClaudeCard).toHaveBeenCalledWith('card_claude'),
+    );
+    await waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not refresh XtermView when Claude restart fails', async () => {
+    mocks.getTerminalForCard.mockResolvedValue({
+      exit_code: 0,
+      signal_killed: false,
+    });
+    mocks.restartClaudeCard.mockRejectedValue(new Error('restart failed'));
+    const card: ClaudeCardData = {
+      type: 'claude',
+      id: 'card_claude',
+      terminalId: 'term_claude',
+    };
+
+    renderAgentCard(card, { deletable: false });
+
+    await screen.findByTestId('xterm-view-stub');
+    const restart = await screen.findByRole('button', { name: 'Restart' });
+    fireEvent.click(restart);
+
+    await waitFor(() =>
+      expect(restartClaudeCard).toHaveBeenCalledWith('card_claude'),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'restart failed',
+    );
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it('does not show Restart for exited Codex cards', async () => {
+    mocks.getTerminalForCard.mockResolvedValue({
+      exit_code: 0,
+      signal_killed: false,
+    });
+
+    renderAgentCard(codexCard, { deletable: false });
+
+    await waitFor(() =>
+      expect(mocks.getTerminalForCard).toHaveBeenCalledWith('card_spec'),
+    );
+    expect(
+      screen.queryByRole('button', { name: /Restart/ }),
+    ).not.toBeInTheDocument();
   });
 });

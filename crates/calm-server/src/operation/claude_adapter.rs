@@ -38,7 +38,7 @@ type SpawnHook = Arc<
     dyn Fn(String, String, String, Value) -> BoxFuture<'static, Result<SpawnHandle>> + Send + Sync,
 >;
 
-const CLAUDE_PHASES: &[PhaseTag] = &[
+pub(super) const CLAUDE_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
     PhaseTag::TxCommitted,
     PhaseTag::SpawnStarted,

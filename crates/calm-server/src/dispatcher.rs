@@ -37,6 +37,7 @@ use crate::harness::{
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::CardRole;
 use crate::operation::claude_adapter::ClaudeAdapter;
+use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{
     CodexAdapter, CodexWorkerAdapter, CodexWorkerOperationPayload,
 };
@@ -138,6 +139,12 @@ fn dispatcher_operation_runtime(
     ));
     let claude_adapter = Arc::new(ClaudeAdapter::new(
         route_repo.clone(),
+        codex.clone(),
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+    ));
+    let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
+        route_repo.clone(),
         codex,
         write.role_cache().clone(),
         write.cove_cache().clone(),
@@ -165,6 +172,7 @@ fn dispatcher_operation_runtime(
             codex_adapter,
             codex_worker_adapter,
             claude_adapter,
+            claude_restart_adapter,
             spec_harness_start_adapter,
             spec_harness_interrupt_adapter,
             spec_harness_shutdown_adapter,

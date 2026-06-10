@@ -53,10 +53,10 @@ pub async fn resolve_claude_session_for_card(
     repo: &dyn RouteRepo,
     card_id: &str,
 ) -> Result<Option<String>> {
-    let active = repo
-        .runtime_get_active_for_card(&card_id.to_string())
+    let runtime = repo
+        .runtime_get_projectable_for_card(&card_id.to_string())
         .await?;
-    if let Some(runtime) = active.as_ref()
+    if let Some(runtime) = runtime.as_ref()
         && let Some(session_id) = non_empty(runtime.session_id.as_deref())
     {
         return Ok(Some(session_id.to_string()));
@@ -74,7 +74,7 @@ pub async fn resolve_claude_session_for_card(
     tracing::warn!(
         target: "runtime_lookup::fallback",
         card_id,
-        runtime_id = active.as_ref().map(|runtime| runtime.id.as_str()),
+        runtime_id = runtime.as_ref().map(|runtime| runtime.id.as_str()),
         legacy_hit = legacy_session.is_some(),
         "runtime Claude session lookup missed; falling back to card payload"
     );

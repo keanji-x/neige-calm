@@ -35,6 +35,7 @@ import {
   createClaudeCard,
   createCodexCard,
   getTerminalForCard,
+  restartClaudeCard,
 } from '../../api/calm';
 import { useTheme } from '../../app/theme';
 import { dlog } from '../../util/debug';
@@ -252,6 +253,8 @@ function CodexCardImpl({
   // `<XtermView>`'s `onExitChange` whenever the daemon emits a new exit
   // event over the live channel.
   const [exit, setExit] = useState<ExitChange | null>(null);
+  const [restartPending, setRestartPending] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
   const terminalId = card.terminalId;
   useEffect(() => {
     if (!cardId || !terminalId) return;
@@ -279,6 +282,21 @@ function CodexCardImpl({
       cancelled = true;
     };
   }, [cardId, terminalId]);
+
+  const onRestartClaude = useCallback(async () => {
+    if (!cardId || provider !== 'claude') return;
+    setRestartPending(true);
+    setRestartError(null);
+    try {
+      await restartClaudeCard(cardId);
+      setExit(null);
+      xtermRefSlot.current?.refresh();
+    } catch (err) {
+      setRestartError(err instanceof Error ? err.message : 'Restart failed');
+    } finally {
+      setRestartPending(false);
+    }
+  }, [cardId, provider, xtermRefSlot]);
 
   useEffect(() => {
     if (!cardId) return;
@@ -347,6 +365,23 @@ function CodexCardImpl({
               before that lands.
             */}
             {exit && <CardExitBadge exit={exit} />}
+            {provider === 'claude' && exit && (
+              <span className="claude-restart-control">
+                <button
+                  type="button"
+                  className="claude-restart-button"
+                  onClick={onRestartClaude}
+                  disabled={restartPending || !cardId}
+                >
+                  {restartPending ? 'Restarting…' : 'Restart'}
+                </button>
+                {restartError && (
+                  <span className="claude-restart-error" role="status">
+                    {restartError}
+                  </span>
+                )}
+              </span>
+            )}
             <span aria-live="polite">
               <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
             </span>
