@@ -1146,6 +1146,7 @@ async fn dispatcher_promotes_to_working_before_fast_worker_report() {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let tool_ctx = Arc::new(calm_server::mcp_server::AppContext {
         repo: route_repo.clone(),
+        wave_vcs_pool: repo.sqlite_pool(),
         events: events.clone(),
         write: calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         daemon_token_hash: None,

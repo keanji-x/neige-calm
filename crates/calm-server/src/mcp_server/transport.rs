@@ -31,7 +31,7 @@
 //! hundred lines of `tokio::net::UnixListener` + `BufReader::lines()`;
 //! adding an HTTP framework would only obscure the framing.
 
-use crate::db::RouteRepo;
+use crate::db::{Repo, RouteRepo};
 use crate::mcp_server::framing::{
     Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
@@ -110,7 +110,7 @@ impl McpServer {
     /// `routes/terminal.rs`'s daemon-socket setup does.
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
-        repo: Arc<dyn RouteRepo>,
+        repo: Arc<dyn Repo>,
         events: crate::event::EventBus,
         write: WriteContext,
         socket_path: PathBuf,
@@ -161,8 +161,11 @@ impl McpServer {
                 .map_err(|e| anyhow::anyhow!("chmod mcp socket {}: {e}", socket_path.display()))?;
         }
 
+        let wave_vcs_pool = repo.sqlite_pool();
+        let route_repo: Arc<dyn RouteRepo> = repo;
         let ctx = Arc::new(AppContext {
-            repo,
+            repo: route_repo,
+            wave_vcs_pool,
             events,
             write,
             daemon_token_hash,

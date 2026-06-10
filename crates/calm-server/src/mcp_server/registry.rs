@@ -24,6 +24,7 @@ use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
 use crate::state::WriteContext;
 use serde_json::{Value, json};
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -136,6 +137,10 @@ pub struct AppContext {
     /// `AppState::repo`, so the dyn-trait gate is preserved (no
     /// sync-domain raw writes reachable from a tool handler).
     pub repo: Arc<dyn RouteRepo>,
+    /// Read-only wave-vcs drill-ins need the sqlite-backed audit tables.
+    /// This is copied from the full internal repo at MCP server spawn time
+    /// instead of widening the route-facing repo trait.
+    pub wave_vcs_pool: Option<SqlitePool>,
     /// Event bus for `write_with_event_typed` broadcasts.
     pub events: EventBus,
     /// #480 PR2 write-surface caches shared with REST/worker paths.
@@ -358,6 +363,7 @@ mod tests {
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(AppContext {
             repo: route_repo,
+            wave_vcs_pool: None,
             events: EventBus::new(),
             write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
             daemon_token_hash: None,
@@ -427,5 +433,31 @@ mod tests {
         .expect("real handler still callable");
 
         assert_eq!(out, json!({ "who": "real" }));
+    }
+
+    #[test]
+    fn wave_history_drill_ins_are_hidden_but_registered() {
+        let mut registry = ToolRegistry::new();
+        crate::mcp_server::tools::register_default_tools(&mut registry);
+        let hidden = [
+            crate::mcp_server::tools::wave_history::TOOL_WAVE_DIFF,
+            crate::mcp_server::tools::wave_history::TOOL_WAVE_CAT_AT,
+            crate::mcp_server::tools::wave_history::TOOL_WAVE_LOG,
+        ];
+
+        for name in hidden {
+            assert!(registry.lookup(name).is_some(), "{name} handler registered");
+            for role in [CardRole::Spec, CardRole::Worker, CardRole::ReportCard] {
+                let names = registry
+                    .descriptors_for_role(role)
+                    .into_iter()
+                    .map(|descriptor| descriptor.name)
+                    .collect::<Vec<_>>();
+                assert!(
+                    !names.iter().any(|visible| visible == name),
+                    "{name} must be hidden from {role:?} tools/list: {names:?}"
+                );
+            }
+        }
     }
 }

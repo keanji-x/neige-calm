@@ -28,11 +28,13 @@ use crate::wave_fs_view::{
 use crate::wave_report::WaveReportPayload;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use similar::TextDiff;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MANIFEST_SCHEMA_VERSION: i64 = 1;
+pub const DEFAULT_PATCH_MAX_LINES: usize = 200;
 
 pub type ObjectHash = String;
 pub type CommitHash = String;
@@ -82,6 +84,55 @@ pub enum DiffStatus {
     Added,
     Deleted,
     Modified,
+}
+
+impl DiffStatus {
+    pub fn wire_label(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Deleted => "deleted",
+            Self::Modified => "modified",
+        }
+    }
+
+    fn observation_label(self) -> &'static str {
+        match self {
+            Self::Added => "new",
+            Self::Deleted => "deleted",
+            Self::Modified => "edited",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDiff {
+    pub path: String,
+    pub status: DiffStatus,
+    pub old_hash: Option<ObjectHash>,
+    pub new_hash: Option<ObjectHash>,
+    pub old_content_type: Option<String>,
+    pub new_content_type: Option<String>,
+    pub patch: Option<String>,
+    pub patch_truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoricalBlob {
+    pub commit: CommitHash,
+    pub path: String,
+    pub content: String,
+    pub content_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitLogEntry {
+    pub hash: CommitHash,
+    pub parent_hash: Option<CommitHash>,
+    pub lifecycle: String,
+    pub event_id: Option<i64>,
+    pub created_at: i64,
+    pub message: Option<String>,
+    pub changed_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -509,6 +560,99 @@ pub async fn diff(
     Ok(diff_manifests(&from_tree, &to_tree, path))
 }
 
+pub async fn diff_with_patches(
+    pool: &SqlitePool,
+    from: &str,
+    to: &str,
+    path: Option<&str>,
+    max_patch_lines: usize,
+) -> Result<Vec<FileDiff>> {
+    let from_tree = tree_at(pool, from)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave-vcs commit {from}")))?;
+    let to_tree = tree_at(pool, to)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave-vcs commit {to}")))?;
+    let entries = diff_manifests(&from_tree, &to_tree, path);
+    file_diffs_from_entries(pool, &from_tree, &to_tree, entries, max_patch_lines).await
+}
+
+pub async fn cat_at(pool: &SqlitePool, commit_hash: &str, path: &str) -> Result<HistoricalBlob> {
+    let tree = tree_at(pool, commit_hash)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave-vcs commit {commit_hash}")))?;
+    let path = normalize_path(path);
+    let entry = tree
+        .entries
+        .get(&path)
+        .ok_or_else(|| CalmError::NotFound(format!("wave-vcs path {path} at {commit_hash}")))?;
+    let bytes = load_blob_bytes_pool(pool, &entry.blob_hash)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave-vcs blob {}", entry.blob_hash)))?;
+    let content = String::from_utf8(bytes).map_err(|e| {
+        CalmError::Internal(format!(
+            "wave-vcs: blob {} at {commit_hash}:{path} is not UTF-8: {e}",
+            entry.blob_hash
+        ))
+    })?;
+    Ok(HistoricalBlob {
+        commit: commit_hash.to_string(),
+        path,
+        content,
+        content_type: entry.content_type.clone(),
+    })
+}
+
+pub async fn commit_record(pool: &SqlitePool, commit_hash: &str) -> Result<Option<CommitRecord>> {
+    load_commit_record_pool(pool, commit_hash).await
+}
+
+pub async fn commit_belongs_to_wave(
+    pool: &SqlitePool,
+    wave_id: &WaveId,
+    commit_hash: &str,
+) -> Result<bool> {
+    let Some(record) = commit_record(pool, commit_hash).await? else {
+        return Ok(false);
+    };
+    Ok(record.wave_id == *wave_id)
+}
+
+pub async fn log(
+    pool: &SqlitePool,
+    wave_id: &WaveId,
+    path: Option<&str>,
+    limit: usize,
+) -> Result<Vec<CommitLogEntry>> {
+    let limit = limit.clamp(1, 200);
+    let records = commit_records_for_wave_pool(pool, wave_id).await?;
+    let normalized = path.map(normalize_path).filter(|path| !path.is_empty());
+    let mut out = Vec::new();
+    for record in records {
+        let changed_paths = changed_paths_for_commit(pool, &record).await?;
+        if let Some(path) = normalized.as_deref()
+            && !changed_paths
+                .iter()
+                .any(|changed| path_matches(changed, path))
+        {
+            continue;
+        }
+        out.push(CommitLogEntry {
+            hash: record.hash,
+            parent_hash: record.parent_hash,
+            lifecycle: record.lifecycle,
+            event_id: record.event_id,
+            created_at: record.created_at,
+            message: record.message,
+            changed_paths,
+        });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 pub async fn since_last_turn_block(
     pool: &SqlitePool,
     wave_id: &WaveId,
@@ -531,7 +675,7 @@ pub async fn since_last_turn_block(
         });
     }
 
-    let entries = diff(pool, previous, &current, None)
+    let entries = diff_with_patches(pool, previous, &current, None, DEFAULT_PATCH_MAX_LINES)
         .await?
         .into_iter()
         .filter(|entry| !is_internal_observation_diff_path(&entry.path, spec_card_id))
@@ -552,12 +696,21 @@ pub async fn since_last_turn_block(
         out.push_str("- ");
         out.push_str(&entry.path);
         out.push(' ');
-        out.push_str(match entry.status {
-            DiffStatus::Added => "new",
-            DiffStatus::Deleted => "deleted",
-            DiffStatus::Modified => "edited",
-        });
+        out.push_str(entry.status.observation_label());
+        if entry.path == "report.md" && entry.patch.is_some() {
+            out.push_str(" (unified patch follows)");
+        }
         out.push('\n');
+        if entry.path == "report.md"
+            && let Some(patch) = entry.patch
+        {
+            out.push_str("```diff\n");
+            out.push_str(&patch);
+            if !patch.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n");
+        }
     }
     Ok(SinceLastTurnBlock {
         current_head: Some(current),
@@ -610,6 +763,121 @@ fn diff_manifests(from: &TreeManifest, to: &TreeManifest, path: Option<&str>) ->
         }
     }
     out
+}
+
+async fn file_diffs_from_entries(
+    pool: &SqlitePool,
+    from_tree: &TreeManifest,
+    to_tree: &TreeManifest,
+    entries: Vec<DiffEntry>,
+    max_patch_lines: usize,
+) -> Result<Vec<FileDiff>> {
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let old_entry = from_tree.entries.get(&entry.path);
+        let new_entry = to_tree.entries.get(&entry.path);
+        let old_content_type = old_entry.map(|entry| entry.content_type.clone());
+        let new_content_type = new_entry.map(|entry| entry.content_type.clone());
+        let patch = if should_render_text_patch(old_entry, new_entry) {
+            let old = load_optional_text_blob(pool, old_entry).await?;
+            let new = load_optional_text_blob(pool, new_entry).await?;
+            match (old, new) {
+                (Some(old), Some(new)) => {
+                    let (patch, truncated) =
+                        unified_patch(&entry.path, &old, &new, max_patch_lines);
+                    Some((patch, truncated))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let (patch, patch_truncated) = patch.unwrap_or_else(|| (String::new(), false));
+        out.push(FileDiff {
+            path: entry.path,
+            status: entry.status,
+            old_hash: entry.old_hash,
+            new_hash: entry.new_hash,
+            old_content_type,
+            new_content_type,
+            patch: if patch.is_empty() { None } else { Some(patch) },
+            patch_truncated,
+        });
+    }
+    Ok(out)
+}
+
+fn should_render_text_patch(
+    old_entry: Option<&ManifestEntry>,
+    new_entry: Option<&ManifestEntry>,
+) -> bool {
+    old_entry
+        .or(new_entry)
+        .map(|entry| is_text_content_type(&entry.content_type))
+        .unwrap_or(false)
+        && old_entry
+            .map(|entry| is_text_content_type(&entry.content_type))
+            .unwrap_or(true)
+        && new_entry
+            .map(|entry| is_text_content_type(&entry.content_type))
+            .unwrap_or(true)
+}
+
+fn is_text_content_type(content_type: &str) -> bool {
+    content_type.starts_with("text/")
+        || matches!(
+            content_type,
+            "application/json" | "application/x-ndjson" | "application/ld+json"
+        )
+}
+
+async fn load_optional_text_blob(
+    pool: &SqlitePool,
+    entry: Option<&ManifestEntry>,
+) -> Result<Option<String>> {
+    let Some(entry) = entry else {
+        return Ok(Some(String::new()));
+    };
+    let Some(bytes) = load_blob_bytes_pool(pool, &entry.blob_hash).await? else {
+        return Ok(None);
+    };
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|e| CalmError::Internal(format!("wave-vcs: text blob is not UTF-8: {e}")))
+}
+
+fn unified_patch(path: &str, old: &str, new: &str, max_lines: usize) -> (String, bool) {
+    let old_header = format!("a/{path}");
+    let new_header = format!("b/{path}");
+    let patch = TextDiff::from_lines(old, new)
+        .unified_diff()
+        .header(&old_header, &new_header)
+        .to_string();
+    truncate_lines(patch, max_lines)
+}
+
+fn truncate_lines(text: String, max_lines: usize) -> (String, bool) {
+    if max_lines == 0 {
+        return (
+            "[wave-vcs patch truncated: line budget is 0]\n".to_string(),
+            true,
+        );
+    }
+    let mut lines = text.lines().collect::<Vec<_>>();
+    if lines.len() <= max_lines {
+        return (text, false);
+    }
+    lines.truncate(max_lines);
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out.push_str(&format!(
+        "[wave-vcs patch truncated after {max_lines} lines]\n"
+    ));
+    (out, true)
+}
+
+fn path_matches(changed: &str, requested: &str) -> bool {
+    changed == requested || changed.starts_with(&format!("{requested}/"))
 }
 
 struct CommitTreeMeta<'a> {
@@ -1086,6 +1354,15 @@ async fn load_blob_bytes_tx(
     Ok(row.map(|(bytes,)| bytes))
 }
 
+async fn load_blob_bytes_pool(pool: &SqlitePool, hash: &str) -> Result<Option<Vec<u8>>> {
+    let row: Option<(Vec<u8>,)> =
+        sqlx::query_as("SELECT bytes FROM wave_vcs_objects WHERE hash = ?1 AND kind = 'blob'")
+            .bind(hash)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(bytes,)| bytes))
+}
+
 async fn put_object_at_tx(
     tx: &mut Transaction<'_, Sqlite>,
     kind: &str,
@@ -1250,6 +1527,71 @@ async fn load_tree_object_pool(pool: &SqlitePool, tree_hash: &str) -> Result<Opt
             .await?;
     row.map(|(bytes,)| serde_json::from_slice(&bytes).map_err(Into::into))
         .transpose()
+}
+
+async fn load_commit_record_pool(
+    pool: &SqlitePool,
+    commit_hash: &str,
+) -> Result<Option<CommitRecord>> {
+    let row = sqlx::query(
+        r#"SELECT hash, wave_id, parent_hash, tree_hash, manifest_schema_version,
+                  lifecycle, event_id, created_at, message
+           FROM wave_vcs_commits
+           WHERE hash = ?1"#,
+    )
+    .bind(commit_hash)
+    .fetch_optional(pool)
+    .await?;
+    row.map(commit_record_from_row).transpose()
+}
+
+async fn commit_records_for_wave_pool(
+    pool: &SqlitePool,
+    wave_id: &WaveId,
+) -> Result<Vec<CommitRecord>> {
+    let rows = sqlx::query(
+        r#"SELECT hash, wave_id, parent_hash, tree_hash, manifest_schema_version,
+                  lifecycle, event_id, created_at, message
+           FROM wave_vcs_commits
+           WHERE wave_id = ?1
+           ORDER BY created_at DESC, COALESCE(event_id, -1) DESC, hash DESC"#,
+    )
+    .bind(wave_id.as_str())
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(commit_record_from_row).collect()
+}
+
+fn commit_record_from_row(row: SqliteRow) -> Result<CommitRecord> {
+    Ok(CommitRecord {
+        hash: row.try_get("hash")?,
+        wave_id: WaveId::from(row.try_get::<String, _>("wave_id")?),
+        parent_hash: row.try_get("parent_hash")?,
+        tree_hash: row.try_get("tree_hash")?,
+        manifest_schema_version: row.try_get("manifest_schema_version")?,
+        lifecycle: row.try_get("lifecycle")?,
+        event_id: row.try_get("event_id")?,
+        created_at: row.try_get("created_at")?,
+        message: row.try_get("message")?,
+    })
+}
+
+async fn changed_paths_for_commit(pool: &SqlitePool, record: &CommitRecord) -> Result<Vec<String>> {
+    let Some(tree) = load_tree_object_pool(pool, &record.tree_hash).await? else {
+        return Ok(Vec::new());
+    };
+    let entries = if let Some(parent_hash) = record.parent_hash.as_deref() {
+        let Some(parent) = tree_at(pool, parent_hash).await? else {
+            return Ok(Vec::new());
+        };
+        diff_manifests(&parent, &tree, None)
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect()
+    } else {
+        tree.entries.keys().cloned().collect()
+    };
+    Ok(entries)
 }
 
 async fn latest_wave_event_tx(
