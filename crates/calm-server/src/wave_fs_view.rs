@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
-const RESERVED_RUN_KEYS: &[&str] = &["index"];
+pub(crate) const RESERVED_RUN_KEYS: &[&str] = &["index"];
 
 #[derive(Clone)]
 pub struct WaveFsView<'a> {
@@ -49,7 +49,11 @@ impl<'a> WaveFsView<'a> {
                     entry_file("wave.json", None, Some(wave.updated_at)),
                     entry_file("report.md", None, Some(wave.updated_at)),
                     entry_dir("cards/", Some(cards.len()), None),
-                    entry_dir("runs/", Some(runs.len()), runs_updated_at(wave, &runs)),
+                    entry_dir(
+                        "runs/",
+                        Some(runs.len().saturating_mul(2).saturating_add(1)),
+                        runs_updated_at(wave, &runs),
+                    ),
                 ])
             }
             "cards" => {
@@ -68,7 +72,14 @@ impl<'a> WaveFsView<'a> {
             }
             "runs" => {
                 let runs = self.runs_for_wave(wave).await?;
-                Ok(runs.iter().map(run_listing_entry).collect())
+                let mut entries =
+                    Vec::with_capacity(runs.len().saturating_mul(2).saturating_add(1));
+                entries.push(entry_file("index.json", None, runs_updated_at(wave, &runs)));
+                for run in &runs {
+                    entries.push(run_listing_entry(run, "md"));
+                    entries.push(run_listing_entry(run, "json"));
+                }
+                Ok(entries)
             }
             path if path.starts_with("cards/") => {
                 let parts: Vec<&str> = path.split('/').collect();
@@ -265,7 +276,7 @@ impl<'a> WaveFsView<'a> {
 
         let runs = project_runs(self.write, cards, events);
         for run in &runs {
-            if RESERVED_RUN_KEYS.contains(&run.idempotency_key.as_str()) {
+            if is_reserved_run_key(&run.idempotency_key) {
                 tracing::error!(
                     target: "wave_file",
                     idempotency_key = %run.idempotency_key,
@@ -307,16 +318,20 @@ impl<'a> WaveFsView<'a> {
 
     fn card_meta(&self, card: &Card) -> Value {
         let role = self.write.verify_role(&card.id).unwrap_or_default();
-        json!({
-            "id": card.id,
-            "kind": card.kind,
-            "role": role,
-            "sort": card.sort,
-            "deletable": card.deletable,
-            "created_at": card.created_at,
-            "updated_at": card.updated_at,
-        })
+        card_meta_value(card, serde_json::to_value(role).unwrap_or(Value::Null))
     }
+}
+
+pub(crate) fn card_meta_value(card: &Card, role: Value) -> Value {
+    json!({
+        "id": card.id,
+        "kind": card.kind,
+        "role": role,
+        "sort": card.sort,
+        "deletable": card.deletable,
+        "created_at": card.created_at,
+        "updated_at": card.updated_at,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -402,12 +417,12 @@ fn cards_updated_at(wave: &Wave, cards: &[Card]) -> i64 {
 }
 
 #[derive(Clone, Debug)]
-struct HookEventProjection {
-    event_id: i64,
-    at: i64,
-    kind: &'static str,
-    hook_kind: String,
-    payload: Value,
+pub(crate) struct HookEventProjection {
+    pub(crate) event_id: i64,
+    pub(crate) at: i64,
+    pub(crate) kind: &'static str,
+    pub(crate) hook_kind: String,
+    pub(crate) payload: Value,
 }
 
 fn hook_events_updated_at(card: &Card, events: &[HookEventProjection]) -> i64 {
@@ -419,33 +434,33 @@ fn hook_events_updated_at(card: &Card, events: &[HookEventProjection]) -> i64 {
 }
 
 #[derive(Clone, Debug)]
-struct RunEventProjection {
-    event_id: i64,
-    at: i64,
-    kind: &'static str,
-    payload: Value,
+pub(crate) struct RunEventProjection {
+    pub(crate) event_id: i64,
+    pub(crate) at: i64,
+    pub(crate) kind: &'static str,
+    pub(crate) payload: Value,
 }
 
 #[derive(Clone, Debug)]
-struct RunVerdictProjection {
-    status: String,
-    reason: Option<String>,
-    at: i64,
+pub(crate) struct RunVerdictProjection {
+    pub(crate) status: String,
+    pub(crate) reason: Option<String>,
+    pub(crate) at: i64,
 }
 
 #[derive(Clone, Debug)]
-struct RunProjection {
-    idempotency_key: String,
-    status: &'static str,
-    kind: String,
-    requested_at: Option<i64>,
-    finished_at: Option<i64>,
-    worker_card: Option<Card>,
-    requested_event: Option<RunEventProjection>,
-    completed_event: Option<RunEventProjection>,
-    failed_event: Option<RunEventProjection>,
-    verdict: Option<RunVerdictProjection>,
-    verdict_event: Option<RunEventProjection>,
+pub(crate) struct RunProjection {
+    pub(crate) idempotency_key: String,
+    pub(crate) status: &'static str,
+    pub(crate) kind: String,
+    pub(crate) requested_at: Option<i64>,
+    pub(crate) finished_at: Option<i64>,
+    pub(crate) worker_card: Option<Card>,
+    pub(crate) requested_event: Option<RunEventProjection>,
+    pub(crate) completed_event: Option<RunEventProjection>,
+    pub(crate) failed_event: Option<RunEventProjection>,
+    pub(crate) verdict: Option<RunVerdictProjection>,
+    pub(crate) verdict_event: Option<RunEventProjection>,
 }
 
 fn project_runs(
@@ -718,8 +733,8 @@ fn run_by_key<'a>(runs: &'a [RunProjection], key: &str) -> Result<&'a RunProject
         .ok_or_else(|| path_not_available(&format!("runs/{key}")))
 }
 
-fn run_listing_entry(run: &RunProjection) -> WaveFsEntry {
-    let mut entry = WaveFsEntry::new(format!("{}.md", run.idempotency_key), "file")
+fn run_listing_entry(run: &RunProjection, extension: &str) -> WaveFsEntry {
+    let mut entry = WaveFsEntry::new(format!("{}.{}", run.idempotency_key, extension), "file")
         .with_extra(
             "idempotency_key",
             Value::String(run.idempotency_key.clone()),
@@ -742,7 +757,7 @@ fn run_listing_entry(run: &RunProjection) -> WaveFsEntry {
     entry
 }
 
-fn run_index_entry(run: &RunProjection) -> Value {
+pub(crate) fn run_index_entry(run: &RunProjection) -> Value {
     json!({
         "idempotency_key": run.idempotency_key,
         "status": run.status,
@@ -754,7 +769,7 @@ fn run_index_entry(run: &RunProjection) -> Value {
     })
 }
 
-fn run_json(run: &RunProjection) -> Value {
+pub(crate) fn run_json(run: &RunProjection) -> Value {
     json!({
         "idempotency_key": run.idempotency_key,
         "status": run.status,
@@ -807,7 +822,7 @@ fn event_json(event: &RunEventProjection) -> Value {
     })
 }
 
-fn hook_events_json(events: &[HookEventProjection]) -> Vec<Value> {
+pub(crate) fn hook_events_json(events: &[HookEventProjection]) -> Vec<Value> {
     events
         .iter()
         .map(|event| {
@@ -826,7 +841,7 @@ fn option_i64(value: Option<i64>) -> Value {
     value.map(Value::from).unwrap_or(Value::Null)
 }
 
-fn conversation_markdown(card_id: &CardId, events: &[HookEventProjection]) -> String {
+pub(crate) fn conversation_markdown(card_id: &CardId, events: &[HookEventProjection]) -> String {
     let mut out = String::new();
     out.push_str("> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth.\n\n");
     out.push_str(&format!("# Conversation — card {}\n\n", card_id.as_str()));
@@ -896,7 +911,7 @@ fn normalize_hook_event_name(name: &str) -> String {
         .collect()
 }
 
-fn run_markdown(run: &RunProjection) -> String {
+pub(crate) fn run_markdown(run: &RunProjection) -> String {
     let mut out = String::new();
     out.push_str("> READ-ONLY PROJECTION: derived from wave events and worker card payloads. This is not the source of truth.\n\n");
     out.push_str(&format!("# Run `{}`\n\n", run.idempotency_key));
@@ -998,7 +1013,7 @@ fn format_optional_i64(value: Option<i64>) -> String {
         .unwrap_or_else(|| "null".into())
 }
 
-fn index_markdown(wave: &Wave, card_count: usize) -> String {
+pub(crate) fn index_markdown(wave: &Wave, card_count: usize) -> String {
     format!(
         "# Wave {}\n\n- Title: {}\n- Cards: {}\n- Report: [report.md](report.md)\n",
         wave.id.as_str(),
@@ -1007,20 +1022,24 @@ fn index_markdown(wave: &Wave, card_count: usize) -> String {
     )
 }
 
-fn content_markdown(content: String) -> WaveFsContent {
+pub(crate) fn content_markdown(content: String) -> WaveFsContent {
     WaveFsContent {
         content,
         content_type: "text/markdown".into(),
     }
 }
 
-fn content_json<T: Serialize>(value: &T) -> Result<WaveFsContent, WaveFsError> {
+pub(crate) fn content_json<T: Serialize>(value: &T) -> Result<WaveFsContent, WaveFsError> {
     let content = serde_json::to_string_pretty(value)
         .map_err(|e| WaveFsError::Internal(format!("wave_file: json serialization: {e}")))?;
     Ok(WaveFsContent {
         content,
         content_type: "application/json".into(),
     })
+}
+
+pub(crate) fn is_reserved_run_key(key: &str) -> bool {
+    RESERVED_RUN_KEYS.contains(&key)
 }
 
 fn entry_dir(name: &str, size: Option<usize>, updated_at: Option<i64>) -> WaveFsEntry {

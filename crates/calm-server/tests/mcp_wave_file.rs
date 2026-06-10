@@ -905,13 +905,20 @@ async fn ls_runs_returns_projected_runs_for_bound_wave() {
     .await
     .expect("spec can list runs");
     let runs = out.as_array().expect("runs ls returns array");
-    assert_eq!(runs.len(), 1, "runs = {runs:?}");
-    assert_eq!(runs[0]["name"], json!("run-list.md"));
-    assert_eq!(runs[0]["kind"], json!("file"));
-    assert_eq!(runs[0]["idempotency_key"], json!("run-list"));
-    assert_eq!(runs[0]["status"], json!("running"));
-    assert_eq!(runs[0]["run_kind"], json!("codex"));
-    assert_eq!(runs[0]["worker_card_id"], json!(worker_id.as_str()));
+    let names = runs
+        .iter()
+        .map(|run| run["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["index.json", "run-list.md", "run-list.json"]);
+    let entry = runs
+        .iter()
+        .find(|run| run["name"] == "run-list.md")
+        .unwrap_or_else(|| panic!("missing run-list.md: {runs:?}"));
+    assert_eq!(entry["kind"], json!("file"));
+    assert_eq!(entry["idempotency_key"], json!("run-list"));
+    assert_eq!(entry["status"], json!("running"));
+    assert_eq!(entry["run_kind"], json!("codex"));
+    assert_eq!(entry["worker_card_id"], json!(worker_id.as_str()));
 }
 
 #[tokio::test]
@@ -972,6 +979,11 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|run| {
+            run["name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with(".md"))
+        })
         .map(|run| run["idempotency_key"].as_str().unwrap())
         .collect();
 
@@ -1727,7 +1739,10 @@ async fn empty_wave_has_empty_runs_projection() {
     )
     .await
     .expect("spec can list runs");
-    assert_eq!(ls, json!([]));
+    let runs = ls.as_array().expect("runs ls returns array");
+    assert_eq!(runs.len(), 1, "runs = {runs:?}");
+    assert_eq!(runs[0]["name"], json!("index.json"));
+    assert_eq!(runs[0]["kind"], json!("file"));
 
     let out = call_tool(
         &boot,

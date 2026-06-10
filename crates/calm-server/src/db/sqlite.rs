@@ -17,9 +17,6 @@
 //! closure so the entity write and the `INSERT INTO events ...` run in
 //! the same transaction. See `db::mod`'s sync-engine comment.
 
-use std::collections::HashMap;
-use std::str::FromStr;
-
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use sqlx::ConnectOptions;
@@ -30,6 +27,9 @@ use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::time::Duration;
 
 use super::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonRecord,
@@ -46,10 +46,12 @@ use crate::runtime_repo::{
     RuntimeId, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution,
     Tx as RuntimeTx,
 };
+use crate::runtime_row::{card_runtime_from_row, run_status_from_db};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
 };
 use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_vcs;
 
 pub struct SqlxRepo {
     pool: SqlitePool,
@@ -124,6 +126,8 @@ impl SqlxRepo {
             .run(&pool)
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
+
+        wave_vcs::backfill_existing_waves(&pool).await?;
 
         // PR3 (#136): seed the repo-local role cache from the freshly-
         // migrated table. This is the backing store for the gated raw
@@ -258,7 +262,59 @@ pub(crate) async fn event_append_for_operation_tx(
     correlation: Option<&str>,
     event: &Event,
 ) -> Result<i64> {
-    SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await
+    let event_id = SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?;
+    if let Some(wave_id) = scope.wave_id() {
+        wave_vcs::commit_in_tx(
+            tx,
+            wave_id,
+            event_id,
+            event,
+            wave_vcs::MANIFEST_SCHEMA_VERSION,
+        )
+        .await?;
+    }
+    Ok(event_id)
+}
+
+pub(crate) async fn begin_immediate_tx<'a>(
+    pool: &'a SqlitePool,
+) -> Result<Transaction<'a, Sqlite>> {
+    const MAX_RETRIES: usize = 6;
+    let mut backoff = Duration::from_millis(10);
+
+    for attempt in 0..=MAX_RETRIES {
+        match pool.begin_with("BEGIN IMMEDIATE").await {
+            Ok(tx) => return Ok(tx),
+            Err(e) if is_sqlite_busy(&e) && attempt < MAX_RETRIES => {
+                tracing::debug!(
+                    attempt,
+                    error = %e,
+                    "sqlite: BEGIN IMMEDIATE hit transient writer contention; retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(250));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    unreachable!("bounded retry loop must return or error");
+}
+
+fn is_sqlite_busy(e: &sqlx::Error) -> bool {
+    let Some(db_err) = e.as_database_error() else {
+        return false;
+    };
+    db_err.code().as_deref().is_some_and(is_sqlite_busy_code)
+}
+
+fn is_sqlite_busy_code(code: &str) -> bool {
+    if let Ok(code) = code.parse::<i64>() {
+        return matches!(code & 0xFF, 5 | 6);
+    }
+    matches!(code, "SQLITE_BUSY" | "SQLITE_LOCKED")
+        || code.starts_with("SQLITE_BUSY_")
+        || code.starts_with("SQLITE_LOCKED_")
 }
 
 pub(crate) async fn terminal_get_by_card_tx(
@@ -501,6 +557,20 @@ pub async fn cove_update_tx(
 }
 
 pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+    let wave_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE cove_id = ?1")
+        .bind(id)
+        .fetch_all(&mut **tx)
+        .await?;
+    for (wave_id,) in wave_ids {
+        sqlx::query("DELETE FROM wave_vcs_refs WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("DELETE FROM wave_vcs_commits WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .execute(&mut **tx)
+            .await?;
+    }
     let res = sqlx::query("DELETE FROM coves WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -728,6 +798,14 @@ pub async fn wave_delete_tx(
     id: &str,
     wave_cove_cache: &WaveCoveCache,
 ) -> Result<()> {
+    sqlx::query("DELETE FROM wave_vcs_refs WHERE wave_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM wave_vcs_commits WHERE wave_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
     let res = sqlx::query("DELETE FROM waves WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -1568,32 +1646,10 @@ fn runtime_kind_to_db(kind: &RuntimeKind) -> &'static str {
     }
 }
 
-fn runtime_kind_from_db(value: &str) -> RuntimeResult<RuntimeKind> {
-    match value {
-        "terminal" => Ok(RuntimeKind::Terminal),
-        "codex" => Ok(RuntimeKind::CodexCard),
-        "claude" => Ok(RuntimeKind::ClaudeCard),
-        "shared-spec" => Ok(RuntimeKind::SharedSpec),
-        other => Err(RuntimeRepoError::Message {
-            message: format!("unknown runtime kind {other:?}"),
-        }),
-    }
-}
-
 fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
     match provider {
         AgentProvider::Codex => "codex",
         AgentProvider::Claude => "claude",
-    }
-}
-
-fn agent_provider_from_db(value: &str) -> RuntimeResult<AgentProvider> {
-    match value {
-        "codex" => Ok(AgentProvider::Codex),
-        "claude" => Ok(AgentProvider::Claude),
-        other => Err(RuntimeRepoError::Message {
-            message: format!("unknown runtime agent provider {other:?}"),
-        }),
     }
 }
 
@@ -1606,21 +1662,6 @@ fn run_status_to_db(status: &RunStatus) -> &'static str {
         RunStatus::Failed => "failed",
         RunStatus::Exited => "exited",
         RunStatus::Superseded => "superseded",
-    }
-}
-
-fn run_status_from_db(value: &str) -> RuntimeResult<RunStatus> {
-    match value {
-        "starting" => Ok(RunStatus::Starting),
-        "running" => Ok(RunStatus::Running),
-        "idle" => Ok(RunStatus::Idle),
-        "turn_pending" => Ok(RunStatus::TurnPending),
-        "failed" => Ok(RunStatus::Failed),
-        "exited" => Ok(RunStatus::Exited),
-        "superseded" => Ok(RunStatus::Superseded),
-        other => Err(RuntimeRepoError::Message {
-            message: format!("unknown runtime status {other:?}"),
-        }),
     }
 }
 
@@ -1682,40 +1723,6 @@ async fn runtime_current_status_tx(
         return Err(runtime_message(format!("runtime {id} not found")));
     };
     run_status_from_db(row.try_get::<String, _>("status")?.as_str())
-}
-
-fn card_runtime_from_row(row: &sqlx::sqlite::SqliteRow) -> RuntimeResult<CardRuntime> {
-    let kind = runtime_kind_from_db(row.try_get::<String, _>("kind")?.as_str())?;
-    let agent_provider = row
-        .try_get::<Option<String>, _>("agent_provider")?
-        .as_deref()
-        .map(agent_provider_from_db)
-        .transpose()?;
-    let status = run_status_from_db(row.try_get::<String, _>("status")?.as_str())?;
-    let handle_state_json = row
-        .try_get::<Option<String>, _>("handle_state_json")?
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()?;
-
-    Ok(CardRuntime {
-        id: row.try_get("id")?,
-        card_id: row.try_get("card_id")?,
-        kind,
-        agent_provider,
-        status,
-        terminal_run_id: row.try_get("terminal_run_id")?,
-        terminal_ref: None,
-        thread_id: row.try_get("thread_id")?,
-        session_id: row.try_get("session_id")?,
-        active_turn_id: row.try_get("active_turn_id")?,
-        handle_state_json,
-        lease_owner: row.try_get("lease_owner")?,
-        lease_until_ms: row.try_get("lease_until_ms")?,
-        created_at_ms: row.try_get("created_at_ms")?,
-        updated_at_ms: row.try_get("updated_at_ms")?,
-        completed_at_ms: row.try_get("completed_at_ms")?,
-    })
 }
 
 async fn runtime_get_by_id_from_pool(
@@ -2579,9 +2586,11 @@ impl RepoRead for SqlxRepo {
 
     // ---------------------------------------------------------------- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
+        // Keep this ORDER BY aligned with wave_vcs::cards_for_wave_tx; tests pin
+        // the sort ASC, id ASC tie-break for duplicate worker run keys.
         let rows = sqlx::query_as::<_, Card>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
-               FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
+               FROM cards WHERE wave_id = ?1 ORDER BY sort ASC, id ASC"#,
         )
         .bind(wave_id)
         .fetch_all(&self.pool)
@@ -3815,7 +3824,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         // Run the caller-supplied entity write.
         let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
         let event = match fut.await {
@@ -3851,6 +3860,19 @@ impl RepoEventWrite for SqlxRepo {
                     return Err(e);
                 }
             };
+        if let Some(wave_id) = scope.wave_id()
+            && let Err(e) = wave_vcs::commit_in_tx(
+                &mut tx,
+                wave_id,
+                event_id,
+                &event,
+                wave_vcs::MANIFEST_SCHEMA_VERSION,
+            )
+            .await
+        {
+            let _ = tx.rollback().await;
+            return Err(e);
+        }
         // Commit before any externally-visible side effect.
         tx.commit().await?;
         // Commit-then-emit invariant: now (and only now) do we broadcast.
@@ -3873,7 +3895,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         // Run the caller-supplied entity write — closure returns one
         // or more (scope, event) pairs for this tx.
         let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
@@ -3921,6 +3943,30 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
+        let mut wave_events = HashMap::<WaveId, (i64, Vec<Event>)>::new();
+        for ((scope, event), event_id) in events.iter().zip(event_ids.iter()) {
+            if let Some(wave_id) = scope.wave_id() {
+                let entry = wave_events
+                    .entry(wave_id.clone())
+                    .or_insert_with(|| (*event_id, Vec::new()));
+                entry.0 = *event_id;
+                entry.1.push(event.clone());
+            }
+        }
+        for (wave_id, (event_id, events_for_wave)) in &wave_events {
+            if let Err(e) = wave_vcs::commit_events_in_tx(
+                &mut tx,
+                wave_id,
+                *event_id,
+                events_for_wave,
+                wave_vcs::MANIFEST_SCHEMA_VERSION,
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
         // Commit before any externally-visible side effect.
         tx.commit().await?;
         // Commit-then-emit invariant: broadcast in the same order the
@@ -3948,7 +3994,7 @@ impl RepoEventWrite for SqlxRepo {
         event: Event,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         // PR3 (#136) — gate. Pure events don't have an entity write to
         // populate the cache from, so the role lookup uses the cache's
         // current contents. `log_pure_event` callers (codex hook
@@ -3969,6 +4015,19 @@ impl RepoEventWrite for SqlxRepo {
                     return Err(e);
                 }
             };
+        if let Some(wave_id) = scope.wave_id()
+            && let Err(e) = wave_vcs::commit_in_tx(
+                &mut tx,
+                wave_id,
+                event_id,
+                &event,
+                wave_vcs::MANIFEST_SCHEMA_VERSION,
+            )
+            .await
+        {
+            let _ = tx.rollback().await;
+            return Err(e);
+        }
         tx.commit().await?;
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
@@ -3988,7 +4047,7 @@ impl RepoEventWrite for SqlxRepo {
     /// this returns. See [`crate::db::WriteInTxFn`] for the rationale.
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
         match fut.await {
             Ok(()) => {}
@@ -4178,5 +4237,20 @@ impl RepoEventWrite for SqlxRepo {
             .fetch_one(&self.pool)
             .await?;
         Ok(row.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_sqlite_busy_code;
+
+    #[test]
+    fn sqlite_busy_code_matches_primary_and_extended_codes() {
+        for code in ["5", "6", "261", "262", "517", "SQLITE_BUSY_SNAPSHOT"] {
+            assert!(is_sqlite_busy_code(code), "code {code}");
+        }
+        for code in ["0", "1", "SQLITE_CONSTRAINT"] {
+            assert!(!is_sqlite_busy_code(code), "code {code}");
+        }
     }
 }
