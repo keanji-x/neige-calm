@@ -27,7 +27,9 @@ struct Boot {
     daemon: Arc<SharedCodexAppServer>,
     events: EventBus,
     roles: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
     write: WriteContext,
+    runtime_id: String,
     wave_id: WaveId,
     cove_id: CoveId,
     spec_card_id: CardId,
@@ -103,7 +105,7 @@ async fn boot() -> Boot {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = SpecHarness::run(SpecHarnessParams {
-        runtime_id,
+        runtime_id: runtime_id.clone(),
         wave_id: wave.id.clone(),
         card_id: spec_card.id.clone(),
         thread_id: Some(thread_id.clone()),
@@ -126,7 +128,9 @@ async fn boot() -> Boot {
         daemon,
         events,
         roles,
+        wave_cove_cache,
         write,
+        runtime_id,
         wave_id: wave.id,
         cove_id: cove.id,
         spec_card_id: spec_card.id,
@@ -310,6 +314,39 @@ async fn wait_for_any_last_seen_head(boot: &Boot) -> String {
     }
 }
 
+async fn wait_for_runtime_snapshot(
+    boot: &Boot,
+    pred: impl Fn(&HarnessSnapshot) -> bool,
+) -> HarnessSnapshot {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = runtime_snapshot(boot).await;
+        if pred(&snapshot) {
+            return snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for runtime snapshot; last={snapshot:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_pending_len(harness: &SpecHarness, len: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let actual = harness.pending_len_for_test().await;
+        if actual == len {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for pending len {len}; last={actual}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn set_last_seen_head_raw(boot: &Boot, head: &str) {
     boot.harness
         .set_last_seen_head_for_test(Some(head.to_string()))
@@ -438,6 +475,65 @@ async fn first_turn_with_last_seen_head_none_has_no_diff_block() {
             .is_none()
     );
     boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
+    let boot = boot().await;
+    boot.harness.shutdown().await.unwrap();
+    let issued_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let turn_id = "turn-issued-before-restart";
+    let mut snapshot = runtime_snapshot(&boot).await;
+    snapshot.phase = HarnessPhaseTag::IssuingTurn;
+    snapshot.last_thread_id = Some(boot.thread_id.clone());
+    snapshot.last_turn_id = Some(turn_id.into());
+    snapshot.last_seen_head = None;
+    snapshot.issued_turn_head = Some(issued_head.clone());
+    persist_runtime_snapshot(&boot, &snapshot).await;
+
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let recovered = SpecHarness::run(SpecHarnessParams {
+        runtime_id: boot.runtime_id.clone(),
+        wave_id: boot.wave_id.clone(),
+        card_id: boot.spec_card_id.clone(),
+        thread_id: Some(boot.thread_id.clone()),
+        repo: repo_dyn,
+        events: boot.events.clone(),
+        card_role_cache: boot.roles.clone(),
+        wave_cove_cache: boot.wave_cove_cache.clone(),
+        daemon: boot.daemon.clone(),
+        config: HarnessConfig::default(),
+        snapshot,
+    });
+    wait_for_state(&recovered, |s| matches!(s, HarnessState::Resumed { .. })).await;
+
+    boot.daemon
+        .emit_notification_for_test(Notification::TurnStarted {
+            thread_id: boot.thread_id.clone(),
+            turn: json!({ "id": turn_id }),
+        });
+    wait_for_state(
+        &recovered,
+        |s| matches!(s, HarnessState::TurnRunning { turn_id: active, .. } if active == turn_id),
+    )
+    .await;
+    boot.daemon
+        .emit_notification_for_test(Notification::TurnCompleted {
+            thread_id: boot.thread_id.clone(),
+            turn: json!({ "id": turn_id, "status": "completed" }),
+        });
+
+    let stored = wait_for_runtime_snapshot(&boot, |snapshot| {
+        snapshot.last_seen_head.as_deref() == Some(issued_head.as_str())
+            && snapshot.issued_turn_head.is_none()
+    })
+    .await;
+    assert_eq!(stored.last_seen_head.as_deref(), Some(issued_head.as_str()));
+    assert!(stored.issued_turn_head.is_none());
+    recovered.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -624,14 +720,25 @@ async fn spec_card_own_payload_path_is_suppressed_from_turn_observation() {
 #[tokio::test]
 async fn batched_observations_get_one_diff_block_covering_all_changes() {
     let boot = boot().await;
-    let before = complete_first_turn_and_stamp(&boot).await;
-    let first = add_worker_card_event(&boot, "one").await;
-    let second = add_worker_card_event(&boot, "two").await;
-    let third = add_worker_card_event(&boot, "three").await;
-    let after = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+    let before = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
         .await
         .unwrap()
         .unwrap();
+    let text = issue_observation(
+        &boot,
+        Observation::WaveGoal {
+            text: "first turn".into(),
+        },
+        1,
+    )
+    .await;
+    assert!(
+        !text.contains("Wave state changes since your last turn"),
+        "first turn must not include a diff block: {text}"
+    );
+    let first = add_worker_card_event(&boot, "one").await;
+    let second = add_worker_card_event(&boot, "two").await;
+    let third = add_worker_card_event(&boot, "three").await;
 
     boot.harness
         .observe(Observation::TaskCompleted {
@@ -651,6 +758,16 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
             result: json!({}),
         })
         .unwrap();
+    wait_for_pending_len(&boot.harness, 3).await;
+    let first_turn_id = boot
+        .daemon
+        .active_turn_for_test(&boot.thread_id)
+        .expect("active first turn");
+    boot.daemon
+        .emit_notification_for_test(Notification::TurnCompleted {
+            thread_id: boot.thread_id.clone(),
+            turn: json!({ "id": first_turn_id, "status": "completed" }),
+        });
     wait_for_turn_count(&boot.daemon, 2).await;
     let text = turn_text(&boot.daemon, 1);
 
@@ -660,7 +777,10 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
         1,
         "batched turn must have one diff block: {text}"
     );
-    assert!(text.contains(&format!("HEAD {} -> {}", short(&before), short(&after))));
+    assert!(
+        text.contains(&format!("HEAD {} ->", short(&before))),
+        "batched diff must start from the issued first-turn head: {text}"
+    );
     assert!(text.contains(first.id.as_str()));
     assert!(text.contains(&format!("cards/{}/payload.json new", first.id)));
     assert!(text.contains(second.id.as_str()));

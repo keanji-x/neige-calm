@@ -37,6 +37,8 @@ pub struct HarnessSnapshot {
     #[serde(default)]
     pub last_seen_head: Option<String>,
     #[serde(default)]
+    pub issued_turn_head: Option<String>,
+    #[serde(default)]
     pub wedged_reason: Option<String>,
 }
 
@@ -68,6 +70,7 @@ impl HarnessSnapshot {
             last_turn_id: None,
             last_report_body_sha256: None,
             last_seen_head: None,
+            issued_turn_head: None,
             wedged_reason: None,
         }
     }
@@ -97,6 +100,7 @@ impl HarnessSnapshot {
             last_turn_id,
             last_report_body_sha256,
             last_seen_head: None,
+            issued_turn_head: None,
             wedged_reason,
         }
     }

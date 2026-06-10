@@ -294,7 +294,7 @@ fn inner_from_params(
         push_watermark: Mutex::new(snapshot.push_watermark),
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         issued_turn_id: Mutex::new(None),
-        issued_turn_head: Mutex::new(None),
+        issued_turn_head: Mutex::new(snapshot.issued_turn_head),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
         debounce: Mutex::new(debounce),
@@ -1151,6 +1151,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
+    let issued_turn_head = inner.issued_turn_head.lock().await.clone();
     let last_report_body_sha256 = inner.last_report_body_sha256.lock().await.clone();
     let last_seen_head = inner.last_seen_head.lock().await.clone();
     let mut snapshot = HarnessSnapshot::from_state(
@@ -1163,6 +1164,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
         last_report_body_sha256,
     );
     snapshot.last_seen_head = last_seen_head;
+    snapshot.issued_turn_head = issued_turn_head;
     snapshot
 }
 
@@ -1190,6 +1192,7 @@ async fn persist_snapshot_inner(
     let mut snapshot = snapshot_for(inner).await;
     if let Some(head) = last_seen_head_override {
         snapshot.last_seen_head = Some(head);
+        snapshot.issued_turn_head = None;
     }
     let runtime_id = inner.runtime_id.clone();
     let thread_id = snapshot.last_thread_id.clone();
