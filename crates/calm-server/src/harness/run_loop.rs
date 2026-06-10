@@ -522,6 +522,14 @@ fn try_fold_pending_tail(
             *body = new_body.clone();
             true
         }
+        // #615 F3: preserve both adjacent user intents under backpressure.
+        // Replacing would lose the earlier send, while separate entries surface
+        // as separate `User says:` blocks when a turn drains multiple observations.
+        (Observation::UserMessage { text }, Observation::UserMessage { text: new_text }) => {
+            text.push_str("\n\n");
+            text.push_str(new_text);
+            true
+        }
         _ => false,
     };
     if folded && let Some(last_envelope_id) = envelope_ids.back_mut() {
@@ -1392,5 +1400,70 @@ mod tests {
             CalmError::Conflict(ref msg) if msg.contains("shutting down")
         ));
         assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn user_message_folds_with_paragraph_breaks() {
+        use super::try_fold_pending_tail;
+        use crate::harness::observation::Observation;
+        use std::collections::VecDeque;
+
+        let mut queue: VecDeque<Observation> = VecDeque::new();
+        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        queue.push_back(Observation::UserMessage {
+            text: "first message".into(),
+        });
+        env_ids.push_back(Some(1));
+
+        let folded = try_fold_pending_tail(
+            &mut queue,
+            &mut env_ids,
+            &Observation::UserMessage {
+                text: "second message".into(),
+            },
+            Some(2),
+        );
+
+        assert!(folded);
+        assert_eq!(queue.len(), 1);
+        let Some(Observation::UserMessage { text }) = queue.back() else {
+            panic!("expected single folded UserMessage, got {:?}", queue);
+        };
+        assert_eq!(text, "first message\n\nsecond message");
+        assert_eq!(
+            env_ids.back().copied().flatten(),
+            Some(2),
+            "folded envelope id should advance to the newest send"
+        );
+    }
+
+    #[test]
+    fn user_message_does_not_fold_with_other_kinds() {
+        use super::try_fold_pending_tail;
+        use crate::harness::observation::Observation;
+        use std::collections::VecDeque;
+
+        let mut queue: VecDeque<Observation> = VecDeque::new();
+        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        queue.push_back(Observation::WaveGoal {
+            text: "goal".into(),
+        });
+        env_ids.push_back(None);
+
+        let folded = try_fold_pending_tail(
+            &mut queue,
+            &mut env_ids,
+            &Observation::UserMessage {
+                text: "user".into(),
+            },
+            None,
+        );
+
+        assert!(!folded, "UserMessage must not fold into WaveGoal");
+        assert_eq!(
+            queue.len(),
+            1,
+            "non-folding path should not mutate the queue"
+        );
     }
 }
