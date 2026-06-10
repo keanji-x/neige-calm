@@ -1136,8 +1136,8 @@ async fn dispatcher_promotes_to_working_before_fast_worker_report() {
         daemon_token_hash: None,
     });
     let task_completed = calm_server::mcp_server::build_default_registry()
-        .lookup(calm_server::mcp_server::tools::emit::TOOL_TASK_COMPLETED)
-        .expect("calm.task_completed handler registered");
+        .lookup(calm_server::mcp_server::tools::emit::TOOL_TASK_COMPLETE)
+        .expect("calm.task.complete handler registered");
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         repo.sqlite_pool()
             .expect("dispatcher test uses sqlite repo"),

@@ -459,7 +459,7 @@ async fn dispatch_request_explicit_planning_after_auto_promote_does_not_duplicat
         &mut wr,
         tools_call_frame(
             18,
-            "calm.dispatch_request",
+            "calm.task.dispatch",
             &b.thread_id,
             json!({
                 "kind": "codex",

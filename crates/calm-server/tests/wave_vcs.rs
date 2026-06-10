@@ -7,7 +7,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_update_tx, runtime_start_tx, terminal_create_tx,
     wave_update_tx,
 };
-use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::event::{Event, EventBus, EventScope, WaveUpdatedPayload};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{
     Card, CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, WavePatch, new_id, now_ms,
@@ -484,6 +484,7 @@ async fn commit_hook_rolls_back_event_when_vcs_commit_fails() {
                         idempotency_key: "rollback".into(),
                         result: json!({"status": "accepted"}),
                         artifacts: vec![],
+                        agent_message: None,
                     })
                 })
             }),
@@ -555,6 +556,7 @@ async fn concurrent_same_wave_writes_form_linear_history() {
                     idempotency_key: key.into(),
                     result: json!({"status": "accepted"}),
                     artifacts: vec![],
+                    agent_message: None,
                 },
             )
             .await
@@ -707,7 +709,7 @@ async fn batch_write_creates_one_commit_at_last_wave_event() {
                                 wave: wave_id.clone(),
                                 cove: cove_id.clone(),
                             },
-                            Event::WaveUpdated(updated),
+                            Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)),
                         ),
                         (
                             EventScope::Wave {
@@ -718,6 +720,7 @@ async fn batch_write_creates_one_commit_at_last_wave_event() {
                                 idempotency_key: "batch".into(),
                                 result: json!({"status": "accepted"}),
                                 artifacts: vec![],
+                                agent_message: None,
                             },
                         ),
                     ])
@@ -767,7 +770,7 @@ async fn incremental_commit_changes_only_expected_wave_paths() {
                     },
                 )
                 .await?;
-                Ok(Event::WaveUpdated(updated))
+                Ok(Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)))
             })
         }),
     )
@@ -875,6 +878,7 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
             goal: "check parity".into(),
             context: json!({"source": "test"}),
             acceptance_criteria: Some("bytes match".into()),
+            agent_message: None,
         },
     )
     .await
@@ -914,6 +918,7 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
             idempotency_key: "run-a".into(),
             result: json!({"summary": "done"}),
             artifacts: vec![],
+            agent_message: None,
         },
     )
     .await
@@ -1049,6 +1054,7 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
             goal: "duplicate key".into(),
             context: json!({}),
             acceptance_criteria: None,
+            agent_message: None,
         },
     )
     .await
@@ -1208,6 +1214,7 @@ async fn task_completion_updates_only_the_affected_run_paths() {
                 goal: format!("run {key}"),
                 context: json!({}),
                 acceptance_criteria: None,
+                agent_message: None,
             },
         )
         .await
@@ -1232,6 +1239,7 @@ async fn task_completion_updates_only_the_affected_run_paths() {
             idempotency_key: "one".into(),
             result: json!({"summary": "done"}),
             artifacts: vec![],
+            agent_message: None,
         },
     )
     .await
@@ -1295,6 +1303,7 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
             goal: "hidden worker".into(),
             context: json!({}),
             acceptance_criteria: None,
+            agent_message: None,
         },
     )
     .await
@@ -1397,6 +1406,7 @@ async fn reserved_run_key_does_not_clobber_runs_index() {
             idempotency_key: "index".into(),
             result: json!({"summary": "reserved"}),
             artifacts: vec![],
+            agent_message: None,
         },
     )
     .await

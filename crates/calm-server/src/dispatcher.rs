@@ -66,6 +66,7 @@ pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
 const DEFAULT_PERMITS: usize = 8;
+const SQLITE_BUSY_MAX_RETRIES: usize = 5;
 
 pub(crate) fn event_warrants_spec_push(
     event: &Event,
@@ -92,6 +93,68 @@ pub(crate) fn event_warrants_spec_push_with_role(
         }
         _ => false,
     }
+}
+
+async fn promote_dispatching_to_working_or_emit_failure<P, PFut, L, LFut>(
+    idempotency_key: &str,
+    scope: EventScope,
+    mut promote: P,
+    log_failure: L,
+) -> bool
+where
+    P: FnMut() -> PFut,
+    PFut: std::future::Future<Output = crate::error::Result<()>>,
+    L: FnOnce(EventScope, Event) -> LFut,
+    LFut: std::future::Future<Output = crate::error::Result<()>>,
+{
+    let mut promote_backoff = Duration::from_millis(10);
+    let mut promote_err = None;
+    for attempt in 0..=SQLITE_BUSY_MAX_RETRIES {
+        match promote().await {
+            Ok(()) => {
+                promote_err = None;
+                break;
+            }
+            Err(e) if is_sqlite_busy(&e) && attempt < SQLITE_BUSY_MAX_RETRIES => {
+                tracing::debug!(
+                    idempotency_key = %idempotency_key,
+                    attempt,
+                    error = %e,
+                    "dispatcher: transient SQLite contention on promotion; retrying"
+                );
+                tokio::time::sleep(promote_backoff).await;
+                promote_backoff = (promote_backoff * 2).min(Duration::from_millis(200));
+                continue;
+            }
+            Err(e) => {
+                promote_err = Some(e);
+                break;
+            }
+        }
+    }
+
+    if let Some(e) = promote_err {
+        tracing::warn!(
+            idempotency_key = %idempotency_key,
+            error = %e,
+            "dispatcher: lifecycle promotion failed permanently; emitting task.failed without spawning"
+        );
+        let fail_event = Event::TaskFailed {
+            idempotency_key: idempotency_key.to_string(),
+            reason: format!("lifecycle promotion failed: {e}"),
+            agent_message: None,
+        };
+        if let Err(e2) = log_failure(scope, fail_event).await {
+            tracing::warn!(
+                idempotency_key = %idempotency_key,
+                error = %e2,
+                "dispatcher: failed to log lifecycle-promotion task.failed event batch"
+            );
+        }
+        return false;
+    }
+
+    true
 }
 
 #[allow(deprecated, clippy::too_many_arguments)]
@@ -714,6 +777,40 @@ impl Inner {
         let idem = req.idempotency_key().to_string();
         let scope = envelope.scope.clone();
 
+        // Promote Dispatching -> Working before spawning the worker so a fast
+        // worker's task.completed (which auto-promotes Working -> Reviewing)
+        // never races ahead of the promotion. A permanent promotion failure
+        // aborts the dispatch before the worker starts, otherwise the wave can
+        // remain stuck in Dispatching after the worker finishes.
+        let promote_inner = Arc::clone(&self);
+        let promote_scope = scope.clone();
+        let log_inner = Arc::clone(&self);
+        if !promote_dispatching_to_working_or_emit_failure(
+            &idem,
+            scope.clone(),
+            move || {
+                let promote_inner = Arc::clone(&promote_inner);
+                let promote_scope = promote_scope.clone();
+                async move {
+                    promote_inner
+                        .auto_promote_dispatching_to_working(&promote_scope)
+                        .await
+                }
+            },
+            move |scope, fail_event| {
+                let log_inner = Arc::clone(&log_inner);
+                async move {
+                    log_inner
+                        .log_task_failure_and_maybe_promote_working_to_reviewing(scope, fail_event)
+                        .await
+                }
+            },
+        )
+        .await
+        {
+            return;
+        }
+
         // Retry on transient SQLite BUSY/locked errors. With more
         // than one dispatcher in flight (permits > 1), SQLite can
         // refuse a write with "database is locked" or "deadlocked"
@@ -723,18 +820,7 @@ impl Inner {
         // and emitting `task.failed`.
         let mut last_err: Option<crate::error::CalmError> = None;
         let mut backoff = Duration::from_millis(10);
-        const MAX_RETRIES: usize = 5;
-        // Promote Dispatching -> Working before spawning the worker so a fast
-        // worker's task.completed (which auto-promotes Working -> Reviewing)
-        // never races ahead of the promotion.
-        if let Err(e) = self.auto_promote_dispatching_to_working(&scope).await {
-            tracing::warn!(
-                idempotency_key = %idem,
-                error = %e,
-                "dispatcher: lifecycle auto-promotion failed; proceeding with spawn"
-            );
-        }
-        for attempt in 0..=MAX_RETRIES {
+        for attempt in 0..=SQLITE_BUSY_MAX_RETRIES {
             match self
                 .dispatch(req.clone(), scope.clone(), envelope.actor.clone())
                 .await
@@ -743,7 +829,7 @@ impl Inner {
                     last_err = None;
                     break;
                 }
-                Err(e) if is_sqlite_busy(&e) && attempt < MAX_RETRIES => {
+                Err(e) if is_sqlite_busy(&e) && attempt < SQLITE_BUSY_MAX_RETRIES => {
                     tracing::debug!(
                         idempotency_key = %idem,
                         attempt,
@@ -775,7 +861,7 @@ impl Inner {
                 agent_message: None,
             };
             let log_result = self
-                .log_spawn_failure_and_maybe_promote_working_to_reviewing(scope.clone(), fail_event)
+                .log_task_failure_and_maybe_promote_working_to_reviewing(scope.clone(), fail_event)
                 .await;
             if let Err(e2) = log_result {
                 tracing::warn!(
@@ -1059,7 +1145,7 @@ impl Inner {
         Ok(())
     }
 
-    async fn log_spawn_failure_and_maybe_promote_working_to_reviewing(
+    async fn log_task_failure_and_maybe_promote_working_to_reviewing(
         self: &Arc<Self>,
         scope: EventScope,
         fail_event: Event,
@@ -1377,6 +1463,75 @@ mod tests {
         EventScope::Wave {
             wave: wave.clone(),
             cove: cove.clone(),
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_spawn_promotion_hard_failure_emits_task_failed_and_aborts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let promote_calls = Arc::new(AtomicUsize::new(0));
+        let logged = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let wave = WaveId::from("wave-promotion-hard-fail");
+        let cove = CoveId::from("cove-promotion-hard-fail");
+        let scope = wave_scope(&wave, &cove);
+
+        let should_spawn = promote_dispatching_to_working_or_emit_failure(
+            "promotion-hard-fail",
+            scope.clone(),
+            {
+                let promote_calls = Arc::clone(&promote_calls);
+                move || {
+                    promote_calls.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Err::<(), _>(CalmError::Internal("forced promotion failure".to_string()))
+                    }
+                }
+            },
+            {
+                let logged = Arc::clone(&logged);
+                move |scope, event| {
+                    let logged = Arc::clone(&logged);
+                    async move {
+                        logged.lock().await.push((scope, event));
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            !should_spawn,
+            "permanent promotion failure must abort before spawning the worker"
+        );
+        assert_eq!(
+            promote_calls.load(Ordering::SeqCst),
+            1,
+            "hard promotion errors should not be retried"
+        );
+
+        let logged = logged.lock().await;
+        assert_eq!(logged.len(), 1, "promotion failure should log TaskFailed");
+        assert_eq!(logged[0].0, scope);
+        match &logged[0].1 {
+            Event::TaskFailed {
+                idempotency_key,
+                reason,
+                agent_message,
+            } => {
+                assert_eq!(idempotency_key, "promotion-hard-fail");
+                assert!(
+                    reason.contains("lifecycle promotion failed"),
+                    "TaskFailed reason should identify promotion failure: {reason}"
+                );
+                assert!(
+                    reason.contains("forced promotion failure"),
+                    "TaskFailed reason should include the original error: {reason}"
+                );
+                assert_eq!(agent_message, &None);
+            }
+            other => panic!("expected TaskFailed for promotion failure, got {other:?}"),
         }
     }
 

@@ -3992,7 +3992,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithActorEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let fut: BoxFuture<'_, Result<Vec<(ActorId, EventScope, Event)>>> = f(&mut tx);
         let events = match fut.await {
             Ok(v) => v,
