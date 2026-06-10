@@ -257,9 +257,13 @@ fn map_observation_send_error(
     e: mpsc::error::TrySendError<HarnessObservationDelivery>,
 ) -> CalmError {
     match e {
-        mpsc::error::TrySendError::Full(_) => {
-            CalmError::Conflict("spec harness observation queue full, retry shortly".into())
-        }
+        // Backpressure: server is temporarily saturated, client should retry.
+        mpsc::error::TrySendError::Full(_) => CalmError::ServiceUnavailable(
+            "spec harness observation queue full, retry shortly".into(),
+        ),
+        // Lifecycle race: the runtime is going away mid-request. State has
+        // changed since the caller's runtime lookup; client should re-poll
+        // or accept the runtime as gone.
         mpsc::error::TrySendError::Closed(_) => {
             CalmError::Conflict("spec harness runtime shutting down".into())
         }
@@ -1357,7 +1361,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observe_delivery_full_maps_to_conflict() {
+    async fn observe_delivery_full_maps_to_service_unavailable() {
         let (tx, _rx) = mpsc::channel::<HarnessObservationDelivery>(1);
         tx.try_send(delivery("goal")).unwrap();
 
@@ -1368,9 +1372,9 @@ mod tests {
 
         assert!(matches!(
             err,
-            CalmError::Conflict(ref msg) if msg.contains("queue full")
+            CalmError::ServiceUnavailable(ref msg) if msg.contains("queue full")
         ));
-        assert_eq!(err.status(), StatusCode::CONFLICT);
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

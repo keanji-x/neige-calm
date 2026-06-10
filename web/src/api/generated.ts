@@ -1024,8 +1024,9 @@ export interface components {
              *     `idempotency_collision`, `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
-             *     `io_error`, `serde_error`, `codex_app_server`, `internal`,
-             *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+             *     `io_error`, `serde_error`, `codex_app_server`,
+             *     `service_unavailable`, `internal`, `forbidden_tool`,
+             *     `not_a_card_tool`, `tool_call_failed`.
              */
             code: string;
             /** @description Human-readable error message. */
@@ -2165,7 +2166,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Runtime shutting down or observation queue full */
+            /** @description Runtime is shutting down (lifecycle race with shutdown) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2176,6 +2177,15 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Observation queue saturated, retry shortly */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
