@@ -20,8 +20,9 @@ use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, Wave, now_ms};
 use crate::runtime_lookup;
-use crate::runtime_repo::CardRuntime;
-use crate::runtime_row::card_runtime_from_row;
+use crate::runtime_row::{
+    projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
+};
 use crate::wave_fs_view::{
     self, HookEventProjection, RunEventProjection, RunProjection, RunVerdictProjection,
 };
@@ -30,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use similar::TextDiff;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MANIFEST_SCHEMA_VERSION: i64 = 1;
@@ -2221,31 +2222,9 @@ async fn project_runtime_into_cards_tx(
         .iter()
         .map(|card| card.card.id.to_string())
         .collect::<Vec<_>>();
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE status != 'superseded'
-             AND card_id IN ("#,
-    );
-    let mut separated = query.separated(", ");
-    for id in &card_ids {
-        separated.push_bind(id);
-    }
-    separated.push_unseparated(
-        r#")
-           ORDER BY card_id ASC,
-             CASE WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0 ELSE 1 END,
-             updated_at_ms DESC, created_at_ms DESC, id DESC"#,
-    );
+    let mut query = projectable_runtimes_for_cards_query(&card_ids);
     let rows = query.build().fetch_all(&mut **tx).await?;
-    let mut runtimes = BTreeMap::<String, CardRuntime>::new();
-    for row in rows {
-        let runtime = card_runtime_from_row(&row)?;
-        runtimes.entry(runtime.card_id.clone()).or_insert(runtime);
-    }
+    let runtimes = projectable_runtimes_for_cards_from_rows(rows)?;
     for card in cards {
         if let Some(runtime) = runtimes.get(card.card.id.as_str()) {
             runtime_lookup::project_runtime_fields(&mut card.card, runtime);
