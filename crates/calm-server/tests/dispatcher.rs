@@ -27,22 +27,29 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::dispatcher::Dispatcher;
+use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{
     ArtifactRef, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::model::{
-    NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+    CardRole, NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+};
+use calm_server::operation::{
+    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationRuntime, PhaseTag,
+    ProviderAdapter, SpawnCtx, SpawnHandle, SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use serde_json::Value;
 
 static DISPATCHER_DAEMON_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -311,6 +318,120 @@ where
             return None;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+const FAST_REPORT_ADAPTER_PHASES: &[PhaseTag] = &[];
+
+struct FastReportAdapter {
+    task_completed: calm_server::mcp_server::registry::ToolHandler,
+    tool_ctx: Arc<calm_server::mcp_server::AppContext>,
+    worker_card_id: String,
+    wave_id: WaveId,
+    idempotency_key: String,
+}
+
+impl FastReportAdapter {
+    fn new(
+        task_completed: calm_server::mcp_server::registry::ToolHandler,
+        tool_ctx: Arc<calm_server::mcp_server::AppContext>,
+        worker_card_id: String,
+        wave_id: WaveId,
+        idempotency_key: String,
+    ) -> Self {
+        Self {
+            task_completed,
+            tool_ctx,
+            worker_card_id,
+            wave_id,
+            idempotency_key,
+        }
+    }
+}
+
+fn unexpected_fast_report_call(name: &str) -> CalmError {
+    CalmError::Internal(format!("fast-report test fixture unexpected call: {name}"))
+}
+
+#[async_trait]
+impl ProviderAdapter for FastReportAdapter {
+    fn kind(&self) -> &'static str {
+        "terminal-worker"
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        FAST_REPORT_ADAPTER_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        Ok(TxOutput::new(
+            "fast-report",
+            None,
+            serde_json::json!({"ok": true}),
+        ))
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Err(unexpected_fast_report_call("app_server_interact"))
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnHandle> {
+        let identity = calm_server::mcp_server::ToolCallIdentity {
+            card_id: self.worker_card_id.clone(),
+            role: CardRole::Worker,
+            wave_id: Some(self.wave_id.to_string()),
+            thread_id: "fast-worker-report-thread".into(),
+        };
+        (self.task_completed)(
+            self.tool_ctx.clone(),
+            identity,
+            serde_json::json!({
+                "idempotency_key": self.idempotency_key.clone(),
+                "result": { "ok": true }
+            }),
+        )
+        .await
+        .map_err(|e| CalmError::Internal(format!("fast worker task_completed failed: {e:?}")))?;
+        Ok(SpawnHandle::NoOp)
+    }
+
+    async fn plan_compensation(
+        &self,
+        _from_phase: PhaseTag,
+        _reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Err(unexpected_fast_report_call("plan_compensation"))
+    }
+
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(unexpected_fast_report_call("compensate_step"))
     }
 }
 
@@ -738,6 +859,168 @@ async fn dispatcher_spawn_success_auto_promotes_dispatching_to_working() {
         .unwrap()
         .expect("wave exists");
     assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+}
+
+#[tokio::test]
+async fn dispatcher_promotes_to_working_before_fast_worker_report() {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Marker {
+        DispatchingToWorking,
+        TaskCompleted,
+        WorkingToReviewing,
+    }
+
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Dispatching),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("set wave dispatching");
+
+    let idem = "fast-worker-report-ordering";
+    let worker_card = repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone(),
+            kind: "terminal".into(),
+            sort: None,
+            payload: serde_json::json!({ "idempotency_key": idem }),
+        })
+        .await
+        .expect("seed worker card");
+    cache.insert(worker_card.id.clone(), CardRole::Worker, wave_id.clone());
+
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let tool_ctx = Arc::new(calm_server::mcp_server::AppContext {
+        repo: route_repo.clone(),
+        events: events.clone(),
+        write: calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        daemon_token_hash: None,
+    });
+    let task_completed = calm_server::mcp_server::build_default_registry()
+        .lookup(calm_server::mcp_server::tools::emit::TOOL_TASK_COMPLETED)
+        .expect("calm.task_completed handler registered");
+    let operation_repo = Arc::new(SqlxOperationRepo::new(
+        repo.sqlite_pool()
+            .expect("dispatcher test uses sqlite repo"),
+    ));
+    let fast_report_adapter = Arc::new(FastReportAdapter::new(
+        task_completed,
+        tool_ctx,
+        worker_card.id.to_string(),
+        wave_id.clone(),
+        idem.to_string(),
+    ));
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let spawn_ctx = SpawnCtx::new(route_repo, stub_daemon(), terminal_renderer, events.clone());
+    let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![fast_report_adapter],
+        events.clone(),
+        spawn_ctx,
+    ));
+    let _dispatcher = Dispatcher::spawn_with_operation_runtime(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        stub_codex(),
+        stub_daemon(),
+        None,
+        stub_shared(&repo),
+        operation_runtime,
+        4,
+    );
+
+    let mut rx = events.subscribe();
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalWorkerRequested {
+            idempotency_key: idem.into(),
+            cmd: "mock-fast-worker".into(),
+            cwd: None,
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut markers = Vec::new();
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                match &env.event {
+                    Event::WaveLifecycleChanged { id, from, to, .. }
+                        if id == &wave_id
+                            && *from == WaveLifecycle::Dispatching
+                            && *to == WaveLifecycle::Working =>
+                    {
+                        markers.push(Marker::DispatchingToWorking);
+                    }
+                    Event::WaveLifecycleChanged { id, from, to, .. }
+                        if id == &wave_id
+                            && *from == WaveLifecycle::Working
+                            && *to == WaveLifecycle::Reviewing =>
+                    {
+                        markers.push(Marker::WorkingToReviewing);
+                    }
+                    Event::TaskCompleted {
+                        idempotency_key, ..
+                    } if idempotency_key == "fast-worker-report-ordering" => {
+                        markers.push(Marker::TaskCompleted);
+                    }
+                    _ => {}
+                }
+
+                if markers.contains(&Marker::DispatchingToWorking)
+                    && markers.contains(&Marker::TaskCompleted)
+                    && markers.contains(&Marker::WorkingToReviewing)
+                {
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+
+    let dispatching_to_working = markers
+        .iter()
+        .position(|m| *m == Marker::DispatchingToWorking)
+        .unwrap_or_else(|| panic!("missing Dispatching -> Working marker: {markers:?}"));
+    let task_completed_idx = markers
+        .iter()
+        .position(|m| *m == Marker::TaskCompleted)
+        .unwrap_or_else(|| panic!("missing task.completed marker: {markers:?}"));
+    let working_to_reviewing = markers
+        .iter()
+        .position(|m| *m == Marker::WorkingToReviewing)
+        .unwrap_or_else(|| panic!("missing Working -> Reviewing marker: {markers:?}"));
+
+    assert!(
+        dispatching_to_working < task_completed_idx,
+        "dispatcher must promote Dispatching -> Working before a fast worker report; markers={markers:?}"
+    );
+    assert!(
+        task_completed_idx < working_to_reviewing,
+        "worker task.completed must then promote Working -> Reviewing; markers={markers:?}"
+    );
+
+    let wave = repo
+        .wave_get(wave_id.as_str())
+        .await
+        .unwrap()
+        .expect("wave exists");
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
 }
 
 #[tokio::test]

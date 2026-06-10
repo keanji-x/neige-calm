@@ -724,19 +724,22 @@ impl Inner {
         let mut last_err: Option<crate::error::CalmError> = None;
         let mut backoff = Duration::from_millis(10);
         const MAX_RETRIES: usize = 5;
+        // Promote Dispatching -> Working before spawning the worker so a fast
+        // worker's task.completed (which auto-promotes Working -> Reviewing)
+        // never races ahead of the promotion.
+        if let Err(e) = self.auto_promote_dispatching_to_working(&scope).await {
+            tracing::warn!(
+                idempotency_key = %idem,
+                error = %e,
+                "dispatcher: lifecycle auto-promotion failed; proceeding with spawn"
+            );
+        }
         for attempt in 0..=MAX_RETRIES {
             match self
                 .dispatch(req.clone(), scope.clone(), envelope.actor.clone())
                 .await
             {
                 Ok(()) => {
-                    if let Err(e) = self.auto_promote_dispatching_to_working(&scope).await {
-                        tracing::warn!(
-                            idempotency_key = %idem,
-                            error = %e,
-                            "dispatcher: worker spawned but lifecycle auto-promotion failed"
-                        );
-                    }
                     last_err = None;
                     break;
                 }
