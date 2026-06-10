@@ -197,6 +197,20 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
     }
 }
 
+pub(crate) fn runtime_view_from_runtime(runtime: &CardRuntime) -> CardRuntimeView {
+    CardRuntimeView {
+        runtime_id: runtime.id.clone(),
+        kind: runtime.kind.clone(),
+        status: runtime.status.clone(),
+        provider: runtime.agent_provider.clone(),
+        terminal_id: non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned),
+        thread_id: non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned),
+        session_id: non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned),
+        source: (runtime.kind == RuntimeKind::SharedSpec).then(|| "shared".to_string()),
+        thread_status: projected_thread_status(runtime).map(ToOwned::to_owned),
+    }
+}
+
 fn projected_thread_status(runtime: &CardRuntime) -> Option<&'static str> {
     if !matches!(
         runtime.kind,

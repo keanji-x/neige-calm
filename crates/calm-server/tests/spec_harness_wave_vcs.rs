@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::{InputItem, Notification};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_create_with_id_tx, runtime_set_status_tx, runtime_start_tx,
+};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, SpecHarness,
@@ -224,6 +226,102 @@ async fn add_worker_card_event(boot: &Boot, label: &str) -> Card {
         json!({"schemaVersion": 1, "label": label}),
     )
     .await
+}
+
+async fn start_worker_runtime_with_event(boot: &Boot, card: &Card, status: RunStatus) -> String {
+    let runtime_id = new_id();
+    let returned_runtime_id = runtime_id.clone();
+    let card_id = card.id.clone();
+    let scope = EventScope::Card {
+        card: card_id.clone(),
+        wave: boot.wave_id.clone(),
+        cove: boot.cove_id.clone(),
+    };
+    boot.repo
+        .write_with_event(
+            ActorId::Kernel,
+            scope,
+            None,
+            &boot.events,
+            &boot.write,
+            Box::new(move |tx| {
+                let runtime_id = runtime_id.clone();
+                let card_id = card_id.clone();
+                let status = status.clone();
+                Box::pin(async move {
+                    let runtime = runtime_start_tx(
+                        tx,
+                        RuntimeInit {
+                            id: runtime_id,
+                            card_id: card_id.to_string(),
+                            kind: RuntimeKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status,
+                            terminal_run_id: None,
+                            thread_id: Some("worker-thread-current-schema".into()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            lease_owner: None,
+                            lease_until_ms: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await?;
+                    Ok(Event::RuntimeStarted {
+                        runtime_id: runtime.id,
+                        card_id: runtime.card_id,
+                        kind: runtime.kind,
+                        agent_provider: runtime.agent_provider,
+                        status: runtime.status,
+                    })
+                })
+            }),
+        )
+        .await
+        .expect("worker runtime started event");
+    returned_runtime_id
+}
+
+async fn set_worker_runtime_status_with_event(
+    boot: &Boot,
+    card: &Card,
+    runtime_id: &str,
+    old_status: RunStatus,
+    new_status: RunStatus,
+) {
+    let runtime_id = runtime_id.to_string();
+    let card_id = card.id.clone();
+    let scope = EventScope::Card {
+        card: card_id.clone(),
+        wave: boot.wave_id.clone(),
+        cove: boot.cove_id.clone(),
+    };
+    boot.repo
+        .write_with_event(
+            ActorId::Kernel,
+            scope,
+            None,
+            &boot.events,
+            &boot.write,
+            Box::new(move |tx| {
+                let runtime_id = runtime_id.clone();
+                let card_id = card_id.clone();
+                let old_status = old_status.clone();
+                let new_status = new_status.clone();
+                Box::pin(async move {
+                    runtime_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
+                    Ok(Event::RuntimeStatusChanged {
+                        runtime_id,
+                        card_id: card_id.to_string(),
+                        old_status,
+                        new_status,
+                    })
+                })
+            }),
+        )
+        .await
+        .expect("worker runtime status changed event");
 }
 
 async fn issue_observation(boot: &Boot, obs: Observation, expected_turns: usize) -> String {
@@ -713,6 +811,10 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         2,
     )
     .await;
+    let turn_two_issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
+        .await
+        .issued_turn_head
+        .expect("turn two issued head");
     assert!(
         !second_text.contains("Wave state changes since your last turn"),
         "unchanged baseline should not produce a diff block: {second_text}"
@@ -724,12 +826,12 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         .unwrap()
         .unwrap();
     complete_latest_turn(&boot).await;
-    assert_eq!(wait_for_any_last_seen_head(&boot).await, before);
-    let after_completion_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_ne!(mid_turn_head, before);
+    wait_for_runtime_snapshot(&boot, |s| {
+        s.last_seen_head.as_deref() == Some(turn_two_issued_head.as_str())
+            && s.issued_turn_head.is_none()
+    })
+    .await;
+    assert_ne!(mid_turn_head, turn_two_issued_head);
 
     let third_text = issue_observation(
         &boot,
@@ -740,12 +842,16 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         3,
     )
     .await;
+    let turn_three_issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
+        .await
+        .issued_turn_head
+        .expect("turn three issued head");
 
     assert!(third_text.starts_with("## Wave state changes since your last turn"));
     assert!(third_text.contains(&format!(
         "HEAD {} -> {}",
-        short(&before),
-        short(&after_completion_head)
+        short(&turn_two_issued_head),
+        short(&turn_three_issued_head)
     )));
     assert!(third_text.contains("report.md new"));
     assert!(third_text.contains("idempotency_key=turn-three"));
@@ -787,6 +893,48 @@ async fn spec_card_own_payload_path_is_suppressed_from_turn_observation() {
     );
     assert!(text.contains(&format!("cards/{}/meta.json edited", boot.spec_card_id)));
     assert!(text.contains("idempotency_key=spec-payload-only"));
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
+    let boot = boot().await;
+    complete_first_turn_and_stamp(&boot).await;
+    let worker = add_worker_card_event(&boot, "runtime-status-current-schema").await;
+    let runtime_id = start_worker_runtime_with_event(&boot, &worker, RunStatus::Starting).await;
+    let before = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    set_last_seen_head_raw(&boot, &before).await;
+
+    add_report_card_event(&boot).await;
+    set_worker_runtime_status_with_event(
+        &boot,
+        &worker,
+        &runtime_id,
+        RunStatus::Starting,
+        RunStatus::Running,
+    )
+    .await;
+
+    let text = issue_observation(
+        &boot,
+        Observation::TaskCompleted {
+            idempotency_key: "runtime-status-current-schema".into(),
+            result: json!({"ok": true}),
+        },
+        2,
+    )
+    .await;
+
+    assert!(text.starts_with("## Wave state changes since your last turn"));
+    assert!(text.contains("report.md new"));
+    assert!(
+        !text.contains(&format!("cards/{}/payload.json", worker.id.as_str())),
+        "current-schema runtime re-render must not create payload diff noise: {text}"
+    );
+    assert!(text.contains("idempotency_key=runtime-status-current-schema"));
     boot.harness.shutdown().await.unwrap();
 }
 

@@ -170,8 +170,9 @@ CLI, which composes with tools like `grep`, `jq`, and `head`:
   * `neige ls [path]` — directory listing, e.g. `neige ls runs/` or \
     `neige ls /`.
   * `neige cat <path>` — read one view, e.g. `neige cat runs/K.md`, \
-    `neige cat runs/index.json`, or \
-    `neige cat cards/<card_id>/payload.json`.
+    `neige cat runs/index.json`, \
+    `neige cat cards/<card_id>/payload.json`, or \
+    `neige cat cards/<card_id>/runtime.json`.
 
 Available `<path>` values for `neige cat` / `neige ls`:
 
@@ -184,8 +185,11 @@ Available `<path>` values for `neige cat` / `neige ls`:
     has the dispatch context.
   * `runs/index.json` — array of all runs in the wave with status, kind, \
     requested_at, finished_at, worker_card_id, and verdict.
-  * `cards/<card_id>/payload.json` — full payload of any card in the \
-    wave (e.g. another worker's bookkeeping).
+  * `cards/<card_id>/payload.json` — the card's own payload in the \
+    wave (e.g. another worker's bookkeeping or dispatch context). \
+    Runtime identity and status live in `cards/<card_id>/runtime.json`.
+  * `cards/<card_id>/runtime.json` — typed runtime identity/status for \
+    a card, or `null` when it has no runtime row.
   * `/` — root directory listing.
   * `report.md` — current wave report body.
 
@@ -254,9 +258,10 @@ You may read your wave's state READ-ONLY from the shell with the `neige` \
 CLI: `neige state` reads the wave shape, `neige ls [path]` lists views, \
 and `neige cat <path>` reads one view. Useful paths include `/`, \
 `runs/index.json`, \
-`runs/<idempotency_key>.md`, `runs/<idempotency_key>.json`, and \
-`cards/<card_id>/payload.json`. These views are own-wave-only; \
-cross-wave reads are forbidden.
+`runs/<idempotency_key>.md`, `runs/<idempotency_key>.json`, \
+`cards/<card_id>/payload.json`, and `cards/<card_id>/runtime.json`. \
+`payload.json` is the card's own payload; runtime identity/status lives \
+in `runtime.json`. These views are own-wave-only; cross-wave reads are forbidden.
 ";
 
 /// Substitute the per-spawn placeholders into a prompt template. Today
