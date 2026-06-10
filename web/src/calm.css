@@ -2440,7 +2440,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 .claude-restart-button {
   min-height: 22px;
-  padding: 0 var(--space-4);
+  padding: var(--space-0) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-2);
