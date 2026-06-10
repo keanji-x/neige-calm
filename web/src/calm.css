@@ -1613,9 +1613,8 @@ select:-webkit-autofill {
   min-height: 0;
 }
 
-/* Report page shell (#594 PR-A). Real data is limited to the wave title
-   and wave-report Markdown body; Files, Event line, and chat stay as
-   static placeholders for PR-B/E/C. */
+/* Report page shell (#594). Real data includes the wave title, report
+   Markdown body, and Files rail; Event line and chat stay staged. */
 .report-page {
   position: relative;
   flex: 1 1 auto;
@@ -1841,6 +1840,12 @@ select:-webkit-autofill {
   color: var(--text-3);
   font-size: var(--text-sm);
   line-height: var(--leading-base);
+}
+.report-rail-files {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-1) var(--space-0);
 }
 .report-chat {
   position: absolute;
@@ -3220,6 +3225,13 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.wave-report-files-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-4);
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
 }
 .wave-report-files-viewer {
   min-width: 0;

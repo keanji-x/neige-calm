@@ -2,7 +2,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
+import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
+import { WaveFileTree } from '../cards/wave-file-tree';
 
 export interface WaveReportPageProps {
   wave: Wave;
@@ -93,6 +95,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const title = waveDisplayTitle(wave.title);
   const reportSlots = selectReportCards(cards);
   const reportCard = reportSlots[0]?.card;
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
 
   return (
     <div className="report-page">
@@ -119,8 +122,14 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           <header className="report-rail-head">
             <span>Files</span>
           </header>
-          <div className="report-rail-placeholder">
-            Wave files appear here. (Wired in PR-B.)
+          <div className="report-rail-files">
+            <WaveFileTree
+              waveId={wave.id}
+              selectedPath={selectedFilePath}
+              onSelectedPathChange={setSelectedFilePath}
+              ariaLabel="Wave files"
+              fallback={<div className="report-rail-placeholder">No files yet.</div>}
+            />
           </div>
         </section>
         <section className="report-rail-section" aria-label="Event line">

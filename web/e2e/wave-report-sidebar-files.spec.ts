@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type APIResponse, type Page } from '@playwright/test';
+import { seedWaveViewMode } from './helpers/reset';
 
 const createdCoveIds: string[] = [];
 
@@ -18,51 +19,89 @@ test.afterEach(async ({ request }) => {
   createdCoveIds.length = 0;
 });
 
-// PR-A of #594 hides the legacy wave-report card from worker grid/list views
-// and moves the first-class Files rail onto WaveReportPage as a placeholder.
-// TODO(#594 PR-B): rewrite this as an equivalent report-page assertion using
-// the real WaveFileTree, then remove the .skip.
-test.skip('Report card file sidebar opens a real wave file', async ({ page }) => {
-  const ts = Date.now();
-  const coveRes = await page.request.post('/api/coves', {
+async function expectOk(res: APIResponse, label: string): Promise<void> {
+  if (res.ok()) return;
+  const body = await res.text().catch(() => '<unreadable>');
+  throw new Error(`${label} -> ${res.status()} ${res.statusText()}: ${body}`);
+}
+
+async function login(page: Page): Promise<void> {
+  const res = await page.request.post('/api/auth/login', {
+    data: {
+      username: process.env.PROBE_USERNAME ?? 'owner',
+      password: process.env.PROBE_PASSWORD ?? 'dev',
+    },
+    headers: { 'content-type': 'application/json' },
+  });
+  await expectOk(res, 'POST /api/auth/login');
+}
+
+async function createCove(page: Page, ts: number): Promise<{ id: string }> {
+  const res = await page.request.post('/api/coves', {
     data: { name: `E2E report files ${ts}`, color: '#4a8' },
     headers: { 'content-type': 'application/json' },
   });
-  expect(coveRes.ok()).toBeTruthy();
-  const cove = (await coveRes.json()) as { id: string };
+  await expectOk(res, 'POST /api/coves');
+  const cove = (await res.json()) as { id: string };
   createdCoveIds.push(cove.id);
+  return cove;
+}
 
-  const waveTitle = `E2E report file wave ${ts}`;
-  const waveRes = await page.request.post('/api/waves', {
+async function createWave(
+  page: Page,
+  coveId: string,
+  ts: number,
+): Promise<{ id: string; title: string }> {
+  const title = `E2E report file wave ${ts}`;
+  const res = await page.request.post('/api/waves', {
     data: {
-      cove_id: cove.id,
-      title: waveTitle,
+      cove_id: coveId,
+      title,
       cwd: `/tmp/playwright-report-files-${ts}`,
       attach_folder: true,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },
   });
-  if (!waveRes.ok()) {
-    const body = await waveRes.text().catch(() => '<unreadable>');
-    throw new Error(
-      `POST /api/waves -> ${waveRes.status()} ${waveRes.statusText()}: ${body}`,
-    );
-  }
-  const wave = (await waveRes.json()) as { id: string };
+  await expectOk(res, 'POST /api/waves');
+  const wave = (await res.json()) as { id: string };
+  return { id: wave.id, title };
+}
+
+async function writeReport(page: Page, waveId: string, body: string): Promise<void> {
+  const res = await page.request.post(`/api/waves/${waveId}/report`, {
+    data: { summary: 'report files smoke', body },
+    headers: { 'content-type': 'application/json' },
+  });
+  await expectOk(res, 'POST /api/waves/:id/report');
+}
+
+test('WaveReportPage Files rail renders a selectable wave-fs tree', async ({
+  page,
+}) => {
+  await login(page);
+
+  const ts = Date.now();
+  const cove = await createCove(page, ts);
+  const wave = await createWave(page, cove.id, ts);
+  await writeReport(page, wave.id, 'Report file tree body.');
+  await seedWaveViewMode(page.request, wave.id, 'report');
 
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
-  await expect(page.getByText(waveTitle, { exact: false }).first()).toBeVisible();
+  await expect(
+    page.getByRole('heading', { level: 1, name: wave.title }),
+  ).toBeVisible();
 
-  const reportCard = page.locator('.wave-report-card').first();
-  await expect(reportCard).toBeVisible();
-  await expect(reportCard.locator('.wave-report-files-tree')).toBeVisible();
+  const filesSection = page.getByRole('region', { name: 'Files' });
+  await expect(filesSection).toBeVisible();
 
-  await reportCard.getByRole('treeitem', { name: /cards\// }).click();
-  await reportCard.getByRole('treeitem', { name: /index\.json/ }).click();
+  const tree = filesSection.getByRole('tree', { name: /Wave files/i });
+  await expect(tree).toBeVisible();
 
-  const viewer = reportCard.locator('.wave-report-files-code-wrap');
-  await expect(viewer).toBeVisible();
-  await expect(viewer).toContainText('"id"', { timeout: 5_000 });
+  const reportFile = tree.getByRole('treeitem', { name: /report\.md/ });
+  await expect(reportFile).toBeVisible();
+  await reportFile.click();
+  await expect(reportFile).toHaveAttribute('aria-selected', 'true');
+  await expect(filesSection.locator('.wave-report-files-viewer')).toHaveCount(0);
 });
