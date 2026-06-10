@@ -63,6 +63,8 @@ const REPLAY_LOG_PATH = resolve(REPLAY_LOG_DIR, 'replay-server.log');
 const test = base.extend({});
 
 test('setup', async () => {
+  test.setTimeout(READY_TIMEOUT_MS + 10_000);
+
   const fixture = process.env.NEIGE_FIXTURE ?? DEFAULT_FIXTURE;
   const fixturePath = resolve(REPO_ROOT, fixture);
   if (!existsSync(fixturePath)) {
@@ -96,7 +98,10 @@ test('setup', async () => {
   // detached:true puts the child in its own process group so teardown
   // can SIGTERM the whole group. cargo wraps its child in another
   // process; killing only the cargo PID can leave the actual replay
-  // server orphaned holding the port.
+  // server orphaned holding the port. Since PR #630 made the replay
+  // grandchild survive stdout EPIPE, a setup failure can also leave
+  // that orphan alive after Playwright kills the worker; the failure
+  // path below SIGKILLs this process group before any PID handoff.
   //
   // stdio: stdout stays a pipe so `waitForBanner` can scan for the
   // ready line. stderr goes straight to the file fd above so the
@@ -111,13 +116,18 @@ test('setup', async () => {
     detached: true,
   });
 
-  await waitForBanner(child);
+  try {
+    await waitForBanner(child);
 
-  if (!child.pid) {
-    throw new Error('replay-setup: cargo child has no PID after spawn');
+    if (!child.pid) {
+      throw new Error('replay-setup: cargo child has no PID after spawn');
+    }
+    mkdirSync(dirname(PID_FILE), { recursive: true });
+    writeFileSync(PID_FILE, String(child.pid), 'utf8');
+  } catch (e) {
+    killProcessGroupOnSetupFailure(child);
+    throw e;
   }
-  mkdirSync(dirname(PID_FILE), { recursive: true });
-  writeFileSync(PID_FILE, String(child.pid), 'utf8');
 
   // Unref the cargo child so the setup worker process can exit cleanly;
   // the replay server keeps running until teardown kills it. stderr
@@ -150,6 +160,16 @@ test('setup', async () => {
     `[replay-server] codex resolution: ${codexBin ?? '<missing — codex-dependent specs will skip>'}`,
   );
 });
+
+function killProcessGroupOnSetupFailure(child: ChildProcess): void {
+  if (!child.pid) return;
+
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+  }
+}
 
 /** Resolve once the replay binary writes a line containing `READY_BANNER`
  *  to stdout. Rejects if the process exits before then (cargo build
