@@ -233,6 +233,29 @@ export function WavePage({
         >
           <Icon n="back" s={14} sw={1.7} />
         </button>
+        {/* Surface flip (issue #594 demo) — leftmost control cluster:
+            与 back 钮并列, 表达模式切换 (icon-only). Slice-9 label
+            convention: visible icon = current surface, action verb in
+            aria-label / noun in title. The grid/list overlay is read-only here
+            (no UI entry for List in the demo); PR2 of #594 swaps this
+            for the persisted three-state ViewMode control. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={reportPreview}
+          className="view-flip"
+          onClick={() => setReportPreview((v) => !v)}
+          aria-label={
+            reportPreview
+              ? 'Switch wave to cards view'
+              : 'Switch wave to report view'
+          }
+          title={
+            reportPreview ? 'Cards' : 'Report'
+          }
+        >
+          <Icon n={reportPreview ? 'report' : 'grid'} s={14} sw={1.7} />
+        </button>
         <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
           <button
@@ -297,29 +320,6 @@ export function WavePage({
               )}
             </>
           )}
-          {/* Surface flip (issue #594 demo) — ONE binary Grid↔Report
-              switch, sitting at the breadcrumb tail. Slice-9 label
-              convention: visible icon = current surface, action verb in
-              aria-label / noun in title. The grid/list overlay is read-only here
-              (no UI entry for List in the demo); PR2 of #594 swaps this
-              for the persisted three-state ViewMode control. */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={reportPreview}
-            className="view-flip"
-            onClick={() => setReportPreview((v) => !v)}
-            aria-label={
-              reportPreview
-                ? 'Switch wave to cards view'
-                : 'Switch wave to report view'
-            }
-            title={
-              reportPreview ? 'Cards' : 'Report'
-            }
-          >
-            <Icon n={reportPreview ? 'report' : 'grid'} s={14} sw={1.6} />
-          </button>
         </span>
         <span className="wave-meta">
           {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
