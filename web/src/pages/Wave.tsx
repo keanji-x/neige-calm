@@ -215,6 +215,29 @@ export function WavePage({
     });
   };
 
+  // Demo toggle for the unified Report view (issue #594). Deliberately
+  // plain useState, NOT overlay-persisted: the report content is the
+  // static design sandbox (`web/public/_design/Report.html`), and
+  // persisting "this wave shows the report" across reloads while the
+  // data is fake would mislead. PR2 of #594 replaces this with a real
+  // three-state ViewMode ('grid' | 'list' | 'report') on the overlay.
+  const [reportPreview, setReportPreview] = useState(false);
+  // One three-segment control, one selected surface — not two stacked
+  // two-state switches (those had contradictory label conventions: one
+  // showed the target state, the other the current state). Grid/List
+  // still flow through the persisted overlay; Report stays local. The
+  // interaction model maps 1:1 onto PR2's three-state ViewMode.
+  const surface: 'grid' | 'list' | 'report' = reportPreview
+    ? 'report'
+    : viewMode;
+  const pickSurface = (s: 'grid' | 'list' | 'report') => {
+    setReportPreview(s === 'report');
+    // Re-use the existing overlay-persistence path for grid↔list; a
+    // report→grid/list exit restores whatever mode the overlay held
+    // unless the user picked the other one.
+    if (s !== 'report' && s !== viewMode) toggleViewMode();
+  };
+
   return (
     // Issue #229 PR B — wrap with WaveContext so the WaveReport card
     // (rendered deep inside WaveGrid/WaveList) can read the wave's
@@ -223,7 +246,7 @@ export function WavePage({
     <WaveContext.Provider
       value={{ id: wave.id, lifecycle: wave.lifecycle }}
     >
-    <div className="workbench">
+    <div className={'workbench' + (reportPreview ? ' workbench--report' : '')}>
       <header className="wave-header">
         <button
           className="wave-back"
@@ -298,33 +321,36 @@ export function WavePage({
           )}
         </span>
         <span className="wave-meta">
-          {/* View-mode toggle (Slice 9 of issue #56). Two-state button —
-              `role="switch"` + `aria-checked` so AT announces the bound
-              state ("Grid view, switch, on" vs "List view, switch, off").
-              The accessible name carries the layout vocabulary so a
-              keyboard / screen-reader user knows what the control
-              switches between; the visible label flips with the state.
-              Pressed visually matches AddPanel — dashed border swap. */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={viewMode === 'list'}
-            className={'view-toggle' + (viewMode === 'list' ? ' is-list' : '')}
-            onClick={toggleViewMode}
-            title={
-              viewMode === 'list'
-                ? 'Switch to grid view'
-                : 'Switch to list view (keyboard-friendly)'
-            }
-            aria-label={
-              viewMode === 'list'
-                ? 'Switch wave to grid view'
-                : 'Switch wave to list view'
-            }
-          >
-            {viewMode === 'list' ? 'List' : 'Grid'}
-          </button>
-          <AddPanel onSelect={beginAdd} />
+          {/* Wave surface picker (issue #594 demo). One segmented
+              radiogroup [Grid | List | Report] replaces the previous
+              two-state Grid/List switch (Slice 9 of #56) for the demo:
+              three exclusive surfaces are one selection, not two
+              switches. Visual vocabulary borrowed from the calendar's
+              `.cal-toggle` (recessed track + raised selected segment).
+              PR2 of #594 keeps this control and moves the Report state
+              into the persisted three-state ViewMode overlay. */}
+          <div className="view-seg" role="radiogroup" aria-label="Wave view">
+            {(['grid', 'list', 'report'] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                role="radio"
+                aria-checked={surface === s}
+                className={surface === s ? 'on' : undefined}
+                onClick={() => pickSurface(s)}
+                title={
+                  s === 'report'
+                    ? 'Unified report view (design demo, #594)'
+                    : s === 'list'
+                      ? 'List view (keyboard-friendly)'
+                      : 'Grid view'
+                }
+              >
+                {s === 'grid' ? 'Grid' : s === 'list' ? 'List' : 'Report'}
+              </button>
+            ))}
+          </div>
+          {!reportPreview && <AddPanel onSelect={beginAdd} />}
           {directAddError && (
             <p
               className="schema-form-error wave-add-direct-error"
@@ -357,27 +383,39 @@ export function WavePage({
       </header>
 
       <section className="workbench-main">
-        <Suspense
-          fallback={
-            <div className="synth">
-              {viewMode === 'list' ? 'Loading list…' : 'Loading grid…'}
-            </div>
-          }
-        >
-          {viewMode === 'list' ? (
-            <WaveList
-              waveId={wave.id}
-              cards={cards}
-              onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
-            />
-          ) : (
-            <WaveGrid
-              waveId={wave.id}
-              cards={cards}
-              onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
-            />
-          )}
-        </Suspense>
+        {reportPreview ? (
+          // Static design sandbox served from `web/public/_design/`.
+          // Pure iframe — no wave data flows in yet; PR2 of #594 swaps
+          // this for a real WaveReportPage fed by the wave's
+          // spec + wave-report cards.
+          <iframe
+            className="wave-report-demo-frame"
+            src="/calm/_design/Report.html"
+            title="Report view demo (#594)"
+          />
+        ) : (
+          <Suspense
+            fallback={
+              <div className="synth">
+                {viewMode === 'list' ? 'Loading list…' : 'Loading grid…'}
+              </div>
+            }
+          >
+            {viewMode === 'list' ? (
+              <WaveList
+                waveId={wave.id}
+                cards={cards}
+                onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+              />
+            ) : (
+              <WaveGrid
+                waveId={wave.id}
+                cards={cards}
+                onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+              />
+            )}
+          </Suspense>
+        )}
       </section>
       {/* Shortcut: when a kind's createSchema is just one `directory` field,
           skip the SchemaForm wrapper entirely and let the user pick a

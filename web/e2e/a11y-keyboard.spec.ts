@@ -610,11 +610,12 @@ test.describe('a11y · keyboard-only navigation', () => {
   });
 
   // Slice 9 — list-view alternative to the WaveGrid. The wave-header
-  // carries a `role="switch"` toggle that flips the per-wave view-mode
-  // overlay between `grid` (default) and `list`. List view replaces the
-  // RGL grid with a semantic `<ul>` whose `<li>` items use roving
-  // tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the focused card by
-  // swapping `card.sort` via the existing optimistic mutation.
+  // carries a `[Grid | List | Report]` radiogroup (#594 demo) whose
+  // Grid/List segments flip the per-wave view-mode overlay between
+  // `grid` (default) and `list`. List view replaces the RGL grid with a
+  // semantic `<ul>` whose `<li>` items use roving tabindex;
+  // Alt+ArrowUp / Alt+ArrowDown reorder the focused card by swapping
+  // `card.sort` via the existing optimistic mutation.
   test('Wave: toggle to list view, reorder with Alt+Arrow, persist across reload', async ({
     page,
   }) => {
@@ -678,22 +679,22 @@ test.describe('a11y · keyboard-only navigation', () => {
       await page.waitForTimeout(500);
     }
 
-    // The toggle is a role="switch" with an accessible name like
-    // "Switch wave to list view" (default state = grid).
-    const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
-    await expect(toggle).toBeVisible();
-    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    // The view picker is a three-segment radiogroup [Grid | List |
+    // Report] (issue #594 demo — replaced the former two-state
+    // role="switch"). Default selection = Grid.
+    const viewGroup = page.getByRole('radiogroup', { name: /wave view/i });
+    await expect(viewGroup).toBeVisible();
+    const listRadio = viewGroup.getByRole('radio', { name: /^list$/i });
+    await expect(listRadio).toHaveAttribute('aria-checked', 'false');
 
-    // Flip via keyboard: focus + Space (the native button activation).
-    await toggle.focus();
+    // Flip via keyboard: focus + Space (the segments are native buttons,
+    // so Space activates without custom key handling).
+    await listRadio.focus();
     await page.keyboard.press(' ');
-
-    // Same DOM node now exposes the opposite accessible name + a flipped
-    // aria-checked. We re-query rather than caching the locator because
-    // the accessible name changed.
-    const toggleNow = page.getByRole('switch', { name: /switch wave to grid view/i });
-    await expect(toggleNow).toBeVisible();
-    await expect(toggleNow).toHaveAttribute('aria-checked', 'true');
+    await expect(listRadio).toHaveAttribute('aria-checked', 'true');
+    await expect(
+      viewGroup.getByRole('radio', { name: /^grid$/i }),
+    ).toHaveAttribute('aria-checked', 'false');
 
     // List view: cards now render as semantic <li>. Wait for the list
     // to mount (it's lazy-loaded — same chunk pattern as WaveGrid).
@@ -764,14 +765,14 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(items.last()).toHaveClass(/is-active/);
 
     // Reload — the view-mode overlay must persist, so the page comes
-    // back in list view.
+    // back in list view (the List segment is the selected radio).
     await page.goto(waveUrl);
     const listAfter = page.getByRole('list', { name: /wave cards/i });
     await expect(listAfter).toBeVisible({ timeout: 5_000 });
-    const toggleAfter = page.getByRole('switch', {
-      name: /switch wave to grid view/i,
-    });
-    await expect(toggleAfter).toHaveAttribute('aria-checked', 'true');
+    const listRadioAfter = page
+      .getByRole('radiogroup', { name: /wave view/i })
+      .getByRole('radio', { name: /^list$/i });
+    await expect(listRadioAfter).toHaveAttribute('aria-checked', 'true');
   });
 
   test('Settings page: all controls reachable and labeled', async ({ page }) => {

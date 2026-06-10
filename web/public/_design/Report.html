@@ -4,32 +4,74 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Report · Research Agent</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script>
+  // Demo theme bridge (#594): the sandbox is iframed inside the app
+  // (`Wave.tsx` report toggle) and is same-origin, so mirror the parent's
+  // resolved theme onto this document and follow live toggles. Standalone
+  // file:// or direct-URL opens land in the catch and stay light.
+  (function () {
+    try {
+      var sync = function () {
+        var t = parent.document.documentElement.dataset.theme;
+        if (t) document.documentElement.dataset.theme = t;
+      };
+      sync();
+      new MutationObserver(sync).observe(parent.document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme'],
+      });
+    } catch (e) { /* standalone open — keep light */ }
+  })();
+</script>
 <style>
+  /* Token VALUES mirror the app palette (web/src/calm.css) so the demo
+     reads as "the app's future layout", not a foreign artifact — see
+     docs/_research-594-demo-visual-subagent.md. Variable NAMES stay the
+     design's own so the layout CSS below is untouched. Fonts are the
+     app stacks: Plex Sans/Mono + the dormant --font-serif stack
+     (calm.css:11) carrying the editorial-serif voice without Google
+     Fonts (e2e blocks them; codex review red line). */
   :root{
-    --canvas: oklch(0.991 0.003 95);
-    --surface: oklch(1 0 0);
-    --surface-2: oklch(0.985 0.004 90);
-    --ink: oklch(0.245 0.008 60);
-    --ink-soft: oklch(0.42 0.007 60);
-    --muted: oklch(0.58 0.006 60);
-    --faint: oklch(0.72 0.005 70);
-    --hair: oklch(0.915 0.004 80);
-    --hair-2: oklch(0.945 0.003 85);
-    --accent: oklch(0.46 0.105 264);
-    --accent-soft: oklch(0.95 0.022 264);
-    --amber: oklch(0.66 0.115 66);
-    --amber-soft: oklch(0.955 0.03 78);
-    --green: oklch(0.56 0.085 152);
+    color-scheme: light;
+    --canvas: oklch(98.8% 0.003 240);      /* = app --bg */
+    --surface: oklch(99.5% 0.002 240);     /* = app --paper */
+    --surface-2: oklch(98% 0.003 240);     /* = app --surface-rail */
+    --ink: oklch(20% 0.008 250);           /* = app --text */
+    --ink-soft: oklch(45% 0.01 250);       /* = app --text-2 */
+    --muted: oklch(52% 0.01 250);          /* = app --text-3 */
+    --faint: oklch(76% 0.008 250);         /* = app --text-4 */
+    --hair: oklch(92% 0.005 240);          /* = app --hairline */
+    --hair-2: oklch(95% 0.005 240);        /* = app --surface-chip */
+    --accent: oklch(52% 0.13 245);         /* = app --accent */
+    --accent-soft: oklch(95% 0.025 245);   /* = app --accent-soft */
+    --amber: oklch(58% 0.16 30);           /* = app --warn */
+    --amber-soft: oklch(96% 0.03 30);      /* = app --warn-soft */
+    --green: oklch(54% 0.14 145);          /* = app --success */
 
-    --sans: "Schibsted Grotesk", system-ui, sans-serif;
-    --serif: "Newsreader", Georgia, serif;
-    --mono: "JetBrains Mono", ui-monospace, monospace;
+    --sans: "IBM Plex Sans", "IBM Plex Sans SC", "IBM Plex Sans JP", "IBM Plex Sans KR", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    --serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
+    --mono: "IBM Plex Mono", "PingFang SC", "SF Mono", ui-monospace, "Menlo", monospace;
 
     --glass: color-mix(in oklab, var(--surface) 82%, transparent);
-    --shadow: 0 1px 2px oklch(0 0 0 / .04), 0 16px 40px -12px oklch(0.3 0.02 60 / .20), 0 4px 12px -6px oklch(0.3 0.02 60 / .12);
+    --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
+  }
+  [data-theme="dark"]{
+    color-scheme: dark;
+    --canvas: oklch(16% 0.008 245);
+    --surface: oklch(19% 0.009 245);
+    --surface-2: oklch(21% 0.009 245);     /* = app dark --surface-card (dark rail sits below canvas) */
+    --ink: oklch(96% 0.005 245);
+    --ink-soft: oklch(72% 0.012 245);
+    --muted: oklch(64% 0.012 245);
+    --faint: oklch(42% 0.012 245);
+    --hair: oklch(28% 0.01 245);
+    --hair-2: oklch(24% 0.01 245);         /* = app dark --surface-chip */
+    --accent: oklch(72% 0.14 245);
+    --accent-soft: oklch(28% 0.05 245);
+    --amber: oklch(70% 0.16 30);
+    --amber-soft: oklch(28% 0.05 30);
+    --green: oklch(74% 0.14 145);
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
   }
 
   *{ box-sizing: border-box; margin: 0; padding: 0; }
@@ -171,7 +213,7 @@
     background: var(--ink); color: var(--canvas);
     box-shadow: var(--shadow); transition: .18s;
   }
-  .ask-pill:hover{ transform: translateY(-1px); background: oklch(0.32 0.01 60); }
+  .ask-pill:hover{ transform: translateY(-1px); background: color-mix(in oklab, var(--ink) 88%, var(--canvas)); }
   .ask-pill .bot{ width: 24px; height: 24px; border-radius: 50%; background: var(--accent); display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; }
   .ask-pill .lbl{ font-size: 13px; font-weight: 500; white-space: nowrap; }
 

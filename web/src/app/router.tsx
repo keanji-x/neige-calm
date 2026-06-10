@@ -80,14 +80,6 @@ const WavePage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('../pages/Settings').then((m) => ({ default: m.SettingsPage })),
 );
-// Demo-only: full-window iframe of `web/public/_design/Report.html`,
-// reached from the TitleBar's "Report design" link. Lives at `/_design`
-// so the path itself signals "not a real product route". CalmApp checks
-// for this prefix and skips the TitleBar+Sidebar shell so the iframe
-// owns the viewport. Tied to design issue #594.
-const DesignPreviewPage = lazy(() =>
-  import('../pages/DesignPreview').then((m) => ({ default: m.DesignPreviewPage })),
-);
 
 // ---------- Route tree ----------
 
@@ -151,18 +143,11 @@ const settingsRoute = createRoute({
   component: SettingsComponent,
 });
 
-const designPreviewRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/_design',
-  component: DesignPreviewPage,
-});
-
 const routeTree = rootRoute.addChildren([
   indexRoute,
   coveRoute,
   waveRoute,
   settingsRoute,
-  designPreviewRoute,
 ]);
 
 // `basepath` mirrors Vite's `base: '/calm/'` (see vite.config.ts) so URLs

@@ -46,31 +46,15 @@ import type { KernelOverlay } from './api/wire';
 import type { Cove, Route as AppRoute, Wave } from './types';
 
 export function CalmApp() {
-  // Routes under `/_design/*` are the design-sandbox preview (issue #594);
-  // they take over the full viewport so we suppress the TitleBar+Sidebar
-  // shell — AND we skip all the Sidebar data hooks below by short-circuiting
-  // before they're called, so opening the preview never fans out cove/wave
-  // queries. Same-position early return = no rules-of-hooks violation.
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-  if (pathname.startsWith('/_design')) {
-    return (
-      <Suspense fallback={<LoadingShell />}>
-        <Outlet />
-      </Suspense>
-    );
-  }
-  return <CalmAppShell pathname={pathname} />;
-}
-
-function CalmAppShell({ pathname }: { pathname: string }) {
   const go = useGo();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   useWheelRouter(scrollRef);
 
   // Derive the current AppRoute shape from the router's location so the
   // Sidebar's "highlight active" logic keeps working without props on
-  // every route component. `pathname` is plumbed in by the parent so we
-  // don't double-subscribe to router state.
+  // every route component. Subscribing via useRouterState ensures we
+  // re-render on history changes (back / forward / programmatic nav).
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const route: AppRoute = useMemo(() => parseAppRoute(pathname), [pathname]);
 
   // ----- Sidebar data -----------------------------------------------------

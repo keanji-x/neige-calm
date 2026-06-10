@@ -322,8 +322,9 @@ test.describe('a11y · axe', () => {
 
   // Slice 9: the list-view alternative to WaveGrid. Same role/name
   // hygiene applies — labels, roles, landmark structure should come
-  // out clean. The role="switch" toggle is the new control we want
-  // covered along with the list itself.
+  // out clean. The view picker is a three-segment radiogroup
+  // [Grid | List | Report] since the #594 demo; we flip to List via
+  // its radio and scan the populated list state.
   test.describe('Wave list view', () => {
     for (const theme of THEMES) {
       test(`${theme} mode · no violations`, async ({ page }) => {
@@ -343,9 +344,11 @@ test.describe('a11y · axe', () => {
         await addBtn.click();
         await page.getByRole('menuitem', { name: /terminal/i }).first().click();
         await page.waitForTimeout(500);
-        const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
-        await expect(toggle).toBeVisible();
-        await toggle.click();
+        const listRadio = page
+          .getByRole('radiogroup', { name: /wave view/i })
+          .getByRole('radio', { name: /^list$/i });
+        await expect(listRadio).toBeVisible();
+        await listRadio.click();
         // List mode lazily mounts; wait for the <ul> before the scan.
         await expect(page.getByRole('list', { name: /wave cards/i })).toBeVisible({
           timeout: 5_000,
