@@ -178,6 +178,9 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'harness.transcript.cleared': noop(
     'Spec ChatTimeline card-topic consumers reset local transcript state directly.',
   ),
+  'harness.user_message.enqueued': noop(
+    'Spec ChatTimeline card-topic consumers observe queued user messages directly.',
+  ),
   'wave.report_edited': {
     keys: (ev) => [waveFilesKey(ev.data.wave_id)],
     reason:

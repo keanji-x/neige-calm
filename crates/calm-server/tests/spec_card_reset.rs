@@ -667,6 +667,78 @@ async fn spec_harness_user_message_folds_at_saturation() {
 }
 
 #[tokio::test]
+async fn send_spec_input_emits_audit_event() {
+    let boot = boot().await;
+    let text = "audit me";
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let (status, _body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let events = boot.repo.events_since(0, None).await.unwrap();
+    let found = events.iter().any(|(_id, _version, scope, event)| {
+        matches!(
+            (scope, event),
+            (
+                calm_server::event::EventScope::Card { card: scope_card, wave: scope_wave, .. },
+                calm_server::event::Event::HarnessUserMessageEnqueued {
+                    runtime_id: ev_rt,
+                    card_id: ev_card,
+                    wave_id: ev_wave,
+                    char_count,
+                },
+            ) if ev_rt == &runtime_id
+                && ev_card == &card.id
+                && ev_wave == &card.wave_id
+                && scope_card == &card.id
+                && scope_wave == &card.wave_id
+                && *char_count == text.chars().count() as u32
+        )
+    });
+    assert!(found, "expected harness.user_message.enqueued: {events:?}");
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_audit_char_count_counts_chars_not_bytes() {
+    let boot = boot().await;
+    // 200 CJK chars = ~600 bytes. If char_count regresses to len(), the
+    // assertion below will catch the byte/char divergence loudly.
+    let text: String = "字".repeat(200);
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let (status, _body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let events = boot.repo.events_since(0, None).await.unwrap();
+    let count = events.iter().find_map(|(_id, _v, _scope, event)| {
+        if let calm_server::event::Event::HarnessUserMessageEnqueued { char_count, .. } = event {
+            Some(*char_count)
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        count,
+        Some(200),
+        "char_count must be utf-8 char count, not bytes"
+    );
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
 async fn send_spec_input_accepts_max_chars() {
     let boot = boot().await;
     let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;

@@ -1697,7 +1697,8 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         }
         Event::HarnessItemAdded { card_id, .. }
         | Event::HarnessPhaseChanged { card_id, .. }
-        | Event::HarnessTranscriptCleared { card_id, .. } => {
+        | Event::HarnessTranscriptCleared { card_id, .. }
+        | Event::HarnessUserMessageEnqueued { card_id, .. } => {
             add_card_runtime_paths(&mut delta, card_id.as_str());
         }
         Event::WaveReportEdited { card_id, .. } => {
