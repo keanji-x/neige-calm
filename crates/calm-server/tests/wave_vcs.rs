@@ -332,6 +332,44 @@ async fn count_rows(pool: &SqlitePool, table: &str) -> i64 {
         .expect("count rows")
 }
 
+async fn vcs_object_hashes(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar("SELECT hash FROM wave_vcs_objects ORDER BY hash")
+        .fetch_all(pool)
+        .await
+        .expect("object hashes")
+}
+
+async fn set_all_vcs_objects_created_at(pool: &SqlitePool, created_at: i64) {
+    sqlx::query("UPDATE wave_vcs_objects SET created_at = ?1")
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("age objects");
+}
+
+async fn set_vcs_object_created_at(pool: &SqlitePool, hash: &str, created_at: i64) {
+    sqlx::query("UPDATE wave_vcs_objects SET created_at = ?1 WHERE hash = ?2")
+        .bind(created_at)
+        .bind(hash)
+        .execute(pool)
+        .await
+        .expect("age object");
+}
+
+async fn vcs_object_exists(pool: &SqlitePool, hash: &str) -> bool {
+    let exists: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wave_vcs_objects WHERE hash = ?1)")
+            .bind(hash)
+            .fetch_one(pool)
+            .await
+            .expect("object exists");
+    exists != 0
+}
+
+fn old_vcs_object_timestamp() -> i64 {
+    now_ms() - 2 * 60 * 60 * 1000
+}
+
 async fn wave_commit_rows(
     repo: &SqlxRepo,
     wave_id: &str,
@@ -712,6 +750,176 @@ async fn wave_delete_cascades_refs_and_commits_but_leaves_objects() {
     assert_eq!(count_rows(repo.pool(), "wave_vcs_refs").await, 0);
     assert_eq!(count_rows(repo.pool(), "wave_vcs_commits").await, 0);
     assert!(count_rows(repo.pool(), "wave_vcs_objects").await > 0);
+}
+
+#[tokio::test]
+async fn object_sweep_deletes_old_orphans_but_keeps_fresh_ones() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let object_hashes = vcs_object_hashes(repo.pool()).await;
+    assert!(object_hashes.len() > 1);
+    let fresh_hash = object_hashes[0].clone();
+
+    repo.wave_delete(wave.id.as_str())
+        .await
+        .expect("delete wave");
+    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    set_vcs_object_created_at(repo.pool(), &fresh_hash, now_ms()).await;
+
+    let deleted = wave_vcs::sweep_unreferenced_objects_once(repo.pool())
+        .await
+        .expect("sweep objects");
+
+    assert_eq!(deleted, (object_hashes.len() - 1) as u64);
+    assert_eq!(count_rows(repo.pool(), "wave_vcs_objects").await, 1);
+    assert!(vcs_object_exists(repo.pool(), &fresh_hash).await);
+}
+
+#[tokio::test]
+async fn object_sweep_keeps_objects_referenced_by_live_commits() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let before = count_rows(repo.pool(), "wave_vcs_objects").await;
+    assert!(before > 0);
+
+    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    let deleted = wave_vcs::sweep_unreferenced_objects_once(repo.pool())
+        .await
+        .expect("sweep objects");
+
+    assert_eq!(deleted, 0);
+    assert_eq!(count_rows(repo.pool(), "wave_vcs_objects").await, before);
+}
+
+#[tokio::test]
+async fn object_sweep_keeps_blob_shared_by_deleted_and_live_waves() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let deleted_wave = make_wave(&repo, cove.id.as_str()).await;
+    let live_wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &deleted_wave.id, &cove.id).await;
+    add_report_card(&repo, &bus, &roles, &write, &live_wave.id, &cove.id).await;
+
+    let deleted_manifest = head_manifest(&repo, &deleted_wave.id).await;
+    let live_manifest = head_manifest(&repo, &live_wave.id).await;
+    let deleted_blobs = deleted_manifest
+        .entries
+        .values()
+        .map(|entry| entry.blob_hash.clone())
+        .collect::<BTreeSet<_>>();
+    let live_blobs = live_manifest
+        .entries
+        .values()
+        .map(|entry| entry.blob_hash.clone())
+        .collect::<BTreeSet<_>>();
+    let shared_blob = deleted_blobs
+        .intersection(&live_blobs)
+        .next()
+        .expect("shared blob")
+        .clone();
+
+    repo.wave_delete(deleted_wave.id.as_str())
+        .await
+        .expect("delete wave");
+    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    let deleted = wave_vcs::sweep_unreferenced_objects_once(repo.pool())
+        .await
+        .expect("sweep objects");
+
+    assert!(deleted > 0);
+    assert!(vcs_object_exists(repo.pool(), &shared_blob).await);
+    assert!(
+        wave_vcs::tree_at(
+            repo.pool(),
+            &wave_vcs::head(repo.pool(), &live_wave.id)
+                .await
+                .expect("live head")
+                .expect("live head exists")
+        )
+        .await
+        .expect("live tree")
+        .is_some()
+    );
+}
+
+#[tokio::test]
+async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
+    let (_dir, repo) = fresh_file_repo().await;
+    let cove = make_cove(&repo).await;
+    let live_wave = make_wave(&repo, cove.id.as_str()).await;
+    let deleted_wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &live_wave.id, &cove.id).await;
+    add_report_card(&repo, &bus, &roles, &write, &deleted_wave.id, &cove.id).await;
+    repo.wave_delete(deleted_wave.id.as_str())
+        .await
+        .expect("delete wave");
+    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+
+    let sweep_repo = repo.clone();
+    let write_repo = repo.clone();
+    let write_bus = bus.clone();
+    let write_context = write.clone();
+    let live_wave_id = live_wave.id.clone();
+    let live_cove_id = cove.id.clone();
+    let update_wave_id = live_wave.id.clone();
+
+    let sweep = tokio::spawn(async move {
+        wave_vcs::sweep_unreferenced_objects_once(sweep_repo.pool())
+            .await
+            .expect("sweep objects")
+    });
+    let write = tokio::spawn(async move {
+        write_repo
+            .write_with_event(
+                ActorId::User,
+                EventScope::Wave {
+                    wave: live_wave_id,
+                    cove: live_cove_id,
+                },
+                None,
+                &write_bus,
+                &write_context,
+                Box::new(move |tx| {
+                    let update_wave_id = update_wave_id.clone();
+                    Box::pin(async move {
+                        let updated = wave_update_tx(
+                            tx,
+                            update_wave_id.as_str(),
+                            WavePatch {
+                                title: Some("updated during sweep".into()),
+                                ..WavePatch::default()
+                            },
+                        )
+                        .await?;
+                        Ok(Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)))
+                    })
+                }),
+            )
+            .await
+            .expect("write event")
+    });
+    let (deleted, event_id) = tokio::join!(sweep, write);
+
+    assert!(deleted.expect("sweep join") > 0);
+    assert!(event_id.expect("write join") > 0);
+    assert!(
+        wave_vcs::head(repo.pool(), &live_wave.id)
+            .await
+            .expect("live head")
+            .is_some()
+    );
 }
 
 #[tokio::test]

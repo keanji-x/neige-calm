@@ -979,6 +979,14 @@ impl AppState {
         // `terminal_sweeper` module docs and `docs/sync-engine-design.md` §10.
         crate::terminal_sweeper::spawn(state.clone());
 
+        // Wave VCS objects are content-addressed and can be shared by multiple
+        // waves, so wave/cove deletion only removes refs + commits. Reclaim
+        // unreferenced objects on a slower hourly cadence with a one-hour
+        // grace window; see `wave_vcs::sweep_unreferenced_objects_once`.
+        if let Some(pool) = state.raw.sqlite_pool() {
+            crate::wave_vcs::spawn_unreferenced_object_sweeper(pool);
+        }
+
         Ok(state)
     }
 }
