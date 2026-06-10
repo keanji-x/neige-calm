@@ -10,7 +10,8 @@ use calm_server::db::sqlite::{
 use calm_server::event::{Event, EventBus, EventScope, WaveUpdatedPayload};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{
-    Card, CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, WavePatch, new_id, now_ms,
+    Card, CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch,
+    new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
@@ -496,6 +497,196 @@ async fn commit_hook_rolls_back_event_when_vcs_commit_fails() {
     assert_eq!(count_rows(repo.pool(), "events").await, 0);
     assert_eq!(count_rows(repo.pool(), "wave_vcs_commits").await, 0);
     assert_eq!(count_rows(repo.pool(), "wave_vcs_refs").await, 0);
+}
+
+#[tokio::test]
+async fn actor_event_batch_writes_wave_vcs_commit_with_lifecycle_and_verdict() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let spec = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "spec",
+        CardRole::Spec,
+        json!({"schemaVersion": 1}),
+    )
+    .await;
+
+    let before_commits = wave_commit_rows(&repo, wave.id.as_str()).await;
+    let scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: cove.id.clone(),
+    };
+    let wave_id = wave.id.clone();
+    let spec_actor = ActorId::AiSpec(spec.id.clone());
+    let event_ids = repo
+        .write_with_actor_events(
+            None,
+            &bus,
+            &write,
+            Box::new(move |tx| {
+                let scope = scope.clone();
+                let wave_id = wave_id.clone();
+                let spec_actor = spec_actor.clone();
+                Box::pin(async move {
+                    let mut events = Vec::new();
+                    if let Some(auto_events) =
+                        calm_server::wave_lifecycle::auto_promote_draft_in_tx(tx, &wave_id).await?
+                    {
+                        events.extend(
+                            auto_events
+                                .into_iter()
+                                .map(|event| (ActorId::Kernel, scope.clone(), event)),
+                        );
+                    }
+                    if let Some(lifecycle_events) =
+                        calm_server::wave_lifecycle::apply_requested_transition_in_tx(
+                            tx,
+                            &wave_id,
+                            WaveLifecycle::Dispatching,
+                            &spec_actor,
+                            "dispatch accepted work".into(),
+                        )
+                        .await?
+                    {
+                        events.extend(
+                            lifecycle_events
+                                .into_iter()
+                                .map(|event| (spec_actor.clone(), scope.clone(), event)),
+                        );
+                    }
+                    events.push((
+                        spec_actor,
+                        scope,
+                        Event::TaskCompleted {
+                            idempotency_key: "actor-batch-verdict".into(),
+                            result: json!({
+                                "status": "accepted",
+                                "reason": "verified",
+                            }),
+                            artifacts: vec![],
+                            agent_message: Some("accept worker result".into()),
+                        },
+                    ));
+                    Ok(events)
+                })
+            }),
+        )
+        .await
+        .expect("actor event batch");
+    assert_eq!(event_ids.len(), 5);
+
+    let after_commits = wave_commit_rows(&repo, wave.id.as_str()).await;
+    assert_eq!(after_commits.len(), before_commits.len() + 1);
+    let latest = after_commits.last().expect("latest commit");
+    assert_eq!(
+        latest.1.as_deref(),
+        before_commits.last().map(|row| row.0.as_str())
+    );
+    assert_eq!(latest.2, event_ids.last().copied());
+
+    let commit = sqlx::query(
+        r#"SELECT event_id, lifecycle, message
+           FROM wave_vcs_commits
+           WHERE hash = ?1"#,
+    )
+    .bind(&latest.0)
+    .fetch_one(repo.pool())
+    .await
+    .expect("latest commit row");
+    assert_eq!(
+        commit.try_get::<Option<i64>, _>("event_id").unwrap(),
+        event_ids.last().copied()
+    );
+    assert_eq!(
+        commit.try_get::<String, _>("lifecycle").unwrap(),
+        "dispatching"
+    );
+    assert_eq!(
+        commit.try_get::<Option<String>, _>("message").unwrap(),
+        Some("task.completed".into())
+    );
+
+    let rows = sqlx::query(
+        r#"SELECT id, kind
+           FROM events
+           WHERE id >= ?1 AND id <= ?2
+           ORDER BY id ASC"#,
+    )
+    .bind(event_ids[0])
+    .bind(*event_ids.last().unwrap())
+    .fetch_all(repo.pool())
+    .await
+    .expect("batch event rows");
+    let batch = rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.try_get::<i64, _>("id").unwrap(),
+                row.try_get::<String, _>("kind").unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        batch,
+        vec![
+            (event_ids[0], "wave.lifecycle_changed".into()),
+            (event_ids[1], "wave.updated".into()),
+            (event_ids[2], "wave.lifecycle_changed".into()),
+            (event_ids[3], "wave.updated".into()),
+            (event_ids[4], "task.completed".into()),
+        ]
+    );
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    let wave_entry = manifest.entries.get("wave.json").expect("wave json");
+    let wave_json: serde_json::Value =
+        serde_json::from_str(&blob_text(&repo, &wave_entry.blob_hash).await).unwrap();
+    assert_eq!(
+        wave_json
+            .get("lifecycle")
+            .and_then(serde_json::Value::as_str),
+        Some("dispatching")
+    );
+
+    let run_entry = manifest
+        .entries
+        .get("runs/actor-batch-verdict.json")
+        .expect("verdict run json");
+    let run_json: serde_json::Value =
+        serde_json::from_str(&blob_text(&repo, &run_entry.blob_hash).await).unwrap();
+    assert_eq!(
+        run_json
+            .pointer("/events/verdict/event_id")
+            .and_then(serde_json::Value::as_i64),
+        event_ids.last().copied()
+    );
+    assert_eq!(
+        run_json
+            .pointer("/events/verdict/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("task.completed")
+    );
+    assert_eq!(
+        run_json
+            .pointer("/verdict/status")
+            .and_then(serde_json::Value::as_str),
+        Some("accepted")
+    );
+    assert_eq!(
+        run_json
+            .pointer("/verdict/reason")
+            .and_then(serde_json::Value::as_str),
+        Some("verified")
+    );
 }
 
 #[tokio::test]

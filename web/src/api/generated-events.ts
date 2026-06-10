@@ -30,7 +30,7 @@ export type AgentProvider = "codex" | "claude";
  */
 export type ArtifactRef = string;
 
-export type Card = { id: CardId, wave_id: WaveId,
+export type Card = { id: CardId, wave_id: WaveId, 
 /**
  * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
  * plugin-provided cards (the canonical MCP Apps resource URI). The
@@ -39,13 +39,13 @@ export type Card = { id: CardId, wave_id: WaveId,
  * before the M4 cut-over and in server-side perms/manifest enforcement
  * — see `docs/architecture/terminology-glossary.md` (plugin card kind).
  */
-kind: string, sort: number,
+kind: string, sort: number, 
 /**
  * Opaque JSON blob — ts-rs would otherwise emit `unknown` via the
  * `serde-json-impl` feature, but we pin it explicitly so a future
  * feature-flag change can't silently widen / narrow the surface.
  */
-payload: unknown, runtime?: CardRuntimeView,
+payload: unknown, runtime?: CardRuntimeView, 
 /**
  * Issue #229 PR A — system-card guard. `true` for user-facing cards
  * (the default; all pre-#229 rows backfill via the column DEFAULT in
@@ -99,7 +99,7 @@ export type CardId = string;
  */
 export type CardRole = "worker" | "spec" | "reportcard";
 
-export type CardRuntime = { id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, terminal_run_id: string | null,
+export type CardRuntime = { id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, terminal_run_id: string | null, 
 /**
  * Lazy-joined view; not a schema column.
  */
@@ -117,7 +117,7 @@ terminal_ref: TerminalRunRef | null, thread_id: string | null, session_id: strin
  */
 export type CardRuntimeView = { runtime_id: string, kind: RuntimeKind, status: RunStatus, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, };
 
-export type Cove = { id: CoveId, name: string, color: string, sort: number,
+export type Cove = { id: CoveId, name: string, color: string, sort: number, 
 /**
  * Issue #175 — `User` for sidebar-visible coves, `System` for the
  * internal singleton that hosts the default Today terminal's wave.
@@ -231,7 +231,7 @@ export type EditAuthor = "spec" | "user" | "kernel";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: RunStatus, new_status: RunStatus, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string,
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: RunStatus, new_status: RunStatus, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so
  * the UI can show it without a separate `/log` fetch. `None` for
@@ -245,39 +245,39 @@ export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.delet
  * ts-rs would emit `last_error: string | null` which would diverge
  * from what the server actually serializes.)
  */
-last_error?: string, } } | { "ev": "codex.hook", "data": {
+last_error?: string, } } | { "ev": "codex.hook", "data": { 
 /**
  * Owning card id — topic key `card:<card_id>`.
  */
-card_id: CardId,
+card_id: CardId, 
 /**
  * Snake_case discriminator: `hook.codex.<event_name>` (e.g.
  * `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
  * the codex payload; defaults to `hook.codex.unknown` if missing.
  */
-kind: string,
+kind: string, 
 /**
  * Stable hook ingest key used by the server and spec harness to
  * suppress duplicate lifecycle posts.
  */
-hook_idempotency_key: string,
+hook_idempotency_key: string, 
 /**
  * Original codex hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "claude.hook", "data": {
+payload: unknown, } } | { "ev": "claude.hook", "data": { 
 /**
  * Owning card id — topic key `card:<card_id>`.
  */
-card_id: CardId,
+card_id: CardId, 
 /**
  * Hook discriminator supplied by the future Claude hook route.
  */
-kind: string,
+kind: string, 
 /**
  * Stable hook ingest key used by the server and spec harness to
  * suppress duplicate lifecycle posts.
  */
-hook_idempotency_key: string,
+hook_idempotency_key: string, 
 /**
  * Original Claude hook JSON, verbatim.
  */
@@ -322,15 +322,15 @@ export type HarnessItem = { id: number, runtime_id: string, card_id: CardId, wav
 
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
 
-export type Overlay = { id: string, plugin_id: string,
+export type Overlay = { id: string, plugin_id: string, 
 /**
  * `"wave"` or `"card"`.
  */
-entity_kind: string, entity_id: string,
+entity_kind: string, entity_id: string, 
 /**
  * Plugin-defined string. Kernel does not interpret.
  */
-kind: string,
+kind: string, 
 /**
  * Opaque JSON blob — see `Card.payload` for the rationale on the
  * explicit `unknown` override.
@@ -347,7 +347,7 @@ export type RuntimeKind = "terminal" | "codex" | "claude" | "shared-spec";
  */
 export type TerminalRunRef = { terminal_id: string, program: string, cwd: string | null, pid: number | null, };
 
-export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null,
+export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
 /**
  * Issue #145 — the wave's lifecycle state. **Required** (no
  * `Option`): every wave-creating code path must seed
@@ -360,7 +360,7 @@ export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, a
  * forcing a fixture rewrite — matches the DB DEFAULT in
  * migration 0012.
  */
-lifecycle: WaveLifecycle,
+lifecycle: WaveLifecycle, 
 /**
  * Issue #250 PR 2 — the working directory the wave's spec daemon
  * runs in. **Required at the route layer**: `POST /api/waves`
@@ -375,7 +375,7 @@ lifecycle: WaveLifecycle,
  * Production wave-create paths inside this binary always stamp a
  * real path — the migration default is the "old data only" fallback.
  */
-cwd: string,
+cwd: string, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
@@ -443,21 +443,21 @@ export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "
  * frontend derives sections from `body` by splitting on H1 headings;
  * the storage layer does not impose a section vocabulary.
  */
-export type WaveReportPayload = {
+export type WaveReportPayload = { 
 /**
  * Tier A persistence contract — see
  * [`crate::validation::WAVE_REPORT_PAYLOAD_SCHEMA_VERSION`].
  * Always `1` today; a future v2 would bump this constant + add a
  * migrator next to it in `validation.rs`.
  */
-schemaVersion: number,
+schemaVersion: number, 
 /**
  * One-line summary used by sidebars / wave-list previews. Empty
  * string is valid (means "spec agent has not produced a summary
  * yet"); the field stays a required `String` per the
  * [[required-over-option]] rule.
  */
-summary: string,
+summary: string, 
 /**
  * Markdown source. Sections are derived at render time by
  * splitting at H1 (`^# `) headings; the kernel does not interpret
@@ -473,7 +473,7 @@ body: string, };
  * optional adjacent field for #597. Older persisted rows that lack the field
  * deserialize with `None`.
  */
-export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null,
+export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
 /**
  * Issue #145 — the wave's lifecycle state. **Required** (no
  * `Option`): every wave-creating code path must seed
@@ -486,7 +486,7 @@ export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: 
  * forcing a fixture rewrite — matches the DB DEFAULT in
  * migration 0012.
  */
-lifecycle: WaveLifecycle,
+lifecycle: WaveLifecycle, 
 /**
  * Issue #250 PR 2 — the working directory the wave's spec daemon
  * runs in. **Required at the route layer**: `POST /api/waves`
@@ -501,7 +501,7 @@ lifecycle: WaveLifecycle,
  * Production wave-create paths inside this binary always stamp a
  * real path — the migration default is the "old data only" fallback.
  */
-cwd: string,
+cwd: string, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),

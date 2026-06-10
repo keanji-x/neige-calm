@@ -277,6 +277,30 @@ pub(crate) async fn event_append_for_operation_tx(
     Ok(event_id)
 }
 
+pub(crate) async fn events_append_for_operation_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    actor: &ActorId,
+    scope: &EventScope,
+    correlation: Option<&str>,
+    events: &[Event],
+) -> Result<Vec<i64>> {
+    let mut event_ids = Vec::with_capacity(events.len());
+    for event in events {
+        event_ids.push(SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?);
+    }
+    if let (Some(wave_id), Some(event_id)) = (scope.wave_id(), event_ids.last()) {
+        wave_vcs::commit_events_in_tx(
+            tx,
+            wave_id,
+            *event_id,
+            events,
+            wave_vcs::MANIFEST_SCHEMA_VERSION,
+        )
+        .await?;
+    }
+    Ok(event_ids)
+}
+
 pub(crate) async fn begin_immediate_tx<'a>(
     pool: &'a SqlitePool,
 ) -> Result<Transaction<'a, Sqlite>> {
@@ -4027,6 +4051,30 @@ impl RepoEventWrite for SqlxRepo {
                     let _ = tx.rollback().await;
                     return Err(e);
                 }
+            }
+        }
+        let mut wave_events = HashMap::<WaveId, (i64, Vec<Event>)>::new();
+        for ((_, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
+            if let Some(wave_id) = scope.wave_id() {
+                let entry = wave_events
+                    .entry(wave_id.clone())
+                    .or_insert_with(|| (*event_id, Vec::new()));
+                entry.0 = *event_id;
+                entry.1.push(event.clone());
+            }
+        }
+        for (wave_id, (event_id, events_for_wave)) in &wave_events {
+            if let Err(e) = wave_vcs::commit_events_in_tx(
+                &mut tx,
+                wave_id,
+                *event_id,
+                events_for_wave,
+                wave_vcs::MANIFEST_SCHEMA_VERSION,
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                return Err(e);
             }
         }
         tx.commit().await?;

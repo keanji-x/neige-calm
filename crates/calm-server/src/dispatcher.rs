@@ -24,7 +24,7 @@ use dashmap::DashMap;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use crate::db::sqlite::event_append_for_operation_tx;
+use crate::db::sqlite::events_append_for_operation_tx;
 use crate::db::{Repo, RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{
@@ -1113,25 +1113,22 @@ impl Inner {
             }
         }
 
-        let mut emitted = Vec::with_capacity(events.len());
-        for event in events {
-            let event_id = match event_append_for_operation_tx(
-                &mut tx,
-                &ActorId::KernelDispatcher,
-                &wave_scope,
-                None,
-                &event,
-            )
-            .await
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    let _ = tx.rollback().await;
-                    return Err(e);
-                }
-            };
-            emitted.push((event_id, event));
-        }
+        let event_ids = match events_append_for_operation_tx(
+            &mut tx,
+            &ActorId::KernelDispatcher,
+            &wave_scope,
+            None,
+            &events,
+        )
+        .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        let emitted = event_ids.into_iter().zip(events).collect::<Vec<_>>();
         tx.commit().await?;
         for (event_id, event) in emitted {
             self.events.emit_envelope(BroadcastEnvelope {
