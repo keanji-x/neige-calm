@@ -10,10 +10,8 @@ use crate::db::{RouteRepo, WaveEvent};
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
-use crate::model::{Card, CardRole, Wave};
-use crate::runtime_lookup::{
-    project_runtime_into_card_payload, project_runtime_into_cards_payload,
-};
+use crate::model::{Card, CardRole, CardRuntimeView, Wave};
+use crate::runtime_lookup::{project_runtime_into_cards_payload, runtime_view_from_runtime};
 use crate::state::WriteContext;
 use crate::wave_report::WaveReportPayload;
 use serde::{Deserialize, Serialize};
@@ -142,26 +140,10 @@ impl<'a> WaveFsView<'a> {
                 let card = self.card_in_wave(wave, parts[1]).await?;
                 match parts[2] {
                     "meta.json" => content_json(&self.card_meta(&card)),
-                    "payload.json" => {
-                        let mut card = card;
-                        project_runtime_into_card_payload(self.repo, &mut card)
-                            .await
-                            .map_err(|e| {
-                                WaveFsError::Internal(format!("wave_file: runtime projection: {e}"))
-                            })?;
-                        content_json(&card.payload)
-                    }
+                    "payload.json" => content_json(&card.payload),
                     "runtime.json" => {
-                        let mut card = card;
-                        project_runtime_into_card_payload(self.repo, &mut card)
-                            .await
-                            .map_err(|e| {
-                                WaveFsError::Internal(format!("wave_file: runtime projection: {e}"))
-                            })?;
-                        match &card.runtime {
-                            Some(runtime) => content_json(runtime),
-                            None => content_json(&Value::Null),
-                        }
+                        let runtime = self.runtime_for_card(&card).await?;
+                        content_json(&runtime)
                     }
                     "events.json" => {
                         let hook_events = self.hook_events_for_card(wave, &card.id).await?;
@@ -216,6 +198,14 @@ impl<'a> WaveFsView<'a> {
             )));
         }
         Ok(card)
+    }
+
+    async fn runtime_for_card(&self, card: &Card) -> Result<Option<CardRuntimeView>, WaveFsError> {
+        self.repo
+            .runtime_get_projectable_for_card(&card.id.to_string())
+            .await
+            .map(|runtime| runtime.map(|runtime| runtime_view_from_runtime(&runtime)))
+            .map_err(|e| WaveFsError::Internal(format!("wave_file: runtime projection: {e}")))
     }
 
     async fn hook_events_for_card(

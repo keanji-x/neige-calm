@@ -333,9 +333,10 @@ async fn snapshot_tree_at_tx(
         Some(wave) => wave.clone(),
         None => load_wave_tx(tx, wave_id).await?,
     };
-    let mut cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
-    project_runtime_into_cards_tx(tx, &mut cards).await?;
-    let runs = project_runs_tx(tx, wave_id, &cards).await?;
+    let cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
+    let mut runtime_projected_cards = cards.clone();
+    project_runtime_into_cards_tx(tx, &mut runtime_projected_cards).await?;
+    let runs = project_runs_tx(tx, wave_id, &runtime_projected_cards).await?;
     let mut entries = BTreeMap::new();
 
     put_rendered_entry(
@@ -366,7 +367,7 @@ async fn snapshot_tree_at_tx(
     )
     .await?;
 
-    for card in &cards {
+    for (card, runtime_projected_card) in cards.iter().zip(runtime_projected_cards.iter()) {
         let card_id = card.card.id.as_str();
         put_rendered_entry(
             tx,
@@ -388,7 +389,7 @@ async fn snapshot_tree_at_tx(
             tx,
             &mut entries,
             format!("cards/{card_id}/runtime.json"),
-            card_runtime_json(&card.card)?,
+            card_runtime_json(&runtime_projected_card.card)?,
             object_created_at,
         )
         .await?;
@@ -1355,11 +1356,7 @@ async fn render_card_path_tx(
     };
     match parts[2] {
         "meta.json" => Ok(Some(card_meta_json(&card)?)),
-        "payload.json" => {
-            let mut card = card;
-            project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
-            Ok(Some(card_payload_json(&card)?))
-        }
+        "payload.json" => Ok(Some(card_payload_json(&card)?)),
         "runtime.json" => {
             let mut card = card;
             project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
@@ -1757,7 +1754,6 @@ fn add_card_payload_path(delta: &mut PathDelta, card_id: &str) {
 }
 
 fn add_card_runtime_paths(delta: &mut PathDelta, card_id: &str) {
-    delta.add(format!("cards/{card_id}/payload.json"));
     delta.add(format!("cards/{card_id}/runtime.json"));
 }
 

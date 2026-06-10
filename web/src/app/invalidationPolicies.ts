@@ -194,7 +194,7 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'terminal.deleted': {
     requiresContext: waveFilesDerivedEventKeys,
     reason:
-      "cards/<id>/payload.json projects terminal runtime status; reaping a terminal invalidates that projection.",
+      "cards/<id>/runtime.json projects terminal runtime status; reaping a terminal invalidates that projection.",
   },
   'plugin.state': noop('No plugin list query exists yet.'),
   'codex.hook': {

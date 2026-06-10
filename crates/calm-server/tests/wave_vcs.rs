@@ -1972,7 +1972,7 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
 }
 
 #[tokio::test]
-async fn spec_runtime_payload_blob_matches_live_view_with_projected_fields() {
+async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
     let wave = make_wave(&repo, cove.id.as_str()).await;
@@ -1993,8 +1993,21 @@ async fn spec_runtime_payload_blob_matches_live_view_with_projected_fields() {
 
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.last_thread_id = Some("spec-thread".into());
-    let runtime = {
+    let (runtime, terminal_id) = {
         let mut tx = repo.pool().begin().await.expect("begin runtime");
+        let terminal = terminal_create_tx(
+            &mut tx,
+            NewTerminal {
+                card_id: spec.id.clone(),
+                program: "codex".into(),
+                cwd: "/tmp".into(),
+                env: json!({}),
+                theme: RequestTheme::default_dark(),
+            },
+        )
+        .await
+        .expect("terminal create");
+        let terminal_id = terminal.id.clone();
         let runtime = runtime_start_tx(
             &mut tx,
             RuntimeInit {
@@ -2003,7 +2016,7 @@ async fn spec_runtime_payload_blob_matches_live_view_with_projected_fields() {
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: RunStatus::Running,
-                terminal_run_id: None,
+                terminal_run_id: Some(terminal_id.clone()),
                 thread_id: Some("spec-thread".into()),
                 session_id: None,
                 active_turn_id: None,
@@ -2016,7 +2029,7 @@ async fn spec_runtime_payload_blob_matches_live_view_with_projected_fields() {
         .await
         .expect("runtime start");
         tx.commit().await.expect("commit runtime");
-        runtime
+        (runtime, terminal_id)
     };
 
     repo.log_pure_event(
@@ -2050,9 +2063,22 @@ async fn spec_runtime_payload_blob_matches_live_view_with_projected_fields() {
     assert_eq!(vcs_payload, live_payload.content);
 
     let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
-    assert_eq!(payload["codex_thread_id"], "spec-thread");
-    assert_eq!(payload["codex_source"], "shared");
-    assert_eq!(payload["codex_thread_status"], "started");
+    assert!(payload.get("codex_thread_id").is_none(), "{payload:?}");
+    assert!(payload.get("codex_source").is_none(), "{payload:?}");
+    assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
+    assert!(payload.get("terminal_id").is_none(), "{payload:?}");
+
+    let runtime_path = format!("cards/{}/runtime.json", spec.id.as_str());
+    let entry = manifest.entries.get(&runtime_path).expect("runtime entry");
+    let vcs_runtime = blob_text(&repo, &entry.blob_hash).await;
+    let live_runtime = view.cat(&wave, &runtime_path).await.expect("live runtime");
+    assert_eq!(vcs_runtime, live_runtime.content);
+
+    let runtime: serde_json::Value = serde_json::from_str(&vcs_runtime).unwrap();
+    assert_eq!(runtime["terminal_id"], terminal_id);
+    assert_eq!(runtime["thread_id"], "spec-thread");
+    assert_eq!(runtime["source"], "shared");
+    assert_eq!(runtime["thread_status"], "started");
 }
 
 #[tokio::test]
