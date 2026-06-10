@@ -119,6 +119,7 @@ describe('WaveReportEntry.fromKernel', () => {
       type: 'wave-report',
       id: 'report_1',
       summary: 'one-line summary',
+      updatedAt: 2000,
     });
     expect(out!.body).toContain('# Goal');
   });

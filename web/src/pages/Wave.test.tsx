@@ -21,9 +21,10 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { WavePage } from './Wave';
-import type { Cove, Wave } from '../types';
+import type { Cove, Wave, WaveCardSlot } from '../types';
 import * as api from '../api/calm';
 import { DARK_THEME_RGB } from '../api/themeRgb';
+import type { WaveReportCardData } from '../cards/builtins/wave-report';
 
 // WaveGrid is lazy-loaded via React.lazy + an internal dynamic import.
 // For these tests we never actually render any cards, but the Suspense
@@ -131,6 +132,17 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     cards: [],
     ...overrides,
   };
+}
+
+function makeReportSlot(body = 'Report body'): WaveCardSlot {
+  const card: WaveReportCardData = {
+    type: 'wave-report',
+    id: 'report_1',
+    summary: '',
+    body,
+    updatedAt: 2_000,
+  };
+  return { kind: 'card', card, sort: -1, deletable: false };
 }
 
 describe('WavePage rename keyboard entry', () => {
@@ -355,6 +367,94 @@ describe('WavePage schema card create errors', () => {
     expect(api.createCodexCard).toHaveBeenCalledWith('w1', {
       cwd: '/tmp/project',
       theme: DARK_THEME_RGB,
+    });
+  });
+});
+
+describe('WavePage report view mode', () => {
+  it('defaults to WaveReportPage when the wave has a report card and no overlay', () => {
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot('Default report body')] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Migrate auth' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Default report body')).toBeInTheDocument();
+  });
+
+  it('does not render AddPanel while in report mode', () => {
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    expect(screen.queryByTestId('add-panel-stub')).not.toBeInTheDocument();
+  });
+
+  it('hides the report toggle for worker-only waves', () => {
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Report not ready/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
+  });
+
+  it('writes report and cards mode changes to the view-mode overlay', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    await user.click(
+      screen.getByRole('switch', { name: 'Switch wave to cards view' }),
+    );
+
+    expect(api.upsertOverlay).toHaveBeenCalledWith({
+      plugin_id: 'kernel',
+      entity_kind: 'view',
+      entity_id: 'w1',
+      kind: 'view-mode',
+      payload: { schemaVersion: 1, mode: 'grid' },
     });
   });
 });

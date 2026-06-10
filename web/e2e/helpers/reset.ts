@@ -122,23 +122,22 @@ export async function createWaveInCove(
 }
 
 /**
- * Issue #594 demo — seed the per-wave `view-mode` overlay via the kernel
- * REST API. The demo's wave header dropped the Grid↔List UI entry (one
- * binary Grid↔Report switch remains), but the overlay row still decides
- * which cards surface renders while Report is off — so list-view specs
- * enter list mode by writing the row directly and reloading. The body is
- * byte-for-byte the write the removed control used to make: same
+ * Seed the per-wave `view-mode` overlay via the kernel REST API. The
+ * header's PR-A binary Cards↔Report switch writes the same row for the
+ * `report`/`grid` path, while specs that need list mode can still seed it
+ * directly. The body is byte-for-byte the write the removed control used
+ * to make: same
  * plugin_id / entity coords / `schemaVersion` as `useOverlayState` +
  * `OVERLAY_VIEW_MODE_SCHEMA_VERSION` in `web/src/pages/Wave.tsx`.
  * (`view-mode` is not a kernel-registered overlay kind, so the payload
  * passes `validate_overlay_payload` as an opaque plugin-style kind.)
- * PR2 of #594 restores a writable three-state ViewMode control; specs
- * that want the click path back can switch then.
+ * PR-E of #594 restores a writable three-state ViewMode control; specs
+ * that want the full click path back can switch then.
  */
 export async function seedWaveViewMode(
   request: APIRequestContext,
   waveId: string,
-  mode: 'grid' | 'list',
+  mode: 'grid' | 'list' | 'report',
 ): Promise<void> {
   const url = `http://127.0.0.1:${REPLAY_PORT}/api/overlays`;
   const response = await request.post(url, {

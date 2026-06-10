@@ -34,7 +34,8 @@ export const OVERLAY_NOW_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "layout"` overlay payloads. */
 export const OVERLAY_LAYOUT_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "view-mode"` overlay payloads (Slice 9 of
- *  issue #56 — per-wave view-mode preference: grid vs list). */
+ *  issue #56; #594 PR-A extends the enum domain to grid/list/report
+ *  without changing the payload shape). */
 export const OVERLAY_VIEW_MODE_SCHEMA_VERSION = 1;
 
 /**
