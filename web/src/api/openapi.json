@@ -393,7 +393,7 @@
             }
           },
           "404": {
-            "description": "Card or active runtime not found",
+            "description": "Card, active runtime, or wave not found",
             "content": {
               "application/json": {
                 "schema": {
