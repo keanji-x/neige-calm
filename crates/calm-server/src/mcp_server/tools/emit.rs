@@ -36,7 +36,7 @@ use crate::ids::CardId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role, require_role_any, role_gated_write_annotations,
+    require_role, role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use serde_json::{Value, json};
@@ -192,7 +192,7 @@ async fn task_completed(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role(&identity, CardRole::Worker)?;
 
     let idempotency_key = args
         .get("idempotency_key")
@@ -247,7 +247,7 @@ async fn task_failed(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role(&identity, CardRole::Worker)?;
 
     let idempotency_key = args
         .get("idempotency_key")

@@ -78,9 +78,21 @@ impl<'a> WaveFsView<'a> {
                 let card = self.card_in_wave(wave, parts[1]).await?;
                 let hook_events = self.hook_events_for_card(wave, &card.id).await?;
                 let hook_events_updated_at = hook_events_updated_at(&card, &hook_events);
+                let runtime = self
+                    .repo
+                    .runtime_get_projectable_for_card(&card.id.to_string())
+                    .await
+                    .map_err(|e| {
+                        WaveFsError::Internal(format!("wave_file: runtime lookup: {e}"))
+                    })?;
+                let runtime_updated_at = runtime
+                    .as_ref()
+                    .map(|runtime| runtime.updated_at_ms)
+                    .unwrap_or(card.updated_at);
                 Ok(vec![
                     entry_file("meta.json", None, Some(card.updated_at)),
                     entry_file("payload.json", None, Some(card.updated_at)),
+                    entry_file("runtime.json", None, Some(runtime_updated_at)),
                     entry_file("events.json", None, Some(hook_events_updated_at)),
                     entry_file("conversation.md", None, Some(hook_events_updated_at)),
                 ])
@@ -127,6 +139,18 @@ impl<'a> WaveFsView<'a> {
                                 WaveFsError::Internal(format!("wave_file: runtime projection: {e}"))
                             })?;
                         content_json(&card.payload)
+                    }
+                    "runtime.json" => {
+                        let mut card = card;
+                        project_runtime_into_card_payload(self.repo, &mut card)
+                            .await
+                            .map_err(|e| {
+                                WaveFsError::Internal(format!("wave_file: runtime projection: {e}"))
+                            })?;
+                        match &card.runtime {
+                            Some(runtime) => content_json(runtime),
+                            None => content_json(&Value::Null),
+                        }
                     }
                     "events.json" => {
                         let hook_events = self.hook_events_for_card(wave, &card.id).await?;

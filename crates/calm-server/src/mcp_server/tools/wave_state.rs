@@ -11,10 +11,10 @@
 //! ## Tool surface
 //!
 //! * `calm.get_wave_state` — Spec **or** Worker callable. Returns the
-//!   thread-mapped card's wave row + the wave's card list (id/kind/role) as
-//!   one JSON snapshot. No event emission. Workers occasionally peek wave
-//!   state before they report; the spec gets a full snapshot every loop
-//!   iteration.
+//!   thread-mapped card's wave row + the wave's card list
+//!   (id/kind/role/runtime) as one JSON snapshot. No event emission.
+//!   Workers occasionally peek wave state before they report; the spec
+//!   gets a full snapshot every loop iteration.
 //!
 //! * `calm.update_wave_state` — Spec only. Patches the wave row
 //!   (`title` / `sort` / `archived_at`), stamps `updated_at`, and
@@ -107,8 +107,10 @@ fn get_wave_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_GET_WAVE_STATE.into(),
         description: "Read the current wave snapshot bound to the calling card. \
-             Returns the wave row plus a card list (`id`, `kind`, `role`) so \
-             a spec daemon can see worker progress without a second call. \
+             Returns the wave row plus a card list so a spec daemon can see \
+             worker progress without a second call. Each card carries `id`, \
+             `kind`, `role`, `sort`, `created_at`, `updated_at`, plus \
+             `runtime` (typed `CardRuntimeView` or `null` when no runtime row). \
              Callable by spec and worker cards alike; no event is emitted."
             .into(),
         input_schema: json!({
@@ -127,11 +129,14 @@ async fn get_wave_state(
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
-    let cards = ctx
+    let mut cards = ctx
         .repo
         .cards_by_wave(wave.id.as_str())
         .await
         .map_err(|e| RpcError::internal(format!("get_wave_state: cards_by_wave: {e}")))?;
+    crate::runtime_lookup::project_runtime_into_cards_payload(ctx.repo.as_ref(), &mut cards)
+        .await
+        .map_err(|e| RpcError::internal(format!("get_wave_state: runtime projection: {e}")))?;
 
     // We re-query the role cache rather than fetching `cards.role` on
     // the card row — the cache is the canonical source the role gate
@@ -149,6 +154,7 @@ async fn get_wave_state(
                 "sort": c.sort,
                 "created_at": c.created_at,
                 "updated_at": c.updated_at,
+                "runtime": c.runtime.clone(),
             })
         })
         .collect();
