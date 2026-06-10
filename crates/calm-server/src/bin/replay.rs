@@ -479,6 +479,7 @@ async fn dev_force_wave_lifecycle(
                             cove_id: cove_id_for_event.clone(),
                             from,
                             to,
+                            agent_message: None,
                         },
                     ),
                     (

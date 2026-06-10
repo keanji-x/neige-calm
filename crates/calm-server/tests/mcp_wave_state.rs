@@ -300,15 +300,46 @@ async fn update_wave_state_from_spec_patches_and_emits() {
         "updated_at advanced (or stayed the same on a same-ms boot)",
     );
 
-    // The bus must have seen one wave.updated envelope under the
-    // wave's scope.
-    let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+    // The first spec write auto-promotes the draft wave before the
+    // title patch, so the bus sees the auto lifecycle/update pair and
+    // then the title's WaveUpdated envelope.
+    let changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers within 1s")
         .expect("bus channel not closed");
+    assert!(matches!(changed.actor, ActorId::Kernel));
     assert!(
-        matches!(envelope.event, Event::WaveUpdated(ref w) if w.id == boot.wave_id),
-        "bus envelope is WaveUpdated for the bound wave: {:?}",
+        matches!(
+            changed.event,
+            Event::WaveLifecycleChanged {
+                from: WaveLifecycle::Draft,
+                to: WaveLifecycle::Planning,
+                agent_message: None,
+                ..
+            }
+        ),
+        "first envelope is auto WaveLifecycleChanged: {:?}",
+        changed.event,
+    );
+
+    let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers auto update")
+        .expect("bus channel not closed");
+    assert!(matches!(auto_updated.actor, ActorId::Kernel));
+    assert!(
+        matches!(auto_updated.event, Event::WaveUpdated(ref w) if w.id == boot.wave_id),
+        "second envelope is auto WaveUpdated for the bound wave: {:?}",
+        auto_updated.event,
+    );
+
+    let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers title update")
+        .expect("bus channel not closed");
+    assert!(
+        matches!(envelope.event, Event::WaveUpdated(ref w) if w.id == boot.wave_id && w.title == "patched"),
+        "third envelope is title WaveUpdated for the bound wave: {:?}",
         envelope.event,
     );
     assert!(
@@ -420,12 +451,26 @@ async fn task_verdict_accepted_emits_task_completed() {
     .expect("spec accept verdict ok");
     assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
 
-    let auto = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+    let auto_changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
-        .expect("bus delivers auto promotion")
+        .expect("bus delivers auto lifecycle")
         .expect("bus open");
-    assert!(matches!(auto.actor, ActorId::Kernel));
-    assert!(matches!(auto.event, Event::WaveUpdated(_)));
+    assert!(matches!(auto_changed.actor, ActorId::Kernel));
+    assert!(matches!(
+        auto_changed.event,
+        Event::WaveLifecycleChanged {
+            from: WaveLifecycle::Draft,
+            to: WaveLifecycle::Planning,
+            agent_message: None,
+            ..
+        }
+    ));
+    let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers auto update")
+        .expect("bus open");
+    assert!(matches!(auto_updated.actor, ActorId::Kernel));
+    assert!(matches!(auto_updated.event, Event::WaveUpdated(_)));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
@@ -511,12 +556,26 @@ async fn task_verdict_rejected_emits_task_failed() {
     .expect("spec reject verdict ok");
     assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
 
-    let auto = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+    let auto_changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
-        .expect("bus delivers auto promotion")
+        .expect("bus delivers auto lifecycle")
         .expect("bus open");
-    assert!(matches!(auto.actor, ActorId::Kernel));
-    assert!(matches!(auto.event, Event::WaveUpdated(_)));
+    assert!(matches!(auto_changed.actor, ActorId::Kernel));
+    assert!(matches!(
+        auto_changed.event,
+        Event::WaveLifecycleChanged {
+            from: WaveLifecycle::Draft,
+            to: WaveLifecycle::Planning,
+            agent_message: None,
+            ..
+        }
+    ));
+    let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers auto update")
+        .expect("bus open");
+    assert!(matches!(auto_updated.actor, ActorId::Kernel));
+    assert!(matches!(auto_updated.event, Event::WaveUpdated(_)));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
@@ -678,11 +737,31 @@ async fn task_verdict_lifecycle_legal_emits_wave_updated_and_verdict() {
     .await
     .expect("verdict with lifecycle succeeds");
 
-    let lifecycle_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+    let changed_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers lifecycle")
         .expect("bus open");
-    match lifecycle_env.event {
+    match changed_env.event {
+        Event::WaveLifecycleChanged {
+            id,
+            cove_id,
+            from,
+            to,
+            agent_message,
+        } => {
+            assert_eq!(id, boot.wave_id);
+            assert_eq!(cove_id, boot.cove_id);
+            assert_eq!(from, WaveLifecycle::Planning);
+            assert_eq!(to, WaveLifecycle::Dispatching);
+            assert_eq!(agent_message.as_deref(), Some("accept and dispatch"));
+        }
+        other => panic!("expected WaveLifecycleChanged first, got {other:?}"),
+    }
+    let updated_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers wave update")
+        .expect("bus open");
+    match updated_env.event {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, boot.wave_id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Dispatching);
@@ -691,7 +770,7 @@ async fn task_verdict_lifecycle_legal_emits_wave_updated_and_verdict() {
                 Some("accept and dispatch")
             );
         }
-        other => panic!("expected WaveUpdated first, got {other:?}"),
+        other => panic!("expected WaveUpdated second, got {other:?}"),
     }
     let verdict_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -706,7 +785,7 @@ async fn task_verdict_lifecycle_legal_emits_wave_updated_and_verdict() {
             assert_eq!(idempotency_key, "verdict-legal-lifecycle");
             assert_eq!(agent_message.as_deref(), Some("accept and dispatch"));
         }
-        other => panic!("expected TaskCompleted second, got {other:?}"),
+        other => panic!("expected TaskCompleted third, got {other:?}"),
     }
     let wave = boot
         .repo
@@ -804,7 +883,7 @@ async fn update_wave_state_lifecycle_happy_path_emits_change_event() {
         "response carries the new lifecycle"
     );
 
-    // First envelope: #597's kernel auto-promotion. The deprecated
+    // First pair: #597's kernel auto-promotion. The deprecated
     // handler then emits its historical lifecycle event + WaveUpdated.
     let env1 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -812,38 +891,62 @@ async fn update_wave_state_lifecycle_happy_path_emits_change_event() {
         .expect("bus open");
     assert!(matches!(env1.actor, ActorId::Kernel));
     match env1.event {
-        Event::WaveUpdated(ref payload) => {
-            assert_eq!(payload.id, boot.wave_id);
-            assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
-            assert_eq!(payload.agent_message, None);
+        Event::WaveLifecycleChanged {
+            ref id,
+            ref cove_id,
+            from,
+            to,
+            ref agent_message,
+        } => {
+            assert_eq!(id, &boot.wave_id);
+            assert_eq!(cove_id, &boot.cove_id);
+            assert_eq!(from, calm_server::model::WaveLifecycle::Draft);
+            assert_eq!(to, calm_server::model::WaveLifecycle::Planning);
+            assert_eq!(agent_message, &None);
         }
-        other => panic!("expected auto WaveUpdated first, got {other:?}"),
+        other => panic!("expected auto WaveLifecycleChanged first, got {other:?}"),
     }
 
     let env2 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
         .expect("bus open");
+    assert!(matches!(env2.actor, ActorId::Kernel));
     match env2.event {
-        Event::WaveLifecycleChanged {
-            ref id,
-            ref cove_id,
-            from,
-            to,
-        } => {
-            assert_eq!(id, &boot.wave_id);
-            assert_eq!(cove_id, &boot.cove_id);
-            assert_eq!(from, calm_server::model::WaveLifecycle::Draft);
-            assert_eq!(to, calm_server::model::WaveLifecycle::Planning);
+        Event::WaveUpdated(ref payload) => {
+            assert_eq!(payload.id, boot.wave_id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
+            assert_eq!(payload.agent_message, None);
         }
-        other => panic!("expected WaveLifecycleChanged second, got {other:?}"),
+        other => panic!("expected auto WaveUpdated second, got {other:?}"),
     }
 
     let env3 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
         .expect("bus open");
-    assert!(matches!(env3.event, Event::WaveUpdated(_)));
+    match env3.event {
+        Event::WaveLifecycleChanged {
+            ref id,
+            ref cove_id,
+            from,
+            to,
+            ref agent_message,
+        } => {
+            assert_eq!(id, &boot.wave_id);
+            assert_eq!(cove_id, &boot.cove_id);
+            assert_eq!(from, calm_server::model::WaveLifecycle::Draft);
+            assert_eq!(to, calm_server::model::WaveLifecycle::Planning);
+            assert_eq!(agent_message, &None);
+        }
+        other => panic!("expected deprecated WaveLifecycleChanged third, got {other:?}"),
+    }
+
+    let env4 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers")
+        .expect("bus open");
+    assert!(matches!(env4.event, Event::WaveUpdated(_)));
 
     // DB is also persisted.
     let persisted = boot
@@ -1008,19 +1111,38 @@ async fn update_wave_state_same_state_lifecycle_plus_other_field_still_writes() 
         Some("renamed"),
     );
 
-    // Two envelopes: kernel auto-promotes Draft -> Planning, then the
-    // deprecated handler writes the title. No WaveLifecycleChanged
-    // because the requested lifecycle was same-state against the
-    // pre-auto row.
-    let env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+    // Three envelopes: kernel auto-promotes Draft -> Planning with its
+    // lifecycle/update pair, then the deprecated handler writes the
+    // title. No explicit WaveLifecycleChanged is emitted for the
+    // requested same-state lifecycle against the pre-auto row.
+    let changed_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
         .expect("bus open");
-    assert!(matches!(env.actor, ActorId::Kernel));
+    assert!(matches!(changed_env.actor, ActorId::Kernel));
+    match changed_env.event {
+        Event::WaveLifecycleChanged {
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(from, WaveLifecycle::Draft);
+            assert_eq!(to, WaveLifecycle::Planning);
+            assert_eq!(agent_message, None);
+        }
+        other => panic!("first envelope is auto WaveLifecycleChanged, got {other:?}"),
+    }
+
+    let updated_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers")
+        .expect("bus open");
+    assert!(matches!(updated_env.actor, ActorId::Kernel));
     assert!(
-        matches!(env.event, Event::WaveUpdated(_)),
-        "first envelope is auto WaveUpdated, got {:?}",
-        env.event,
+        matches!(updated_env.event, Event::WaveUpdated(_)),
+        "second envelope is auto WaveUpdated, got {:?}",
+        updated_env.event,
     );
 
     let title_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
@@ -1029,11 +1151,11 @@ async fn update_wave_state_same_state_lifecycle_plus_other_field_still_writes() 
         .expect("bus open");
     assert!(
         matches!(title_env.event, Event::WaveUpdated(ref w) if w.title == "renamed"),
-        "second envelope is title WaveUpdated, got {:?}",
+        "third envelope is title WaveUpdated, got {:?}",
         title_env.event,
     );
 
-    // No follow-up lifecycle-change envelope.
+    // No follow-up explicit lifecycle-change envelope.
     let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         bus.is_err(),

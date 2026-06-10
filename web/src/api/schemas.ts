@@ -181,7 +181,9 @@ export const coveDeletedSchema = z.object({
 
 export const waveUpdatedSchema = z.object({
   ev: z.literal('wave.updated'),
-  data: waveSchema,
+  data: waveSchema.extend({
+    agent_message: z.string().optional(),
+  }),
 });
 
 export const waveDeletedSchema = z.object({
@@ -203,6 +205,7 @@ export const waveLifecycleChangedSchema = z.object({
     cove_id: z.string(),
     from: waveLifecycleSchema,
     to: waveLifecycleSchema,
+    agent_message: z.string().optional(),
   }),
 });
 
@@ -327,6 +330,7 @@ export const waveReportEditedSchema = z.object({
     summary_after: z.string(),
     body_before: z.string(),
     body_after: z.string(),
+    agent_message: z.string().optional(),
   }),
 });
 
@@ -438,6 +442,7 @@ export const codexWorkerRequestedSchema = z.object({
     goal: z.string(),
     context: z.unknown(),
     acceptance_criteria: z.string().optional(),
+    agent_message: z.string().optional(),
   }),
 });
 
@@ -452,6 +457,7 @@ export const terminalWorkerRequestedSchema = z.object({
     idempotency_key: z.string(),
     cmd: z.string(),
     cwd: z.string().optional(),
+    agent_message: z.string().optional(),
   }),
 });
 
@@ -471,6 +477,7 @@ export const taskCompletedSchema = z.object({
     idempotency_key: z.string(),
     result: z.unknown(),
     artifacts: z.array(z.string()),
+    agent_message: z.string().optional(),
   }),
 });
 
@@ -485,6 +492,7 @@ export const taskFailedSchema = z.object({
   data: z.object({
     idempotency_key: z.string(),
     reason: z.string(),
+    agent_message: z.string().optional(),
   }),
 });
 

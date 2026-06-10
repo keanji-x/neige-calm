@@ -36,7 +36,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
-use calm_server::ids::{CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{
     TOOL_REPORT_EDIT, TOOL_REPORT_READ, TOOL_REPORT_WRITE,
@@ -453,6 +453,88 @@ async fn write_without_lifecycle_keeps_wave_state_and_records_agent_message() {
 }
 
 #[tokio::test]
+async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
+    let boot = boot().await;
+    boot.repo
+        .wave_update(
+            boot.wave_id.as_str(),
+            WavePatch {
+                lifecycle: Some(WaveLifecycle::Draft),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("set draft lifecycle");
+    let mut rx = boot.ctx.events.subscribe();
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "auto-promote body\n",
+            "message": "write from draft"
+        }),
+    )
+    .await
+    .expect("write succeeds");
+
+    let changed_env = recv_env(&mut rx).await;
+    assert!(matches!(changed_env.actor, ActorId::Kernel));
+    match changed_env.event {
+        Event::WaveLifecycleChanged {
+            id,
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(id, boot.wave_id);
+            assert_eq!(from, WaveLifecycle::Draft);
+            assert_eq!(to, WaveLifecycle::Planning);
+            assert_eq!(agent_message, None);
+        }
+        other => panic!("expected auto WaveLifecycleChanged first, got {other:?}"),
+    }
+
+    let updated_env = recv_env(&mut rx).await;
+    assert!(matches!(updated_env.actor, ActorId::Kernel));
+    match updated_env.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, boot.wave_id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
+            assert_eq!(payload.agent_message, None);
+        }
+        other => panic!("expected auto WaveUpdated second, got {other:?}"),
+    }
+    assert!(matches!(
+        recv_env(&mut rx).await.event,
+        Event::CardUpdated(_)
+    ));
+    match recv_env(&mut rx).await.event {
+        Event::WaveReportEdited {
+            agent_message,
+            body_after,
+            ..
+        } => {
+            assert_eq!(agent_message.as_deref(), Some("write from draft"));
+            assert_eq!(body_after, "auto-promote body\n");
+        }
+        other => panic!("expected WaveReportEdited fourth, got {other:?}"),
+    }
+
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Planning);
+    let no_more = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(no_more.is_err(), "unexpected extra event: {no_more:?}");
+}
+
+#[tokio::test]
 async fn write_lifecycle_legal_emits_wave_updated_and_report_events() {
     let boot = boot().await;
     let mut rx = boot.ctx.events.subscribe();
@@ -470,8 +552,24 @@ async fn write_lifecycle_legal_emits_wave_updated_and_report_events() {
     .await
     .expect("write with lifecycle succeeds");
 
-    let lifecycle_env = recv_env(&mut rx).await;
-    match &lifecycle_env.event {
+    let changed_env = recv_env(&mut rx).await;
+    match &changed_env.event {
+        Event::WaveLifecycleChanged {
+            id,
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(id, &boot.wave_id);
+            assert_eq!(*from, WaveLifecycle::Planning);
+            assert_eq!(*to, WaveLifecycle::Dispatching);
+            assert_eq!(agent_message.as_deref(), Some("report moves dispatching"));
+        }
+        other => panic!("expected WaveLifecycleChanged first, got {other:?}"),
+    }
+    let updated_env = recv_env(&mut rx).await;
+    match &updated_env.event {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, boot.wave_id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Dispatching);
@@ -480,7 +578,7 @@ async fn write_lifecycle_legal_emits_wave_updated_and_report_events() {
                 Some("report moves dispatching")
             );
         }
-        other => panic!("expected WaveUpdated first, got {other:?}"),
+        other => panic!("expected WaveUpdated second, got {other:?}"),
     }
     assert!(matches!(
         recv_env(&mut rx).await.event,
@@ -495,7 +593,7 @@ async fn write_lifecycle_legal_emits_wave_updated_and_report_events() {
             assert_eq!(agent_message.as_deref(), Some("report moves dispatching"));
             assert_eq!(body_after, "dispatching body\n");
         }
-        other => panic!("expected WaveReportEdited third, got {other:?}"),
+        other => panic!("expected WaveReportEdited fourth, got {other:?}"),
     }
     let wave = boot
         .repo
@@ -1014,6 +1112,21 @@ async fn edit_lifecycle_legal_emits_wave_updated_and_report_events() {
     .expect("edit with lifecycle succeeds");
 
     match recv_env(&mut rx).await.event {
+        Event::WaveLifecycleChanged {
+            id,
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(id, boot.wave_id);
+            assert_eq!(from, WaveLifecycle::Planning);
+            assert_eq!(to, WaveLifecycle::Dispatching);
+            assert_eq!(agent_message.as_deref(), Some("edit moves dispatching"));
+        }
+        other => panic!("expected WaveLifecycleChanged first, got {other:?}"),
+    }
+    match recv_env(&mut rx).await.event {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, boot.wave_id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Dispatching);
@@ -1022,7 +1135,7 @@ async fn edit_lifecycle_legal_emits_wave_updated_and_report_events() {
                 Some("edit moves dispatching")
             );
         }
-        other => panic!("expected WaveUpdated first, got {other:?}"),
+        other => panic!("expected WaveUpdated second, got {other:?}"),
     }
     assert!(matches!(
         recv_env(&mut rx).await.event,
@@ -1037,7 +1150,7 @@ async fn edit_lifecycle_legal_emits_wave_updated_and_report_events() {
             assert_eq!(agent_message.as_deref(), Some("edit moves dispatching"));
             assert_eq!(body_after, "before ABC after\n");
         }
-        other => panic!("expected WaveReportEdited third, got {other:?}"),
+        other => panic!("expected WaveReportEdited fourth, got {other:?}"),
     }
     let wave = boot
         .repo

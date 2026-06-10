@@ -304,8 +304,12 @@ async fn update_wave_state(
                 let actor = actor.clone();
                 Box::pin(async move {
                     let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                    if let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id_inner).await? {
-                        events.push((ActorId::Kernel, scope_inner.clone(), auto));
+                    if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id_inner).await? {
+                        events.extend(
+                            auto_events
+                                .into_iter()
+                                .map(|event| (ActorId::Kernel, scope_inner.clone(), event)),
+                        );
                     }
                     let updated = apply_wave_patch_tx(tx, &wave_id_inner, patch_inner).await?;
                     if let Some((from, to)) = lifecycle_change {
@@ -317,6 +321,7 @@ async fn update_wave_state(
                                 cove_id: cove_id_event,
                                 from,
                                 to,
+                                agent_message: None,
                             },
                         ));
                     }
@@ -575,19 +580,28 @@ async fn update_task_meta(
             let message = write_args.message.clone();
             Box::pin(async move {
                 let mut events = Vec::new();
-                if let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id).await? {
-                    events.push((ActorId::Kernel, wave_scope.clone(), auto));
+                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await? {
+                    events.extend(
+                        auto_events
+                            .into_iter()
+                            .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
+                    );
                 }
-                if let Some(target) = write_args.lifecycle {
-                    let lifecycle_event = apply_requested_transition_in_tx(
+                if let Some(target) = write_args.lifecycle
+                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
                         tx,
                         &wave_id,
                         target,
                         &actor,
                         message.clone(),
                     )
-                    .await?;
-                    events.push((actor.clone(), wave_scope, lifecycle_event));
+                    .await?
+                {
+                    events.extend(
+                        lifecycle_events
+                            .into_iter()
+                            .map(|event| (actor.clone(), wave_scope.clone(), event)),
+                    );
                 }
                 events.push((actor, scope, event));
                 Ok(((), events))

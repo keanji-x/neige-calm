@@ -273,12 +273,12 @@ pub fn validate_transition(
 
 /// Auto-promote a draft wave to planning from inside an audited write tx.
 ///
-/// Returns the `WaveUpdated` event the caller should append to the same event
-/// batch. Non-draft waves are left untouched and return `None`.
+/// Returns the lifecycle/update events the caller should append to the same
+/// event batch. Non-draft waves are left untouched and return `None`.
 pub async fn auto_promote_draft_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &crate::ids::WaveId,
-) -> Result<Option<Event>, CalmError> {
+) -> Result<Option<Vec<Event>>, CalmError> {
     auto_transition_if_current_in_tx(
         tx,
         wave_id,
@@ -291,17 +291,20 @@ pub async fn auto_promote_draft_in_tx(
 }
 
 /// Apply an explicit spec-requested lifecycle transition inside the caller's
-/// write tx and return the `WaveUpdated` event for the same batch.
+/// write tx and return the lifecycle/update events for the same batch.
 pub async fn apply_requested_transition_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &crate::ids::WaveId,
     to: WaveLifecycle,
     actor: &ActorId,
     agent_message: String,
-) -> Result<Event, CalmError> {
+) -> Result<Option<Vec<Event>>, CalmError> {
     let current = wave_get_tx(tx, wave_id).await?;
     validate_transition(current.lifecycle, to, actor)
         .map_err(|e| CalmError::Forbidden(format!("wave lifecycle: {e}")))?;
+    if current.lifecycle == to {
+        return Ok(None);
+    }
     let updated = crate::db::sqlite::wave_update_tx(
         tx,
         wave_id.as_str(),
@@ -311,18 +314,27 @@ pub async fn apply_requested_transition_in_tx(
         },
     )
     .await?;
-    Ok(Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
-        updated,
-        Some(agent_message),
-    )))
+    Ok(Some(vec![
+        Event::WaveLifecycleChanged {
+            id: updated.id.clone(),
+            cove_id: updated.cove_id.clone(),
+            from: current.lifecycle,
+            to,
+            agent_message: Some(agent_message.clone()),
+        },
+        Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
+            updated,
+            Some(agent_message),
+        )),
+    ]))
 }
 
 /// Auto-transition a wave when it is exactly in `from`.
 ///
 /// Kernel auto hooks use this for idempotent current-state gating: only the
 /// first serialized tx sees the triggering `from` state, updates the row, and
-/// emits a `WaveUpdated`; later concurrent txs see the advanced state and do
-/// nothing.
+/// emits lifecycle/update events; later concurrent txs see the advanced state
+/// and do nothing.
 pub async fn auto_transition_if_current_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &crate::ids::WaveId,
@@ -330,13 +342,16 @@ pub async fn auto_transition_if_current_in_tx(
     to: WaveLifecycle,
     actor: &ActorId,
     agent_message: Option<String>,
-) -> Result<Option<Event>, CalmError> {
+) -> Result<Option<Vec<Event>>, CalmError> {
     let current = wave_get_tx(tx, wave_id).await?;
     if current.lifecycle != from {
         return Ok(None);
     }
     validate_transition(current.lifecycle, to, actor)
         .map_err(|e| CalmError::Forbidden(format!("wave lifecycle: {e}")))?;
+    if current.lifecycle == to {
+        return Ok(None);
+    }
     let updated = crate::db::sqlite::wave_update_tx(
         tx,
         wave_id.as_str(),
@@ -346,9 +361,19 @@ pub async fn auto_transition_if_current_in_tx(
         },
     )
     .await?;
-    Ok(Some(Event::WaveUpdated(
-        crate::event::WaveUpdatedPayload::new(updated, agent_message),
-    )))
+    Ok(Some(vec![
+        Event::WaveLifecycleChanged {
+            id: updated.id.clone(),
+            cove_id: updated.cove_id.clone(),
+            from: current.lifecycle,
+            to,
+            agent_message: None,
+        },
+        Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
+            updated,
+            agent_message,
+        )),
+    ]))
 }
 
 async fn wave_get_tx(

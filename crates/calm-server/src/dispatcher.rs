@@ -986,7 +986,7 @@ impl Inner {
             CalmError::Internal("dispatcher lifecycle auto-promotion requires sqlite repo".into())
         })?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        let event = match crate::wave_lifecycle::auto_transition_if_current_in_tx(
+        let events = match crate::wave_lifecycle::auto_transition_if_current_in_tx(
             &mut tx,
             &wave_id,
             crate::model::WaveLifecycle::Dispatching,
@@ -996,7 +996,7 @@ impl Inner {
         )
         .await
         {
-            Ok(Some(event)) => event,
+            Ok(Some(events)) => events,
             Ok(None) => {
                 let _ = tx.rollback().await;
                 return Ok(());
@@ -1006,40 +1006,49 @@ impl Inner {
                 return Err(e);
             }
         };
-        #[allow(deprecated)]
-        if let Err(violation) = crate::role_gate::enforce_role(
-            &ActorId::KernelDispatcher,
-            &event,
-            &wave_scope,
-            self.write.role_cache(),
-            self.write.cove_cache(),
-        ) {
-            let _ = tx.rollback().await;
-            return Err(CalmError::Forbidden(violation.to_string()));
-        }
-        let event_id = match event_append_for_operation_tx(
-            &mut tx,
-            &ActorId::KernelDispatcher,
-            &wave_scope,
-            None,
-            &event,
-        )
-        .await
-        {
-            Ok(id) => id,
-            Err(e) => {
+        for event in &events {
+            #[allow(deprecated)]
+            if let Err(violation) = crate::role_gate::enforce_role(
+                &ActorId::KernelDispatcher,
+                event,
+                &wave_scope,
+                self.write.role_cache(),
+                self.write.cove_cache(),
+            ) {
                 let _ = tx.rollback().await;
-                return Err(e);
+                return Err(CalmError::Forbidden(violation.to_string()));
             }
-        };
+        }
+
+        let mut emitted = Vec::with_capacity(events.len());
+        for event in events {
+            let event_id = match event_append_for_operation_tx(
+                &mut tx,
+                &ActorId::KernelDispatcher,
+                &wave_scope,
+                None,
+                &event,
+            )
+            .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            };
+            emitted.push((event_id, event));
+        }
         tx.commit().await?;
-        self.events.emit_envelope(BroadcastEnvelope {
-            id: event_id,
-            event_version: SYNC_EVENT_VERSION,
-            actor: ActorId::KernelDispatcher,
-            scope: wave_scope,
-            event,
-        });
+        for (event_id, event) in emitted {
+            self.events.emit_envelope(BroadcastEnvelope {
+                id: event_id,
+                event_version: SYNC_EVENT_VERSION,
+                actor: ActorId::KernelDispatcher,
+                scope: wave_scope.clone(),
+                event,
+            });
+        }
         Ok(())
     }
 

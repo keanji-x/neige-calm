@@ -258,20 +258,29 @@ pub async fn persist_report(
             Box::pin(async move {
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
                 if auto_promote_draft
-                    && let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id).await?
+                    && let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await?
                 {
-                    events.push((ActorId::Kernel, wave_scope.clone(), auto));
+                    events.extend(
+                        auto_events
+                            .into_iter()
+                            .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
+                    );
                 }
-                if let Some(target) = lifecycle {
-                    let lifecycle_event = apply_requested_transition_in_tx(
+                if let Some(target) = lifecycle
+                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
                         tx,
                         &wave_id,
                         target,
                         &actor,
                         agent_message.clone().unwrap_or_default(),
                     )
-                    .await?;
-                    events.push((actor.clone(), wave_scope, lifecycle_event));
+                    .await?
+                {
+                    events.extend(
+                        lifecycle_events
+                            .into_iter()
+                            .map(|event| (actor.clone(), wave_scope.clone(), event)),
+                    );
                 }
                 // 1. Load (or lazy-init) the CRDT doc for this card.
                 let existing = card_body_crdt_get_tx(tx, &id).await?;

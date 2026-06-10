@@ -366,19 +366,28 @@ async fn emit_spec_write_for_identity(
             let message = message.clone();
             Box::pin(async move {
                 let mut events = Vec::new();
-                if let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id).await? {
-                    events.push((ActorId::Kernel, wave_scope.clone(), auto));
+                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await? {
+                    events.extend(
+                        auto_events
+                            .into_iter()
+                            .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
+                    );
                 }
-                if let Some(target) = lifecycle {
-                    let lifecycle_event = apply_requested_transition_in_tx(
+                if let Some(target) = lifecycle
+                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
                         tx,
                         &wave_id,
                         target,
                         &actor,
                         message.clone(),
                     )
-                    .await?;
-                    events.push((actor.clone(), wave_scope, lifecycle_event));
+                    .await?
+                {
+                    events.extend(
+                        lifecycle_events
+                            .into_iter()
+                            .map(|event| (actor.clone(), wave_scope.clone(), event)),
+                    );
                 }
                 events.push((actor, scope, event));
                 Ok(((), events))
@@ -453,7 +462,7 @@ async fn emit_task_report_for_identity(
             let wave_id = wave_id.clone();
             Box::pin(async move {
                 let mut events = vec![(actor, scope, event)];
-                if let Some(auto) = auto_transition_if_current_in_tx(
+                if let Some(auto_events) = auto_transition_if_current_in_tx(
                     tx,
                     &wave_id,
                     crate::model::WaveLifecycle::Working,
@@ -463,7 +472,11 @@ async fn emit_task_report_for_identity(
                 )
                 .await?
                 {
-                    events.push((ActorId::Kernel, wave_scope, auto));
+                    events.extend(
+                        auto_events
+                            .into_iter()
+                            .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
+                    );
                 }
                 Ok(((), events))
             })

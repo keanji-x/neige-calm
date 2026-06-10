@@ -390,6 +390,9 @@ pub enum Event {
         cove_id: CoveId,
         from: WaveLifecycle,
         to: WaveLifecycle,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
     },
 
     #[serde(rename = "card.added")]
@@ -2086,6 +2089,7 @@ mod scope_tests {
                 cove_id: CoveId::from("cove-1"),
                 from: WaveLifecycle::Draft,
                 to: WaveLifecycle::Planning,
+                agent_message: None,
             },
             Event::CardAdded(card_sample("card-added", "wave-1")),
             Event::CardUpdated(card_sample("card-updated", "wave-1")),

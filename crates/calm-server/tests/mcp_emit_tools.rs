@@ -261,12 +261,30 @@ async fn dispatch_request_lifecycle_legal_emits_wave_updated_and_request() {
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
 
-    let lifecycle_env = recv_bus(&mut rx).await;
-    match &lifecycle_env.actor {
+    let changed_env = recv_bus(&mut rx).await;
+    match &changed_env.actor {
         ActorId::AiSpec(card_id) => assert_eq!(card_id.as_str(), b.card_id.as_str()),
         other => panic!("expected AiSpec lifecycle actor; got {other:?}"),
     }
-    match &lifecycle_env.event {
+    match &changed_env.event {
+        Event::WaveLifecycleChanged {
+            id,
+            cove_id,
+            from,
+            to,
+            agent_message,
+        } => {
+            assert_eq!(id, &wave.id);
+            assert_eq!(cove_id, &wave.cove_id);
+            assert_eq!(*from, WaveLifecycle::Planning);
+            assert_eq!(*to, WaveLifecycle::Dispatching);
+            assert_eq!(agent_message.as_deref(), Some("move to dispatching"));
+        }
+        other => panic!("expected WaveLifecycleChanged first, got {other:?}"),
+    }
+
+    let updated_env = recv_bus(&mut rx).await;
+    match &updated_env.event {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, wave.id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Dispatching);
@@ -275,7 +293,7 @@ async fn dispatch_request_lifecycle_legal_emits_wave_updated_and_request() {
                 Some("move to dispatching")
             );
         }
-        other => panic!("expected WaveUpdated first, got {other:?}"),
+        other => panic!("expected WaveUpdated second, got {other:?}"),
     }
 
     let request_env = recv_bus(&mut rx).await;
@@ -288,7 +306,7 @@ async fn dispatch_request_lifecycle_legal_emits_wave_updated_and_request() {
             assert_eq!(idempotency_key, "dr-legal-lifecycle");
             assert_eq!(agent_message.as_deref(), Some("move to dispatching"));
         }
-        other => panic!("expected CodexWorkerRequested second, got {other:?}"),
+        other => panic!("expected CodexWorkerRequested third, got {other:?}"),
     }
 
     let post = b.repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
@@ -360,15 +378,34 @@ async fn first_spec_write_auto_promotes_draft_and_second_write_is_idempotent() {
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
 
-    let auto = recv_bus(&mut rx).await;
-    assert!(matches!(auto.actor, ActorId::Kernel));
-    match &auto.event {
+    let auto_changed = recv_bus(&mut rx).await;
+    assert!(matches!(auto_changed.actor, ActorId::Kernel));
+    match &auto_changed.event {
+        Event::WaveLifecycleChanged {
+            id,
+            cove_id,
+            from,
+            to,
+            agent_message,
+        } => {
+            assert_eq!(id, &wave.id);
+            assert_eq!(cove_id, &wave.cove_id);
+            assert_eq!(*from, WaveLifecycle::Draft);
+            assert_eq!(*to, WaveLifecycle::Planning);
+            assert_eq!(agent_message, &None);
+        }
+        other => panic!("expected auto WaveLifecycleChanged first, got {other:?}"),
+    }
+
+    let auto_updated = recv_bus(&mut rx).await;
+    assert!(matches!(auto_updated.actor, ActorId::Kernel));
+    match &auto_updated.event {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, wave.id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
             assert_eq!(payload.agent_message, None);
         }
-        other => panic!("expected auto WaveUpdated first, got {other:?}"),
+        other => panic!("expected auto WaveUpdated second, got {other:?}"),
     }
     assert!(matches!(
         recv_bus(&mut rx).await.event,
@@ -404,6 +441,88 @@ async fn first_spec_write_auto_promotes_draft_and_second_write_is_idempotent() {
     assert!(
         no_more.is_err(),
         "unexpected extra promotion event: {no_more:?}"
+    );
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn dispatch_request_explicit_planning_after_auto_promote_does_not_duplicate_lifecycle_events()
+{
+    let b = boot_with_role(CardRole::Spec).await;
+    let wave = boot_wave(&b).await;
+    assert_eq!(wave.lifecycle, WaveLifecycle::Draft);
+    let mut rx = b.events.subscribe();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            18,
+            "calm.dispatch_request",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-auto-explicit-planning",
+                "goal": "explicit planning after auto",
+                "message": "explicit planning after auto",
+                "lifecycle": "planning"
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let auto_changed = recv_bus(&mut rx).await;
+    assert!(matches!(auto_changed.actor, ActorId::Kernel));
+    match &auto_changed.event {
+        Event::WaveLifecycleChanged {
+            id,
+            cove_id,
+            from,
+            to,
+            agent_message,
+        } => {
+            assert_eq!(id, &wave.id);
+            assert_eq!(cove_id, &wave.cove_id);
+            assert_eq!(*from, WaveLifecycle::Draft);
+            assert_eq!(*to, WaveLifecycle::Planning);
+            assert_eq!(agent_message, &None);
+        }
+        other => panic!("expected one auto WaveLifecycleChanged, got {other:?}"),
+    }
+
+    let auto_updated = recv_bus(&mut rx).await;
+    assert!(matches!(auto_updated.actor, ActorId::Kernel));
+    match &auto_updated.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, wave.id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
+            assert_eq!(payload.agent_message, None);
+        }
+        other => panic!("expected one auto WaveUpdated, got {other:?}"),
+    }
+
+    let request_env = recv_bus(&mut rx).await;
+    match &request_env.event {
+        Event::CodexWorkerRequested {
+            idempotency_key,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(idempotency_key, "dr-auto-explicit-planning");
+            assert_eq!(
+                agent_message.as_deref(),
+                Some("explicit planning after auto")
+            );
+        }
+        other => panic!("expected CodexWorkerRequested after auto-promotion, got {other:?}"),
+    }
+    let no_more = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_more.is_err(),
+        "explicit same-state lifecycle emitted duplicate events: {no_more:?}"
     );
     let _ = (&b.server, &b.repo);
 }
@@ -543,9 +662,28 @@ async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
         } if idempotency_key == "tc-auto-review"
     ));
 
-    let auto = recv_bus(&mut rx).await;
-    assert!(matches!(auto.actor, ActorId::Kernel));
-    match &auto.event {
+    let auto_changed = recv_bus(&mut rx).await;
+    assert!(matches!(auto_changed.actor, ActorId::Kernel));
+    match &auto_changed.event {
+        Event::WaveLifecycleChanged {
+            id,
+            cove_id,
+            from,
+            to,
+            agent_message,
+        } => {
+            assert_eq!(id, &wave.id);
+            assert_eq!(cove_id, &wave.cove_id);
+            assert_eq!(*from, WaveLifecycle::Working);
+            assert_eq!(*to, WaveLifecycle::Reviewing);
+            assert_eq!(agent_message, &None);
+        }
+        other => panic!("expected auto WaveLifecycleChanged after task report, got {other:?}"),
+    }
+
+    let auto_updated = recv_bus(&mut rx).await;
+    assert!(matches!(auto_updated.actor, ActorId::Kernel));
+    match &auto_updated.event {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, wave.id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Reviewing);
@@ -554,7 +692,7 @@ async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
                 Some("[auto] first task report")
             );
         }
-        other => panic!("expected auto WaveUpdated after task report, got {other:?}"),
+        other => panic!("expected auto WaveUpdated after lifecycle change, got {other:?}"),
     }
     let post = b.repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
     assert_eq!(post.lifecycle, WaveLifecycle::Reviewing);
