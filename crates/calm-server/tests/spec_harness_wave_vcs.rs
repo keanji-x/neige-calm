@@ -615,8 +615,8 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
 
     assert!(text.starts_with("## Wave state changes since your last turn"));
     assert!(text.contains(&format!("HEAD {} -> {}", short(&before), short(&after))));
-    assert!(text.contains("report.md new"));
-    assert!(text.contains("report.md new (unified patch follows)"));
+    assert!(text.contains("report.md new (by kernel)"));
+    assert!(text.contains("report.md new (by kernel) (unified patch follows)"));
     assert!(text.contains("```diff\n--- a/report.md"));
     assert!(text.contains("+++ b/report.md"));
     assert!(text.contains("@@"));

@@ -271,6 +271,7 @@ pub(crate) async fn event_append_for_operation_tx(
         wave_vcs::commit_in_tx(
             tx,
             wave_id,
+            actor,
             event_id,
             event,
             wave_vcs::MANIFEST_SCHEMA_VERSION,
@@ -295,6 +296,7 @@ pub(crate) async fn events_append_for_operation_tx(
         wave_vcs::commit_events_in_tx(
             tx,
             wave_id,
+            actor,
             *event_id,
             events,
             wave_vcs::MANIFEST_SCHEMA_VERSION,
@@ -3862,6 +3864,7 @@ impl RepoEventWrite for SqlxRepo {
             && let Err(e) = wave_vcs::commit_in_tx(
                 &mut tx,
                 wave_id,
+                &actor,
                 event_id,
                 &event,
                 wave_vcs::MANIFEST_SCHEMA_VERSION,
@@ -3955,6 +3958,7 @@ impl RepoEventWrite for SqlxRepo {
             if let Err(e) = wave_vcs::commit_events_in_tx(
                 &mut tx,
                 wave_id,
+                &actor,
                 *event_id,
                 events_for_wave,
                 wave_vcs::MANIFEST_SCHEMA_VERSION,
@@ -4026,20 +4030,22 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
-        let mut wave_events = HashMap::<WaveId, (i64, Vec<Event>)>::new();
-        for ((_, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
+        let mut wave_events = HashMap::<WaveId, (i64, ActorId, Vec<Event>)>::new();
+        for ((actor, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
             if let Some(wave_id) = scope.wave_id() {
                 let entry = wave_events
                     .entry(wave_id.clone())
-                    .or_insert_with(|| (*event_id, Vec::new()));
+                    .or_insert_with(|| (*event_id, actor.clone(), Vec::new()));
                 entry.0 = *event_id;
-                entry.1.push(event.clone());
+                entry.1 = actor.clone();
+                entry.2.push(event.clone());
             }
         }
-        for (wave_id, (event_id, events_for_wave)) in &wave_events {
+        for (wave_id, (event_id, actor, events_for_wave)) in &wave_events {
             if let Err(e) = wave_vcs::commit_events_in_tx(
                 &mut tx,
                 wave_id,
+                actor,
                 *event_id,
                 events_for_wave,
                 wave_vcs::MANIFEST_SCHEMA_VERSION,
@@ -4099,6 +4105,7 @@ impl RepoEventWrite for SqlxRepo {
             && let Err(e) = wave_vcs::commit_in_tx(
                 &mut tx,
                 wave_id,
+                &actor,
                 event_id,
                 &event,
                 wave_vcs::MANIFEST_SCHEMA_VERSION,

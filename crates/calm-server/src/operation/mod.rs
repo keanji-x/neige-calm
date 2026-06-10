@@ -2043,6 +2043,13 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(stored_event_id, event_id);
+        let author: Option<String> =
+            sqlx::query_scalar("SELECT author FROM wave_vcs_commits WHERE hash = ?1")
+                .bind(&head)
+                .fetch_one(sqlx_repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(author.as_deref(), Some("kernel"));
         assert!(
             crate::wave_vcs::tree_at(sqlx_repo.pool(), &head)
                 .await
