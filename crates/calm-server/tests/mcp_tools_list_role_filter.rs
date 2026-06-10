@@ -66,13 +66,21 @@ async fn tools_list_for_spec_role_does_not_leak_aliases() {
         "calm.task_failed",
         "calm.get_wave_state",
         "calm.update_task_meta",
-        "calm.update_wave_state",
     ] {
         assert!(
             !names.iter().any(|name| name == hidden_name),
             "hidden tool leaked in tools/list: {hidden_name}; names={names:?}",
         );
     }
+}
+
+#[tokio::test]
+async fn retired_update_wave_state_shadow_is_not_registered() {
+    let registry = calm_server::mcp_server::build_default_registry();
+    assert!(
+        registry.lookup("calm.update_wave_state").is_none(),
+        "retired update_wave_state name must not remain as a hidden tool or alias",
+    );
 }
 
 #[tokio::test]

@@ -1,12 +1,11 @@
-//! Wave-state tools for reading wave shape, patching wave metadata, and
-//! recording spec verdicts on worker outcomes.
+//! Wave-state tools for reading wave shape and recording spec verdicts on
+//! worker outcomes.
 //!
 //! These tools complete the spec-card closed loop: a spec daemon reads
-//! the current wave snapshot, mutates wave-level metadata (title /
-//! sort / archive), and marks individual worker results as accepted /
-//! rejected during validation. The dispatcher then closes the loop by
-//! pushing the next worker-emitted event onto the spec's thread as a
-//! turn input (#293 — no polling).
+//! the current wave snapshot and marks individual worker results as
+//! accepted / rejected during validation. The dispatcher then closes the
+//! loop by pushing the next worker-emitted event onto the spec's thread
+//! as a turn input (#293 — no polling).
 //!
 //! ## Tool surface
 //!
@@ -15,15 +14,6 @@
 //!   (id/kind/role/runtime) as one JSON snapshot. No event emission.
 //!   Workers occasionally peek wave state before they report; the spec
 //!   gets a full snapshot every loop iteration.
-//!
-//! * `calm.update_wave_state` — Spec only. Patches the wave row
-//!   (`title` / `sort` / `archived_at`), stamps `updated_at`, and
-//!   emits `Event::WaveUpdated(full_wave)` via
-//!   `write_with_event_typed`. The MCP entry's soft role gate refuses
-//!   non-Spec callers with `-32602 spec-only tool`; the real boundary
-//!   is the in-tx role gate (`enforce_role`), which already pins
-//!   `WaveUpdated` to spec / user / kernel actors. Re-checking at the
-//!   MCP entry just gives the caller a cleaner error shape.
 //!
 //! * `calm.task.verdict` — Spec only. Records the spec's
 //!   accept/reject verdict on a worker's prior result. Lowers to
@@ -57,18 +47,14 @@
 //! ## Scope construction
 //!
 //! Unlike PR7a's emit tools (which scope to the caller's *card*), the
-//! wave-state tools scope to the caller's *wave*. The wave is where
-//! the spec card's authority lives — emitting `WaveUpdated` under
-//! `EventScope::Card` would be a category error (the role gate
-//! permits it but the topic routing would miss wave-level
-//! subscribers). For `task_verdict` we also use `EventScope::Wave`
-//! since the verdict is wave-level metadata about a worker the spec
-//! supervises, not the spec's own card state.
+//! the verdict write scopes to the caller's *wave*. The verdict is
+//! wave-level metadata about a worker the spec supervises, not the
+//! spec's own card state.
 
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, WaveId};
+use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -78,20 +64,16 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
-use crate::model::{CardRole, Wave, WaveLifecycle, WavePatch};
-use crate::wave_lifecycle::{
-    apply_requested_transition_in_tx, auto_promote_draft_in_tx, validate_transition,
-};
+use crate::model::{CardRole, Wave};
+use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub const TOOL_WAVE_STATE: &str = "calm.wave.state";
-pub const TOOL_UPDATE_WAVE_STATE: &str = "calm.update_wave_state";
 pub const TOOL_TASK_VERDICT: &str = "calm.task.verdict";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(wave_state_descriptor(), wrap(wave_state));
-    registry.register(update_wave_state_descriptor(), wrap(update_wave_state));
     registry.register(task_verdict_descriptor(), wrap(task_verdict));
     register_deprecated_alias(registry, "calm.get_wave_state", TOOL_WAVE_STATE);
     register_deprecated_alias(registry, "calm.update_task_meta", TOOL_TASK_VERDICT);
@@ -171,297 +153,6 @@ async fn wave_state(
         "wave": wave,
         "cards": cards_json,
     }))
-}
-
-// ---------------------------------------------------------------------------
-// calm.update_wave_state
-// ---------------------------------------------------------------------------
-
-fn update_wave_state_descriptor() -> ToolDescriptor {
-    ToolDescriptor {
-        name: TOOL_UPDATE_WAVE_STATE.into(),
-        description: "Spec-only: patch the wave row (`title` / `sort` / \
-             `archived_at` / `lifecycle`) and emit `wave.updated` (plus \
-             `wave.lifecycle_changed` when `lifecycle` is set and the \
-             requested transition actually changes state). Omitted \
-             fields are left unchanged. `archived_at = null` \
-             unarchives; a positive ms timestamp archives. `lifecycle` \
-             accepts the typed state names — see issue #145 / \
-             `wave_lifecycle.rs` for the allowed `from → to` table. \
-             A same-state lifecycle request (e.g. setting `lifecycle` \
-             to the wave's current state) is an idempotent silent \
-             success: no `wave.lifecycle_changed` event is emitted, \
-             and if `lifecycle` was the only field supplied the row is \
-             not rewritten. An illegal transition is rejected with \
-             `-32403`; the wave row and event log are both untouched. \
-             Returns the post-patch wave."
-            .into(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "title": { "type": "string" },
-                "sort": { "type": "number" },
-                "archived_at": { "type": ["integer", "null"] },
-                "lifecycle": {
-                    "type": "string",
-                    "enum": [
-                        "draft", "planning", "dispatching", "working",
-                        "blocked", "reviewing", "done", "canceled", "failed"
-                    ],
-                    "description": "Request a Wave lifecycle transition. The kernel \
-                         validates (from, to, actor=spec) via wave_lifecycle::validate_transition."
-                }
-            }
-        }),
-        annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[],
-    }
-}
-
-async fn update_wave_state(
-    ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
-    args: Value,
-) -> Result<Value, RpcError> {
-    tracing::warn!(
-        target: "calm.deprecated",
-        card_id = %identity.card_id,
-        "calm.update_wave_state called by card {} - retire per #597; use lifecycle arg on per-write tools",
-        identity.card_id
-    );
-    require_role(&identity, CardRole::Spec)?;
-
-    let patch = parse_wave_patch(&args)?;
-    let (_, current) = resolve_wave_for_identity(&ctx, &identity).await?;
-
-    let wave_id = current.id.clone();
-    let cove_id = current.cove_id.clone();
-    let scope = EventScope::Wave {
-        wave: wave_id.clone(),
-        cove: cove_id.clone(),
-    };
-    let actor = identity.to_actor_id();
-
-    // Issue #145 — lifecycle transitions go through the state machine
-    // *before* the row update. The MCP entry mirrors the REST handler
-    // in `routes::waves::update_wave`: validate (from → to, actor),
-    // surface `-32403` on rejection so the spec agent sees a clear
-    // shape, otherwise emit `WaveLifecycleChanged` alongside the
-    // usual `WaveUpdated` in one transaction.
-    //
-    // Idempotent same-state: when `patch.lifecycle == Some(current)`
-    // (e.g. the spec retried `update_wave_state(lifecycle="planning")`
-    // while already planning), the validator returns `Ok(())` and we
-    // strip `lifecycle` from the patch so neither
-    // `WaveLifecycleChanged` nor a pointless column rewrite happens.
-    // If `lifecycle` was the *only* supplied field, the resulting
-    // patch is fully empty and we return the wave row without
-    // touching the DB — distinct from an explicit `{}` ping (which
-    // still bumps `updated_at` and re-broadcasts as before).
-    let lifecycle_was_only_field = patch.lifecycle.is_some()
-        && patch.title.is_none()
-        && patch.sort.is_none()
-        && patch.archived_at.is_none();
-    let mut patch = patch;
-    let lifecycle_change = if let Some(to) = patch.lifecycle {
-        validate_transition(current.lifecycle, to, &actor)
-            .map_err(|e| RpcError::custom(-32403, format!("update_wave_state: lifecycle: {e}")))?;
-        if current.lifecycle == to {
-            patch.lifecycle = None;
-            None
-        } else {
-            Some((current.lifecycle, to))
-        }
-    } else {
-        None
-    };
-
-    // Idempotent shortcut: lifecycle was the sole patch field and it
-    // turned out to be a no-op, so there's nothing to write and
-    // nothing to emit. Return the unchanged wave row. The `{}`
-    // ping path is unaffected (`lifecycle_was_only_field` is false
-    // when `patch.lifecycle` is None).
-    if lifecycle_was_only_field && lifecycle_change.is_none() {
-        return Ok(json!({ "ok": true, "wave": current }));
-    }
-
-    let wave_id_for_event = wave_id.clone();
-    let cove_id_for_event = cove_id.clone();
-    let scope_for_tx = scope.clone();
-    let patch_for_tx = patch.clone();
-    let ((updated_wave, _emitted_lifecycle), _ids) =
-        write_with_actor_events_typed::<(Wave, Option<(WaveLifecycle, WaveLifecycle)>), _>(
-            ctx.repo.as_ref(),
-            None,
-            &ctx.events,
-            &ctx.write,
-            move |tx| {
-                let scope_inner = scope_for_tx.clone();
-                let wave_id_inner = wave_id.clone();
-                let patch_inner = patch_for_tx.clone();
-                let wave_id_event = wave_id_for_event.clone();
-                let cove_id_event = cove_id_for_event.clone();
-                let actor = actor.clone();
-                Box::pin(async move {
-                    let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                    if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id_inner).await? {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::Kernel, scope_inner.clone(), event)),
-                        );
-                    }
-                    let updated = apply_wave_patch_tx(tx, &wave_id_inner, patch_inner).await?;
-                    if let Some((from, to)) = lifecycle_change {
-                        events.push((
-                            actor.clone(),
-                            scope_inner.clone(),
-                            Event::WaveLifecycleChanged {
-                                id: wave_id_event,
-                                cove_id: cove_id_event,
-                                from,
-                                to,
-                                agent_message: None,
-                            },
-                        ));
-                    }
-                    events.push((
-                        actor,
-                        scope_inner,
-                        Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
-                            updated.clone(),
-                            None,
-                        )),
-                    ));
-                    Ok(((updated, lifecycle_change), events))
-                })
-            },
-        )
-        .await
-        .map_err(map_emit_error)?;
-
-    Ok(json!({ "ok": true, "wave": updated_wave }))
-}
-
-/// Apply the patch to the wave row inside the supplied transaction.
-/// Mirrors `db::sqlite::wave_update_tx` but accepts the patch shape
-/// PR7b emits (all fields direct-optional, no double-Option dance —
-/// MCP callers pass `archived_at: null` to unarchive and an integer
-/// to archive, which we coerce into the existing `WavePatch` shape
-/// on the way in via `parse_wave_patch`).
-async fn apply_wave_patch_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    id: &WaveId,
-    patch: WavePatch,
-) -> Result<Wave, CalmError> {
-    crate::db::sqlite::wave_update_tx(tx, id.as_str(), patch).await
-}
-
-/// Translate the on-the-wire `args` JSON into the kernel's `WavePatch`.
-/// The MCP shape is simpler than the HTTP `PATCH /waves/:id` body:
-/// `archived_at: null` means unarchive; omitting the key means leave
-/// alone. We convert that to the kernel's double-Option encoding so
-/// the existing `wave_update_tx` doesn't need a parallel code path.
-fn parse_wave_patch(args: &Value) -> Result<WavePatch, RpcError> {
-    let obj = args.as_object().ok_or_else(|| {
-        RpcError::invalid_params("update_wave_state: arguments must be an object")
-    })?;
-
-    let title = match obj.get("title") {
-        Some(Value::String(s)) => Some(s.clone()),
-        Some(Value::Null) | None => None,
-        Some(other) => {
-            return Err(RpcError::invalid_params(format!(
-                "update_wave_state: `title` must be a string, got {}",
-                shape_of(other)
-            )));
-        }
-    };
-
-    let sort = match obj.get("sort") {
-        Some(Value::Number(n)) => Some(n.as_f64().ok_or_else(|| {
-            RpcError::invalid_params("update_wave_state: `sort` not representable as f64")
-        })?),
-        Some(Value::Null) | None => None,
-        Some(other) => {
-            return Err(RpcError::invalid_params(format!(
-                "update_wave_state: `sort` must be a number, got {}",
-                shape_of(other)
-            )));
-        }
-    };
-
-    // Distinguish "omitted" (None) from "null" (Some(None)) from
-    // "integer" (Some(Some(n))). The `Value::is_null()` check is the
-    // critical bit — `obj.get("archived_at")` returns
-    // `Some(Value::Null)` for an explicit `archived_at: null`.
-    let archived_at = match obj.get("archived_at") {
-        None => None,
-        Some(Value::Null) => Some(None),
-        Some(Value::Number(n)) => Some(Some(n.as_i64().ok_or_else(|| {
-            RpcError::invalid_params("update_wave_state: `archived_at` not representable as i64")
-        })?)),
-        Some(other) => {
-            return Err(RpcError::invalid_params(format!(
-                "update_wave_state: `archived_at` must be integer or null, got {}",
-                shape_of(other)
-            )));
-        }
-    };
-
-    // Issue #145 — optional lifecycle transition. Accepts only the
-    // typed state names; anything else is rejected at parse time so
-    // an LLM typo never reaches `validate_transition`. The actual
-    // (from, to, actor) check runs inside `update_wave_state` once
-    // we know the current state of the wave.
-    let lifecycle = match obj.get("lifecycle") {
-        None => None,
-        Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(parse_lifecycle_name(s)?),
-        Some(other) => {
-            return Err(RpcError::invalid_params(format!(
-                "update_wave_state: `lifecycle` must be a string, got {}",
-                shape_of(other)
-            )));
-        }
-    };
-
-    // An empty patch is a valid no-op call — the spec might "ping"
-    // the wave by passing `{}` to refresh `updated_at` + re-broadcast
-    // the row. `wave_update_tx` stamps `updated_at = now_ms()`
-    // unconditionally on every call, so the no-op still bumps the
-    // freshness clock.
-    Ok(WavePatch {
-        title,
-        sort,
-        archived_at,
-        pinned_at: None,
-        lifecycle,
-    })
-}
-
-/// Parse the wire-side lowercase lifecycle string into the typed enum.
-/// Keeps the accepted vocabulary in one place so it stays in sync with
-/// `WaveLifecycle`'s serde rename. A future variant addition surfaces
-/// as a compile-time `match` exhaustiveness diff if you write the new
-/// arm here too.
-fn parse_lifecycle_name(s: &str) -> Result<WaveLifecycle, RpcError> {
-    match s {
-        "draft" => Ok(WaveLifecycle::Draft),
-        "planning" => Ok(WaveLifecycle::Planning),
-        "dispatching" => Ok(WaveLifecycle::Dispatching),
-        "working" => Ok(WaveLifecycle::Working),
-        "blocked" => Ok(WaveLifecycle::Blocked),
-        "reviewing" => Ok(WaveLifecycle::Reviewing),
-        "done" => Ok(WaveLifecycle::Done),
-        "canceled" => Ok(WaveLifecycle::Canceled),
-        "failed" => Ok(WaveLifecycle::Failed),
-        other => Err(RpcError::invalid_params(format!(
-            "update_wave_state: unknown lifecycle `{other}`. \
-             Allowed: draft, planning, dispatching, working, blocked, \
-             reviewing, done, canceled, failed."
-        ))),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -659,33 +350,6 @@ async fn resolve_wave_for_identity(
     Ok((card, wave))
 }
 
-/// Map an eventized-write error into the appropriate `RpcError`. The
-/// in-tx role gate's `Forbidden` becomes `-32403`; everything else is
-/// `-32603` internal. Centralized so all three tools surface the
-/// same error shape for the same DB-side failure modes.
-fn map_emit_error(e: CalmError) -> RpcError {
-    match e {
-        CalmError::Forbidden(msg) => {
-            RpcError::custom(-32403, format!("update_wave_state: forbidden: {msg}"))
-        }
-        other => RpcError::internal(format!("update_wave_state: {other}")),
-    }
-}
-
-/// Human-readable label for a JSON value's variant — used in error
-/// messages so the caller sees `"got string"` rather than the value
-/// itself (which may be large / contain secrets).
-fn shape_of(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,64 +383,5 @@ mod tests {
             err.message.contains("Worker"),
             "error should mention got role: {err:?}"
         );
-    }
-
-    #[test]
-    fn parse_wave_patch_empty_is_ok() {
-        let p = parse_wave_patch(&json!({})).expect("empty patch is a valid no-op");
-        assert!(p.title.is_none());
-        assert!(p.sort.is_none());
-        assert!(p.archived_at.is_none());
-    }
-
-    #[test]
-    fn parse_wave_patch_title_and_sort() {
-        let p = parse_wave_patch(&json!({"title": "new", "sort": 1.5})).expect("happy-path patch");
-        assert_eq!(p.title.as_deref(), Some("new"));
-        assert_eq!(p.sort, Some(1.5));
-        assert!(p.archived_at.is_none());
-    }
-
-    #[test]
-    fn parse_wave_patch_archive_then_unarchive() {
-        // Integer → archive (`Some(Some(ts))`).
-        let archived =
-            parse_wave_patch(&json!({"archived_at": 12345})).expect("archive patch parses");
-        assert_eq!(archived.archived_at, Some(Some(12345)));
-
-        // Explicit null → unarchive (`Some(None)`).
-        let unarchived =
-            parse_wave_patch(&json!({"archived_at": null})).expect("unarchive patch parses");
-        assert_eq!(unarchived.archived_at, Some(None));
-
-        // Omitted → leave alone (`None`).
-        let untouched = parse_wave_patch(&json!({})).expect("omitted patch parses");
-        assert!(untouched.archived_at.is_none());
-    }
-
-    #[test]
-    fn parse_wave_patch_rejects_wrong_types() {
-        // title must be string
-        let err = parse_wave_patch(&json!({"title": 7})).expect_err("integer title rejected");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
-        assert!(err.message.contains("title"));
-
-        // sort must be number
-        let err = parse_wave_patch(&json!({"sort": "abc"})).expect_err("string sort rejected");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
-        assert!(err.message.contains("sort"));
-
-        // archived_at must be integer or null
-        let err = parse_wave_patch(&json!({"archived_at": "yesterday"}))
-            .expect_err("string archived_at rejected");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
-        assert!(err.message.contains("archived_at"));
-    }
-
-    #[test]
-    fn parse_wave_patch_rejects_non_object_args() {
-        let err = parse_wave_patch(&json!("not-an-object")).expect_err("string args rejected");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
-        assert!(err.message.contains("object"));
     }
 }

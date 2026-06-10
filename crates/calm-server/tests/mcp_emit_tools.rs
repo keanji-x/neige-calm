@@ -392,7 +392,7 @@ async fn first_spec_write_auto_promotes_draft_and_second_write_is_idempotent() {
             assert_eq!(cove_id, &wave.cove_id);
             assert_eq!(*from, WaveLifecycle::Draft);
             assert_eq!(*to, WaveLifecycle::Planning);
-            assert_eq!(agent_message, &None);
+            assert_eq!(agent_message.as_deref(), Some("[auto] first spec write"));
         }
         other => panic!("expected auto WaveLifecycleChanged first, got {other:?}"),
     }
@@ -403,7 +403,10 @@ async fn first_spec_write_auto_promotes_draft_and_second_write_is_idempotent() {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, wave.id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
-            assert_eq!(payload.agent_message, None);
+            assert_eq!(
+                payload.agent_message.as_deref(),
+                Some("[auto] first spec write")
+            );
         }
         other => panic!("expected auto WaveUpdated second, got {other:?}"),
     }
@@ -488,7 +491,7 @@ async fn dispatch_request_explicit_planning_after_auto_promote_does_not_duplicat
             assert_eq!(cove_id, &wave.cove_id);
             assert_eq!(*from, WaveLifecycle::Draft);
             assert_eq!(*to, WaveLifecycle::Planning);
-            assert_eq!(agent_message, &None);
+            assert_eq!(agent_message.as_deref(), Some("[auto] first spec write"));
         }
         other => panic!("expected one auto WaveLifecycleChanged, got {other:?}"),
     }
@@ -499,7 +502,10 @@ async fn dispatch_request_explicit_planning_after_auto_promote_does_not_duplicat
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, wave.id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
-            assert_eq!(payload.agent_message, None);
+            assert_eq!(
+                payload.agent_message.as_deref(),
+                Some("[auto] first spec write")
+            );
         }
         other => panic!("expected one auto WaveUpdated, got {other:?}"),
     }
@@ -676,7 +682,7 @@ async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
             assert_eq!(cove_id, &wave.cove_id);
             assert_eq!(*from, WaveLifecycle::Working);
             assert_eq!(*to, WaveLifecycle::Reviewing);
-            assert_eq!(agent_message, &None);
+            assert_eq!(agent_message.as_deref(), Some("[auto] first task report"));
         }
         other => panic!("expected auto WaveLifecycleChanged after task report, got {other:?}"),
     }

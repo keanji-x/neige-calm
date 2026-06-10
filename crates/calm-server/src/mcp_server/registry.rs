@@ -88,12 +88,10 @@ impl ToolCallIdentity {
 /// The *real* boundary is [`crate::role_gate::enforce_role`], which runs
 /// inside every eventized write and refuses any cross-role attempt with
 /// a transactional rollback. This helper is purely UX: it short-circuits
-/// at the MCP-tool entry so a worker card calling
-/// `calm.update_wave_state` gets a deterministic
-/// `-32602 spec-only tool` error code instead of the more opaque
-/// `-32403 forbidden: only spec cards may emit wave.updated` that the
-/// in-tx gate would otherwise produce after speculatively reading the
-/// wave row.
+/// at the MCP-tool entry so a worker card calling a spec-only tool such
+/// as `calm.task.verdict` gets a deterministic `-32602 spec-only tool`
+/// error code instead of the more opaque `-32403 forbidden` that the
+/// in-tx gate would otherwise produce after speculatively reading rows.
 ///
 /// Use at the top of every spec-only handler. `calm.wave.state` is
 /// callable by both Spec and Worker (a worker may need to peek wave

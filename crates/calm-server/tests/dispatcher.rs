@@ -856,7 +856,7 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 }
 
 #[tokio::test]
-async fn dispatcher_spawn_success_auto_promotes_dispatching_to_working() {
+async fn dispatcher_promotes_dispatching_to_working_before_spawn() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     repo.wave_update(
@@ -929,7 +929,7 @@ async fn dispatcher_spawn_success_auto_promotes_dispatching_to_working() {
     }
     assert!(
         saw_auto,
-        "dispatcher must emit kernel-dispatcher WaveUpdated after worker spawn success"
+        "dispatcher must emit kernel-dispatcher WaveUpdated before worker spawn"
     );
 
     let wave = repo
@@ -1057,6 +1057,7 @@ async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
             Event::WaveLifecycleChanged {
                 from: first_from,
                 to: first_to,
+                agent_message: first_message,
                 ..
             },
             Event::WaveUpdated(first_update),
@@ -1068,13 +1069,19 @@ async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
             Event::WaveLifecycleChanged {
                 from: second_from,
                 to: second_to,
+                agent_message: second_message,
                 ..
             },
             Event::WaveUpdated(second_update),
         ] => {
             assert_eq!(*first_from, WaveLifecycle::Dispatching);
             assert_eq!(*first_to, WaveLifecycle::Working);
+            assert_eq!(first_message.as_deref(), Some("[auto] worker spawned"));
             assert_eq!(first_update.lifecycle, WaveLifecycle::Working);
+            assert_eq!(
+                first_update.agent_message.as_deref(),
+                Some("[auto] worker spawned")
+            );
             assert_eq!(idempotency_key, idem);
             assert!(
                 reason.contains("forced spawn failure"),
@@ -1082,7 +1089,15 @@ async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
             );
             assert_eq!(*second_from, WaveLifecycle::Working);
             assert_eq!(*second_to, WaveLifecycle::Reviewing);
+            assert_eq!(
+                second_message.as_deref(),
+                Some("[auto] worker spawn failed")
+            );
             assert_eq!(second_update.lifecycle, WaveLifecycle::Reviewing);
+            assert_eq!(
+                second_update.agent_message.as_deref(),
+                Some("[auto] worker spawn failed")
+            );
         }
         other => panic!("unexpected spawn-failure lifecycle event sequence: {other:#?}"),
     }
