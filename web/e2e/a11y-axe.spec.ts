@@ -34,6 +34,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
 import {
+  createIframeCard,
   resetReplayServer,
   createWaveInCove,
   seedWaveViewMode,
@@ -338,6 +339,12 @@ test.describe('a11y · axe', () => {
       test(`${theme} mode · no violations`, async ({ page }) => {
         const { waveId } = await ids(page);
         await seedWaveViewMode(page.request, waveId, 'list');
+        await createIframeCard(
+          page.request,
+          waveId,
+          'https://example.invalid/axe-list-card',
+          1,
+        );
         await page.goto(`/calm/wave/${waveId}?trace=1`);
         await waitForBootstrap(page);
         // Wait for the wave page to fully render — the AddPanel trigger
@@ -347,14 +354,11 @@ test.describe('a11y · axe', () => {
         await expect(addBtn).toBeVisible();
         // Post-#175 the wave from `ids()` is freshly minted with zero
         // cards (the default Today PTY lives in the hidden system cove,
-        // not user-created waves). Without at least one card the
+        // not user-created waves). Without at least one worker card the
         // list-view `<ul>` collapses to 0 height and Playwright reports
-        // it as hidden. Add one card so the list view has something to
-        // render — what we're scanning is the populated list state.
-        await addBtn.click();
-        await page.getByRole('menuitem', { name: /terminal/i }).first().click();
-        // List mode lazily mounts; wait for the <ul> (now non-empty —
-        // the card.added WS event lands the new row) before the scan.
+        // it as hidden. Seed an iframe worker card via REST so this scan
+        // covers the populated list state without depending on PTY startup.
+        // List mode lazily mounts; wait for the <ul> before the scan.
         await expect(page.getByRole('list', { name: /wave cards/i })).toBeVisible({
           timeout: 5_000,
         });
