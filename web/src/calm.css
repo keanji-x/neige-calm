@@ -1411,7 +1411,7 @@ select:-webkit-autofill {
   outline-offset: 2px;
 }
 .wave-crumb {
-  display: flex; align-items: baseline; gap: var(--space-4);
+  display: flex; align-items: center; gap: var(--space-4);
   /* Content-sized (shrinkable, min-width:0 keeps the title ellipsis
      working) rather than greedy `flex: 1`: the #594 view-flip toggle sits
      at the crumb tail and should not shove against the right-side meta
@@ -1422,7 +1422,6 @@ select:-webkit-autofill {
 }
 .wave-cove-dot {
   width: 9px; height: 9px; border-radius: var(--radius-sm);
-  align-self: center;
   flex-shrink: 0;
 }
 .wave-cove {
@@ -1774,17 +1773,14 @@ select:-webkit-autofill {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* Wave surface flip (issue #594 demo) — ONE binary Grid↔Report switch
-   at the breadcrumb tail. It reads as a ghost icon button by default;
-   checked (= report) fills softly, and
-   aria-checked carries the bound state to AT. PR2 of #594 replaces this
-   with the persisted three-state ViewMode control. */
+/* Wave surface flip: icon-only mode toggle (Cards ↔ Report). checked =
+   icon color becomes accent without fill because report mode already swaps
+   the whole main area to the fullscreen report. */
 .view-flip {
   width: 26px;
   height: 26px;
   display: grid;
   place-items: center;
-  align-self: center; /* override wave-crumb's align-items: baseline */
   flex-shrink: 0;
   padding: var(--space-0);
   border-radius: var(--radius-md);
@@ -1794,8 +1790,7 @@ select:-webkit-autofill {
 }
 .view-flip:hover { background: var(--overlay-hover-strong); color: var(--text); }
 .view-flip[aria-checked="true"] {
-  background: var(--surface-card);
-  color: var(--text);
+  color: var(--accent);
 }
 .view-flip:focus-visible {
   outline: 2px solid var(--accent);
