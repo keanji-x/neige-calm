@@ -365,7 +365,7 @@ async fn tools_call_before_initialize_is_rejected() {
         &mut wr,
         tools_call_frame(
             3,
-            "calm.task_completed",
+            "calm.task.complete",
             "pre-init-thread",
             json!({"idempotency_key": "x"}),
         ),
@@ -452,7 +452,7 @@ async fn two_tools_calls_on_one_connection_share_identity() {
 }
 
 #[tokio::test]
-async fn spec_role_cannot_call_task_completed_or_failed() {
+async fn spec_role_cannot_call_task_complete_or_fail() {
     let b = boot().await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
@@ -466,7 +466,7 @@ async fn spec_role_cannot_call_task_completed_or_failed() {
         &mut wr,
         tools_call_frame(
             12,
-            "calm.task_completed",
+            "calm.task.complete",
             &b.thread_id,
             json!({"idempotency_key": "tc-spec-refused", "result": "ok"}),
         ),
@@ -475,14 +475,14 @@ async fn spec_role_cannot_call_task_completed_or_failed() {
     let completed = recv_frame(&mut rd).await;
     let err = completed
         .get("error")
-        .expect("spec task_completed must be rejected");
+        .expect("spec task.complete must be rejected");
     assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
 
     send_frame(
         &mut wr,
         tools_call_frame(
             13,
-            "calm.task_failed",
+            "calm.task.fail",
             &b.thread_id,
             json!({"idempotency_key": "tf-spec-refused", "reason": "nope"}),
         ),
@@ -491,7 +491,7 @@ async fn spec_role_cannot_call_task_completed_or_failed() {
     let failed = recv_frame(&mut rd).await;
     let err = failed
         .get("error")
-        .expect("spec task_failed must be rejected");
+        .expect("spec task.fail must be rejected");
     assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
     let _ = (&b.server, &b.repo);
 }

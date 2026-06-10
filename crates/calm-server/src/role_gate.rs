@@ -157,7 +157,7 @@ pub fn enforce_role(
 
     // --- (2.5) Dispatch-request events are spec-only. ---
     //
-    // Issue #583. `calm.dispatch_request` is gated to Spec at the MCP
+    // Issue #583. `calm.task.dispatch` is gated to Spec at the MCP
     // soft gate (`emit.rs::dispatch_request`), but the in-tx gate must
     // also refuse worker AI actors from emitting these events to provide
     // real kernel-level defense-in-depth — otherwise an internal caller

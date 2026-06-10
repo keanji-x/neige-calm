@@ -49,13 +49,30 @@ async fn tools_list_for_spec_role_returns_only_writes() {
     assert_eq!(
         names,
         vec![
-            "calm.dispatch_request",
             "calm.report.edit",
             "calm.report.write",
-            "calm.update_task_meta",
+            "calm.task.dispatch",
+            "calm.task.verdict",
             "calm.update_wave_state",
         ]
     );
+}
+
+#[tokio::test]
+async fn tools_list_for_spec_role_does_not_leak_aliases() {
+    let names = tools_list_names_for_role(CardRole::Spec).await;
+    for old_name in [
+        "calm.dispatch_request",
+        "calm.task_completed",
+        "calm.task_failed",
+        "calm.get_wave_state",
+        "calm.update_task_meta",
+    ] {
+        assert!(
+            !names.iter().any(|name| name == old_name),
+            "deprecated alias leaked in tools/list: {old_name}; names={names:?}",
+        );
+    }
 }
 
 #[tokio::test]
@@ -89,8 +106,8 @@ async fn tools_list_for_shared_daemon_resolves_thread_role() {
         .filter_map(|tool| tool.get("name").and_then(|name| name.as_str()))
         .collect();
     assert!(
-        names.contains(&"calm.dispatch_request"),
-        "spec thread on shared daemon must see dispatch_request, got: {names:?}"
+        names.contains(&"calm.task.dispatch"),
+        "spec thread on shared daemon must see task.dispatch, got: {names:?}"
     );
     assert_eq!(
         names.len(),

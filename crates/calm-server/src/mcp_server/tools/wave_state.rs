@@ -1,5 +1,5 @@
-//! PR7b (#136) wave-state tools — `calm.get_wave_state`,
-//! `calm.update_wave_state`, `calm.update_task_meta`.
+//! Wave-state tools for reading wave shape, patching wave metadata, and
+//! recording spec verdicts on worker outcomes.
 //!
 //! These tools complete the spec-card closed loop: a spec daemon reads
 //! the current wave snapshot, mutates wave-level metadata (title /
@@ -10,7 +10,7 @@
 //!
 //! ## Tool surface
 //!
-//! * `calm.get_wave_state` — Spec **or** Worker callable. Returns the
+//! * `calm.wave.state` — Spec **or** Worker callable. Returns the
 //!   thread-mapped card's wave row + the wave's card list
 //!   (id/kind/role/runtime) as one JSON snapshot. No event emission.
 //!   Workers occasionally peek wave state before they report; the spec
@@ -25,7 +25,7 @@
 //!   `WaveUpdated` to spec / user / kernel actors. Re-checking at the
 //!   MCP entry just gives the caller a cleaner error shape.
 //!
-//! * `calm.update_task_meta` — Spec only. Records the spec's
+//! * `calm.task.verdict` — Spec only. Records the spec's
 //!   accept/reject verdict on a worker's prior result. Lowers to
 //!   either `Event::TaskCompleted` (verdict = "accepted") or
 //!   `Event::TaskFailed` (verdict = "rejected"); the `idempotency_key`
@@ -72,21 +72,24 @@ use crate::ids::WaveId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role, require_role_any, role_gated_write_annotations,
+    read_only_annotations, register_deprecated_alias, require_role, require_role_any,
+    role_gated_write_annotations,
 };
 use crate::model::{CardRole, Wave, WaveLifecycle, WavePatch};
 use crate::wave_lifecycle::validate_transition;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_GET_WAVE_STATE: &str = "calm.get_wave_state";
+pub const TOOL_WAVE_STATE: &str = "calm.wave.state";
 pub const TOOL_UPDATE_WAVE_STATE: &str = "calm.update_wave_state";
-pub const TOOL_UPDATE_TASK_META: &str = "calm.update_task_meta";
+pub const TOOL_TASK_VERDICT: &str = "calm.task.verdict";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(get_wave_state_descriptor(), wrap(get_wave_state));
     registry.register(update_wave_state_descriptor(), wrap(update_wave_state));
     registry.register(update_task_meta_descriptor(), wrap(update_task_meta));
+    register_deprecated_alias(registry, "calm.get_wave_state", TOOL_WAVE_STATE);
+    register_deprecated_alias(registry, "calm.update_task_meta", TOOL_TASK_VERDICT);
 }
 
 /// Common wrapper that turns a typed async fn into the boxed-future
@@ -100,12 +103,12 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// calm.get_wave_state
+// calm.wave.state
 // ---------------------------------------------------------------------------
 
 fn get_wave_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_GET_WAVE_STATE.into(),
+        name: TOOL_WAVE_STATE.into(),
         description: "Read the current wave snapshot bound to the calling card. \
              Returns the wave row plus a card list so a spec daemon can see \
              worker progress without a second call. Each card carries `id`, \
@@ -435,12 +438,12 @@ fn parse_lifecycle_name(s: &str) -> Result<WaveLifecycle, RpcError> {
 }
 
 // ---------------------------------------------------------------------------
-// calm.update_task_meta
+// calm.task.verdict
 // ---------------------------------------------------------------------------
 
 fn update_task_meta_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_UPDATE_TASK_META.into(),
+        name: TOOL_TASK_VERDICT.into(),
         description: "Spec-only: record the spec's accept/reject verdict on \
              a worker's prior result. `idempotency_key` echoes the original \
              `*.worker_requested`. `status = \"accepted\"` emits \

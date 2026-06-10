@@ -20,7 +20,7 @@ use calm_server::event::EventBus;
 use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture,
 };
-use calm_server::mcp_server::tools::wave_state::TOOL_GET_WAVE_STATE;
+use calm_server::mcp_server::tools::wave_state::TOOL_WAVE_STATE;
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
@@ -364,7 +364,7 @@ async fn existing_handlers_unchanged_when_meta_present() {
     let boot = boot_with_registry(build_default_registry()).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
-    let without_meta = tools_call_frame(2, TOOL_GET_WAVE_STATE, json!({}));
+    let without_meta = tools_call_frame(2, TOOL_WAVE_STATE, json!({}));
     send_frame(&mut wr, without_meta).await;
     let without_resp = recv_frame(&mut rd).await;
     assert!(
@@ -376,7 +376,7 @@ async fn existing_handlers_unchanged_when_meta_present() {
         json!(boot.wave_id)
     );
 
-    let mut with_meta = tools_call_frame(3, TOOL_GET_WAVE_STATE, json!({}));
+    let mut with_meta = tools_call_frame(3, TOOL_WAVE_STATE, json!({}));
     with_meta["params"]["_meta"] = json!({
         "threadId": boot.thread_id,
         "card_id": "not-the-bound-card"

@@ -5,7 +5,7 @@
 //! Boots a real `SharedCodexAppServer` (codex 0.13x daemon) + a real
 //! `McpServer` (kernel-as-MCP-server) + the real `neige-mcp-stdio-shim`
 //! binary. Starts a Spec card thread, sends ONE turn with an explicit
-//! prompt forcing two `calm.update_wave_state` calls. Counts
+//! prompt forcing two `calm.task.verdict` calls. Counts
 //! `mcpToolCall` `item/started` vs `item/completed` notifications for
 //! 90 s. Asserts both calls complete.
 //!
@@ -15,8 +15,8 @@
 //!
 //!   - kernel MCP server gets `initialize` (daemon trust) ✓
 //!   - kernel returns `tools/list` (11 tools, including
-//!     `calm.update_wave_state`) ✓
-//!   - LLM returns `function_call name="calm_update_wave_state"
+//!     `calm.task.verdict`) ✓
+//!   - LLM returns `function_call name="calm_task_verdict"
 //!     namespace="mcp__calm"` ✓
 //!   - codex emits `McpToolCallBegin` → `item/started` ✓
 //!   - codex **never sends `tools/call` to the kernel** — the dispatch
@@ -30,9 +30,9 @@
 //! (`tests/mcp_shim_round_trip.rs`) proves the shim + kernel handle
 //! `initialize` + `tools/call` correctly when driven directly, so the
 //! gap is in codex's MCP dispatch (probably the sanitized name
-//! `calm_update_wave_state` → original `calm.update_wave_state`
+//! `calm_task_verdict` → original `calm.task.verdict`
 //! reverse-mapping; codex's session log shows the bizarre joined name
-//! `mcp__calmcalm_update_wave_state` in its `ToolCall:` info line).
+//! `mcp__calmcalm_task_verdict` in its `ToolCall:` info line).
 //!
 //! ## Why ship it
 //!
@@ -324,11 +324,11 @@ async fn codex_mcp_double_call_both_complete() {
     eprintln!("[double-call] thread_id={thread_id} runtime_attribution=seeded");
 
     let mut rx = daemon.subscribe_notifications();
-    let prompt = "You have one MCP tool available: calm.update_wave_state. \
+    let prompt = "You have one MCP tool available: calm.task.verdict. \
 You MUST call it exactly twice, in sequence, with these exact arguments. \
 Do NOT output any text before, between, or after the calls. \
-First call: { \"title\": \"first-rename\" } \
-Second call: { \"title\": \"second-rename\" } \
+First call: { \"idempotency_key\": \"double-call-first\", \"status\": \"accepted\", \"reason\": \"first probe\" } \
+Second call: { \"idempotency_key\": \"double-call-second\", \"status\": \"accepted\", \"reason\": \"second probe\" } \
 After the second call returns, output the single word OK and stop.";
     let turn_id = daemon
         .turn_start(&thread_id, vec![InputItem::text(prompt)])

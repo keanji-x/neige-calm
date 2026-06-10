@@ -222,7 +222,7 @@ async fn state_outputs_pretty_wave_state_json() {
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
     assert_eq!(call["method"], "tools/call");
-    assert_eq!(call["params"]["name"], json!("calm.get_wave_state"));
+    assert_eq!(call["params"]["name"], json!("calm.wave.state"));
     assert_eq!(call["params"]["arguments"], json!({}));
     let state = json!({
         "wave": { "id": "w1", "lifecycle": "working" },
@@ -254,7 +254,7 @@ async fn state_json_outputs_compact_wave_state_json() {
 
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
-    assert_eq!(call["params"]["name"], json!("calm.get_wave_state"));
+    assert_eq!(call["params"]["name"], json!("calm.wave.state"));
     assert_eq!(call["params"]["arguments"], json!({}));
     let state = json!({
         "wave": { "id": "w1", "lifecycle": "working" },
