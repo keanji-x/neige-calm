@@ -475,6 +475,25 @@ pub async fn commit_events_in_tx(
     events: &[Event],
     manifest_schema_version: i64,
 ) -> Result<Option<CommitHash>> {
+    commit_events_with_author_in_tx(
+        tx,
+        wave_id,
+        Some(actor),
+        event_id,
+        events,
+        manifest_schema_version,
+    )
+    .await
+}
+
+pub async fn commit_events_with_author_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+    author: Option<&ActorId>,
+    event_id: i64,
+    events: &[Event],
+    manifest_schema_version: i64,
+) -> Result<Option<CommitHash>> {
     if events
         .iter()
         .any(|event| matches!(event, Event::WaveDeleted { .. }))
@@ -527,14 +546,14 @@ pub async fn commit_events_in_tx(
         .await?
     };
 
-    let author = actor.to_string();
+    let author = author.map(ToString::to_string);
     commit_tree_at_tx(
         tx,
         wave_id,
         &tree,
         CommitTreeMeta {
             parent_hash: parent_hash.as_deref(),
-            author: Some(author.as_str()),
+            author: author.as_deref(),
             event_id: Some(event_id),
             message: events.last().map(Event::kind_tag).unwrap_or("event"),
             manifest_schema_version,

@@ -627,6 +627,74 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
 }
 
 #[tokio::test]
+async fn ai_actor_attribution_flows_into_diff_block() {
+    let boot = boot().await;
+    complete_first_turn_and_stamp(&boot).await;
+    let worker = add_card_with_event(
+        &boot.repo,
+        &boot.events,
+        &boot.roles,
+        &boot.write,
+        &boot.wave_id,
+        &boot.cove_id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "ai-attribution"}),
+    )
+    .await;
+    let before = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    set_last_seen_head_raw(&boot, &before).await;
+
+    let worker_id = worker.id.clone();
+    boot.repo
+        .write_with_event(
+            ActorId::AiCodex(worker_id.clone()),
+            EventScope::Card {
+                card: worker_id.clone(),
+                wave: boot.wave_id.clone(),
+                cove: boot.cove_id.clone(),
+            },
+            None,
+            &boot.events,
+            &boot.write,
+            Box::new(move |_tx| {
+                Box::pin(async move {
+                    Ok(Event::TaskCompleted {
+                        idempotency_key: "ai-attribution".into(),
+                        result: json!({"ok": true}),
+                        artifacts: vec![],
+                        agent_message: None,
+                    })
+                })
+            }),
+        )
+        .await
+        .expect("ai task completed event");
+
+    let text = issue_observation(
+        &boot,
+        Observation::TaskCompleted {
+            idempotency_key: "ai-attribution-observed".into(),
+            result: json!({"ok": true}),
+        },
+        2,
+    )
+    .await;
+    let label = format!(
+        "runs/ai-attribution.json edited (by ai:codex:{})",
+        worker.id
+    );
+    assert!(
+        text.contains(&label),
+        "AI actor label should flow into diff attribution: {text}"
+    );
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn mid_turn_changes_remain_visible_on_next_turn() {
     let boot = boot().await;
     complete_first_turn_and_stamp(&boot).await;

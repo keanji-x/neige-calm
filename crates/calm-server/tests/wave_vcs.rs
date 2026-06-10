@@ -1223,6 +1223,107 @@ async fn batch_write_creates_one_commit_at_last_wave_event() {
 }
 
 #[tokio::test]
+async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "mixed-actor-batch"}),
+    )
+    .await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before mixed batch");
+    let wave_id = wave.id.clone();
+    let cove_id = cove.id.clone();
+
+    repo.write_with_actor_events(
+        None,
+        &bus,
+        &write,
+        Box::new(move |tx| {
+            let wave_id = wave_id.clone();
+            let cove_id = cove_id.clone();
+            Box::pin(async move {
+                let updated = wave_update_tx(
+                    tx,
+                    wave_id.as_str(),
+                    WavePatch {
+                        title: Some("mixed actor title".into()),
+                        ..WavePatch::default()
+                    },
+                )
+                .await?;
+                Ok(vec![
+                    (
+                        ActorId::User,
+                        EventScope::Wave {
+                            wave: wave_id.clone(),
+                            cove: cove_id.clone(),
+                        },
+                        Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)),
+                    ),
+                    (
+                        ActorId::Kernel,
+                        EventScope::Wave {
+                            wave: wave_id,
+                            cove: cove_id,
+                        },
+                        Event::TaskCompleted {
+                            idempotency_key: "mixed-actor-batch".into(),
+                            result: json!({"status": "accepted"}),
+                            artifacts: vec![],
+                            agent_message: None,
+                        },
+                    ),
+                ])
+            })
+        }),
+    )
+    .await
+    .expect("mixed actor batch");
+
+    let after = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after mixed batch");
+    let author: Option<String> =
+        sqlx::query_scalar("SELECT author FROM wave_vcs_commits WHERE hash = ?1")
+            .bind(&after)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(author, None);
+
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+        .await
+        .unwrap()
+        .block
+        .expect("diff block");
+    assert!(block.contains("wave.json edited"), "block = {block}");
+    assert!(
+        block.contains("runs/mixed-actor-batch.json edited"),
+        "block = {block}"
+    );
+    assert!(
+        !block.contains("(by "),
+        "mixed actor commit should not render an attribution suffix: {block}"
+    );
+}
+
+#[tokio::test]
 async fn incremental_commit_changes_only_expected_wave_paths() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;

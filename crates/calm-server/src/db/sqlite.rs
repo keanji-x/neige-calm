@@ -4030,22 +4030,26 @@ impl RepoEventWrite for SqlxRepo {
                 }
             }
         }
-        let mut wave_events = HashMap::<WaveId, (i64, ActorId, Vec<Event>)>::new();
+        let mut wave_events = HashMap::<WaveId, (i64, Option<ActorId>, Vec<Event>)>::new();
         for ((actor, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
             if let Some(wave_id) = scope.wave_id() {
                 let entry = wave_events
                     .entry(wave_id.clone())
-                    .or_insert_with(|| (*event_id, actor.clone(), Vec::new()));
+                    .or_insert_with(|| (*event_id, Some(actor.clone()), Vec::new()));
+                // Commit author is exact only for a single-actor wave batch; mixed actor batches
+                // are stored as NULL so the diff renderer leaves them unattributed.
                 entry.0 = *event_id;
-                entry.1 = actor.clone();
+                if !matches!(&entry.1, Some(existing) if existing == actor) {
+                    entry.1 = None;
+                }
                 entry.2.push(event.clone());
             }
         }
-        for (wave_id, (event_id, actor, events_for_wave)) in &wave_events {
-            if let Err(e) = wave_vcs::commit_events_in_tx(
+        for (wave_id, (event_id, author, events_for_wave)) in &wave_events {
+            if let Err(e) = wave_vcs::commit_events_with_author_in_tx(
                 &mut tx,
                 wave_id,
-                actor,
+                author.as_ref(),
                 *event_id,
                 events_for_wave,
                 wave_vcs::MANIFEST_SCHEMA_VERSION,
