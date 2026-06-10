@@ -122,6 +122,36 @@ export async function createWaveInCove(
 }
 
 /**
+ * Seed a renderer-free worker card for specs that need populated card
+ * surfaces but do not care about terminal/codex daemon startup. The direct
+ * card-create route persists the row and emits `card.added`; the iframe
+ * adapter then renders it as an ordinary worker card.
+ */
+export async function createIframeCard(
+  request: APIRequestContext,
+  waveId: string,
+  url: string,
+  sort?: number,
+): Promise<{ id: string; kind: string; sort: number }> {
+  const endpoint = `http://127.0.0.1:${REPLAY_PORT}/api/waves/${encodeURIComponent(waveId)}/cards`;
+  const response = await request.post(endpoint, {
+    data: {
+      kind: 'iframe',
+      sort,
+      payload: { url },
+    },
+    headers: { 'content-type': 'application/json' },
+  });
+  if (!response.ok()) {
+    const body = await response.text().catch(() => '<unreadable body>');
+    throw new Error(
+      `createIframeCard(${waveId}): POST ${endpoint} -> ${response.status()} ${response.statusText()}: ${body}`,
+    );
+  }
+  return (await response.json()) as { id: string; kind: string; sort: number };
+}
+
+/**
  * Seed the per-wave `view-mode` overlay via the kernel REST API. The
  * header's PR-A binary Cards↔Report switch writes the same row for the
  * `report`/`grid` path, while specs that need list mode can still seed it
@@ -139,7 +169,13 @@ export async function seedWaveViewMode(
   waveId: string,
   mode: 'grid' | 'list' | 'report',
 ): Promise<void> {
-  const url = `http://127.0.0.1:${REPLAY_PORT}/api/overlays`;
+  // Relative path on purpose: unlike the other helpers in this file (which
+  // are replay-suite-only and pin REPLAY_PORT), this one is also called from
+  // the chromium docker project (wave-report-view.spec.ts), where 4141 does
+  // not exist. Both projects' request contexts resolve /api against the
+  // right stack — the a11y vite server proxies /api to the replay binary
+  // via VITE_API_PROXY_TARGET.
+  const url = `/api/overlays`;
   const response = await request.post(url, {
     data: {
       plugin_id: 'kernel',
