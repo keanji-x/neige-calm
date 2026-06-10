@@ -41,6 +41,7 @@ pub const DEFAULT_PATCH_MAX_LINES: usize = 200;
 const LOG_FILTER_SCAN_LIMIT: usize = 1000;
 const OBJECT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const OBJECT_SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
+const ATTRIBUTION_COMMIT_BOUND: usize = 50;
 
 pub type ObjectHash = String;
 pub type CommitHash = String;
@@ -75,6 +76,7 @@ pub struct CommitRecord {
     pub event_id: Option<i64>,
     pub created_at: i64,
     pub message: Option<String>,
+    pub author: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -289,6 +291,7 @@ async fn backfill_existing_waves_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<
             &tree,
             CommitTreeMeta {
                 parent_hash: None,
+                author: None,
                 event_id,
                 message: "backfill root",
                 manifest_schema_version: MANIFEST_SCHEMA_VERSION,
@@ -435,6 +438,7 @@ pub async fn commit_tree(
         tree,
         CommitTreeMeta {
             parent_hash,
+            author: None,
             event_id,
             message,
             manifest_schema_version,
@@ -447,6 +451,7 @@ pub async fn commit_tree(
 pub async fn commit_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
+    actor: &ActorId,
     event_id: i64,
     event: &Event,
     manifest_schema_version: i64,
@@ -454,6 +459,7 @@ pub async fn commit_in_tx(
     commit_events_in_tx(
         tx,
         wave_id,
+        actor,
         event_id,
         std::slice::from_ref(event),
         manifest_schema_version,
@@ -464,6 +470,26 @@ pub async fn commit_in_tx(
 pub async fn commit_events_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
+    actor: &ActorId,
+    event_id: i64,
+    events: &[Event],
+    manifest_schema_version: i64,
+) -> Result<Option<CommitHash>> {
+    commit_events_with_author_in_tx(
+        tx,
+        wave_id,
+        Some(actor),
+        event_id,
+        events,
+        manifest_schema_version,
+    )
+    .await
+}
+
+pub async fn commit_events_with_author_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+    author: Option<&ActorId>,
     event_id: i64,
     events: &[Event],
     manifest_schema_version: i64,
@@ -520,12 +546,14 @@ pub async fn commit_events_in_tx(
         .await?
     };
 
+    let author = author.map(ToString::to_string);
     commit_tree_at_tx(
         tx,
         wave_id,
         &tree,
         CommitTreeMeta {
             parent_hash: parent_hash.as_deref(),
+            author: author.as_deref(),
             event_id: Some(event_id),
             message: events.last().map(Event::kind_tag).unwrap_or("event"),
             manifest_schema_version,
@@ -726,6 +754,7 @@ pub async fn since_last_turn_block(
     } else {
         None
     };
+    let path_authors = path_authors_since(pool, previous, &current).await?;
     let mut out = String::new();
     out.push_str(&format!(
         "## Wave state changes since your last turn (HEAD {} -> {})\n",
@@ -737,6 +766,15 @@ pub async fn since_last_turn_block(
         out.push_str(&entry.path);
         out.push(' ');
         out.push_str(entry.status.observation_label());
+        if let Some(author) = path_authors.as_ref().and_then(|authors| {
+            authors
+                .get(&entry.path)
+                .and_then(|author| author.as_deref())
+        }) {
+            out.push_str(" (by ");
+            out.push_str(author);
+            out.push(')');
+        }
         if entry.path == "report.md" && report_patch.is_some() {
             out.push_str(" (unified patch follows)");
         }
@@ -878,6 +916,87 @@ async fn insert_sweep_refs_tx(
         builder.build().execute(&mut **tx).await?;
     }
     Ok(())
+}
+
+async fn path_authors_since(
+    pool: &SqlitePool,
+    previous: &str,
+    current: &str,
+) -> Result<Option<BTreeMap<String, Option<String>>>> {
+    let mut records = Vec::new();
+    let mut cursor = current.to_string();
+    let mut reached_previous = false;
+
+    for _ in 0..ATTRIBUTION_COMMIT_BOUND {
+        let Some(record) = load_commit_record_pool(pool, &cursor).await? else {
+            return Ok(None);
+        };
+        let Some(parent_hash) = record.parent_hash.clone() else {
+            return Ok(None);
+        };
+        reached_previous = parent_hash == previous;
+        cursor = parent_hash;
+        records.push(record);
+        if reached_previous {
+            break;
+        }
+    }
+
+    if !reached_previous {
+        return Ok(None);
+    }
+
+    let mut tree_cache = BTreeMap::<String, TreeManifest>::new();
+    let mut authors = BTreeMap::<String, Option<String>>::new();
+    for record in records {
+        let Some(parent_hash) = record.parent_hash.as_deref() else {
+            return Ok(None);
+        };
+        let Some(tree) = load_tree_for_commit_record(pool, &record, &mut tree_cache).await? else {
+            return Ok(None);
+        };
+        let Some(parent) = load_tree_for_commit_hash(pool, parent_hash, &mut tree_cache).await?
+        else {
+            return Ok(None);
+        };
+        for entry in diff_manifests(&parent, &tree, None) {
+            authors
+                .entry(entry.path)
+                .or_insert_with(|| record.author.clone());
+        }
+    }
+
+    Ok(Some(authors))
+}
+
+async fn load_tree_for_commit_record(
+    pool: &SqlitePool,
+    record: &CommitRecord,
+    cache: &mut BTreeMap<String, TreeManifest>,
+) -> Result<Option<TreeManifest>> {
+    if let Some(tree) = cache.get(&record.hash) {
+        return Ok(Some(tree.clone()));
+    }
+    let Some(tree) = load_tree_object_pool(pool, &record.tree_hash).await? else {
+        return Ok(None);
+    };
+    cache.insert(record.hash.clone(), tree.clone());
+    Ok(Some(tree))
+}
+
+async fn load_tree_for_commit_hash(
+    pool: &SqlitePool,
+    commit_hash: &str,
+    cache: &mut BTreeMap<String, TreeManifest>,
+) -> Result<Option<TreeManifest>> {
+    if let Some(tree) = cache.get(commit_hash) {
+        return Ok(Some(tree.clone()));
+    }
+    let Some(tree) = tree_at(pool, commit_hash).await? else {
+        return Ok(None);
+    };
+    cache.insert(commit_hash.to_string(), tree.clone());
+    Ok(Some(tree))
 }
 
 fn diff_manifests(from: &TreeManifest, to: &TreeManifest, path: Option<&str>) -> Vec<DiffEntry> {
@@ -1036,28 +1155,29 @@ fn path_matches(changed: &str, requested: &str) -> bool {
     changed == requested || changed.starts_with(&format!("{requested}/"))
 }
 
+#[derive(Clone, Copy)]
 struct CommitTreeMeta<'a> {
     parent_hash: Option<&'a str>,
+    author: Option<&'a str>,
     event_id: Option<i64>,
     message: &'a str,
     manifest_schema_version: i64,
     created_at: i64,
 }
 
-async fn commit_tree_at_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+fn commit_hash_for_tree(
     wave_id: &WaveId,
-    tree: &TreeSnapshot,
-    meta: CommitTreeMeta<'_>,
+    tree_hash: &str,
+    lifecycle: &str,
+    meta: &CommitTreeMeta<'_>,
 ) -> Result<CommitHash> {
-    let lifecycle = wave_lifecycle_tx(tx, wave_id).await?;
     let mut commit = BTreeMap::<String, Value>::new();
     commit.insert("created_at".into(), Value::from(meta.created_at));
     commit.insert(
         "event_id".into(),
         meta.event_id.map(Value::from).unwrap_or(Value::Null),
     );
-    commit.insert("lifecycle".into(), Value::String(lifecycle.clone()));
+    commit.insert("lifecycle".into(), Value::String(lifecycle.to_string()));
     commit.insert(
         "manifest_schema_version".into(),
         Value::from(meta.manifest_schema_version),
@@ -1069,23 +1189,34 @@ async fn commit_tree_at_tx(
             .map(|hash| Value::String(hash.to_string()))
             .unwrap_or(Value::Null),
     );
-    commit.insert("tree_hash".into(), Value::String(tree.tree_hash.clone()));
+    commit.insert("tree_hash".into(), Value::String(tree_hash.to_string()));
     commit.insert("wave_id".into(), Value::String(wave_id.to_string()));
     let commit_bytes = canonical_json_bytes(&commit)?;
-    let hash = hash_bytes("commit", &commit_bytes);
+    Ok(hash_bytes("commit", &commit_bytes))
+}
+
+async fn commit_tree_at_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+    tree: &TreeSnapshot,
+    meta: CommitTreeMeta<'_>,
+) -> Result<CommitHash> {
+    let lifecycle = wave_lifecycle_tx(tx, wave_id).await?;
+    let hash = commit_hash_for_tree(wave_id, &tree.tree_hash, &lifecycle, &meta)?;
 
     sqlx::query(
         r#"INSERT OR IGNORE INTO wave_vcs_commits (
                hash, wave_id, parent_hash, tree_hash, manifest_schema_version,
                author, message, lifecycle, event_id, created_at
            )
-           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9)"#,
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
     )
     .bind(&hash)
     .bind(wave_id.as_str())
     .bind(meta.parent_hash)
     .bind(&tree.tree_hash)
     .bind(meta.manifest_schema_version)
+    .bind(meta.author)
     .bind(meta.message)
     .bind(&lifecycle)
     .bind(meta.event_id)
@@ -1691,7 +1822,7 @@ async fn load_commit_record_pool(
 ) -> Result<Option<CommitRecord>> {
     let row = sqlx::query(
         r#"SELECT hash, wave_id, parent_hash, tree_hash, manifest_schema_version,
-                  lifecycle, event_id, created_at, message
+                  lifecycle, event_id, created_at, message, author
            FROM wave_vcs_commits
            WHERE hash = ?1"#,
     )
@@ -1708,7 +1839,7 @@ async fn commit_records_for_wave_pool(
 ) -> Result<Vec<CommitRecord>> {
     let rows = sqlx::query(
         r#"SELECT hash, wave_id, parent_hash, tree_hash, manifest_schema_version,
-                  lifecycle, event_id, created_at, message
+                  lifecycle, event_id, created_at, message, author
            FROM wave_vcs_commits
            WHERE wave_id = ?1
            ORDER BY created_at DESC, COALESCE(event_id, -1) DESC, hash DESC
@@ -1732,6 +1863,7 @@ fn commit_record_from_row(row: SqliteRow) -> Result<CommitRecord> {
         event_id: row.try_get("event_id")?,
         created_at: row.try_get("created_at")?,
         message: row.try_get("message")?,
+        author: row.try_get("author")?,
     })
 }
 
@@ -2662,4 +2794,31 @@ fn markdown_code_fence_for(text: &str) -> String {
         }
     }
     "`".repeat(3.max(longest + 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_hash_ignores_author_metadata() {
+        let wave_id = WaveId::from("wave-1");
+        let base = CommitTreeMeta {
+            parent_hash: Some("parent-1"),
+            author: Some("user"),
+            event_id: Some(7),
+            message: "wave.updated",
+            manifest_schema_version: MANIFEST_SCHEMA_VERSION,
+            created_at: 1234,
+        };
+        let other_author = CommitTreeMeta {
+            author: Some("kernel"),
+            ..base
+        };
+
+        assert_eq!(
+            commit_hash_for_tree(&wave_id, "tree-1", "draft", &base).unwrap(),
+            commit_hash_for_tree(&wave_id, "tree-1", "draft", &other_author).unwrap()
+        );
+    }
 }

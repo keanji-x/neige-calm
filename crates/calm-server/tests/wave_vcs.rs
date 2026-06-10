@@ -208,6 +208,47 @@ async fn update_card_with_event(
         .expect("updated card exists")
 }
 
+async fn update_wave_title_with_actor(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    write: &WriteContext,
+    wave_id: &WaveId,
+    cove_id: &CoveId,
+    title: &str,
+    actor: ActorId,
+) {
+    let wave_id_for_tx = wave_id.clone();
+    let title = title.to_string();
+    repo.write_with_event(
+        actor,
+        EventScope::Wave {
+            wave: wave_id.clone(),
+            cove: cove_id.clone(),
+        },
+        None,
+        bus,
+        write,
+        Box::new(move |tx| {
+            let wave_id = wave_id_for_tx.clone();
+            let title = title.clone();
+            Box::pin(async move {
+                let updated = wave_update_tx(
+                    tx,
+                    wave_id.as_str(),
+                    WavePatch {
+                        title: Some(title),
+                        ..WavePatch::default()
+                    },
+                )
+                .await?;
+                Ok(Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)))
+            })
+        }),
+    )
+    .await
+    .expect("wave title update event");
+}
+
 async fn insert_raw_card(
     repo: &SqlxRepo,
     roles: &CardRoleCache,
@@ -1170,7 +1211,116 @@ async fn batch_write_creates_one_commit_at_last_wave_event() {
 
     let commits = wave_commit_rows(&repo, wave.id.as_str()).await;
     assert_eq!(commits.len(), 2);
-    assert_eq!(commits.last().unwrap().2, Some(*ids.last().unwrap()));
+    let latest = commits.last().unwrap();
+    assert_eq!(latest.2, Some(*ids.last().unwrap()));
+    let author: Option<String> =
+        sqlx::query_scalar("SELECT author FROM wave_vcs_commits WHERE hash = ?1")
+            .bind(&latest.0)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(author.as_deref(), Some("user"));
+}
+
+#[tokio::test]
+async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "mixed-actor-batch"}),
+    )
+    .await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before mixed batch");
+    let wave_id = wave.id.clone();
+    let cove_id = cove.id.clone();
+
+    repo.write_with_actor_events(
+        None,
+        &bus,
+        &write,
+        Box::new(move |tx| {
+            let wave_id = wave_id.clone();
+            let cove_id = cove_id.clone();
+            Box::pin(async move {
+                let updated = wave_update_tx(
+                    tx,
+                    wave_id.as_str(),
+                    WavePatch {
+                        title: Some("mixed actor title".into()),
+                        ..WavePatch::default()
+                    },
+                )
+                .await?;
+                Ok(vec![
+                    (
+                        ActorId::User,
+                        EventScope::Wave {
+                            wave: wave_id.clone(),
+                            cove: cove_id.clone(),
+                        },
+                        Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)),
+                    ),
+                    (
+                        ActorId::Kernel,
+                        EventScope::Wave {
+                            wave: wave_id,
+                            cove: cove_id,
+                        },
+                        Event::TaskCompleted {
+                            idempotency_key: "mixed-actor-batch".into(),
+                            result: json!({"status": "accepted"}),
+                            artifacts: vec![],
+                            agent_message: None,
+                        },
+                    ),
+                ])
+            })
+        }),
+    )
+    .await
+    .expect("mixed actor batch");
+
+    let after = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after mixed batch");
+    let author: Option<String> =
+        sqlx::query_scalar("SELECT author FROM wave_vcs_commits WHERE hash = ?1")
+            .bind(&after)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(author, None);
+
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+        .await
+        .unwrap()
+        .block
+        .expect("diff block");
+    assert!(block.contains("wave.json edited"), "block = {block}");
+    assert!(
+        block.contains("runs/mixed-actor-batch.json edited"),
+        "block = {block}"
+    );
+    assert!(
+        !block.contains("(by "),
+        "mixed actor commit should not render an attribution suffix: {block}"
+    );
 }
 
 #[tokio::test]
@@ -1342,6 +1492,18 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
     )
     .await
     .expect("hook event");
+    let hook_head = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after hook");
+    let hook_author: Option<String> =
+        sqlx::query_scalar("SELECT author FROM wave_vcs_commits WHERE hash = ?1")
+            .bind(&hook_head)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(hook_author.as_deref(), Some("kernel"));
+
     repo.log_pure_event(
         ActorId::KernelDispatcher,
         EventScope::Wave {
@@ -1485,7 +1647,7 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
     let block = since.block.expect("diff block");
     assert!(
-        block.contains("report.md edited (unified patch follows)"),
+        block.contains("report.md edited (by kernel) (unified patch follows)"),
         "block = {block}"
     );
     assert!(
@@ -1512,6 +1674,89 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
     assert!(
         diff_body.contains("\n-old line\n+new line"),
         "diff should contain the report edit hunk: {block}"
+    );
+}
+
+#[tokio::test]
+async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before updates");
+
+    for i in 0..=50 {
+        update_wave_title_with_actor(
+            &repo,
+            &bus,
+            &write,
+            &wave.id,
+            &cove.id,
+            &format!("title-{i}"),
+            ActorId::User,
+        )
+        .await;
+    }
+
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+        .await
+        .unwrap()
+        .block
+        .expect("diff block");
+    assert!(block.contains("index.md edited"), "block = {block}");
+    assert!(
+        !block.contains("(by "),
+        "over-bound range should use old unattributed rendering: {block}"
+    );
+}
+
+#[tokio::test]
+async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before update");
+
+    update_wave_title_with_actor(
+        &repo,
+        &bus,
+        &write,
+        &wave.id,
+        &cove.id,
+        "legacy-null-author",
+        ActorId::User,
+    )
+    .await;
+    let after = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after update");
+    sqlx::query("UPDATE wave_vcs_commits SET author = NULL WHERE hash = ?1")
+        .bind(&after)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+        .await
+        .unwrap()
+        .block
+        .expect("diff block");
+    assert!(block.contains("index.md edited"), "block = {block}");
+    assert!(
+        !block.contains("(by "),
+        "NULL legacy author should not render an attribution suffix: {block}"
     );
 }
 

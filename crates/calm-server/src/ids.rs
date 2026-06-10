@@ -66,6 +66,23 @@ pub enum ActorId {
     AiClaude(CardId),
 }
 
+impl std::fmt::Display for ActorId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::User => f.write_str("user"),
+            Self::Kernel => f.write_str("kernel"),
+            Self::KernelDispatcher => f.write_str("kernel-dispatcher"),
+            Self::Plugin(id) => write!(f, "plugin:{id}"),
+            Self::AiSpec(id) if id.as_str().is_empty() => f.write_str("ai:spec"),
+            Self::AiSpec(id) => write!(f, "ai:spec:{}", id.as_str()),
+            Self::AiCodex(id) if id.as_str().is_empty() => f.write_str("ai:codex"),
+            Self::AiCodex(id) => write!(f, "ai:codex:{}", id.as_str()),
+            Self::AiClaude(id) if id.as_str().is_empty() => f.write_str("ai:claude"),
+            Self::AiClaude(id) => write!(f, "ai:claude:{}", id.as_str()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Boilerplate conversions for each newtype. We generate the From / Display /
 // AsRef impls via a tiny macro so adding a future id (e.g. PluginId in some
@@ -161,5 +178,16 @@ mod tests {
         let u = ActorId::User;
         let back: ActorId = serde_json::from_str(&serde_json::to_string(&u).unwrap()).unwrap();
         assert_eq!(back, u);
+    }
+
+    #[test]
+    fn actor_id_display_is_commit_author_label() {
+        assert_eq!(ActorId::User.to_string(), "user");
+        assert_eq!(ActorId::Kernel.to_string(), "kernel");
+        assert_eq!(
+            ActorId::AiSpec(CardId::from("card-7")).to_string(),
+            "ai:spec:card-7"
+        );
+        assert_eq!(ActorId::AiCodex(CardId::from("")).to_string(), "ai:codex");
     }
 }
