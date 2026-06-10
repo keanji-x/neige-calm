@@ -834,6 +834,27 @@ export interface components {
          * @enum {string}
          */
         CardRole: "worker" | "spec" | "reportcard";
+        /**
+         * @description Live runtime projection joined from the `runtimes` table when a card is
+         *     fetched or serialized.
+         *
+         *     This view is not part of the idempotency contract: across retries the
+         *     runtime row may have advanced, so `Card.runtime` may differ between the
+         *     first POST response and a retry POST response returning the same operation
+         *     result. Future cleanup (#581 item 4) will remove the legacy payload-key
+         *     projection; this typed view is the forward-compatible reader path.
+         */
+        CardRuntimeView: {
+            kind: components["schemas"]["RuntimeKind"];
+            provider?: null | components["schemas"]["AgentProvider"];
+            runtime_id: string;
+            session_id?: string | null;
+            source?: string | null;
+            status: components["schemas"]["RunStatus"];
+            terminal_id?: string | null;
+            thread_id?: string | null;
+            thread_status?: string | null;
+        };
         Cove: {
             color: string;
             /** Format: int64 */
