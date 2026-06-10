@@ -2,14 +2,14 @@
 //! `mcp_server::handshake` path + per-connection identity binding.
 //!
 //! Boots a real `McpServer` against an in-memory `SqlxRepo` + a UDS
-//! tempdir, mints Spec cards with per-card MCP tokens, and drives a mock
+//! tempdir, mints a Spec card with a per-card MCP token, and drives a mock
 //! client over the socket. Covers:
 //!
 //!   * `initialize` with a valid token → success + capabilities echoed.
 //!   * `initialize` with a bogus token → `-32401` error + connection close.
 //!   * `tools/call` before `initialize` → `-32002` error.
 //!   * Multiple `tools/call`s on one connection → per-call
-//!     `_meta.threadId` identity mapping routes to distinguishable waves.
+//!     `_meta.threadId` identity mapping routes to distinguishable threads.
 //!
 //! Test budget: 5 seconds per case (UDS bind/connect is sub-ms; the
 //! budget exists only to bound runaway hangs).
@@ -27,7 +27,8 @@ use calm_server::db::sqlite::{
     runtime_get_active_for_card_tx, runtime_start_tx,
 };
 use calm_server::event::EventBus;
-use calm_server::mcp_server::{McpServer, build_default_registry};
+use calm_server::mcp_server::registry::{ToolCallIdentity, ToolHandler, ToolHandlerFuture};
+use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::runtime_repo::{
@@ -37,30 +38,35 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const TEST_BUDGET: Duration = Duration::from_secs(5);
 
+type IdentityCaptureRx = mpsc::UnboundedReceiver<ToolCallIdentity>;
+
 struct Boot {
     server: Arc<McpServer>,
+    sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_id: String,
     wave_id: String,
     thread_id: String,
-    card_id_b: String,
-    wave_id_b: String,
-    thread_id_b: String,
     /// Raw per-card MCP token (kept in memory only — never persisted).
     raw_token: String,
     socket_path: PathBuf,
     _tmp: TempDir,
 }
 
-/// Boot an `McpServer` against an in-memory SqlxRepo with two Spec cards
-/// plus MCP tokens already minted. Each card's wave + cove are seeded so
+/// Boot an `McpServer` against an in-memory SqlxRepo with a Spec card
+/// plus an MCP token already minted. The card's wave + cove are seeded so
 /// the emit tools (PR7a) can resolve the scope chain.
 async fn boot() -> Boot {
+    boot_with_registry(build_default_registry()).await
+}
+
+async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let tmp = TempDir::new().expect("tempdir for MCP socket");
     let socket_path = tmp.path().join("kernel.sock");
 
@@ -128,43 +134,7 @@ async fn boot() -> Boot {
     let thread_id = format!("thread-{card_id}");
     seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
-    let wave_b = repo
-        .wave_create(NewWave {
-            cove_id: cove.id.clone(),
-            title: "mcp-handshake-test-b".into(),
-            sort: None,
-            cwd: String::new(),
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    let card_id_b = calm_server::model::new_id();
-    let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let (_card_b, _term_b, _mcp_token_b) = card_with_codex_create_tx(
-        &mut tx,
-        card_id_b.clone(),
-        &calm_server::model::new_id(),
-        wave_b.id.clone(),
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Spec,
-        false,
-        &card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint secondary spec card");
-    tx.commit().await.unwrap();
-    let thread_id_b = format!("thread-{card_id_b}");
-    seed_runtime_thread(&sqlx_repo, card_id_b.as_str(), thread_id_b.as_str()).await;
-
     let events = EventBus::new();
-    let registry = build_default_registry();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let server = McpServer::spawn(
@@ -181,14 +151,12 @@ async fn boot() -> Boot {
 
     Boot {
         server,
+        sqlx_repo,
         repo,
         events,
         card_id,
         wave_id: wave.id.to_string(),
         thread_id,
-        card_id_b,
-        wave_id_b: wave_b.id.to_string(),
-        thread_id_b,
         raw_token,
         socket_path,
         _tmp: tmp,
@@ -321,6 +289,30 @@ fn wave_json_from_cat_response(resp: &Value) -> Value {
     serde_json::from_str(content).expect("wave content is JSON")
 }
 
+fn registry_with_wave_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCaptureRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mut registry = ToolRegistry::new();
+    calm_server::mcp_server::tools::register_default_tools(&mut registry);
+    let wave_cat = registry
+        .lookup("calm.wave.cat")
+        .expect("calm.wave.cat registered");
+    let descriptor = registry
+        .descriptors()
+        .into_iter()
+        .find(|d| d.name == "calm.wave.cat")
+        .expect("calm.wave.cat descriptor registered");
+    let handler: ToolHandler = Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
+        let tx = tx.clone();
+        let wave_cat = wave_cat.clone();
+        Box::pin(async move {
+            tx.send(identity.clone()).unwrap();
+            wave_cat(ctx, identity, args).await
+        })
+    });
+    registry.register(descriptor, handler);
+    (Arc::new(registry), rx)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -423,13 +415,15 @@ async fn tools_call_before_initialize_is_rejected() {
     let _ = &b.server;
 }
 
-// Per-call `_meta.threadId` routing is verified by using one initialized
-// connection with the primary card token, then sending read-only calls whose
-// thread IDs map to different seeded cards/waves. A transport that falls back
-// to the init-token identity resolves call 2 to the primary wave and fails.
+// Per-call `_meta.threadId` routing is verified on one initialized card-bound
+// connection by wrapping `calm.wave.cat` and capturing the identity delivered to
+// the handler. Both calls resolve to the same card/wave, so the load-bearing
+// assertion is that the observed `identity.thread_id` matches each request's
+// `_meta.threadId`; falling back to the initialize/bound identity is caught.
 #[tokio::test]
 async fn two_tools_calls_route_per_call_meta_thread_id() {
-    let b = boot().await;
+    let (registry, mut identity_rx) = registry_with_wave_cat_identity_capture();
+    let b = boot_with_registry(registry).await;
     let mut rx = b.events.subscribe_filtered();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
@@ -461,13 +455,22 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         "first wave.cat resolved wrong wave for bound card {}",
         b.card_id
     );
+    let identity1 = timeout(TEST_BUDGET, identity_rx.recv())
+        .await
+        .expect("first captured identity within budget")
+        .expect("first captured identity present");
+    assert_eq!(identity1.card_id, b.card_id);
+    assert_eq!(identity1.thread_id, b.thread_id);
+
+    let thread_id_a2 = format!("thread-{}-second", b.card_id);
+    seed_runtime_thread(&b.sqlx_repo, b.card_id.as_str(), thread_id_a2.as_str()).await;
 
     send_frame(
         &mut wr,
         tools_call_frame(
             11,
             "calm.wave.cat",
-            &b.thread_id_b,
+            &thread_id_a2,
             json!({"path": "wave.json"}),
         ),
     )
@@ -480,10 +483,16 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
     let wave2 = wave_json_from_cat_response(&r2);
     assert_eq!(
         wave2["id"],
-        json!(b.wave_id_b.as_str()),
+        json!(b.wave_id.as_str()),
         "second wave.cat resolved wrong wave for bound card {}",
-        b.card_id_b
+        b.card_id
     );
+    let identity2 = timeout(TEST_BUDGET, identity_rx.recv())
+        .await
+        .expect("second captured identity within budget")
+        .expect("second captured identity present");
+    assert_eq!(identity2.card_id, b.card_id);
+    assert_eq!(identity2.thread_id, thread_id_a2);
 
     match timeout(Duration::from_millis(50), rx.recv()).await {
         Err(_) => {}

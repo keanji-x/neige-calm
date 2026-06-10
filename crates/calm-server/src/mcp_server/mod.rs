@@ -48,7 +48,7 @@ pub mod registry;
 pub mod tools;
 pub mod transport;
 
-pub use registry::{AppContext, CardIdentity, ToolCallIdentity, ToolRegistry};
+pub use registry::{AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolRegistry};
 pub use transport::{McpServer, McpShimConfig};
 
 use std::sync::Arc;
