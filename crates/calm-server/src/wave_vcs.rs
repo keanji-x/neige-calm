@@ -35,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const MANIFEST_SCHEMA_VERSION: i64 = 1;
 pub const DEFAULT_PATCH_MAX_LINES: usize = 200;
+const LOG_FILTER_SCAN_LIMIT: usize = 1000;
 
 pub type ObjectHash = String;
 pub type CommitHash = String;
@@ -133,6 +134,12 @@ pub struct CommitLogEntry {
     pub created_at: i64,
     pub message: Option<String>,
     pub changed_paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitLog {
+    pub commits: Vec<CommitLogEntry>,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -623,12 +630,20 @@ pub async fn log(
     wave_id: &WaveId,
     path: Option<&str>,
     limit: usize,
-) -> Result<Vec<CommitLogEntry>> {
+) -> Result<CommitLog> {
     let limit = limit.clamp(1, 200);
-    let records = commit_records_for_wave_pool(pool, wave_id).await?;
     let normalized = path.map(normalize_path).filter(|path| !path.is_empty());
+    let scan_limit = if normalized.is_some() {
+        LOG_FILTER_SCAN_LIMIT
+    } else {
+        limit
+    };
+    let records = commit_records_for_wave_pool(pool, wave_id, scan_limit.saturating_add(1)).await?;
+    let fetched = records.len();
     let mut out = Vec::new();
-    for record in records {
+    let mut examined = 0;
+    for record in records.into_iter().take(scan_limit) {
+        examined += 1;
         let changed_paths = changed_paths_for_commit(pool, &record).await?;
         if let Some(path) = normalized.as_deref()
             && !changed_paths
@@ -650,7 +665,10 @@ pub async fn log(
             break;
         }
     }
-    Ok(out)
+    Ok(CommitLog {
+        commits: out,
+        truncated: examined < fetched,
+    })
 }
 
 pub async fn since_last_turn_block(
@@ -675,7 +693,7 @@ pub async fn since_last_turn_block(
         });
     }
 
-    let entries = diff_with_patches(pool, previous, &current, None, DEFAULT_PATCH_MAX_LINES)
+    let entries = diff(pool, previous, &current, None)
         .await?
         .into_iter()
         .filter(|entry| !is_internal_observation_diff_path(&entry.path, spec_card_id))
@@ -686,6 +704,23 @@ pub async fn since_last_turn_block(
             block: None,
         });
     }
+    let report_patch = if entries.iter().any(|entry| {
+        entry.path == "report.md"
+            && matches!(entry.status, DiffStatus::Added | DiffStatus::Modified)
+    }) {
+        diff_with_patches(
+            pool,
+            previous,
+            &current,
+            Some("report.md"),
+            DEFAULT_PATCH_MAX_LINES,
+        )
+        .await?
+        .into_iter()
+        .find_map(|entry| entry.patch)
+    } else {
+        None
+    };
     let mut out = String::new();
     out.push_str(&format!(
         "## Wave state changes since your last turn (HEAD {} -> {})\n",
@@ -697,19 +732,22 @@ pub async fn since_last_turn_block(
         out.push_str(&entry.path);
         out.push(' ');
         out.push_str(entry.status.observation_label());
-        if entry.path == "report.md" && entry.patch.is_some() {
+        if entry.path == "report.md" && report_patch.is_some() {
             out.push_str(" (unified patch follows)");
         }
         out.push('\n');
         if entry.path == "report.md"
-            && let Some(patch) = entry.patch
+            && let Some(patch) = report_patch.as_deref()
         {
-            out.push_str("```diff\n");
-            out.push_str(&patch);
+            let fence = markdown_code_fence_for(patch);
+            out.push_str(&fence);
+            out.push_str("diff\n");
+            out.push_str(patch);
             if !patch.ends_with('\n') {
                 out.push('\n');
             }
-            out.push_str("```\n");
+            out.push_str(&fence);
+            out.push('\n');
         }
     }
     Ok(SinceLastTurnBlock {
@@ -1548,15 +1586,18 @@ async fn load_commit_record_pool(
 async fn commit_records_for_wave_pool(
     pool: &SqlitePool,
     wave_id: &WaveId,
+    limit: usize,
 ) -> Result<Vec<CommitRecord>> {
     let rows = sqlx::query(
         r#"SELECT hash, wave_id, parent_hash, tree_hash, manifest_schema_version,
                   lifecycle, event_id, created_at, message
            FROM wave_vcs_commits
            WHERE wave_id = ?1
-           ORDER BY created_at DESC, COALESCE(event_id, -1) DESC, hash DESC"#,
+           ORDER BY created_at DESC, COALESCE(event_id, -1) DESC, hash DESC
+           LIMIT ?2"#,
     )
     .bind(wave_id.as_str())
+    .bind(limit as i64)
     .fetch_all(pool)
     .await?;
     rows.into_iter().map(commit_record_from_row).collect()
@@ -2511,4 +2552,18 @@ fn normalize_path(path: &str) -> String {
 
 fn short_hash(hash: &str) -> &str {
     hash.get(..8).unwrap_or(hash)
+}
+
+fn markdown_code_fence_for(text: &str) -> String {
+    let mut longest = 0;
+    let mut current = 0;
+    for ch in text.chars() {
+        if ch == '`' {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    "`".repeat(3.max(longest + 1))
 }

@@ -620,6 +620,7 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
     assert!(text.contains("```diff\n--- a/report.md"));
     assert!(text.contains("+++ b/report.md"));
     assert!(text.contains("@@"));
+    assert!(text.contains("\n+# Goal"));
     assert!(text.contains("\n\n---\n\n"));
     assert!(text.contains("idempotency_key=report-write"));
     boot.harness.shutdown().await.unwrap();

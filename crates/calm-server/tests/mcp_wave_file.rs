@@ -1975,6 +1975,7 @@ async fn hidden_wave_history_tools_are_callable_and_patch_report() {
     )
     .await
     .expect("hidden log is callable");
+    assert_eq!(log["truncated"], json!(false));
     let commits = log["commits"].as_array().expect("commits array");
     assert!(
         commits.iter().any(|commit| commit["changed_paths"]

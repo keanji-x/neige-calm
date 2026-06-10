@@ -166,11 +166,12 @@ async fn wave_log(
     let obj = object_args(&args, TOOL_WAVE_LOG)?;
     let path = optional_string(obj, "path", TOOL_WAVE_LOG)?;
     let limit = optional_limit(obj, TOOL_WAVE_LOG)?;
-    let commits = wave_vcs::log(pool, &wave.id, path, limit)
+    let log = wave_vcs::log(pool, &wave.id, path, limit)
         .await
         .map_err(vcs_error_to_rpc)?;
     Ok(json!({
-        "commits": commits.into_iter().map(commit_log_json).collect::<Vec<_>>(),
+        "commits": log.commits.into_iter().map(commit_log_json).collect::<Vec<_>>(),
+        "truncated": log.truncated,
     }))
 }
 
