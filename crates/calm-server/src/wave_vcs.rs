@@ -19,6 +19,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, Wave, now_ms};
+use crate::runtime_lookup;
 use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeKind};
 use crate::wave_fs_view::{
     self, HookEventProjection, RunEventProjection, RunProjection, RunVerdictProjection,
@@ -94,10 +95,39 @@ struct CardProjection {
     role: String,
 }
 
-#[derive(Clone, Copy)]
 enum CardVisibility {
-    AnnouncedOnly,
+    AnnouncedOrInherited(BTreeSet<String>),
     AllRows,
+}
+
+impl CardVisibility {
+    fn announced_only() -> Self {
+        Self::AnnouncedOrInherited(BTreeSet::new())
+    }
+
+    fn from_manifest(manifest: &TreeManifest) -> Self {
+        Self::AnnouncedOrInherited(visible_card_ids_from_manifest(manifest))
+    }
+
+    fn includes(&self, card_id: &str, announced: bool) -> bool {
+        match self {
+            Self::AnnouncedOrInherited(inherited) => announced || inherited.contains(card_id),
+            Self::AllRows => true,
+        }
+    }
+}
+
+fn visible_card_ids_from_manifest(manifest: &TreeManifest) -> BTreeSet<String> {
+    manifest
+        .entries
+        .keys()
+        .filter_map(|path| {
+            path.strip_prefix("cards/")
+                .and_then(|path| path.strip_suffix("/meta.json"))
+                .filter(|card_id| !card_id.contains('/'))
+                .map(ToOwned::to_owned)
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -174,7 +204,7 @@ async fn backfill_existing_waves_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<
             MANIFEST_SCHEMA_VERSION,
             created_at,
             &Some(wave.clone()),
-            CardVisibility::AllRows,
+            &CardVisibility::AllRows,
         )
         .await?;
         commit_tree_at_tx(
@@ -207,7 +237,7 @@ pub async fn snapshot_tree(
         schema_version,
         now_ms(),
         &None,
-        CardVisibility::AnnouncedOnly,
+        &CardVisibility::announced_only(),
     )
     .await
 }
@@ -218,7 +248,7 @@ async fn snapshot_tree_at_tx(
     schema_version: i64,
     object_created_at: i64,
     prefetched_wave: &Option<Wave>,
-    card_visibility: CardVisibility,
+    card_visibility: &CardVisibility,
 ) -> Result<TreeSnapshot> {
     let wave = match prefetched_wave {
         Some(wave) => wave.clone(),
@@ -367,6 +397,7 @@ pub async fn commit_events_in_tx(
         let mut parent_manifest = tree_at_in_tx(tx, parent)
             .await?
             .ok_or_else(|| CalmError::Internal(format!("wave-vcs: missing tree for {parent}")))?;
+        let card_visibility = CardVisibility::from_manifest(&parent_manifest);
         let mut delta = PathDelta::default();
         for event in events {
             delta.merge(paths_changed_by_event(event, wave_id));
@@ -378,11 +409,19 @@ pub async fn commit_events_in_tx(
                 manifest_schema_version,
                 now,
                 &None,
-                CardVisibility::AnnouncedOnly,
+                &card_visibility,
             )
             .await?
         } else {
-            apply_delta_tx(tx, wave_id, &mut parent_manifest, delta, now).await?;
+            apply_delta_tx(
+                tx,
+                wave_id,
+                &mut parent_manifest,
+                delta,
+                &card_visibility,
+                now,
+            )
+            .await?;
             store_tree(tx, manifest_schema_version, parent_manifest.entries, now).await?
         }
     } else {
@@ -392,7 +431,7 @@ pub async fn commit_events_in_tx(
             manifest_schema_version,
             now,
             &None,
-            CardVisibility::AnnouncedOnly,
+            &CardVisibility::announced_only(),
         )
         .await?
     };
@@ -613,6 +652,7 @@ async fn apply_delta_tx(
     wave_id: &WaveId,
     manifest: &mut TreeManifest,
     delta: PathDelta,
+    card_visibility: &CardVisibility,
     object_created_at: i64,
 ) -> Result<()> {
     for prefix in delta.remove_prefixes {
@@ -622,7 +662,9 @@ async fn apply_delta_tx(
     }
     let mut run_keys = delta.run_keys;
     for card_id in delta.run_card_ids {
-        if let Some(key) = run_key_for_worker_card_tx(tx, wave_id, &card_id).await? {
+        if let Some(key) =
+            run_key_for_worker_card_tx(tx, wave_id, &card_id, card_visibility).await?
+        {
             run_keys.insert(key);
         }
         if let Some(key) =
@@ -637,12 +679,13 @@ async fn apply_delta_tx(
             wave_id,
             &mut manifest.entries,
             run_keys,
+            card_visibility,
             object_created_at,
         )
         .await?;
     }
     for path in delta.exact {
-        match render_path_tx(tx, wave_id, &path).await? {
+        match render_path_tx(tx, wave_id, &path, card_visibility).await? {
             Some(content) => {
                 put_rendered_entry(tx, &mut manifest.entries, path, content, object_created_at)
                     .await?;
@@ -659,6 +702,7 @@ async fn render_path_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     path: &str,
+    card_visibility: &CardVisibility,
 ) -> Result<Option<BlobContent>> {
     let path = normalize_path(path);
     match path.as_str() {
@@ -667,7 +711,7 @@ async fn render_path_tx(
                 Some(wave) => wave,
                 None => return Ok(None),
             };
-            let cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            let cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
             Ok(Some(index_markdown(&wave, cards.len())))
         }
         "wave.json" => {
@@ -677,22 +721,24 @@ async fn render_path_tx(
             Ok(Some(wave_json(&wave)?))
         }
         "report.md" => {
-            let cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            let cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
             report_markdown(&cards)
         }
         "cards/index.json" => {
-            let cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            let cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
             Ok(Some(cards_index_json(&cards)?))
         }
-        path if path.starts_with("cards/") => render_card_path_tx(tx, wave_id, path).await,
+        path if path.starts_with("cards/") => {
+            render_card_path_tx(tx, wave_id, path, card_visibility).await
+        }
         "runs/index.json" => {
-            let mut cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            let mut cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
             project_runtime_into_cards_tx(tx, &mut cards).await?;
             let runs = project_runs_tx(tx, wave_id, &cards).await?;
             Ok(Some(runs_index_json(&runs)?))
         }
         path if path.starts_with("runs/") => {
-            let mut cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            let mut cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
             project_runtime_into_cards_tx(tx, &mut cards).await?;
             let runs = project_runs_tx(tx, wave_id, &cards).await?;
             render_run_path(path, &runs)
@@ -705,12 +751,13 @@ async fn render_card_path_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     path: &str,
+    card_visibility: &CardVisibility,
 ) -> Result<Option<BlobContent>> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() != 3 {
         return Ok(None);
     }
-    let Some(card) = card_in_wave_tx(tx, wave_id, parts[1]).await? else {
+    let Some(card) = card_in_wave_tx(tx, wave_id, parts[1], card_visibility).await? else {
         return Ok(None);
     };
     match parts[2] {
@@ -815,6 +862,11 @@ async fn insert_run_entries(
     .await?;
     for run in runs {
         if wave_fs_view::is_reserved_run_key(&run.idempotency_key) {
+            // `wave_file` errors for reserved run keys because a live read can
+            // fail without side effects. Wave VCS is in an event write tx, so
+            // it skips the pathological key instead of rolling back unrelated
+            // events; byte parity with `wave_file` is intentionally waived for
+            // that invariant violation.
             tracing::error!(
                 target: "wave_vcs",
                 idempotency_key = %run.idempotency_key,
@@ -847,12 +899,16 @@ async fn apply_run_key_delta_tx(
     wave_id: &WaveId,
     entries: &mut BTreeMap<String, ManifestEntry>,
     run_keys: BTreeSet<String>,
+    card_visibility: &CardVisibility,
     created_at: i64,
 ) -> Result<()> {
     let mut index = load_runs_index_map_tx(tx, entries).await?;
 
     for key in run_keys {
         if wave_fs_view::is_reserved_run_key(&key) {
+            // See `insert_run_entries`: VCS skips the reserved-key projection
+            // to keep unrelated event writes commit-able, so this pathological
+            // state deliberately diverges from live `wave_file` byte parity.
             tracing::error!(
                 target: "wave_vcs",
                 idempotency_key = %key,
@@ -861,7 +917,7 @@ async fn apply_run_key_delta_tx(
             continue;
         }
         index.remove(&key);
-        match project_run_by_key_tx(tx, wave_id, &key).await? {
+        match project_run_by_key_tx(tx, wave_id, &key, card_visibility).await? {
             Some(run) => {
                 index.insert(key.clone(), wave_fs_view::run_index_entry(&run));
                 put_rendered_entry(
@@ -926,9 +982,18 @@ async fn run_key_for_worker_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     card_id: &str,
+    visibility: &CardVisibility,
 ) -> Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as(
-        r#"SELECT json_extract(payload, '$.idempotency_key') AS idempotency_key
+    let row = sqlx::query(
+        r#"SELECT id,
+                  json_extract(payload, '$.idempotency_key') AS idempotency_key,
+                  EXISTS (
+                    SELECT 1
+                    FROM events
+                    WHERE events.scope_wave = cards.wave_id
+                      AND events.kind = 'card.added'
+                      AND json_extract(events.payload, '$.id') = cards.id
+                  ) AS vcs_announced
            FROM cards
            WHERE id = ?1
              AND wave_id = ?2
@@ -939,7 +1004,16 @@ async fn run_key_for_worker_card_tx(
     .bind(wave_id.as_str())
     .fetch_optional(&mut **tx)
     .await?;
-    Ok(row.map(|(key,)| key))
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let id: String = row.try_get("id")?;
+    let announced: i64 = row.try_get("vcs_announced")?;
+    if visibility.includes(&id, announced != 0) {
+        Ok(Some(row.try_get("idempotency_key")?))
+    } else {
+        Ok(None)
+    }
 }
 
 async fn run_key_for_worker_card_in_index_tx(
@@ -1175,58 +1249,67 @@ async fn load_wave_optional_tx(
 async fn cards_for_wave_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
-    visibility: CardVisibility,
+    visibility: &CardVisibility,
 ) -> Result<Vec<CardProjection>> {
-    let sql = match visibility {
-        CardVisibility::AnnouncedOnly => {
-            r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
-               FROM cards
-               WHERE wave_id = ?1
-                 AND EXISTS (
-                   SELECT 1
-                   FROM events
-                   WHERE events.scope_wave = cards.wave_id
-                     AND events.kind = 'card.added'
-                     AND json_extract(events.payload, '$.id') = cards.id
-                 )
-               ORDER BY sort ASC, id ASC"#
+    let rows = sqlx::query(
+        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at,
+                  EXISTS (
+                    SELECT 1
+                    FROM events
+                    WHERE events.scope_wave = cards.wave_id
+                      AND events.kind = 'card.added'
+                      AND json_extract(events.payload, '$.id') = cards.id
+                  ) AS vcs_announced
+           FROM cards
+           WHERE wave_id = ?1
+           ORDER BY sort ASC, id ASC"#,
+    )
+    .bind(wave_id.as_str())
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut out = Vec::new();
+    for row in rows {
+        let id: String = row.try_get("id")?;
+        let announced: i64 = row.try_get("vcs_announced")?;
+        if visibility.includes(&id, announced != 0) {
+            out.push(card_projection_from_row(row)?);
         }
-        CardVisibility::AllRows => {
-            r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
-               FROM cards
-               WHERE wave_id = ?1
-               ORDER BY sort ASC, id ASC"#
-        }
-    };
-    let rows = sqlx::query(sql)
-        .bind(wave_id.as_str())
-        .fetch_all(&mut **tx)
-        .await?;
-    rows.into_iter().map(card_projection_from_row).collect()
+    }
+    Ok(out)
 }
 
 async fn card_in_wave_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     card_id: &str,
+    visibility: &CardVisibility,
 ) -> Result<Option<CardProjection>> {
     let row = sqlx::query(
-        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
+        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at,
+                  EXISTS (
+                    SELECT 1
+                    FROM events
+                    WHERE events.scope_wave = cards.wave_id
+                      AND events.kind = 'card.added'
+                      AND json_extract(events.payload, '$.id') = cards.id
+                  ) AS vcs_announced
            FROM cards
-           WHERE id = ?1 AND wave_id = ?2
-             AND EXISTS (
-               SELECT 1
-               FROM events
-               WHERE events.scope_wave = cards.wave_id
-                 AND events.kind = 'card.added'
-                 AND json_extract(events.payload, '$.id') = cards.id
-             )"#,
+           WHERE id = ?1 AND wave_id = ?2"#,
     )
     .bind(card_id)
     .bind(wave_id.as_str())
     .fetch_optional(&mut **tx)
     .await?;
-    row.map(card_projection_from_row).transpose()
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let id: String = row.try_get("id")?;
+    let announced: i64 = row.try_get("vcs_announced")?;
+    if visibility.includes(&id, announced != 0) {
+        card_projection_from_row(row).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 fn card_projection_from_row(row: SqliteRow) -> Result<CardProjection> {
@@ -1477,11 +1560,13 @@ async fn project_run_by_key_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     key: &str,
+    card_visibility: &CardVisibility,
 ) -> Result<Option<RunProjection>> {
     if !run_key_is_visible(key) {
         return Ok(None);
     }
-    let mut worker_projection = worker_card_for_run_key_tx(tx, wave_id, key).await?;
+    let mut worker_projection =
+        worker_card_for_run_key_tx(tx, wave_id, key, card_visibility).await?;
     if let Some(card) = worker_projection.as_mut() {
         project_runtime_into_cards_tx(tx, std::slice::from_mut(card)).await?;
     }
@@ -1603,21 +1688,36 @@ async fn worker_card_for_run_key_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     key: &str,
+    visibility: &CardVisibility,
 ) -> Result<Option<CardProjection>> {
-    let row = sqlx::query(
-        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
+    let rows = sqlx::query(
+        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at,
+                  EXISTS (
+                    SELECT 1
+                    FROM events
+                    WHERE events.scope_wave = cards.wave_id
+                      AND events.kind = 'card.added'
+                      AND json_extract(events.payload, '$.id') = cards.id
+                  ) AS vcs_announced
            FROM cards
            WHERE wave_id = ?1
              AND role = 'worker'
              AND json_extract(payload, '$.idempotency_key') = ?2
            ORDER BY updated_at DESC, id DESC
-           LIMIT 1"#,
+           "#,
     )
     .bind(wave_id.as_str())
     .bind(key)
-    .fetch_optional(&mut **tx)
+    .fetch_all(&mut **tx)
     .await?;
-    row.map(card_projection_from_row).transpose()
+    for row in rows {
+        let id: String = row.try_get("id")?;
+        let announced: i64 = row.try_get("vcs_announced")?;
+        if visibility.includes(&id, announced != 0) {
+            return card_projection_from_row(row).map(Some);
+        }
+    }
+    Ok(None)
 }
 
 async fn run_events_for_key_tx(
@@ -1694,7 +1794,8 @@ async fn project_runtime_into_cards_tx(
                   lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
                   completed_at_ms
            FROM runtimes
-           WHERE card_id IN ("#,
+           WHERE status != 'superseded'
+             AND card_id IN ("#,
     );
     let mut separated = query.separated(", ");
     for id in &card_ids {
@@ -1702,7 +1803,7 @@ async fn project_runtime_into_cards_tx(
     }
     separated.push_unseparated(
         r#")
-           ORDER BY
+           ORDER BY card_id ASC,
              CASE WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0 ELSE 1 END,
              updated_at_ms DESC, created_at_ms DESC, id DESC"#,
     );
@@ -1714,7 +1815,7 @@ async fn project_runtime_into_cards_tx(
     }
     for card in cards {
         if let Some(runtime) = runtimes.get(card.card.id.as_str()) {
-            project_runtime_fields(&mut card.card, runtime);
+            runtime_lookup::project_runtime_fields(&mut card.card, runtime);
         }
     }
     Ok(())
@@ -1784,62 +1885,6 @@ fn run_status_from_db(value: &str) -> Result<RunStatus> {
             "wave-vcs: unknown runtime status {other}"
         ))),
     }
-}
-
-fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
-    let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
-    let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
-    let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
-    let source = (runtime.kind == RuntimeKind::SharedSpec).then(|| "shared".to_string());
-    let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
-
-    let Some(map) = card.payload.as_object_mut() else {
-        return;
-    };
-    if let Some(terminal_id) = terminal_id {
-        map.insert("terminal_id".into(), Value::String(terminal_id));
-    }
-    if runtime.kind == RuntimeKind::ClaudeCard
-        && let Some(session_id) = session_id
-    {
-        map.insert("claude_session_id".into(), Value::String(session_id));
-    }
-    if matches!(
-        runtime.kind,
-        RuntimeKind::CodexCard | RuntimeKind::SharedSpec
-    ) && let Some(thread_id) = thread_id
-    {
-        map.insert("codex_thread_id".into(), Value::String(thread_id));
-    }
-    if let Some(source) = source {
-        map.insert("codex_source".into(), Value::String(source));
-    }
-    if let Some(thread_status) = thread_status {
-        map.insert("codex_thread_status".into(), Value::String(thread_status));
-    }
-}
-
-fn projected_thread_status(runtime: &CardRuntime) -> Option<&'static str> {
-    if !matches!(
-        runtime.kind,
-        RuntimeKind::CodexCard | RuntimeKind::SharedSpec
-    ) {
-        return None;
-    }
-    match runtime.status {
-        RunStatus::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
-            Some("pending_thread_start")
-        }
-        RunStatus::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
-            Some("failed_to_spawn")
-        }
-        RunStatus::Running if non_empty(runtime.thread_id.as_deref()).is_some() => Some("started"),
-        _ => None,
-    }
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn run_event(event_id: i64, at: i64, kind: &'static str, payload: Value) -> RunEventProjection {
@@ -1930,6 +1975,7 @@ fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
 
 fn run_key_is_visible(key: &str) -> bool {
     if wave_fs_view::is_reserved_run_key(key) {
+        // Deliberate VCS/live-view divergence; see `insert_run_entries`.
         tracing::error!(
             target: "wave_vcs",
             idempotency_key = %key,

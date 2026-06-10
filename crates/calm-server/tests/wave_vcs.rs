@@ -138,25 +138,44 @@ async fn add_report_card(
     .await
 }
 
-async fn insert_raw_report_card(repo: &SqlxRepo, roles: &CardRoleCache, wave_id: &WaveId) -> Card {
-    let mut tx = repo.pool().begin().await.expect("begin raw report insert");
+async fn insert_raw_card(
+    repo: &SqlxRepo,
+    roles: &CardRoleCache,
+    wave_id: &WaveId,
+    kind: &str,
+    role: CardRole,
+    payload: serde_json::Value,
+) -> Card {
+    let mut tx = repo.pool().begin().await.expect("begin raw card insert");
     let card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
             wave_id: wave_id.clone(),
-            kind: "wave-report".into(),
+            kind: kind.into(),
             sort: None,
-            payload: serde_json::to_value(WaveReportPayload::initial()).expect("report payload"),
+            payload,
         },
-        CardRole::ReportCard,
-        false,
+        role,
+        !matches!(role, CardRole::ReportCard | CardRole::Spec),
         roles,
     )
     .await
-    .expect("insert raw report card");
-    tx.commit().await.expect("commit raw report insert");
+    .expect("insert raw card");
+    tx.commit().await.expect("commit raw card insert");
     card
+}
+
+async fn insert_raw_report_card(repo: &SqlxRepo, roles: &CardRoleCache, wave_id: &WaveId) -> Card {
+    insert_raw_card(
+        repo,
+        roles,
+        wave_id,
+        "wave-report",
+        CardRole::ReportCard,
+        serde_json::to_value(WaveReportPayload::initial()).expect("report payload"),
+    )
+    .await
 }
 
 async fn start_codex_runtime_with_event(
@@ -484,6 +503,72 @@ async fn backfill_is_idempotent_and_uses_null_event_id_for_eventless_wave() {
 }
 
 #[tokio::test]
+async fn backfilled_eventless_cards_survive_incremental_index_rerenders() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, _write) = write_context();
+    insert_raw_report_card(&repo, &roles, &wave.id).await;
+    let worker = insert_raw_card(
+        &repo,
+        &roles,
+        &wave.id,
+        "terminal",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "label": "legacy"}),
+    )
+    .await;
+
+    assert_eq!(
+        wave_vcs::backfill_existing_waves(repo.pool())
+            .await
+            .unwrap(),
+        1
+    );
+    repo.log_pure_event(
+        ActorId::Kernel,
+        EventScope::Card {
+            card: worker.id.clone(),
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
+        None,
+        &bus,
+        &roles,
+        &coves,
+        Event::CardUpdated(worker.clone()),
+    )
+    .await
+    .expect("legacy card update event");
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    assert!(
+        manifest
+            .entries
+            .contains_key(&format!("cards/{}/meta.json", worker.id.as_str())),
+        "backfilled card path disappeared from manifest"
+    );
+
+    let cards_index = manifest
+        .entries
+        .get("cards/index.json")
+        .expect("cards index");
+    let cards: Vec<serde_json::Value> =
+        serde_json::from_str(&blob_text(&repo, &cards_index.blob_hash).await).unwrap();
+    assert!(
+        cards
+            .iter()
+            .any(|card| card.get("id").and_then(|id| id.as_str()) == Some(worker.id.as_str())),
+        "cards/index.json = {cards:?}"
+    );
+
+    let index = manifest.entries.get("index.md").expect("index.md");
+    let index_md = blob_text(&repo, &index.blob_hash).await;
+    assert!(index_md.contains("- Cards: 2"), "index.md = {index_md}");
+}
+
+#[tokio::test]
 async fn batch_write_creates_one_commit_at_last_wave_event() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
@@ -736,6 +821,95 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
 }
 
 #[tokio::test]
+async fn superseded_only_runtime_payload_matches_live_view_without_runtime_fields() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "superseded-only"}),
+    )
+    .await;
+
+    let mut tx = repo.pool().begin().await.expect("begin runtime");
+    let runtime = runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: worker.id.to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: Some("stale-thread".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("runtime start");
+    let superseded_at = now_ms();
+    sqlx::query(
+        r#"UPDATE runtimes
+              SET status = 'superseded',
+                  updated_at_ms = ?1,
+                  completed_at_ms = ?1
+            WHERE id = ?2"#,
+    )
+    .bind(superseded_at)
+    .bind(&runtime.id)
+    .execute(&mut *tx)
+    .await
+    .expect("mark superseded");
+    tx.commit().await.expect("commit runtime");
+
+    repo.log_pure_event(
+        ActorId::Kernel,
+        EventScope::Card {
+            card: worker.id.clone(),
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
+        None,
+        &bus,
+        &roles,
+        &coves,
+        Event::RuntimeSuperseded {
+            old_runtime_id: runtime.id,
+            new_runtime_id: "missing-replacement".into(),
+            card_id: worker.id.to_string(),
+        },
+    )
+    .await
+    .expect("runtime superseded event");
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    let payload_path = format!("cards/{}/payload.json", worker.id.as_str());
+    let entry = manifest.entries.get(&payload_path).expect("payload entry");
+    let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
+    let view = WaveFsView::new(&repo, &write);
+    let live_payload = view.cat(&wave, &payload_path).await.expect("live payload");
+    assert_eq!(vcs_payload, live_payload.content);
+
+    let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
+    assert!(payload.get("codex_thread_id").is_none(), "{payload:?}");
+    assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
+}
+
+#[tokio::test]
 async fn task_completion_updates_only_the_affected_run_paths() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
@@ -833,7 +1007,7 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
             wave_id: wave.id.clone(),
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"schemaVersion": 1, "idempotency_key": "hidden-run"}),
         },
         CardRole::Worker,
         true,
@@ -853,14 +1027,15 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
         &bus,
         &roles,
         &coves,
-        Event::TaskCompleted {
-            idempotency_key: "unrelated".into(),
-            result: json!({"summary": "done"}),
-            artifacts: vec![],
+        Event::CodexWorkerRequested {
+            idempotency_key: "hidden-run".into(),
+            goal: "hidden worker".into(),
+            context: json!({}),
+            acceptance_criteria: None,
         },
     )
     .await
-    .expect("unrelated event");
+    .expect("request event");
     let manifest = head_manifest(&repo, &wave.id).await;
     assert!(
         !manifest
@@ -868,6 +1043,21 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
             .keys()
             .any(|path| path.starts_with(&format!("cards/{hidden_id}/")))
     );
+    let run_entry = manifest
+        .entries
+        .get("runs/hidden-run.json")
+        .expect("run json");
+    let run_json: serde_json::Value =
+        serde_json::from_str(&blob_text(&repo, &run_entry.blob_hash).await).unwrap();
+    assert_eq!(run_json["worker_card_id"], serde_json::Value::Null);
+    assert_eq!(run_json["worker_card_payload"], serde_json::Value::Null);
+
+    let mut tx = repo.pool().begin().await.expect("begin snapshot");
+    let snapshot = wave_vcs::snapshot_tree(&mut tx, &wave.id, MANIFEST_SCHEMA_VERSION)
+        .await
+        .expect("snapshot");
+    tx.rollback().await.expect("rollback snapshot");
+    assert_eq!(snapshot.manifest, manifest);
 
     repo.log_pure_event(
         ActorId::Kernel,

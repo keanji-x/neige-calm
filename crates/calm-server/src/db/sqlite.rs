@@ -304,7 +304,16 @@ fn is_sqlite_busy(e: &sqlx::Error) -> bool {
     let Some(db_err) = e.as_database_error() else {
         return false;
     };
-    matches!(db_err.code().as_deref(), Some("5") | Some("6"))
+    db_err.code().as_deref().is_some_and(is_sqlite_busy_code)
+}
+
+fn is_sqlite_busy_code(code: &str) -> bool {
+    if let Ok(code) = code.parse::<i64>() {
+        return matches!(code & 0xFF, 5 | 6);
+    }
+    matches!(code, "SQLITE_BUSY" | "SQLITE_LOCKED")
+        || code.starts_with("SQLITE_BUSY_")
+        || code.starts_with("SQLITE_LOCKED_")
 }
 
 pub(crate) async fn terminal_get_by_card_tx(
@@ -4296,5 +4305,20 @@ impl RepoEventWrite for SqlxRepo {
             .fetch_one(&self.pool)
             .await?;
         Ok(row.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_sqlite_busy_code;
+
+    #[test]
+    fn sqlite_busy_code_matches_primary_and_extended_codes() {
+        for code in ["5", "6", "261", "262", "517", "SQLITE_BUSY_SNAPSHOT"] {
+            assert!(is_sqlite_busy_code(code), "code {code}");
+        }
+        for code in ["0", "1", "SQLITE_CONSTRAINT"] {
+            assert!(!is_sqlite_busy_code(code), "code {code}");
+        }
     }
 }

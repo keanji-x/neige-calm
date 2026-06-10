@@ -147,7 +147,7 @@ pub async fn project_runtime_into_event_payload<R: RuntimeRepo + ?Sized>(
     Ok(())
 }
 
-fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
+pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
     let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
     let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
     let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
