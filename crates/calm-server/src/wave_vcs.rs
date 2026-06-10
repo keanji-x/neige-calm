@@ -15,6 +15,7 @@
 //! generate wave-vcs commits because they are outside any wave scope.
 
 use crate::db::WaveEvent;
+use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
@@ -31,12 +32,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use similar::TextDiff;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 pub const MANIFEST_SCHEMA_VERSION: i64 = 1;
 pub const DEFAULT_PATCH_MAX_LINES: usize = 200;
 const LOG_FILTER_SCAN_LIMIT: usize = 1000;
+const OBJECT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const OBJECT_SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
 
 pub type ObjectHash = String;
 pub type CommitHash = String;
@@ -757,10 +761,123 @@ pub async fn since_last_turn_block(
     })
 }
 
-/// Sweeper stub for PR1. Objects are content-addressed and intentionally not
-/// removed from `wave_delete_tx`; a later timer can call this function.
-pub async fn sweep_unreferenced_objects_once(_pool: &SqlitePool) -> Result<u64> {
-    Ok(0)
+/// Spawn the unreferenced-object sweeper. Content-addressed objects are not
+/// deleted by `wave_delete_tx` / `cove_delete_tx` because blobs can be shared
+/// across waves; this hourly fallback reclaims rows no live commit references.
+pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(OBJECT_SWEEP_INTERVAL);
+        // Match the terminal sweeper: skip the immediate boot tick and let the
+        // server settle before taking the SQLite writer lock for cleanup.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if let Err(e) = sweep_unreferenced_objects_once(&pool).await {
+                tracing::warn!(error = %e, "wave_vcs: object sweep failed");
+            }
+        }
+    });
+}
+
+/// One unreferenced-object sweep pass. Public so integration tests can drive
+/// cleanup deterministically without waiting for the hourly task.
+///
+/// This deliberately performs one `O(commits)` scan inside the writer
+/// transaction to seed live tree refs. It is single-writer fallback GC; revisit
+/// with streaming/snapshot+reverify if commit counts grow.
+pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
+    let cutoff_ms = now_ms().saturating_sub(OBJECT_SWEEP_GRACE_MS);
+    let mut tx = begin_immediate_tx(pool).await?;
+    let res = sweep_unreferenced_objects_tx(&mut tx, cutoff_ms).await;
+    match res {
+        Ok(deleted) => {
+            tx.commit().await?;
+            if deleted > 0 {
+                tracing::info!(deleted, "wave_vcs: swept unreferenced objects");
+            }
+            Ok(deleted)
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
+
+async fn sweep_unreferenced_objects_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    cutoff_ms: i64,
+) -> Result<u64> {
+    sqlx::query(
+        r#"CREATE TEMP TABLE IF NOT EXISTS wave_vcs_sweep_refs (
+               hash TEXT PRIMARY KEY
+           )"#,
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("DELETE FROM wave_vcs_sweep_refs")
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO wave_vcs_sweep_refs(hash)
+           SELECT DISTINCT tree_hash FROM wave_vcs_commits"#,
+    )
+    .execute(&mut **tx)
+    .await?;
+
+    let tree_rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+        r#"SELECT refs.hash, o.bytes
+           FROM wave_vcs_sweep_refs AS refs
+           JOIN wave_vcs_objects AS o ON o.hash = refs.hash
+           WHERE o.kind = 'tree'"#,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut blob_hashes = BTreeSet::new();
+    for (tree_hash, bytes) in tree_rows {
+        let manifest: TreeManifest = serde_json::from_slice(&bytes).map_err(|e| {
+            CalmError::Internal(format!(
+                "wave_vcs: parse tree manifest object {tree_hash}: {e}"
+            ))
+        })?;
+        blob_hashes.extend(manifest.entries.into_values().map(|entry| entry.blob_hash));
+    }
+    insert_sweep_refs_tx(tx, blob_hashes).await?;
+
+    let result = sqlx::query(
+        r#"DELETE FROM wave_vcs_objects
+           WHERE created_at < ?1
+             AND NOT EXISTS (
+               SELECT 1
+               FROM wave_vcs_sweep_refs AS refs
+               WHERE refs.hash = wave_vcs_objects.hash
+             )"#,
+    )
+    .bind(cutoff_ms)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+async fn insert_sweep_refs_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    hashes: BTreeSet<ObjectHash>,
+) -> Result<()> {
+    const INSERT_CHUNK_SIZE: usize = 500;
+    let hashes = hashes.into_iter().collect::<Vec<_>>();
+    for chunk in hashes.chunks(INSERT_CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut builder: QueryBuilder<'_, Sqlite> =
+            QueryBuilder::new("INSERT OR IGNORE INTO wave_vcs_sweep_refs(hash) ");
+        builder.push_values(chunk, |mut row, hash| {
+            row.push_bind(hash);
+        });
+        builder.build().execute(&mut **tx).await?;
+    }
+    Ok(())
 }
 
 fn diff_manifests(from: &TreeManifest, to: &TreeManifest, path: Option<&str>) -> Vec<DiffEntry> {
