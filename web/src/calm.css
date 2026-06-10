@@ -1411,18 +1411,18 @@ select:-webkit-autofill {
   outline-offset: 2px;
 }
 .wave-crumb {
-  display: flex; align-items: center; gap: var(--space-4);
+  display: flex; align-items: baseline; gap: var(--space-4);
   /* Content-sized (shrinkable, min-width:0 keeps the title ellipsis
-     working) rather than greedy `flex: 1`: the #594 view-flip toggle
-     sits immediately after the crumb in the header's LEFT region, and
-     a greedy crumb would shove it against the right-side meta cluster.
-     The free space now lives between the toggle and `.wave-meta`
+     working) rather than greedy `flex: 1`: the #594 view-flip toggle sits
+     at the crumb tail and should not shove against the right-side meta
+     cluster. The free space lives between the crumb and `.wave-meta`
      (margin-left: auto below). */
   min-width: 0; flex: 0 1 auto;
   font-size: var(--text-md);
 }
 .wave-cove-dot {
   width: 9px; height: 9px; border-radius: var(--radius-sm);
+  align-self: center;
   flex-shrink: 0;
 }
 .wave-cove {
@@ -1775,13 +1775,14 @@ select:-webkit-autofill {
   outline-offset: 2px;
 }
 /* Wave surface flip (issue #594 demo) — ONE binary Grid↔Report switch
-   in the wave header's LEFT region, right after the breadcrumb. It reads
-   as ghost text by default; checked (= report) fills softly, and
+   at the breadcrumb tail. It reads as ghost text by default; checked
+   (= report) fills softly, and
    aria-checked carries the bound state to AT. PR2 of #594 replaces this
    with the persisted three-state ViewMode control. */
 .view-flip {
   display: inline-flex;
   align-items: center;
+  align-self: baseline;
   flex-shrink: 0;
   padding: var(--space-0) var(--space-3);
   border-radius: var(--radius-md);

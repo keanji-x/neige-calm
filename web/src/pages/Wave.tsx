@@ -297,32 +297,32 @@ export function WavePage({
               )}
             </>
           )}
+          {/* Surface flip (issue #594 demo) — ONE binary Grid↔Report
+              switch, sitting at the breadcrumb tail. Slice-9 label
+              convention: visible label = current surface, action verb in
+              aria-label/title. The grid/list overlay is read-only here
+              (no UI entry for List in the demo); PR2 of #594 swaps this
+              for the persisted three-state ViewMode control. */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={reportPreview}
+            className="view-flip"
+            onClick={() => setReportPreview((v) => !v)}
+            aria-label={
+              reportPreview
+                ? 'Switch wave to cards view'
+                : 'Switch wave to report view'
+            }
+            title={
+              reportPreview
+                ? 'Switch to cards view'
+                : 'Unified report view (design demo, #594)'
+            }
+          >
+            {reportPreview ? 'Report' : 'Grid'}
+          </button>
         </span>
-        {/* Surface flip (issue #594 demo) — ONE binary Grid↔Report
-            switch, sitting after the breadcrumb. Slice-9 label
-            convention: visible label = current surface, action verb in
-            aria-label/title. The grid/list overlay is read-only here
-            (no UI entry for List in the demo); PR2 of #594 swaps this
-            for the persisted three-state ViewMode control. */}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={reportPreview}
-          className="view-flip"
-          onClick={() => setReportPreview((v) => !v)}
-          aria-label={
-            reportPreview
-              ? 'Switch wave to cards view'
-              : 'Switch wave to report view'
-          }
-          title={
-            reportPreview
-              ? 'Switch to cards view'
-              : 'Unified report view (design demo, #594)'
-          }
-        >
-          {reportPreview ? 'Report' : 'Grid'}
-        </button>
         <span className="wave-meta">
           {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
               lifecycle on every wave (defaults to 'draft' on create); this
