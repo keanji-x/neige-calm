@@ -402,6 +402,16 @@
               }
             }
           },
+          "409": {
+            "description": "Runtime shutting down or observation queue full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {

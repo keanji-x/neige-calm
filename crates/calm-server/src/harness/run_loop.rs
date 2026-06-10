@@ -159,14 +159,7 @@ impl SpecHarness {
         self.inner
             .observations
             .try_send(delivery)
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    CalmError::Internal("spec harness observation queue full".into())
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    CalmError::Internal("spec harness observation queue closed".into())
-                }
-            })
+            .map_err(map_observation_send_error)
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
@@ -257,6 +250,19 @@ impl SpecHarness {
 
     pub async fn set_last_seen_head_for_test(&self, head: Option<String>) {
         *self.inner.last_seen_head.lock().await = head;
+    }
+}
+
+fn map_observation_send_error(
+    e: mpsc::error::TrySendError<HarnessObservationDelivery>,
+) -> CalmError {
+    match e {
+        mpsc::error::TrySendError::Full(_) => {
+            CalmError::Conflict("spec harness observation queue full, retry shortly".into())
+        }
+        mpsc::error::TrySendError::Closed(_) => {
+            CalmError::Conflict("spec harness runtime shutting down".into())
+        }
     }
 }
 
@@ -1324,7 +1330,20 @@ fn run_status_to_db(status: &RunStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::should_persist_item_method;
+    use super::{
+        HarnessObservationDelivery, map_observation_send_error, should_persist_item_method,
+    };
+    use crate::error::CalmError;
+    use crate::harness::observation::Observation;
+    use axum::http::StatusCode;
+    use tokio::sync::mpsc;
+
+    fn delivery(text: &str) -> HarnessObservationDelivery {
+        HarnessObservationDelivery {
+            observation: Observation::WaveGoal { text: text.into() },
+            envelope_id: None,
+        }
+    }
 
     #[test]
     fn item_persistence_filter_keeps_terminal_items_and_drops_deltas() {
@@ -1335,5 +1354,39 @@ mod tests {
         assert!(!should_persist_item_method("item/reasoning/delta"));
         assert!(!should_persist_item_method("turn/completed"));
         assert!(!should_persist_item_method("item/other"));
+    }
+
+    #[tokio::test]
+    async fn observe_delivery_full_maps_to_conflict() {
+        let (tx, _rx) = mpsc::channel::<HarnessObservationDelivery>(1);
+        tx.try_send(delivery("goal")).unwrap();
+
+        let err = tx
+            .try_send(delivery("next"))
+            .map_err(map_observation_send_error)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CalmError::Conflict(ref msg) if msg.contains("queue full")
+        ));
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn observe_delivery_closed_maps_to_conflict() {
+        let (tx, rx) = mpsc::channel::<HarnessObservationDelivery>(4);
+        drop(rx);
+
+        let err = tx
+            .try_send(delivery("x"))
+            .map_err(map_observation_send_error)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CalmError::Conflict(ref msg) if msg.contains("shutting down")
+        ));
+        assert_eq!(err.status(), StatusCode::CONFLICT);
     }
 }
