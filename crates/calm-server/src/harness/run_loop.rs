@@ -21,6 +21,7 @@ use crate::model::now_ms;
 use crate::runtime_repo::{RunStatus, RuntimeId};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
+use crate::{spec_card, wave_vcs};
 
 const OBSERVATION_BUFFER: usize = 256;
 const MAX_PENDING_QUEUE_LEN: usize = 256;
@@ -662,7 +663,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
-                return persist_snapshot(inner).await;
+                return persist_snapshot_stamping_last_seen_head(inner).await;
             }
             let state = inner.state.lock().await.clone();
             let active = state.active_turn_id();
@@ -682,6 +683,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
+            return persist_snapshot_stamping_last_seen_head(inner).await;
         }
         Notification::Other { method, params } if method == "turn/aborted" => {
             let Some(aborted_turn_id) = other_turn_id(&params).map(ToOwned::to_owned) else {
@@ -837,6 +839,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
 
+    {
+        let state = inner.state.lock().await;
+        if !state.can_issue_turn() {
+            return Ok(());
+        }
+    }
+    let diff_block = since_last_turn_diff_block(inner).await?;
+
     let prior_turn = {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
@@ -872,7 +882,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     *inner.debounce.lock().await = DebounceState::default();
 
-    let text = drained
+    let joined_observation_text = drained
         .iter()
         .map(Observation::to_turn_text)
         .collect::<Vec<_>>()
@@ -884,6 +894,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         persist_snapshot(inner).await?;
         return Ok(());
     };
+    let text = prepend_diff_block(diff_block, joined_observation_text);
 
     match IssueTurnHandle::from_reconciliation(inner)
         .issue(&thread_id, vec![InputItem::text(text)])
@@ -907,6 +918,22 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn since_last_turn_diff_block(inner: &Arc<Inner>) -> Result<Option<String>> {
+    let Some(pool) = inner.repo.sqlite_pool() else {
+        return Ok(None);
+    };
+    let last_seen_head =
+        spec_card::last_seen_head_for_card(inner.repo.as_ref(), &inner.card_id).await?;
+    wave_vcs::since_last_turn_block(&pool, &inner.wave_id, last_seen_head.as_deref()).await
+}
+
+fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> String {
+    match diff_block {
+        Some(diff) => format!("{diff}\n\n---\n\n{observation_text}"),
+        None => observation_text,
+    }
 }
 
 async fn rebuffer_head(
@@ -1092,6 +1119,14 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    persist_snapshot_inner(inner, false).await
+}
+
+async fn persist_snapshot_stamping_last_seen_head(inner: &Arc<Inner>) -> Result<()> {
+    persist_snapshot_inner(inner, true).await
+}
+
+async fn persist_snapshot_inner(inner: &Arc<Inner>, stamp_last_seen_head: bool) -> Result<()> {
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -1112,6 +1147,8 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
     let event_runtime_id = runtime_id.clone();
     let event_card_id = inner.card_id.clone();
     let event_wave_id = inner.wave_id.clone();
+    let stamp_card_id = inner.card_id.clone();
+    let stamp_wave_id = inner.wave_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
 
@@ -1134,6 +1171,14 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
             .bind(&runtime_id)
             .execute(&mut **tx)
             .await?;
+            if stamp_last_seen_head {
+                spec_card::stamp_last_seen_head_from_wave_head_tx(
+                    tx,
+                    &stamp_card_id,
+                    &stamp_wave_id,
+                )
+                .await?;
+            }
             Ok(())
         })
     })

@@ -224,6 +224,7 @@ pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     fail_next_thread_start: AtomicBool,
+    started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
 }
 
@@ -234,6 +235,7 @@ impl FakeSharedCodexAppServer {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
             fail_next_thread_start: AtomicBool::new(false),
+            started_turns: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -539,6 +541,10 @@ impl SharedCodexAppServer {
         if let Some(fake) = self.fake.as_ref() {
             let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
             let turn_id = format!("fake-turn-{n:04}");
+            fake.started_turns
+                .lock()
+                .expect("fake shared codex started turns mutex poisoned")
+                .push((thread_id.to_string(), items.clone()));
             self.active_turns
                 .insert(thread_id.to_string(), turn_id.clone());
             let _ = self.notifications.send(Notification::TurnStarted {
@@ -690,6 +696,19 @@ impl SharedCodexAppServer {
             .as_ref()
             .map(|fake| fake.next_turn.load(Ordering::SeqCst).saturating_sub(1))
             .unwrap_or(0)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn started_turns_for_test(&self) -> Vec<(String, Vec<InputItem>)> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.started_turns
+                    .lock()
+                    .expect("fake shared codex started turns mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
     }
 
     #[cfg(feature = "fixtures")]

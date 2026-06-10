@@ -302,7 +302,7 @@ async fn snapshot_tree_at_tx(
             tx,
             &mut entries,
             format!("cards/{card_id}/payload.json"),
-            card_payload_json(&card.card)?,
+            card_payload_json(card)?,
             object_created_at,
         )
         .await?;
@@ -512,7 +512,11 @@ pub async fn since_last_turn_block(
         return Ok(None);
     }
 
-    let entries = diff(pool, previous, &current, None).await?;
+    let entries = diff(pool, previous, &current, None)
+        .await?
+        .into_iter()
+        .filter(|entry| !is_internal_observation_diff_path(&entry.path))
+        .collect::<Vec<_>>();
     if entries.is_empty() {
         return Ok(None);
     }
@@ -774,7 +778,7 @@ async fn render_card_path_tx(
         "payload.json" => {
             let mut card = card;
             project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
-            Ok(Some(card_payload_json(&card.card)?))
+            Ok(Some(card_payload_json(&card)?))
         }
         "runtime.json" => {
             let mut card = card;
@@ -1999,8 +2003,21 @@ fn card_meta_value(card: &CardProjection) -> Result<Value> {
     ))
 }
 
-fn card_payload_json(card: &Card) -> Result<BlobContent> {
-    content_json(&card.payload)
+fn card_payload_json(card: &CardProjection) -> Result<BlobContent> {
+    let mut payload = card.card.payload.clone();
+    if card.role == "spec"
+        && let Some(map) = payload.as_object_mut()
+    {
+        map.remove("last_seen_head");
+        map.remove("codex_thread_id");
+        map.remove("codex_source");
+        map.remove("codex_thread_status");
+    }
+    content_json(&payload)
+}
+
+fn is_internal_observation_diff_path(path: &str) -> bool {
+    path.starts_with("cards/") && path.ends_with("/runtime.json")
 }
 
 fn card_runtime_json(card: &Card) -> Result<BlobContent> {
