@@ -45,6 +45,8 @@ struct Boot {
     server: Arc<McpServer>,
     repo: Arc<dyn Repo>,
     events: EventBus,
+    card_id: String,
+    wave_id: String,
     thread_id: String,
     /// Raw per-card MCP token (kept in memory only — never persisted).
     raw_token: String,
@@ -143,6 +145,8 @@ async fn boot() -> Boot {
         server,
         repo,
         events,
+        card_id,
+        wave_id: wave.id.to_string(),
         thread_id,
         raw_token,
         socket_path,
@@ -267,6 +271,13 @@ fn tools_call_frame(id: i64, name: &str, thread_id: &str, args: Value) -> Value 
             "_meta": { "threadId": thread_id }
         }
     })
+}
+
+fn wave_json_from_cat_response(resp: &Value) -> Value {
+    let structured = &resp["result"]["structuredContent"];
+    assert_eq!(structured["content_type"], json!("application/json"));
+    let content = structured["content"].as_str().expect("wave content string");
+    serde_json::from_str(content).expect("wave content is JSON")
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +412,13 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         r1.get("error").is_none(),
         "first tools/call errored: {r1:#?}"
     );
+    let wave1 = wave_json_from_cat_response(&r1);
+    assert_eq!(
+        wave1["id"],
+        json!(b.wave_id.as_str()),
+        "first wave.cat resolved wrong wave for bound card {}",
+        b.card_id
+    );
 
     send_frame(
         &mut wr,
@@ -416,6 +434,13 @@ async fn two_tools_calls_on_one_connection_share_identity() {
     assert!(
         r2.get("error").is_none(),
         "second tools/call errored: {r2:#?}"
+    );
+    let wave2 = wave_json_from_cat_response(&r2);
+    assert_eq!(
+        wave2["id"],
+        json!(b.wave_id.as_str()),
+        "second wave.cat resolved wrong wave for bound card {}",
+        b.card_id
     );
 
     match timeout(Duration::from_millis(50), rx.recv()).await {

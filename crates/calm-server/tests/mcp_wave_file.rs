@@ -20,7 +20,7 @@ use calm_server::mcp_server::tools::wave_state::TOOL_UPDATE_TASK_META;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
 
@@ -223,6 +223,15 @@ fn content_json(value: &Value) -> Value {
     serde_json::from_str(content).expect("content is JSON")
 }
 
+fn entry_updated_at(entries: &[Value], name: &str) -> i64 {
+    entries
+        .iter()
+        .find(|entry| entry["name"] == name)
+        .unwrap_or_else(|| panic!("missing {name}: {entries:?}"))["updated_at"]
+        .as_i64()
+        .expect("entry updated_at is i64")
+}
+
 #[allow(deprecated)]
 async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) -> i64 {
     log_wave_event_as(boot, ActorId::User, wave_id, cove_id, event).await
@@ -414,10 +423,10 @@ async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
     card.id
 }
 
-async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> String {
+async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> CardRuntime {
     let runtime_id = calm_server::model::new_id();
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    let runtime = runtime_start_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -438,7 +447,7 @@ async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> String {
     .await
     .expect("seed runtime row");
     tx.commit().await.unwrap();
-    runtime_id
+    runtime
 }
 
 #[tokio::test]
@@ -751,6 +760,18 @@ async fn ls_card_directory_includes_hook_event_views() {
 async fn card_runtime_json_returns_typed_runtime_or_null() {
     let boot = boot().await;
     let card_id = boot.worker_card_id.clone();
+    set_card_updated_at(&boot, &card_id, 100).await;
+
+    let listing = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can list card directory before runtime exists");
+    let entries = listing.as_array().expect("ls returns array");
+    assert_eq!(entry_updated_at(entries, "runtime.json"), 100);
 
     let out = call_tool(
         &boot,
@@ -765,7 +786,24 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
         serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
     assert!(runtime.is_none(), "cards without runtime rows return null");
 
-    let runtime_id = seed_codex_runtime(&boot, &card_id).await;
+    let runtime_row = seed_codex_runtime(&boot, &card_id).await;
+    let listing = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can list card directory after runtime exists");
+    let entries = listing.as_array().expect("ls returns array");
+    let listed_updated_at = entry_updated_at(entries, "runtime.json");
+    assert!(
+        listed_updated_at >= runtime_row.updated_at_ms,
+        "runtime.json listing timestamp {listed_updated_at} should reflect runtime row {}",
+        runtime_row.updated_at_ms
+    );
+
+    let runtime_id = runtime_row.id.clone();
     let out = call_tool(
         &boot,
         TOOL_WAVE_CAT,
