@@ -49,7 +49,11 @@ impl<'a> WaveFsView<'a> {
                     entry_file("wave.json", None, Some(wave.updated_at)),
                     entry_file("report.md", None, Some(wave.updated_at)),
                     entry_dir("cards/", Some(cards.len()), None),
-                    entry_dir("runs/", Some(runs.len()), runs_updated_at(wave, &runs)),
+                    entry_dir(
+                        "runs/",
+                        Some(runs.len().saturating_mul(2).saturating_add(1)),
+                        runs_updated_at(wave, &runs),
+                    ),
                 ])
             }
             "cards" => {
@@ -68,7 +72,14 @@ impl<'a> WaveFsView<'a> {
             }
             "runs" => {
                 let runs = self.runs_for_wave(wave).await?;
-                Ok(runs.iter().map(run_listing_entry).collect())
+                let mut entries =
+                    Vec::with_capacity(runs.len().saturating_mul(2).saturating_add(1));
+                entries.push(entry_file("index.json", None, runs_updated_at(wave, &runs)));
+                for run in &runs {
+                    entries.push(run_listing_entry(run, "md"));
+                    entries.push(run_listing_entry(run, "json"));
+                }
+                Ok(entries)
             }
             path if path.starts_with("cards/") => {
                 let parts: Vec<&str> = path.split('/').collect();
@@ -722,8 +733,8 @@ fn run_by_key<'a>(runs: &'a [RunProjection], key: &str) -> Result<&'a RunProject
         .ok_or_else(|| path_not_available(&format!("runs/{key}")))
 }
 
-fn run_listing_entry(run: &RunProjection) -> WaveFsEntry {
-    let mut entry = WaveFsEntry::new(format!("{}.md", run.idempotency_key), "file")
+fn run_listing_entry(run: &RunProjection, extension: &str) -> WaveFsEntry {
+    let mut entry = WaveFsEntry::new(format!("{}.{}", run.idempotency_key, extension), "file")
         .with_extra(
             "idempotency_key",
             Value::String(run.idempotency_key.clone()),

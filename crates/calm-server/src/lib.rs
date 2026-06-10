@@ -467,6 +467,7 @@ pub mod role_gate;
 pub mod routes;
 pub mod runtime_lookup;
 pub mod runtime_repo;
+pub(crate) mod runtime_row;
 pub mod shared_codex_appserver;
 pub mod shared_codex_home;
 pub mod spec_appserver;

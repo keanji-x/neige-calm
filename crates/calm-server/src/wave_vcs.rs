@@ -20,7 +20,8 @@ use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, Wave, now_ms};
 use crate::runtime_lookup;
-use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeKind};
+use crate::runtime_repo::CardRuntime;
+use crate::runtime_row::card_runtime_from_row;
 use crate::wave_fs_view::{
     self, HookEventProjection, RunEventProjection, RunProjection, RunVerdictProjection,
 };
@@ -302,6 +303,14 @@ async fn snapshot_tree_at_tx(
             &mut entries,
             format!("cards/{card_id}/payload.json"),
             card_payload_json(&card.card)?,
+            object_created_at,
+        )
+        .await?;
+        put_rendered_entry(
+            tx,
+            &mut entries,
+            format!("cards/{card_id}/runtime.json"),
+            card_runtime_json(&card.card)?,
             object_created_at,
         )
         .await?;
@@ -767,6 +776,11 @@ async fn render_card_path_tx(
             project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
             Ok(Some(card_payload_json(&card.card)?))
         }
+        "runtime.json" => {
+            let mut card = card;
+            project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
+            Ok(Some(card_runtime_json(&card.card)?))
+        }
         "events.json" => {
             let events = hook_events_for_card_tx(tx, wave_id, &card.card.id).await?;
             Ok(Some(hook_events_json(&events)?))
@@ -1074,9 +1088,7 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
             add_card_paths(&mut delta, &card.id);
             delta.add("index.md");
             delta.add("cards/index.json");
-            if card.kind == "wave-report" {
-                delta.add("report.md");
-            }
+            delta.add("report.md");
             if let Some(key) = idempotency_key_from_payload(&card.payload) {
                 delta.add_run_key(key);
             }
@@ -1086,18 +1098,19 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
             delta.remove_prefix(format!("cards/{}/", id.as_str()));
             delta.add("cards/index.json");
             delta.add("index.md");
+            delta.add("report.md");
             delta.add_run_card_id(id.as_str());
         }
         Event::RuntimeStarted { card_id, .. }
         | Event::RuntimeStatusChanged { card_id, .. }
         | Event::RuntimeSuperseded { card_id, .. } => {
-            add_card_payload_path(&mut delta, card_id);
+            add_card_runtime_paths(&mut delta, card_id);
             delta.add_run_card_id(card_id);
         }
         Event::HarnessItemAdded { card_id, .. }
         | Event::HarnessPhaseChanged { card_id, .. }
         | Event::HarnessTranscriptCleared { card_id, .. } => {
-            add_card_payload_path(&mut delta, card_id.as_str());
+            add_card_runtime_paths(&mut delta, card_id.as_str());
         }
         Event::WaveReportEdited { card_id, .. } => {
             delta.add("report.md");
@@ -1142,11 +1155,17 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
 fn add_card_paths(delta: &mut PathDelta, card_id: &CardId) {
     delta.add(format!("cards/{}/meta.json", card_id.as_str()));
     delta.add(format!("cards/{}/payload.json", card_id.as_str()));
+    delta.add(format!("cards/{}/runtime.json", card_id.as_str()));
     add_card_event_paths(delta, card_id);
 }
 
 fn add_card_payload_path(delta: &mut PathDelta, card_id: &str) {
     delta.add(format!("cards/{card_id}/payload.json"));
+}
+
+fn add_card_runtime_paths(delta: &mut PathDelta, card_id: &str) {
+    delta.add(format!("cards/{card_id}/payload.json"));
+    delta.add(format!("cards/{card_id}/runtime.json"));
 }
 
 fn add_card_event_paths(delta: &mut PathDelta, card_id: &CardId) {
@@ -1703,7 +1722,7 @@ async fn worker_card_for_run_key_tx(
            WHERE wave_id = ?1
              AND role = 'worker'
              AND json_extract(payload, '$.idempotency_key') = ?2
-           ORDER BY updated_at DESC, id DESC
+           ORDER BY sort ASC, id ASC
            "#,
     )
     .bind(wave_id.as_str())
@@ -1819,72 +1838,6 @@ async fn project_runtime_into_cards_tx(
         }
     }
     Ok(())
-}
-
-fn card_runtime_from_row(row: &SqliteRow) -> Result<CardRuntime> {
-    let handle_state_json = match row.try_get::<Option<String>, _>("handle_state_json")? {
-        Some(text) => Some(serde_json::from_str(&text)?),
-        None => None,
-    };
-    Ok(CardRuntime {
-        id: row.try_get("id")?,
-        card_id: row.try_get("card_id")?,
-        kind: runtime_kind_from_db(row.try_get::<String, _>("kind")?.as_str())?,
-        agent_provider: row
-            .try_get::<Option<String>, _>("agent_provider")?
-            .as_deref()
-            .map(agent_provider_from_db)
-            .transpose()?,
-        status: run_status_from_db(row.try_get::<String, _>("status")?.as_str())?,
-        terminal_run_id: row.try_get("terminal_run_id")?,
-        terminal_ref: None,
-        thread_id: row.try_get("thread_id")?,
-        session_id: row.try_get("session_id")?,
-        active_turn_id: row.try_get("active_turn_id")?,
-        handle_state_json,
-        lease_owner: row.try_get("lease_owner")?,
-        lease_until_ms: row.try_get("lease_until_ms")?,
-        created_at_ms: row.try_get("created_at_ms")?,
-        updated_at_ms: row.try_get("updated_at_ms")?,
-        completed_at_ms: row.try_get("completed_at_ms")?,
-    })
-}
-
-fn runtime_kind_from_db(value: &str) -> Result<RuntimeKind> {
-    match value {
-        "terminal" => Ok(RuntimeKind::Terminal),
-        "codex" => Ok(RuntimeKind::CodexCard),
-        "claude" => Ok(RuntimeKind::ClaudeCard),
-        "shared-spec" => Ok(RuntimeKind::SharedSpec),
-        other => Err(CalmError::Internal(format!(
-            "wave-vcs: unknown runtime kind {other}"
-        ))),
-    }
-}
-
-fn agent_provider_from_db(value: &str) -> Result<AgentProvider> {
-    match value {
-        "codex" => Ok(AgentProvider::Codex),
-        "claude" => Ok(AgentProvider::Claude),
-        other => Err(CalmError::Internal(format!(
-            "wave-vcs: unknown agent provider {other}"
-        ))),
-    }
-}
-
-fn run_status_from_db(value: &str) -> Result<RunStatus> {
-    match value {
-        "starting" => Ok(RunStatus::Starting),
-        "running" => Ok(RunStatus::Running),
-        "idle" => Ok(RunStatus::Idle),
-        "turn_pending" => Ok(RunStatus::TurnPending),
-        "failed" => Ok(RunStatus::Failed),
-        "exited" => Ok(RunStatus::Exited),
-        "superseded" => Ok(RunStatus::Superseded),
-        other => Err(CalmError::Internal(format!(
-            "wave-vcs: unknown runtime status {other}"
-        ))),
-    }
 }
 
 fn run_event(event_id: i64, at: i64, kind: &'static str, payload: Value) -> RunEventProjection {
@@ -2046,6 +1999,13 @@ fn card_meta_value(card: &CardProjection) -> Result<Value> {
 
 fn card_payload_json(card: &Card) -> Result<BlobContent> {
     content_json(&card.payload)
+}
+
+fn card_runtime_json(card: &Card) -> Result<BlobContent> {
+    match &card.runtime {
+        Some(runtime) => content_json(runtime),
+        None => content_json(&Value::Null),
+    }
 }
 
 fn hook_events_json(events: &[HookEventProjection]) -> Result<BlobContent> {

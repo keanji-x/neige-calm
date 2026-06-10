@@ -46,6 +46,7 @@ use crate::runtime_repo::{
     RuntimeId, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution,
     Tx as RuntimeTx,
 };
+use crate::runtime_row::{card_runtime_from_row, run_status_from_db};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
 };
@@ -1645,32 +1646,10 @@ fn runtime_kind_to_db(kind: &RuntimeKind) -> &'static str {
     }
 }
 
-fn runtime_kind_from_db(value: &str) -> RuntimeResult<RuntimeKind> {
-    match value {
-        "terminal" => Ok(RuntimeKind::Terminal),
-        "codex" => Ok(RuntimeKind::CodexCard),
-        "claude" => Ok(RuntimeKind::ClaudeCard),
-        "shared-spec" => Ok(RuntimeKind::SharedSpec),
-        other => Err(RuntimeRepoError::Message {
-            message: format!("unknown runtime kind {other:?}"),
-        }),
-    }
-}
-
 fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
     match provider {
         AgentProvider::Codex => "codex",
         AgentProvider::Claude => "claude",
-    }
-}
-
-fn agent_provider_from_db(value: &str) -> RuntimeResult<AgentProvider> {
-    match value {
-        "codex" => Ok(AgentProvider::Codex),
-        "claude" => Ok(AgentProvider::Claude),
-        other => Err(RuntimeRepoError::Message {
-            message: format!("unknown runtime agent provider {other:?}"),
-        }),
     }
 }
 
@@ -1683,21 +1662,6 @@ fn run_status_to_db(status: &RunStatus) -> &'static str {
         RunStatus::Failed => "failed",
         RunStatus::Exited => "exited",
         RunStatus::Superseded => "superseded",
-    }
-}
-
-fn run_status_from_db(value: &str) -> RuntimeResult<RunStatus> {
-    match value {
-        "starting" => Ok(RunStatus::Starting),
-        "running" => Ok(RunStatus::Running),
-        "idle" => Ok(RunStatus::Idle),
-        "turn_pending" => Ok(RunStatus::TurnPending),
-        "failed" => Ok(RunStatus::Failed),
-        "exited" => Ok(RunStatus::Exited),
-        "superseded" => Ok(RunStatus::Superseded),
-        other => Err(RuntimeRepoError::Message {
-            message: format!("unknown runtime status {other:?}"),
-        }),
     }
 }
 
@@ -1759,40 +1723,6 @@ async fn runtime_current_status_tx(
         return Err(runtime_message(format!("runtime {id} not found")));
     };
     run_status_from_db(row.try_get::<String, _>("status")?.as_str())
-}
-
-fn card_runtime_from_row(row: &sqlx::sqlite::SqliteRow) -> RuntimeResult<CardRuntime> {
-    let kind = runtime_kind_from_db(row.try_get::<String, _>("kind")?.as_str())?;
-    let agent_provider = row
-        .try_get::<Option<String>, _>("agent_provider")?
-        .as_deref()
-        .map(agent_provider_from_db)
-        .transpose()?;
-    let status = run_status_from_db(row.try_get::<String, _>("status")?.as_str())?;
-    let handle_state_json = row
-        .try_get::<Option<String>, _>("handle_state_json")?
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()?;
-
-    Ok(CardRuntime {
-        id: row.try_get("id")?,
-        card_id: row.try_get("card_id")?,
-        kind,
-        agent_provider,
-        status,
-        terminal_run_id: row.try_get("terminal_run_id")?,
-        terminal_ref: None,
-        thread_id: row.try_get("thread_id")?,
-        session_id: row.try_get("session_id")?,
-        active_turn_id: row.try_get("active_turn_id")?,
-        handle_state_json,
-        lease_owner: row.try_get("lease_owner")?,
-        lease_until_ms: row.try_get("lease_until_ms")?,
-        created_at_ms: row.try_get("created_at_ms")?,
-        updated_at_ms: row.try_get("updated_at_ms")?,
-        completed_at_ms: row.try_get("completed_at_ms")?,
-    })
 }
 
 async fn runtime_get_by_id_from_pool(
@@ -2658,7 +2588,7 @@ impl RepoRead for SqlxRepo {
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
         let rows = sqlx::query_as::<_, Card>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
-               FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
+               FROM cards WHERE wave_id = ?1 ORDER BY sort ASC, id ASC"#,
         )
         .bind(wave_id)
         .fetch_all(&self.pool)

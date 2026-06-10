@@ -1,14 +1,16 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, runtime_start_tx, terminal_create_tx, wave_update_tx,
+    SqlxRepo, card_create_with_id_tx, card_update_tx, runtime_start_tx, terminal_create_tx,
+    wave_update_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{
-    Card, CardRole, NewCard, NewCove, NewTerminal, NewWave, WavePatch, new_id, now_ms,
+    Card, CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, WavePatch, new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
@@ -136,6 +138,45 @@ async fn add_report_card(
         serde_json::to_value(WaveReportPayload::initial()).expect("report payload"),
     )
     .await
+}
+
+async fn update_card_with_event(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    write: &WriteContext,
+    card: &Card,
+    cove_id: &CoveId,
+    patch: CardPatch,
+) -> Card {
+    let card_id = card.id.clone();
+    let lookup_card_id = card_id.clone();
+    let scope = EventScope::Card {
+        card: card_id.clone(),
+        wave: card.wave_id.clone(),
+        cove: cove_id.clone(),
+    };
+    repo.write_with_event(
+        ActorId::Kernel,
+        scope,
+        None,
+        bus,
+        write,
+        Box::new(move |tx| {
+            let card_id = card_id.clone();
+            let patch = patch.clone();
+            Box::pin(async move {
+                let card = card_update_tx(tx, card_id.as_str(), patch).await?;
+                Ok(Event::CardUpdated(card))
+            })
+        }),
+    )
+    .await
+    .expect("card updated event");
+
+    repo.card_get(lookup_card_id.as_str())
+        .await
+        .expect("card lookup after update")
+        .expect("updated card exists")
 }
 
 async fn insert_raw_card(
@@ -296,6 +337,41 @@ async fn blob_text(repo: &SqlxRepo, hash: &str) -> String {
             .await
             .expect("blob bytes");
     String::from_utf8(bytes).expect("blob utf8")
+}
+
+async fn live_wave_file_paths(
+    view: &WaveFsView<'_>,
+    wave: &calm_server::model::Wave,
+) -> BTreeSet<String> {
+    let mut files = BTreeSet::new();
+    let mut dirs = vec![String::new()];
+    while let Some(dir) = dirs.pop() {
+        let entries = view
+            .ls(
+                wave,
+                if dir.is_empty() {
+                    None
+                } else {
+                    Some(dir.as_str())
+                },
+            )
+            .await
+            .expect("live ls");
+        for entry in entries {
+            let name = entry.name.trim_end_matches('/');
+            let path = if dir.is_empty() {
+                name.to_string()
+            } else {
+                format!("{dir}/{name}")
+            };
+            if entry.kind == "dir" {
+                dirs.push(path);
+            } else {
+                files.insert(path);
+            }
+        }
+    }
+    files
 }
 
 async fn head_manifest(repo: &SqlxRepo, wave_id: &WaveId) -> wave_vcs::TreeManifest {
@@ -813,11 +889,165 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
 
     let manifest = head_manifest(&repo, &wave.id).await;
     let view = WaveFsView::new(&repo, &write);
+    let manifest_paths = manifest.entries.keys().cloned().collect::<BTreeSet<_>>();
+    let live_paths = live_wave_file_paths(&view, &wave).await;
+    assert_eq!(manifest_paths, live_paths);
+
     for (path, entry) in &manifest.entries {
         let vcs = blob_text(&repo, &entry.blob_hash).await;
         let fs = view.cat(&wave, path).await.expect(path);
         assert_eq!(vcs, fs.content, "path {path}");
     }
+}
+
+#[tokio::test]
+async fn card_retarget_from_wave_report_removes_report_blob() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let before = head_manifest(&repo, &wave.id).await;
+    assert!(before.entries.contains_key("report.md"));
+
+    update_card_with_event(
+        &repo,
+        &bus,
+        &write,
+        &report,
+        &cove.id,
+        CardPatch {
+            kind: Some("terminal".into()),
+            sort: None,
+            payload: Some(json!({"schemaVersion": 1})),
+            deletable: None,
+        },
+    )
+    .await;
+
+    let after = head_manifest(&repo, &wave.id).await;
+    assert!(!after.entries.contains_key("report.md"));
+}
+
+#[tokio::test]
+async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let first = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "dup-key", "name": "first"}),
+    )
+    .await;
+    let second = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "dup-key", "name": "second"}),
+    )
+    .await;
+    let first = update_card_with_event(
+        &repo,
+        &bus,
+        &write,
+        &first,
+        &cove.id,
+        CardPatch {
+            kind: None,
+            sort: Some(1.0),
+            payload: None,
+            deletable: None,
+        },
+    )
+    .await;
+    let second = update_card_with_event(
+        &repo,
+        &bus,
+        &write,
+        &second,
+        &cove.id,
+        CardPatch {
+            kind: None,
+            sort: Some(1.0),
+            payload: None,
+            deletable: None,
+        },
+    )
+    .await;
+    let mut expected_ids = vec![first.id.to_string(), second.id.to_string()];
+    expected_ids.sort();
+
+    let live_ids = repo
+        .cards_by_wave(wave.id.as_str())
+        .await
+        .expect("cards by wave")
+        .into_iter()
+        .map(|card| card.id.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(live_ids, expected_ids);
+
+    repo.log_pure_event(
+        ActorId::Kernel,
+        EventScope::Wave {
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
+        None,
+        &bus,
+        &roles,
+        &coves,
+        Event::CodexWorkerRequested {
+            idempotency_key: "dup-key".into(),
+            goal: "duplicate key".into(),
+            context: json!({}),
+            acceptance_criteria: None,
+        },
+    )
+    .await
+    .expect("request event");
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    let cards_index_entry = manifest
+        .entries
+        .get("cards/index.json")
+        .expect("cards index");
+    let cards_index: Vec<serde_json::Value> =
+        serde_json::from_str(&blob_text(&repo, &cards_index_entry.blob_hash).await).unwrap();
+    let manifest_card_ids = cards_index
+        .iter()
+        .map(|card| card["id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(manifest_card_ids, expected_ids);
+
+    let run_entry = manifest.entries.get("runs/dup-key.json").expect("run json");
+    let run_json: serde_json::Value =
+        serde_json::from_str(&blob_text(&repo, &run_entry.blob_hash).await).unwrap();
+    assert_eq!(
+        run_json["worker_card_id"].as_str(),
+        Some(expected_ids[0].as_str())
+    );
+
+    let mut tx = repo.pool().begin().await.expect("begin snapshot");
+    let snapshot = wave_vcs::snapshot_tree(&mut tx, &wave.id, MANIFEST_SCHEMA_VERSION)
+        .await
+        .expect("snapshot");
+    tx.rollback().await.expect("rollback snapshot");
+    assert_eq!(snapshot.manifest, manifest);
 }
 
 #[tokio::test]
