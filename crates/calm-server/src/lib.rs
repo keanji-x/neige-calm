@@ -481,6 +481,7 @@ pub mod wave_fs_view;
 pub mod wave_lifecycle;
 pub mod wave_report;
 pub mod wave_report_doc;
+pub mod wave_vcs;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {

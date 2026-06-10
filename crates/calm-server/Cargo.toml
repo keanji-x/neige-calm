@@ -182,6 +182,7 @@ automerge = "0.9"
 # Local crates
 calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }
+blake3 = "1.8"
 
 # Plugin host (Slice B): unix-only — used by `plugin_host::process` to send a
 # real SIGTERM before falling back to SIGKILL. `tokio::process::Child::kill()`
