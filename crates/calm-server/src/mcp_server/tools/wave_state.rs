@@ -61,7 +61,7 @@
 //! the spec card's authority lives — emitting `WaveUpdated` under
 //! `EventScope::Card` would be a category error (the role gate
 //! permits it but the topic routing would miss wave-level
-//! subscribers). For `update_task_meta` we also use `EventScope::Wave`
+//! subscribers). For `task_verdict` we also use `EventScope::Wave`
 //! since the verdict is wave-level metadata about a worker the spec
 //! supervises, not the spec's own card state.
 
@@ -90,9 +90,9 @@ pub const TOOL_UPDATE_WAVE_STATE: &str = "calm.update_wave_state";
 pub const TOOL_TASK_VERDICT: &str = "calm.task.verdict";
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(get_wave_state_descriptor(), wrap(get_wave_state));
+    registry.register(wave_state_descriptor(), wrap(wave_state));
     registry.register(update_wave_state_descriptor(), wrap(update_wave_state));
-    registry.register(update_task_meta_descriptor(), wrap(update_task_meta));
+    registry.register(task_verdict_descriptor(), wrap(task_verdict));
     register_deprecated_alias(registry, "calm.get_wave_state", TOOL_WAVE_STATE);
     register_deprecated_alias(registry, "calm.update_task_meta", TOOL_TASK_VERDICT);
 }
@@ -111,7 +111,7 @@ where
 // calm.wave.state
 // ---------------------------------------------------------------------------
 
-fn get_wave_state_descriptor() -> ToolDescriptor {
+fn wave_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_WAVE_STATE.into(),
         description: "Read the current wave snapshot bound to the calling card. \
@@ -130,7 +130,7 @@ fn get_wave_state_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn get_wave_state(
+async fn wave_state(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     _args: Value,
@@ -141,10 +141,10 @@ async fn get_wave_state(
         .repo
         .cards_by_wave(wave.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("get_wave_state: cards_by_wave: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("wave_state: cards_by_wave: {e}")))?;
     crate::runtime_lookup::project_runtime_into_cards_payload(ctx.repo.as_ref(), &mut cards)
         .await
-        .map_err(|e| RpcError::internal(format!("get_wave_state: runtime projection: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("wave_state: runtime projection: {e}")))?;
 
     // We re-query the role cache rather than fetching `cards.role` on
     // the card row — the cache is the canonical source the role gate
@@ -468,7 +468,7 @@ fn parse_lifecycle_name(s: &str) -> Result<WaveLifecycle, RpcError> {
 // calm.task.verdict
 // ---------------------------------------------------------------------------
 
-fn update_task_meta_descriptor() -> ToolDescriptor {
+fn task_verdict_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_VERDICT.into(),
         description: "Spec-only: record the spec's accept/reject verdict on \
@@ -498,26 +498,26 @@ fn update_task_meta_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn update_task_meta(
+async fn task_verdict(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
-    let write_args = parse_write_args(&args, "update_task_meta")?;
+    let write_args = parse_write_args(&args, "task_verdict")?;
 
     let idempotency_key = args
         .get("idempotency_key")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            RpcError::invalid_params("update_task_meta: missing `idempotency_key` (non-empty)")
+            RpcError::invalid_params("task_verdict: missing `idempotency_key` (non-empty)")
         })?
         .to_string();
     let status = args
         .get("status")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError::invalid_params("update_task_meta: missing `status`"))?;
+        .ok_or_else(|| RpcError::invalid_params("task_verdict: missing `status`"))?;
     let reason = args
         .get("reason")
         .and_then(|v| v.as_str())
@@ -551,7 +551,7 @@ async fn update_task_meta(
         },
         other => {
             return Err(RpcError::invalid_params(format!(
-                "update_task_meta: unknown status `{other}` (expected `accepted` or `rejected`)"
+                "task_verdict: unknown status `{other}` (expected `accepted` or `rejected`)"
             )));
         }
     };

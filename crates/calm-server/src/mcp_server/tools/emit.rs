@@ -52,9 +52,9 @@ pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(dispatch_request_descriptor(), wrap(dispatch_request));
-    registry.register(task_completed_descriptor(), wrap(task_completed));
-    registry.register(task_failed_descriptor(), wrap(task_failed));
+    registry.register(task_dispatch_descriptor(), wrap(task_dispatch));
+    registry.register(task_complete_descriptor(), wrap(task_complete));
+    registry.register(task_fail_descriptor(), wrap(task_fail));
     register_deprecated_alias(registry, "calm.dispatch_request", TOOL_TASK_DISPATCH);
     register_deprecated_alias(registry, "calm.task_completed", TOOL_TASK_COMPLETE);
     register_deprecated_alias(registry, "calm.task_failed", TOOL_TASK_FAIL);
@@ -75,7 +75,7 @@ where
 // calm.task.dispatch
 // ---------------------------------------------------------------------------
 
-fn dispatch_request_descriptor() -> ToolDescriptor {
+fn task_dispatch_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_DISPATCH.into(),
         description: "Spec-only: request that the kernel dispatcher spawn a worker card. \
@@ -106,34 +106,34 @@ fn dispatch_request_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn dispatch_request(
+async fn task_dispatch(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
-    let write_args = parse_write_args(&args, "dispatch_request")?;
+    let write_args = parse_write_args(&args, "task_dispatch")?;
 
     let idempotency_key = args
         .get("idempotency_key")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            RpcError::invalid_params("dispatch_request: missing `idempotency_key` (non-empty)")
+            RpcError::invalid_params("task_dispatch: missing `idempotency_key` (non-empty)")
         })?
         .to_string();
 
     let kind = args
         .get("kind")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError::invalid_params("dispatch_request: missing `kind`"))?;
+        .ok_or_else(|| RpcError::invalid_params("task_dispatch: missing `kind`"))?;
 
     let event = match kind {
         "codex" => {
             let goal = args
                 .get("goal")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| RpcError::invalid_params("dispatch_request[codex]: missing `goal`"))?
+                .ok_or_else(|| RpcError::invalid_params("task_dispatch[codex]: missing `goal`"))?
                 .to_string();
             let context = args.get("context").cloned().unwrap_or(Value::Null);
             let acceptance_criteria = args
@@ -152,9 +152,7 @@ async fn dispatch_request(
             let cmd = args
                 .get("cmd")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    RpcError::invalid_params("dispatch_request[terminal]: missing `cmd`")
-                })?
+                .ok_or_else(|| RpcError::invalid_params("task_dispatch[terminal]: missing `cmd`"))?
                 .to_string();
             let cwd = args
                 .get("cwd")
@@ -169,7 +167,7 @@ async fn dispatch_request(
         }
         other => {
             return Err(RpcError::invalid_params(format!(
-                "dispatch_request: unknown kind `{other}` (expected `codex` or `terminal`)"
+                "task_dispatch: unknown kind `{other}` (expected `codex` or `terminal`)"
             )));
         }
     };
@@ -190,7 +188,7 @@ async fn dispatch_request(
 // calm.task.complete
 // ---------------------------------------------------------------------------
 
-fn task_completed_descriptor() -> ToolDescriptor {
+fn task_complete_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_COMPLETE.into(),
         description: "Report that a worker card has completed its task. \
@@ -211,7 +209,7 @@ fn task_completed_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn task_completed(
+async fn task_complete(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
@@ -223,7 +221,7 @@ async fn task_completed(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            RpcError::invalid_params("task_completed: missing `idempotency_key` (non-empty)")
+            RpcError::invalid_params("task_complete: missing `idempotency_key` (non-empty)")
         })?
         .to_string();
     let result = args.get("result").cloned().unwrap_or(Value::Null);
@@ -232,7 +230,7 @@ async fn task_completed(
         .cloned()
         .unwrap_or(Value::Array(vec![]));
     let artifacts: Vec<crate::event::ArtifactRef> = serde_json::from_value(artifacts_val)
-        .map_err(|e| RpcError::invalid_params(format!("task_completed: invalid artifacts: {e}")))?;
+        .map_err(|e| RpcError::invalid_params(format!("task_complete: invalid artifacts: {e}")))?;
 
     let event = Event::TaskCompleted {
         idempotency_key,
@@ -248,7 +246,7 @@ async fn task_completed(
 // calm.task.fail
 // ---------------------------------------------------------------------------
 
-fn task_failed_descriptor() -> ToolDescriptor {
+fn task_fail_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_FAIL.into(),
         description: "Report that a worker card has failed its task. \
@@ -267,7 +265,7 @@ fn task_failed_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn task_failed(
+async fn task_fail(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
@@ -279,13 +277,13 @@ async fn task_failed(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            RpcError::invalid_params("task_failed: missing `idempotency_key` (non-empty)")
+            RpcError::invalid_params("task_fail: missing `idempotency_key` (non-empty)")
         })?
         .to_string();
     let reason = args
         .get("reason")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError::invalid_params("task_failed: missing `reason`"))?
+        .ok_or_else(|| RpcError::invalid_params("task_fail: missing `reason`"))?
         .to_string();
 
     let event = Event::TaskFailed {

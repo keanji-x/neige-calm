@@ -2,14 +2,14 @@
 //! `mcp_server::handshake` path + per-connection identity binding.
 //!
 //! Boots a real `McpServer` against an in-memory `SqlxRepo` + a UDS
-//! tempdir, mints a Spec card with a per-card MCP token, and drives a
-//! mock client over the socket. Covers:
+//! tempdir, mints Spec cards with per-card MCP tokens, and drives a mock
+//! client over the socket. Covers:
 //!
 //!   * `initialize` with a valid token → success + capabilities echoed.
 //!   * `initialize` with a bogus token → `-32401` error + connection close.
 //!   * `tools/call` before `initialize` → `-32002` error.
-//!   * Multiple `tools/call`s on one connection → all succeed with the
-//!     same per-call `_meta.threadId` identity mapping.
+//!   * Multiple `tools/call`s on one connection → per-call
+//!     `_meta.threadId` identity mapping routes to distinguishable waves.
 //!
 //! Test budget: 5 seconds per case (UDS bind/connect is sub-ms; the
 //! budget exists only to bound runaway hangs).
@@ -48,15 +48,18 @@ struct Boot {
     card_id: String,
     wave_id: String,
     thread_id: String,
+    card_id_b: String,
+    wave_id_b: String,
+    thread_id_b: String,
     /// Raw per-card MCP token (kept in memory only — never persisted).
     raw_token: String,
     socket_path: PathBuf,
     _tmp: TempDir,
 }
 
-/// Boot an `McpServer` against an in-memory SqlxRepo with one Spec card
-/// plus its MCP token already minted. The card's wave + cove are seeded
-/// so the emit tools (PR7a) can resolve the scope chain.
+/// Boot an `McpServer` against an in-memory SqlxRepo with two Spec cards
+/// plus MCP tokens already minted. Each card's wave + cove are seeded so
+/// the emit tools (PR7a) can resolve the scope chain.
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for MCP socket");
     let socket_path = tmp.path().join("kernel.sock");
@@ -125,6 +128,41 @@ async fn boot() -> Boot {
     let thread_id = format!("thread-{card_id}");
     seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
+    let wave_b = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "mcp-handshake-test-b".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card_id_b = calm_server::model::new_id();
+    let mut tx = sqlx_repo.pool().begin().await.unwrap();
+    let (_card_b, _term_b, _mcp_token_b) = card_with_codex_create_tx(
+        &mut tx,
+        card_id_b.clone(),
+        &calm_server::model::new_id(),
+        wave_b.id.clone(),
+        None,
+        "/workspace".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Spec,
+        false,
+        &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .expect("mint secondary spec card");
+    tx.commit().await.unwrap();
+    let thread_id_b = format!("thread-{card_id_b}");
+    seed_runtime_thread(&sqlx_repo, card_id_b.as_str(), thread_id_b.as_str()).await;
+
     let events = EventBus::new();
     let registry = build_default_registry();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -148,6 +186,9 @@ async fn boot() -> Boot {
         card_id,
         wave_id: wave.id.to_string(),
         thread_id,
+        card_id_b,
+        wave_id_b: wave_b.id.to_string(),
+        thread_id_b,
         raw_token,
         socket_path,
         _tmp: tmp,
@@ -382,8 +423,12 @@ async fn tools_call_before_initialize_is_rejected() {
     let _ = &b.server;
 }
 
+// Per-call `_meta.threadId` routing is verified by using one initialized
+// connection with the primary card token, then sending read-only calls whose
+// thread IDs map to different seeded cards/waves. A transport that falls back
+// to the init-token identity resolves call 2 to the primary wave and fails.
 #[tokio::test]
-async fn two_tools_calls_on_one_connection_share_identity() {
+async fn two_tools_calls_route_per_call_meta_thread_id() {
     let b = boot().await;
     let mut rx = b.events.subscribe_filtered();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
@@ -394,9 +439,6 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         "init failed: {init_resp:#?}"
     );
 
-    // Two wave.cat calls back-to-back. Both should succeed — the
-    // second proves the identity stayed pinned and the kernel didn't
-    // drop the connection after the first response.
     send_frame(
         &mut wr,
         tools_call_frame(
@@ -425,7 +467,7 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         tools_call_frame(
             11,
             "calm.wave.cat",
-            &b.thread_id,
+            &b.thread_id_b,
             json!({"path": "wave.json"}),
         ),
     )
@@ -438,9 +480,9 @@ async fn two_tools_calls_on_one_connection_share_identity() {
     let wave2 = wave_json_from_cat_response(&r2);
     assert_eq!(
         wave2["id"],
-        json!(b.wave_id.as_str()),
+        json!(b.wave_id_b.as_str()),
         "second wave.cat resolved wrong wave for bound card {}",
-        b.card_id
+        b.card_id_b
     );
 
     match timeout(Duration::from_millis(50), rx.recv()).await {
