@@ -979,6 +979,7 @@ async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
         4,
     );
 
+    let mut rx = events.subscribe();
     let idem = "spawn-fail-auto-review";
     repo.log_pure_event(
         ActorId::User,
@@ -997,16 +998,41 @@ async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
     .await
     .unwrap();
 
-    wait_for(Duration::from_secs(5), || {
-        let repo = repo.clone();
-        let wave_id = wave_id.clone();
-        async move {
-            let wave = repo.wave_get(wave_id.as_str()).await.unwrap()?;
-            (wave.lifecycle == WaveLifecycle::Reviewing).then_some(())
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_failed = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key,
+                    reason,
+                    ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    assert!(
+                        reason.contains("forced spawn failure"),
+                        "task.failed should preserve dispatch error, got {reason:?}"
+                    );
+                    let wave = repo
+                        .wave_get(wave_id.as_str())
+                        .await
+                        .unwrap()
+                        .expect("wave exists");
+                    assert_eq!(
+                        wave.lifecycle,
+                        WaveLifecycle::Reviewing,
+                        "TaskFailed broadcast must not be observable before Working -> Reviewing commits"
+                    );
+                    saw_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
         }
-    })
-    .await
-    .expect("spawn failure should advance wave to Reviewing");
+    }
+    assert!(saw_failed, "expected spawn failure task.failed broadcast");
 
     let rows = repo.events_since(0, None).await.unwrap();
     let relevant: Vec<Event> = rows

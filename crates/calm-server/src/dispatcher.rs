@@ -25,7 +25,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::db::sqlite::event_append_for_operation_tx;
-use crate::db::{Repo, RouteRepo};
+use crate::db::{Repo, RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{
     BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SYNC_EVENT_VERSION,
@@ -766,40 +766,22 @@ impl Inner {
                 error = %e,
                 "dispatcher: spawn failed; emitting task.failed"
             );
-            // Emit a TaskFailed so the dispatcher's push path delivers
-            // the failure to the requesting spec card as a turn input.
-            // Scope mirrors the request envelope's scope so the push can
-            // route on it.
+            // Emit TaskFailed and any Working -> Reviewing promotion in one
+            // audited transaction so TaskFailed observers never wake on stale
+            // wave lifecycle state.
             let fail_event = Event::TaskFailed {
                 idempotency_key: idem.clone(),
                 reason: format!("{e}"),
                 agent_message: None,
             };
-            // Allow on `WriteContext::role_cache()`/`cove_cache()` deprecation, not on `log_pure_event`.
-            #[allow(deprecated)]
             let log_result = self
-                .repo
-                .log_pure_event(
-                    ActorId::KernelDispatcher,
-                    scope.clone(),
-                    None,
-                    &self.events,
-                    self.write.role_cache(),
-                    self.write.cove_cache(),
-                    fail_event,
-                )
+                .log_spawn_failure_and_maybe_promote_working_to_reviewing(scope.clone(), fail_event)
                 .await;
             if let Err(e2) = log_result {
                 tracing::warn!(
                     idempotency_key = %idem,
                     error = %e2,
-                    "dispatcher: failed to log task.failed event"
-                );
-            } else if let Err(e3) = self.auto_promote_working_to_reviewing(&scope).await {
-                tracing::warn!(
-                    idempotency_key = %idem,
-                    error = %e3,
-                    "dispatcher: failed to auto-promote lifecycle after task.failed"
+                    "dispatcher: failed to log task.failed event batch"
                 );
             }
         }
@@ -987,19 +969,6 @@ impl Inner {
         .await
     }
 
-    async fn auto_promote_working_to_reviewing(
-        self: &Arc<Self>,
-        scope: &EventScope,
-    ) -> crate::error::Result<()> {
-        self.auto_promote_wave_lifecycle(
-            scope,
-            WaveLifecycle::Working,
-            WaveLifecycle::Reviewing,
-            Some("[auto] first task report".to_string()),
-        )
-        .await
-    }
-
     async fn auto_promote_wave_lifecycle(
         self: &Arc<Self>,
         scope: &EventScope,
@@ -1088,6 +1057,51 @@ impl Inner {
             });
         }
         Ok(())
+    }
+
+    async fn log_spawn_failure_and_maybe_promote_working_to_reviewing(
+        self: &Arc<Self>,
+        scope: EventScope,
+        fail_event: Event,
+    ) -> crate::error::Result<()> {
+        let wave_id = scope.wave_id().cloned();
+        let wave_scope = wave_id
+            .clone()
+            .zip(scope.cove_id().cloned())
+            .map(|(wave, cove)| EventScope::Wave { wave, cove });
+
+        write_with_actor_events_typed::<(), _>(
+            self.repo.as_ref(),
+            None,
+            &self.events,
+            &self.write,
+            move |tx| {
+                Box::pin(async move {
+                    let mut events = vec![(ActorId::KernelDispatcher, scope, fail_event)];
+                    if let (Some(wave_id), Some(wave_scope)) = (wave_id, wave_scope)
+                        && let Some(auto_events) =
+                            crate::wave_lifecycle::auto_transition_if_current_in_tx(
+                                tx,
+                                &wave_id,
+                                WaveLifecycle::Working,
+                                WaveLifecycle::Reviewing,
+                                &ActorId::KernelDispatcher,
+                                None,
+                            )
+                            .await?
+                    {
+                        events.extend(
+                            auto_events.into_iter().map(|event| {
+                                (ActorId::KernelDispatcher, wave_scope.clone(), event)
+                            }),
+                        );
+                    }
+                    Ok(((), events))
+                })
+            },
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn dispatch(
