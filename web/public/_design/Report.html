@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Report · Research Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --canvas: oklch(0.991 0.003 95);
+    --surface: oklch(1 0 0);
+    --surface-2: oklch(0.985 0.004 90);
+    --ink: oklch(0.245 0.008 60);
+    --ink-soft: oklch(0.42 0.007 60);
+    --muted: oklch(0.58 0.006 60);
+    --faint: oklch(0.72 0.005 70);
+    --hair: oklch(0.915 0.004 80);
+    --hair-2: oklch(0.945 0.003 85);
+    --accent: oklch(0.46 0.105 264);
+    --accent-soft: oklch(0.95 0.022 264);
+    --amber: oklch(0.66 0.115 66);
+    --amber-soft: oklch(0.955 0.03 78);
+    --green: oklch(0.56 0.085 152);
+
+    --sans: "Schibsted Grotesk", system-ui, sans-serif;
+    --serif: "Newsreader", Georgia, serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+
+    --glass: color-mix(in oklab, var(--surface) 82%, transparent);
+    --shadow: 0 1px 2px oklch(0 0 0 / .04), 0 16px 40px -12px oklch(0.3 0.02 60 / .20), 0 4px 12px -6px oklch(0.3 0.02 60 / .12);
+  }
+
+  *{ box-sizing: border-box; margin: 0; padding: 0; }
+  html,body{ height: 100%; }
+  body{
+    font-family: var(--sans);
+    background: var(--canvas);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection{ background: var(--accent-soft); }
+  button{ font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+  .scroll{ overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--hair) transparent; }
+  .scroll::-webkit-scrollbar{ width: 9px; }
+  .scroll::-webkit-scrollbar-thumb{ background: var(--hair); border-radius: 99px; border: 3px solid transparent; background-clip: padding-box; }
+  .scroll::-webkit-scrollbar-thumb:hover{ background: var(--faint); background-clip: padding-box; }
+
+  .app{ display: flex; flex-direction: column; height: 100vh; }
+
+  /* ───────────── stage ───────────── */
+  .stage{ flex: 1; position: relative; min-height: 0; }
+  .center{ position: absolute; inset: 0 280px 0 0; overflow-y: auto; }
+  .doc{ max-width: 640px; margin: 0 auto; padding: 48px 40px 150px; }
+
+  /* ───────────── docked sidebar: two collapsible sections ───────────── */
+  .sidebar{ position: fixed; right: 0; top: 0; bottom: 0; width: 280px; z-index: 30;
+    background: var(--surface); border-left: 1px solid var(--hair);
+    display: flex; flex-direction: column; }
+  .section{ display: flex; flex-direction: column; min-height: 0; }
+  .section + .section{ border-top: 1px solid var(--hair); }
+  .section.open{ flex: 1 1 0; }
+  .section:not(.open){ flex: 0 0 auto; }
+  .card-head{ display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 18px 14px; flex: 0 0 auto; cursor: pointer; user-select: none; transition: background .12s; }
+  .card-head:hover{ background: var(--surface-2); }
+  .card-head .ttl{ font-size: 12.5px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 9px; white-space: nowrap; min-width: 0; }
+  .card-head .ttl .chev-h{ width: 12px; height: 12px; stroke: var(--faint); fill: none; stroke-width: 1.9; transition: transform .18s; flex: 0 0 auto; }
+  .section.open .card-head .ttl .chev-h{ transform: rotate(90deg); }
+  .card-head .ttl .gic{ width: 15px; height: 15px; stroke: var(--muted); fill: none; stroke-width: 1.6; flex: 0 0 auto; }
+  .card-head .meta{ font-family: var(--mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
+  .section:not(.open) .card-body{ display: none; }
+  .card-body{ flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .card-body > .tree, .card-body > .timeline{ flex: 1 1 auto; min-height: 0; }
+  .live{ display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 9.5px; color: var(--green); }
+  .live .d{ width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px color-mix(in oklab, var(--green) 18%, transparent); }
+
+  /* ───────────── folder tree ───────────── */
+  .tree{ padding: 2px 8px 12px; }
+  .node .children{ margin-left: 16px; padding-left: 8px; border-left: 1px solid var(--hair-2); display: none; }
+  .node.open > .children{ display: block; }
+  .row{ display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 7px 8px; border-radius: 8px; transition: .12s; }
+  .row:hover{ background: color-mix(in oklab, var(--surface-2) 70%, transparent); }
+  .row .nm{ flex: 1; min-width: 0; font-size: 12.5px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .xt, .row .ct{ font-family: var(--mono); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); flex: 0 0 auto; }
+
+  .folder-row .chev{ width: 11px; height: 11px; stroke: var(--faint); fill: none; stroke-width: 1.8; transition: transform .16s; flex: 0 0 auto; }
+  .node.open > .folder-row .chev{ transform: rotate(90deg); }
+  .folder-row .fdr{ width: 15px; height: 15px; stroke: var(--muted); fill: none; stroke-width: 1.5; flex: 0 0 auto; }
+  .folder-row .nm{ font-weight: 600; color: var(--ink); }
+
+  .file-row{ padding-left: 8px; }
+  .file-row .fic{ width: 14px; height: 16px; stroke: var(--faint); fill: none; stroke-width: 1.5; flex: 0 0 auto; margin-left: 19px; }
+  .file-row.active{ background: var(--surface-2); }
+  .file-row.active .fic{ stroke: var(--accent); }
+  .file-row.active .nm{ color: var(--ink); font-weight: 500; }
+  /* files nested directly under a folder already indent via .children; remove double indent */
+  .children .file-row .fic{ margin-left: 0; }
+
+  /* ───────────── event line ───────────── */
+  .timeline{ padding: 4px 16px 14px; position: relative; }
+  .tl-line{ position: absolute; left: 22px; top: 8px; bottom: 16px; width: 1.5px; background: var(--hair); }
+  .ev{ position: relative; padding: 0 0 18px 26px; }
+  .ev:last-child{ padding-bottom: 4px; }
+  .ev .node-dot{ position: absolute; left: 0; top: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--faint); z-index: 2; }
+  .ev.accent .node-dot{ border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .ev.amber .node-dot{ border-color: var(--amber); background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); }
+  .ev .time{ font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .ev .etitle{ font-size: 12.5px; font-weight: 600; color: var(--ink); margin-top: 3px; display: flex; align-items: center; gap: 7px; }
+  .ev .tag{ font-family: var(--mono); font-size: 8.5px; letter-spacing: .04em; text-transform: uppercase; padding: 2px 6px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--hair); color: var(--muted); font-weight: 400; }
+  .ev.amber .tag{ color: var(--amber); border-color: color-mix(in oklab, var(--amber) 30%, var(--hair)); background: var(--amber-soft); }
+  .ev.accent .tag{ color: var(--accent); border-color: color-mix(in oklab, var(--accent) 30%, var(--hair)); background: var(--accent-soft); }
+  .ev .edesc{ font-size: 12px; line-height: 1.5; color: var(--muted); margin-top: 5px; }
+  .ev .edesc code{ font-family: var(--mono); font-size: 10.5px; color: var(--ink-soft); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--hair-2); }
+
+  /* ───────────── center: report ───────────── */
+  .doc h1{ font-family: var(--serif); font-weight: 500; font-size: 40px; line-height: 1.1; letter-spacing: -0.01em; margin: 20px 0 0; text-wrap: balance; }
+  .byline{ display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 20px; padding-bottom: 26px; border-bottom: 1px solid var(--hair); font-size: 12.5px; color: var(--muted); }
+  .byline .who{ display: inline-flex; align-items: center; gap: 8px; color: var(--ink-soft); font-weight: 500; }
+  .byline .who .bot{ width: 22px; height: 22px; border-radius: 6px; background: var(--ink); color: var(--canvas); display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; }
+  .byline .b-sep{ width: 3px; height: 3px; border-radius: 50%; background: var(--faint); }
+  .byline .mono{ font-family: var(--mono); font-size: 11px; }
+
+  .doc h2{ font-family: var(--sans); font-weight: 600; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 44px 0 0; display: flex; align-items: center; gap: 12px; }
+  .doc h2 .n{ font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  .doc h3{ font-family: var(--serif); font-weight: 500; font-size: 23px; line-height: 1.25; margin: 12px 0 0; letter-spacing: -0.005em; }
+  .doc p{ font-family: var(--serif); font-size: 17.5px; line-height: 1.62; color: var(--ink-soft); margin-top: 16px; text-wrap: pretty; }
+  .doc p .accent{ color: var(--ink); font-weight: 600; }
+  .doc a.ref{ color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: 11px; vertical-align: super; padding: 0 1px; }
+  .doc a.ref:hover{ text-decoration: underline; }
+
+  .findings{ margin-top: 28px; border: 1px solid var(--hair); border-radius: 14px; overflow: hidden; background: var(--surface); }
+  .findings .fh{ padding: 14px 20px; border-bottom: 1px solid var(--hair-2); font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 9px; }
+  .findings .fh .star{ width: 13px; height: 13px; stroke: var(--accent); fill: none; stroke-width: 1.6; }
+  .find-row{ display: grid; grid-template-columns: 88px 1fr; gap: 18px; padding: 16px 20px; align-items: baseline; }
+  .find-row + .find-row{ border-top: 1px solid var(--hair-2); }
+  .find-stat{ font-family: var(--serif); font-size: 28px; font-weight: 500; line-height: 1; color: var(--ink); }
+  .find-stat .u{ font-family: var(--sans); font-size: 12px; font-weight: 500; color: var(--muted); display: block; margin-top: 5px; letter-spacing: 0; }
+  .find-txt{ font-family: var(--serif); font-size: 15.5px; line-height: 1.5; color: var(--ink-soft); }
+  .find-txt b{ color: var(--ink); font-weight: 600; }
+
+  .chart{ margin-top: 26px; border: 1px solid var(--hair); border-radius: 14px; background:
+    repeating-linear-gradient(135deg, var(--surface-2) 0 9px, var(--surface) 9px 18px);
+    height: 248px; position: relative; display: flex; align-items: flex-end; justify-content: center;
+    padding: 22px; overflow: hidden;
+  }
+  .chart .ph-tag{ position: absolute; top: 14px; left: 16px; font-family: var(--mono); font-size: 10.5px; color: var(--faint); background: var(--surface); padding: 4px 9px; border-radius: 6px; border: 1px solid var(--hair); }
+  .chart .bars{ display: flex; align-items: flex-end; gap: 16px; height: 100%; width: 100%; max-width: 420px; padding-top: 26px; }
+  .chart .bars span{ flex: 1; background: linear-gradient(var(--accent), color-mix(in oklab, var(--accent) 55%, var(--canvas))); border-radius: 5px 5px 0 0; opacity: .9; }
+  .chart .cap{ position: absolute; bottom: 12px; left: 16px; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .figcap{ font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 9px; text-align: center; }
+
+  .tbl{ margin-top: 26px; border: 1px solid var(--hair); border-radius: 14px; overflow: hidden; font-family: var(--sans); }
+  .tbl table{ width: 100%; border-collapse: collapse; }
+  .tbl th{ text-align: left; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); padding: 12px 18px; background: var(--surface-2); border-bottom: 1px solid var(--hair); }
+  .tbl th.num,.tbl td.num{ text-align: right; font-family: var(--mono); }
+  .tbl td{ padding: 13px 18px; font-size: 14px; color: var(--ink-soft); border-bottom: 1px solid var(--hair-2); }
+  .tbl tr:last-child td{ border-bottom: none; }
+  .tbl td.name{ color: var(--ink); font-weight: 500; }
+  .tbl td .chg{ font-family: var(--mono); font-size: 12px; }
+  .chg.up{ color: var(--amber); }
+  .chg.down{ color: var(--green); }
+
+  /* ───────────── minimal chat (collapsed pill → small box) ───────────── */
+  .chat{ position: fixed; right: 308px; bottom: 26px; z-index: 35; }
+  .ask-pill{
+    display: inline-flex; align-items: center; gap: 10px;
+    height: 46px; padding: 0 18px 0 14px; border-radius: 99px;
+    background: var(--ink); color: var(--canvas);
+    box-shadow: var(--shadow); transition: .18s;
+  }
+  .ask-pill:hover{ transform: translateY(-1px); background: oklch(0.32 0.01 60); }
+  .ask-pill .bot{ width: 24px; height: 24px; border-radius: 50%; background: var(--accent); display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; }
+  .ask-pill .lbl{ font-size: 13px; font-weight: 500; white-space: nowrap; }
+
+  .ask-box{
+    display: none; width: 360px;
+    background: var(--glass); backdrop-filter: blur(16px) saturate(1.4);
+    border: 1px solid var(--hair); border-radius: 16px; box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .ask-box .ab-head{ display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 12px 15px; border-bottom: 1px solid var(--hair-2); }
+  .ask-box .ab-head .who{ display: flex; align-items: center; gap: 9px; font-size: 12.5px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+  .ask-box .ab-head .who .bot{ width: 22px; height: 22px; border-radius: 6px; background: var(--ink); color: var(--canvas); display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; }
+  .ab-close{ width: 28px; height: 28px; border-radius: 8px; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; transition: .12s; }
+  .ab-close:hover{ background: var(--surface-2); color: var(--ink); }
+  .ab-close svg{ width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.7; }
+  .ab-input{ display: flex; align-items: flex-end; gap: 8px; padding: 12px; }
+  .ab-input textarea{
+    flex: 1; resize: none; border: none; outline: none; background: transparent;
+    font-family: var(--serif); font-size: 15px; line-height: 1.4; color: var(--ink);
+    height: 24px; max-height: 96px; padding: 4px 2px;
+  }
+  .ab-input textarea::placeholder{ color: var(--faint); }
+  .send{ width: 32px; height: 32px; border-radius: 9px; background: var(--ink); color: var(--canvas); display: inline-flex; align-items: center; justify-content: center; transition: .15s; flex: 0 0 auto; }
+  .send:hover{ background: var(--accent); }
+  .send svg{ width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+
+  .chat.open .ask-pill{ display: none; }
+  .chat.open .ask-box{ display: block; }
+
+  @media (max-width: 1240px){
+    .sidebar{ width: 248px; }
+    .center{ inset: 0 248px 0 0; }
+    .chat{ right: 276px; }
+    .doc{ padding: 48px 28px 150px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="stage">
+
+    <!-- ───────── docked sidebar: two collapsible sections ───────── -->
+    <div class="sidebar">
+
+      <!-- section 1: files (folder tree) -->
+      <aside class="section open">
+        <div class="card-head" data-toggle>
+          <div class="ttl">
+            <svg class="chev-h" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+            <svg class="gic" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+            Files
+          </div>
+          <div class="meta">9 files · 3 folders</div>
+        </div>
+        <div class="card-body">
+        <div class="tree scroll">
+
+          <div class="node folder open">
+            <button class="row folder-row">
+              <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+              <svg class="fdr" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+              <span class="nm">Sources</span>
+              <span class="ct">4</span>
+            </button>
+            <div class="children">
+              <button class="row file-row active">
+                <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                <span class="nm">market-data-q2.csv</span><span class="xt">csv</span>
+              </button>
+              <button class="row file-row">
+                <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                <span class="nm">benchmark-report-2026.pdf</span><span class="xt">pdf</span>
+              </button>
+              <button class="row file-row">
+                <svg class="fic" viewBox="0 0 24 24"><path d="M9 15l6-6"/><path d="M11 7l1-1a4 4 0 015 5l-1 1"/><path d="M13 17l-1 1a4 4 0 01-5-5l1-1"/></svg>
+                <span class="nm">reuters.com/markets</span><span class="xt">url</span>
+              </button>
+              <button class="row file-row">
+                <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                <span class="nm">iea-outlook-extract.pdf</span><span class="xt">pdf</span>
+              </button>
+
+              <div class="node folder">
+                <button class="row folder-row">
+                  <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+                  <svg class="fdr" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                  <span class="nm">raw-datasets</span>
+                  <span class="ct">2</span>
+                </button>
+                <div class="children">
+                  <button class="row file-row">
+                    <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                    <span class="nm">ev-registrations.xlsx</span><span class="xt">xlsx</span>
+                  </button>
+                  <button class="row file-row">
+                    <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                    <span class="nm">supply-chain-map.png</span><span class="xt">png</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="node folder open">
+            <button class="row folder-row">
+              <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+              <svg class="fdr" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+              <span class="nm">Generated</span>
+              <span class="ct">3</span>
+            </button>
+            <div class="children">
+              <button class="row file-row">
+                <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                <span class="nm">outlook-summary.md</span><span class="xt">md</span>
+              </button>
+              <button class="row file-row">
+                <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                <span class="nm">charts-export.png</span><span class="xt">png</span>
+              </button>
+              <button class="row file-row">
+                <svg class="fic" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/></svg>
+                <span class="nm">price-index-clean.csv</span><span class="xt">csv</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+        </div>
+      </aside>
+
+      <!-- section 2: event line -->
+      <aside class="section open">
+        <div class="card-head" data-toggle>
+          <div class="ttl">
+            <svg class="chev-h" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+            <svg class="gic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+            Event line
+          </div>
+          <span class="live"><span class="d"></span> LIVE</span>
+        </div>
+        <div class="card-body">
+        <div class="timeline scroll">
+          <div class="tl-line"></div>
+
+          <div class="ev accent">
+            <span class="node-dot"></span>
+            <div class="time">Today · 14:20</div>
+            <div class="etitle">Report regenerated <span class="tag">agent</span></div>
+            <div class="edesc">Outlook rebuilt after new pricing rows landed. 4 figures refreshed.</div>
+          </div>
+
+          <div class="ev amber">
+            <span class="node-dot"></span>
+            <div class="time">Today · 13:55</div>
+            <div class="etitle">Anomaly detected <span class="tag">alert</span></div>
+            <div class="edesc">Cell price <code>+6.2%</code> WoW exceeds the trailing volatility band.</div>
+          </div>
+
+          <div class="ev">
+            <span class="node-dot"></span>
+            <div class="time">Today · 11:30</div>
+            <div class="etitle">New data synced <span class="tag">data</span></div>
+            <div class="edesc"><code>1,204</code> rows added to <code>market-data-q2.csv</code>.</div>
+          </div>
+
+          <div class="ev">
+            <span class="node-dot"></span>
+            <div class="time">Today · 09:00</div>
+            <div class="etitle">Source connected <span class="tag">source</span></div>
+            <div class="edesc">Reuters markets feed linked and indexed.</div>
+          </div>
+
+          <div class="ev">
+            <span class="node-dot"></span>
+            <div class="time">Yesterday · 18:40</div>
+            <div class="etitle">Dataset refreshed <span class="tag">data</span></div>
+            <div class="edesc">Scheduled pull updated 3 of 6 sources.</div>
+          </div>
+
+          <div class="ev">
+            <span class="node-dot"></span>
+            <div class="time">Jun 6 · 10:12</div>
+            <div class="etitle">Report created <span class="tag">init</span></div>
+            <div class="edesc">Agent initialized the workspace from 5 seed documents.</div>
+          </div>
+
+        </div>
+        </div>
+      </aside>
+
+    </div>
+
+    <!-- ───────── center: report ───────── -->
+    <div class="center scroll">
+      <article class="doc">
+
+        <h1>Global EV Battery Supply Chain — Q2 2026 Outlook</h1>
+
+        <div class="byline">
+          <span class="who"><span class="bot">R</span> Research Agent</span>
+          <span class="b-sep"></span>
+          <span>Updated <span class="mono">2h ago</span></span>
+          <span class="b-sep"></span>
+          <span>14 sources</span>
+          <span class="b-sep"></span>
+          <span class="mono">~6 min read</span>
+        </div>
+
+        <h2><span class="n">01</span> Executive summary</h2>
+        <p>Battery cell pricing reversed three consecutive quarters of decline, climbing as cathode-grade lithium tightened across the first half of <span class="accent">2026</span>. Refining capacity remains the single largest bottleneck, with the top three processors still accounting for a majority share of qualified output.<a class="ref" href="#">1</a> Downstream, automakers continue to diversify supplier panels, but qualification cycles mean the effect on landed cost will lag by two to three quarters.<a class="ref" href="#">2</a></p>
+
+        <div class="findings">
+          <div class="fh">
+            <svg class="star" viewBox="0 0 24 24"><path d="M12 3l2.5 5.5L20 9.5l-4 4 1 6-5-3-5 3 1-6-4-4 5.5-1L12 3z"/></svg>
+            Key findings
+          </div>
+          <div class="find-row">
+            <div class="find-stat">+6.2%<span class="u">QoQ cell price</span></div>
+            <div class="find-txt">First quarterly increase since Q3 2025, driven by <b>lithium carbonate</b> tightening and slower-than-planned refinery ramps.</div>
+          </div>
+          <div class="find-row">
+            <div class="find-stat">68%<span class="u">top-3 refining</span></div>
+            <div class="find-txt">Refining concentration is <b>unchanged YoY</b> despite three new projects announced — none reach qualified output before 2027.</div>
+          </div>
+          <div class="find-row">
+            <div class="find-stat">2–3Q<span class="u">cost lag</span></div>
+            <div class="find-txt">Supplier diversification is accelerating, but qualification timelines delay any <b>landed-cost relief</b> into early 2027.</div>
+          </div>
+        </div>
+
+        <h2><span class="n">02</span> Market dynamics</h2>
+        <h3>Pricing turned a corner in April</h3>
+        <p>After bottoming in March, the blended cell price index moved higher for three consecutive months. The move was concentrated in NMC chemistries, where cathode input costs are most exposed to refined lithium, while LFP held comparatively flat.<a class="ref" href="#">3</a></p>
+
+        <div class="chart">
+          <div class="ph-tag">chart placeholder · blended cell price index</div>
+          <div class="bars">
+            <span style="height:46%"></span>
+            <span style="height:38%"></span>
+            <span style="height:34%"></span>
+            <span style="height:30%"></span>
+            <span style="height:41%"></span>
+            <span style="height:58%"></span>
+            <span style="height:72%"></span>
+          </div>
+          <div class="cap">Oct 25 → Jun 26 · indexed to 100</div>
+        </div>
+        <div class="figcap">Fig 1. Drop real chart export from charts-export.png</div>
+
+        <h2><span class="n">03</span> Supply concentration</h2>
+        <p>Qualified refining output remains the binding constraint. The table below summarizes processed-material share among the leading producers and the quarter-over-quarter movement in available qualified tonnage.<a class="ref" href="#">4</a></p>
+
+        <div class="tbl">
+          <table>
+            <thead>
+              <tr><th>Producer</th><th>Region</th><th class="num">Share</th><th class="num">QoQ</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="name">Ganfeng Processing</td><td>CN</td><td class="num">31%</td><td class="num"><span class="chg up">+1.4</span></td></tr>
+              <tr><td class="name">Albemarle</td><td>US / CL</td><td class="num">22%</td><td class="num"><span class="chg down">−0.6</span></td></tr>
+              <tr><td class="name">SQM</td><td>CL</td><td class="num">15%</td><td class="num"><span class="chg up">+0.3</span></td></tr>
+              <tr><td class="name">Tianqi</td><td>CN / AU</td><td class="num">11%</td><td class="num"><span class="chg down">−0.8</span></td></tr>
+              <tr><td class="name">Others</td><td>—</td><td class="num">21%</td><td class="num"><span class="chg up">+0.5</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2><span class="n">04</span> Risks &amp; signals</h2>
+        <p>The agent flagged one anomaly this cycle: a <span class="accent">6.2%</span> single-week jump in spot cell prices that exceeds the trailing volatility band. Treat the Q3 ramp guidance from new refiners as the key variable to watch — any slippage extends the current pricing regime well into next year.<a class="ref" href="#">5</a></p>
+
+      </article>
+    </div>
+
+    <!-- ───────── minimal chat: pill → small box ───────── -->
+    <div class="chat" id="chat">
+      <button class="ask-pill" id="askOpen">
+        <span class="bot">R</span>
+        <span class="lbl">Ask the Research Agent</span>
+      </button>
+      <div class="ask-box">
+        <div class="ab-head">
+          <div class="who"><span class="bot">R</span> Research Agent</div>
+          <button class="ab-close" id="askClose" title="Close">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div class="ab-input">
+          <textarea id="askField" rows="1" placeholder="Ask a follow-up about this report…"></textarea>
+          <button class="send" title="Send"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // sidebar section collapse / expand
+  document.querySelectorAll('.section [data-toggle]').forEach(function(head){
+    head.addEventListener('click', function(){
+      head.closest('.section').classList.toggle('open');
+    });
+  });
+
+  // folder expand / collapse
+  document.querySelectorAll('.folder-row').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      btn.closest('.node').classList.toggle('open');
+    });
+  });
+
+  // file selection
+  document.querySelectorAll('.file-row').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.file-row.active').forEach(function(a){ a.classList.remove('active'); });
+      btn.classList.add('active');
+    });
+  });
+
+  // minimal chat expand / collapse
+  var chat = document.getElementById('chat');
+  var field = document.getElementById('askField');
+  document.getElementById('askOpen').addEventListener('click', function(){
+    chat.classList.add('open');
+    setTimeout(function(){ field.focus(); }, 30);
+  });
+  document.getElementById('askClose').addEventListener('click', function(){
+    chat.classList.remove('open');
+  });
+  // auto-grow textarea
+  field.addEventListener('input', function(){
+    field.style.height = 'auto';
+    field.style.height = Math.min(field.scrollHeight, 96) + 'px';
+  });
+</script>
+</body>
+</html>
