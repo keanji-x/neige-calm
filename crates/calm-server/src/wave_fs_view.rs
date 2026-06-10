@@ -225,7 +225,7 @@ impl<'a> WaveFsView<'a> {
     ) -> Result<Vec<HookEventProjection>, WaveFsError> {
         let events = self
             .repo
-            .events_for_wave(wave.id.as_str(), &["codex.hook", "claude.hook"])
+            .events_for_wave(wave.id.as_str(), &["codex.hook", "claude.hook"], None)
             .await
             .map_err(|e| WaveFsError::Internal(format!("wave_file: events_for_wave: {e}")))?;
 
@@ -270,6 +270,7 @@ impl<'a> WaveFsView<'a> {
                     "task.completed",
                     "task.failed",
                 ],
+                None,
             )
             .await
             .map_err(|e| WaveFsError::Internal(format!("wave_file: events_for_wave: {e}")))?;

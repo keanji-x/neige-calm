@@ -27,20 +27,29 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::dispatcher::Dispatcher;
+use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{
     ArtifactRef, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms};
+use calm_server::model::{
+    CardRole, NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+};
+use calm_server::operation::{
+    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationRuntime, PhaseTag,
+    ProviderAdapter, SpawnCtx, SpawnHandle, SqlxOperationRepo, Tx, TxOutput,
+};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use serde_json::Value;
 
 static DISPATCHER_DAEMON_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -116,6 +125,7 @@ fn codex_req(idem: &str, goal: &str) -> Event {
         goal: goal.into(),
         context: serde_json::Value::Null,
         acceptance_criteria: None,
+        agent_message: None,
     }
 }
 
@@ -311,6 +321,199 @@ where
     }
 }
 
+const FAST_REPORT_ADAPTER_PHASES: &[PhaseTag] = &[];
+
+struct FastReportAdapter {
+    task_completed: calm_server::mcp_server::registry::ToolHandler,
+    tool_ctx: Arc<calm_server::mcp_server::AppContext>,
+    worker_card_id: String,
+    wave_id: WaveId,
+    idempotency_key: String,
+}
+
+impl FastReportAdapter {
+    fn new(
+        task_completed: calm_server::mcp_server::registry::ToolHandler,
+        tool_ctx: Arc<calm_server::mcp_server::AppContext>,
+        worker_card_id: String,
+        wave_id: WaveId,
+        idempotency_key: String,
+    ) -> Self {
+        Self {
+            task_completed,
+            tool_ctx,
+            worker_card_id,
+            wave_id,
+            idempotency_key,
+        }
+    }
+}
+
+fn unexpected_fast_report_call(name: &str) -> CalmError {
+    CalmError::Internal(format!("fast-report test fixture unexpected call: {name}"))
+}
+
+#[async_trait]
+impl ProviderAdapter for FastReportAdapter {
+    fn kind(&self) -> &'static str {
+        "terminal-worker"
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        FAST_REPORT_ADAPTER_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        Ok(TxOutput::new(
+            "fast-report",
+            None,
+            serde_json::json!({"ok": true}),
+        ))
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Err(unexpected_fast_report_call("app_server_interact"))
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnHandle> {
+        let identity = calm_server::mcp_server::ToolCallIdentity {
+            card_id: self.worker_card_id.clone(),
+            role: CardRole::Worker,
+            wave_id: Some(self.wave_id.to_string()),
+            thread_id: "fast-worker-report-thread".into(),
+        };
+        (self.task_completed)(
+            self.tool_ctx.clone(),
+            identity,
+            serde_json::json!({
+                "idempotency_key": self.idempotency_key.clone(),
+                "result": { "ok": true }
+            }),
+        )
+        .await
+        .map_err(|e| CalmError::Internal(format!("fast worker task_completed failed: {e:?}")))?;
+        Ok(SpawnHandle::NoOp)
+    }
+
+    async fn plan_compensation(
+        &self,
+        _from_phase: PhaseTag,
+        _reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Err(unexpected_fast_report_call("plan_compensation"))
+    }
+
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(unexpected_fast_report_call("compensate_step"))
+    }
+}
+
+const FAILING_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
+
+struct FailingSpawnAdapter;
+
+#[async_trait]
+impl ProviderAdapter for FailingSpawnAdapter {
+    fn kind(&self) -> &'static str {
+        "terminal-worker"
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        FAILING_SPAWN_ADAPTER_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        Ok(TxOutput::new(
+            "failing-spawn",
+            None,
+            serde_json::json!({"ok": false}),
+        ))
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Err(CalmError::Internal(
+            "failing-spawn test fixture unexpected app_server_interact".into(),
+        ))
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnHandle> {
+        Err(CalmError::Internal("forced spawn failure".into()))
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Ok(CompensationStateVersioned {
+            version: 1,
+            from_phase,
+            reason: reason.to_string(),
+            steps: Vec::new(),
+        })
+    }
+
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(CalmError::Internal(
+            "failing-spawn test fixture has no compensation steps".into(),
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. SubscribeFilter integration.
 // ---------------------------------------------------------------------------
@@ -332,6 +535,7 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
         Event::TaskFailed {
             idempotency_key: "k2".into(),
             reason: "x".into(),
+            agent_message: None,
         },
     );
     events.emit(ActorId::User, codex_req("k3", "g3"));
@@ -479,6 +683,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
                 if let Event::TaskFailed {
                     idempotency_key,
                     reason,
+                    ..
                 } = &env.event
                     && idempotency_key == idem
                 {
@@ -605,6 +810,7 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
@@ -650,6 +856,408 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 }
 
 #[tokio::test]
+async fn dispatcher_spawn_success_auto_promotes_dispatching_to_working() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Dispatching),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("set wave dispatching");
+
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        proc_supervisor_sock: None,
+    });
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        codex,
+        daemon,
+        None,
+        stub_shared(&repo),
+        4,
+    );
+
+    let mut rx = events.subscribe();
+    let idem = "auto-working-terminal";
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalWorkerRequested {
+            idempotency_key: idem.into(),
+            cmd: "/bin/true".into(),
+            cwd: None,
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_auto = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if matches!(env.actor, ActorId::KernelDispatcher)
+                    && let Event::WaveUpdated(payload) = env.event
+                    && payload.id == wave_id
+                {
+                    assert_eq!(payload.lifecycle, WaveLifecycle::Working);
+                    assert_eq!(
+                        payload.agent_message.as_deref(),
+                        Some("[auto] worker spawned")
+                    );
+                    saw_auto = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        saw_auto,
+        "dispatcher must emit kernel-dispatcher WaveUpdated after worker spawn success"
+    );
+
+    let wave = repo
+        .wave_get(wave_id.as_str())
+        .await
+        .unwrap()
+        .expect("wave exists");
+    assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+}
+
+#[tokio::test]
+async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Dispatching),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("set wave dispatching");
+
+    let operation_repo = Arc::new(SqlxOperationRepo::new(
+        repo.sqlite_pool()
+            .expect("dispatcher test uses sqlite repo"),
+    ));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let spawn_ctx = SpawnCtx::new(route_repo, stub_daemon(), terminal_renderer, events.clone());
+    let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![Arc::new(FailingSpawnAdapter)],
+        events.clone(),
+        spawn_ctx,
+    ));
+    let _dispatcher = Dispatcher::spawn_with_operation_runtime(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        stub_codex(),
+        stub_daemon(),
+        None,
+        stub_shared(&repo),
+        operation_runtime,
+        4,
+    );
+
+    let mut rx = events.subscribe();
+    let idem = "spawn-fail-auto-review";
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalWorkerRequested {
+            idempotency_key: idem.into(),
+            cmd: "force-failure".into(),
+            cwd: None,
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_failed = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key,
+                    reason,
+                    ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    assert!(
+                        reason.contains("forced spawn failure"),
+                        "task.failed should preserve dispatch error, got {reason:?}"
+                    );
+                    let wave = repo
+                        .wave_get(wave_id.as_str())
+                        .await
+                        .unwrap()
+                        .expect("wave exists");
+                    assert_eq!(
+                        wave.lifecycle,
+                        WaveLifecycle::Reviewing,
+                        "TaskFailed broadcast must not be observable before Working -> Reviewing commits"
+                    );
+                    saw_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(saw_failed, "expected spawn failure task.failed broadcast");
+
+    let rows = repo.events_since(0, None).await.unwrap();
+    let relevant: Vec<Event> = rows
+        .into_iter()
+        .filter_map(|(_id, _version, scope, event)| {
+            if scope.wave_id() != Some(&wave_id) {
+                return None;
+            }
+            match &event {
+                Event::WaveLifecycleChanged { id, .. } if id == &wave_id => Some(event),
+                Event::WaveUpdated(payload) if payload.id == wave_id => Some(event),
+                Event::TaskFailed {
+                    idempotency_key, ..
+                } if idempotency_key == idem => Some(event),
+                _ => None,
+            }
+        })
+        .collect();
+
+    match relevant.as_slice() {
+        [
+            Event::WaveLifecycleChanged {
+                from: first_from,
+                to: first_to,
+                ..
+            },
+            Event::WaveUpdated(first_update),
+            Event::TaskFailed {
+                idempotency_key,
+                reason,
+                ..
+            },
+            Event::WaveLifecycleChanged {
+                from: second_from,
+                to: second_to,
+                ..
+            },
+            Event::WaveUpdated(second_update),
+        ] => {
+            assert_eq!(*first_from, WaveLifecycle::Dispatching);
+            assert_eq!(*first_to, WaveLifecycle::Working);
+            assert_eq!(first_update.lifecycle, WaveLifecycle::Working);
+            assert_eq!(idempotency_key, idem);
+            assert!(
+                reason.contains("forced spawn failure"),
+                "task.failed should preserve dispatch error, got {reason:?}"
+            );
+            assert_eq!(*second_from, WaveLifecycle::Working);
+            assert_eq!(*second_to, WaveLifecycle::Reviewing);
+            assert_eq!(second_update.lifecycle, WaveLifecycle::Reviewing);
+        }
+        other => panic!("unexpected spawn-failure lifecycle event sequence: {other:#?}"),
+    }
+
+    let wave = repo
+        .wave_get(wave_id.as_str())
+        .await
+        .unwrap()
+        .expect("wave exists");
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+}
+
+#[tokio::test]
+async fn dispatcher_promotes_to_working_before_fast_worker_report() {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Marker {
+        DispatchingToWorking,
+        TaskCompleted,
+        WorkingToReviewing,
+    }
+
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Dispatching),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("set wave dispatching");
+
+    let idem = "fast-worker-report-ordering";
+    let worker_card = repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone(),
+            kind: "terminal".into(),
+            sort: None,
+            payload: serde_json::json!({ "idempotency_key": idem }),
+        })
+        .await
+        .expect("seed worker card");
+    cache.insert(worker_card.id.clone(), CardRole::Worker, wave_id.clone());
+
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let tool_ctx = Arc::new(calm_server::mcp_server::AppContext {
+        repo: route_repo.clone(),
+        events: events.clone(),
+        write: calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        daemon_token_hash: None,
+    });
+    let task_completed = calm_server::mcp_server::build_default_registry()
+        .lookup(calm_server::mcp_server::tools::emit::TOOL_TASK_COMPLETE)
+        .expect("calm.task.complete handler registered");
+    let operation_repo = Arc::new(SqlxOperationRepo::new(
+        repo.sqlite_pool()
+            .expect("dispatcher test uses sqlite repo"),
+    ));
+    let fast_report_adapter = Arc::new(FastReportAdapter::new(
+        task_completed,
+        tool_ctx,
+        worker_card.id.to_string(),
+        wave_id.clone(),
+        idem.to_string(),
+    ));
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let spawn_ctx = SpawnCtx::new(route_repo, stub_daemon(), terminal_renderer, events.clone());
+    let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![fast_report_adapter],
+        events.clone(),
+        spawn_ctx,
+    ));
+    let _dispatcher = Dispatcher::spawn_with_operation_runtime(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        stub_codex(),
+        stub_daemon(),
+        None,
+        stub_shared(&repo),
+        operation_runtime,
+        4,
+    );
+
+    let mut rx = events.subscribe();
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalWorkerRequested {
+            idempotency_key: idem.into(),
+            cmd: "mock-fast-worker".into(),
+            cwd: None,
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut markers = Vec::new();
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                match &env.event {
+                    Event::WaveLifecycleChanged { id, from, to, .. }
+                        if id == &wave_id
+                            && *from == WaveLifecycle::Dispatching
+                            && *to == WaveLifecycle::Working =>
+                    {
+                        markers.push(Marker::DispatchingToWorking);
+                    }
+                    Event::WaveLifecycleChanged { id, from, to, .. }
+                        if id == &wave_id
+                            && *from == WaveLifecycle::Working
+                            && *to == WaveLifecycle::Reviewing =>
+                    {
+                        markers.push(Marker::WorkingToReviewing);
+                    }
+                    Event::TaskCompleted {
+                        idempotency_key, ..
+                    } if idempotency_key == "fast-worker-report-ordering" => {
+                        markers.push(Marker::TaskCompleted);
+                    }
+                    _ => {}
+                }
+
+                if markers.contains(&Marker::DispatchingToWorking)
+                    && markers.contains(&Marker::TaskCompleted)
+                    && markers.contains(&Marker::WorkingToReviewing)
+                {
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+
+    let dispatching_to_working = markers
+        .iter()
+        .position(|m| *m == Marker::DispatchingToWorking)
+        .unwrap_or_else(|| panic!("missing Dispatching -> Working marker: {markers:?}"));
+    let task_completed_idx = markers
+        .iter()
+        .position(|m| *m == Marker::TaskCompleted)
+        .unwrap_or_else(|| panic!("missing task.completed marker: {markers:?}"));
+    let working_to_reviewing = markers
+        .iter()
+        .position(|m| *m == Marker::WorkingToReviewing)
+        .unwrap_or_else(|| panic!("missing Working -> Reviewing marker: {markers:?}"));
+
+    assert!(
+        dispatching_to_working < task_completed_idx,
+        "dispatcher must promote Dispatching -> Working before a fast worker report; markers={markers:?}"
+    );
+    assert!(
+        task_completed_idx < working_to_reviewing,
+        "worker task.completed must then promote Working -> Reviewing; markers={markers:?}"
+    );
+
+    let wave = repo
+        .wave_get(wave_id.as_str())
+        .await
+        .unwrap()
+        .expect("wave exists");
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+}
+
+#[tokio::test]
 async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
@@ -689,6 +1297,7 @@ async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
             idempotency_key: idem.into(),
             cmd: cmd.into(),
             cwd: None,
+            agent_message: None,
         },
     )
     .await
@@ -704,6 +1313,7 @@ async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
             idempotency_key: idem.into(),
             cmd: cmd.into(),
             cwd: Some(String::new()),
+            agent_message: None,
         },
     )
     .await
@@ -825,6 +1435,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     let mut rx = events.subscribe();
@@ -909,6 +1520,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     repo.log_pure_event(
         ActorId::User,
@@ -1032,6 +1644,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     let mut rx = events.subscribe();
@@ -1156,6 +1769,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         // Fast-exit command for the real supervised shell.
         cmd: "printf done\n".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)

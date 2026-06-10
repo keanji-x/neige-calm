@@ -479,9 +479,16 @@ async fn dev_force_wave_lifecycle(
                             cove_id: cove_id_for_event.clone(),
                             from,
                             to,
+                            agent_message: None,
                         },
                     ),
-                    (scope, Event::WaveUpdated(wave.clone())),
+                    (
+                        scope,
+                        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
+                            wave.clone(),
+                            None,
+                        )),
+                    ),
                 ];
                 Ok((wave, events))
             })

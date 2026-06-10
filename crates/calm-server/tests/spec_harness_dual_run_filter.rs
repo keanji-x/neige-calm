@@ -250,6 +250,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
             summary_after: "summary".into(),
             body_before: String::new(),
             body_after: "body after".into(),
+            agent_message: None,
         },
     )
     .await
@@ -398,6 +399,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         summary_after: "summary".into(),
         body_before: String::new(),
         body_after: "body after".into(),
+        agent_message: None,
     };
     let cold_bus = EventBus::new();
     let envelope_id = repo

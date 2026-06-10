@@ -231,7 +231,7 @@ export type EditAuthor = "spec" | "user" | "kernel";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": Wave } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: RunStatus, new_status: RunStatus, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: RunStatus, new_status: RunStatus, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so
  * the UI can show it without a separate `/log` fetch. `None` for
@@ -281,7 +281,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, } };
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } };
 
 /**
  * Where an event lives in the cove → wave → card hierarchy.
@@ -464,3 +464,61 @@ summary: string,
  * the structure.
  */
 body: string, };
+
+/**
+ * Payload for `Event::WaveUpdated`.
+ *
+ * `wave` is flattened to preserve the historical wire shape: the event data
+ * is still the full wave row at top level, with `agent_message` added as an
+ * optional adjacent field for #597. Older persisted rows that lack the field
+ * deserialize with `None`.
+ */
+export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
+/**
+ * Issue #145 — the wave's lifecycle state. **Required** (no
+ * `Option`): every wave-creating code path must seed
+ * [`WaveLifecycle::Draft`] explicitly. Per the project's
+ * "required over Option" preference, Option here would silently
+ * hide missing-data bugs — the field is core kernel contract.
+ *
+ * `#[serde(default)]` lets wire payloads emitted before #145
+ * landed (event-log replay fixtures) parse as `Draft` without
+ * forcing a fixture rewrite — matches the DB DEFAULT in
+ * migration 0012.
+ */
+lifecycle: WaveLifecycle, 
+/**
+ * Issue #250 PR 2 — the working directory the wave's spec daemon
+ * runs in. **Required at the route layer**: `POST /api/waves`
+ * rejects empty / non-absolute paths and refuses to create a wave
+ * whose cwd isn't claimable by some cove (via
+ * `cove_folder_resolve`, optionally creating a `cove_folders` row
+ * when the body sets `attach_folder: true`).
+ *
+ * `#[serde(default)]` mirrors the lifecycle precedent: replay of
+ * a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
+ * hydrates as `""`, matching the DB DEFAULT in migration 0018.
+ * Production wave-create paths inside this binary always stamp a
+ * real path — the migration default is the "old data only" fallback.
+ */
+cwd: string, 
+/**
+ * Issue #250 PR 2 — unix-ms timestamp the wave most recently
+ * entered a terminal lifecycle state (Done / Canceled / Failed),
+ * or `None` while the wave is non-terminal. Stamped inside the
+ * same transaction as the `WaveLifecycleChanged` event by
+ * `wave_update_tx`; cleared back to `None` on reopen
+ * (Done/Canceled/Failed → Planning). The calendar window query
+ * `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
+ * terminal_at >= since)` to keep open waves visible across every
+ * day they span.
+ *
+ * Backfill semantics: rows that existed before this migration
+ * stay `None` even when their lifecycle is already terminal —
+ * the event log carries the original transition timestamp but
+ * the migration deliberately doesn't read from `events` (mixing
+ * migration with replay is fragile). A user-driven reopen →
+ * re-Done cycle stamps the column with the current time, which
+ * is the first defensible point.
+ */
+terminal_at: number | null, created_at: number, updated_at: number, };

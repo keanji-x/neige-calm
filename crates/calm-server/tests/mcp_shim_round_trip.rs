@@ -220,7 +220,8 @@ async fn shim_round_trip_initialize_and_tools_call_completes() {
             "arguments": {
                 "idempotency_key": "shim-round-trip",
                 "status": "accepted",
-                "reason": "round-trip probe"
+                "reason": "round-trip probe",
+                "message": "accept shim round-trip probe"
             },
             "_meta": { "threadId": boot.thread_id }
         }

@@ -83,22 +83,31 @@ async fn replay_harness_events_since(
     watermark: i64,
     snapshot: &mut HarnessSnapshot,
 ) -> Result<()> {
-    let rows = repo.events_since(watermark, None).await?;
+    let rows = repo
+        .events_for_wave(
+            wave_id.as_str(),
+            &[
+                "task.completed",
+                "task.failed",
+                "wave.report_edited",
+                "codex.hook",
+                "claude.hook",
+            ],
+            Some(watermark),
+        )
+        .await?;
     let mut replayed = 0usize;
-    for (id, _version, scope, event) in rows {
-        if scope.wave_id() != Some(wave_id) {
+    for row in rows {
+        let role = role_needed_for_spec_push_filter(repo.as_ref(), &row.event).await?;
+        if !dispatcher::event_warrants_spec_push_with_role(&row.event, &row.actor, |_| role) {
             continue;
         }
-        let role = role_needed_for_spec_push_filter(repo.as_ref(), &event).await?;
-        if !dispatcher::event_warrants_spec_push_with_role(&event, |_| role) {
-            continue;
-        }
-        let Some(obs) = dispatcher::harness_observation_from_event(wave_id, &event) else {
+        let Some(obs) = dispatcher::harness_observation_from_event(wave_id, &row.event) else {
             continue;
         };
         snapshot.pending_queue.push(obs);
-        snapshot.pending_envelope_ids.push(Some(id));
-        snapshot.push_watermark = snapshot.push_watermark.max(id);
+        snapshot.pending_envelope_ids.push(Some(row.id));
+        snapshot.push_watermark = snapshot.push_watermark.max(row.id);
         replayed += 1;
     }
     if replayed > 0 {

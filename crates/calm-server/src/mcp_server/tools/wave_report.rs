@@ -58,7 +58,10 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, role_gated_write_annotations,
 };
-use crate::model::{Card, CardRole, Wave};
+use crate::mcp_server::tools::lifecycle_args::{
+    lifecycle_schema, message_schema, parse_write_args,
+};
+use crate::model::{Card, CardRole, Wave, WaveLifecycle};
 use crate::wave_report::{WaveReportPayload, persist_report};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -132,14 +135,18 @@ fn write_descriptor() -> ToolDescriptor {
              `calm.report.edit` for targeted string replacement \
              instead when only part of the body changes. Returns \
              `{ updated_at }`. Omitting `summary` leaves the existing \
-             summary unchanged."
+             summary unchanged. `message` is required and is persisted as \
+             `agent_message`; optional `lifecycle` advances the wave state \
+             machine in the same atomic write."
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["body"],
+            "required": ["body", "message"],
             "properties": {
                 "body": { "type": "string" },
-                "summary": { "type": "string" }
+                "summary": { "type": "string" },
+                "message": message_schema(),
+                "lifecycle": lifecycle_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -153,6 +160,7 @@ async fn report_write(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
+    let write_args = parse_write_args(&args, "calm.report.write")?;
     let obj = args.as_object().ok_or_else(|| {
         RpcError::invalid_params("calm.report.write: arguments must be an object")
     })?;
@@ -178,7 +186,19 @@ async fn report_write(
         summary: summary_override.unwrap_or_else(|| current.summary.clone()),
         body,
     };
-    call_persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
+    call_persist_report(
+        &ctx,
+        &identity,
+        PersistReportCall {
+            wave,
+            report_card,
+            current_payload: current,
+            next: next_payload,
+            agent_message: write_args.message,
+            lifecycle: write_args.lifecycle,
+        },
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -197,15 +217,20 @@ fn edit_descriptor() -> ToolDescriptor {
              `CardUpdated` + `WaveReportEdited` event pair as every \
              other persist (with `body_before == body_after`). \
              Returns `{ updated_at }`. The summary is preserved — \
-             call `calm.report.write` to update both at once."
+             call `calm.report.write` to update both at once. `message` \
+             is required and is persisted as `agent_message`; optional \
+             `lifecycle` advances the wave state machine in the same \
+             atomic write."
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["old_string", "new_string"],
+            "required": ["old_string", "new_string", "message"],
             "properties": {
                 "old_string": { "type": "string", "minLength": 1 },
                 "new_string": { "type": "string" },
-                "replace_all": { "type": "boolean" }
+                "replace_all": { "type": "boolean" },
+                "message": message_schema(),
+                "lifecycle": lifecycle_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -219,6 +244,7 @@ async fn report_edit(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
+    let write_args = parse_write_args(&args, "calm.report.edit")?;
     let obj = args
         .as_object()
         .ok_or_else(|| RpcError::invalid_params("calm.report.edit: arguments must be an object"))?;
@@ -289,7 +315,19 @@ async fn report_edit(
         summary: current.summary.clone(),
         body: new_body,
     };
-    call_persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
+    call_persist_report(
+        &ctx,
+        &identity,
+        PersistReportCall {
+            wave,
+            report_card,
+            current_payload: current,
+            next: next_payload,
+            agent_message: write_args.message,
+            lifecycle: write_args.lifecycle,
+        },
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -403,13 +441,19 @@ pub(crate) async fn load_report_for_wave(
 /// share one persist path; one event-pair contract; one transactional
 /// write. Anything else would be two parallel implementations of the
 /// same invariant, with the corresponding drift risk.
-async fn call_persist_report(
-    ctx: &Arc<AppContext>,
-    identity: &ToolCallIdentity,
+struct PersistReportCall {
     wave: Wave,
     report_card: Card,
     current_payload: WaveReportPayload,
     next: WaveReportPayload,
+    agent_message: String,
+    lifecycle: Option<WaveLifecycle>,
+}
+
+async fn call_persist_report(
+    ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
+    call: PersistReportCall,
 ) -> Result<Value, RpcError> {
     let actor = identity.to_actor_id();
     match persist_report(
@@ -418,10 +462,13 @@ async fn call_persist_report(
         &ctx.write,
         actor,
         EditAuthor::Spec,
-        wave,
-        report_card,
-        current_payload,
-        next,
+        call.wave,
+        call.report_card,
+        call.current_payload,
+        call.next,
+        Some(call.agent_message),
+        call.lifecycle,
+        true,
     )
     .await
     {

@@ -33,7 +33,8 @@ use std::time::Duration;
 
 use super::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonRecord,
-    SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithEventFn, WriteWithEventsFn,
+    SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
+    WriteWithEventsFn,
 };
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
@@ -274,6 +275,30 @@ pub(crate) async fn event_append_for_operation_tx(
         .await?;
     }
     Ok(event_id)
+}
+
+pub(crate) async fn events_append_for_operation_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    actor: &ActorId,
+    scope: &EventScope,
+    correlation: Option<&str>,
+    events: &[Event],
+) -> Result<Vec<i64>> {
+    let mut event_ids = Vec::with_capacity(events.len());
+    for event in events {
+        event_ids.push(SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?);
+    }
+    if let (Some(wave_id), Some(event_id)) = (scope.wave_id(), event_ids.last()) {
+        wave_vcs::commit_events_in_tx(
+            tx,
+            wave_id,
+            *event_id,
+            events,
+            wave_vcs::MANIFEST_SCHEMA_VERSION,
+        )
+        .await?;
+    }
+    Ok(event_ids)
 }
 
 pub(crate) async fn begin_immediate_tx<'a>(
@@ -3983,6 +4008,88 @@ impl RepoEventWrite for SqlxRepo {
         Ok(event_ids)
     }
 
+    async fn write_with_actor_events(
+        &self,
+        correlation: Option<&str>,
+        bus: &EventBus,
+        write: &crate::state::WriteContext,
+        f: WriteWithActorEventsFn<'_>,
+    ) -> Result<Vec<i64>> {
+        // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let fut: BoxFuture<'_, Result<Vec<(ActorId, EventScope, Event)>>> = f(&mut tx);
+        let events = match fut.await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        if events.is_empty() {
+            let _ = tx.rollback().await;
+            return Err(CalmError::Internal(
+                "write_with_actor_events: closure returned an empty event batch".into(),
+            ));
+        }
+        for (actor, scope, event) in &events {
+            if let Err(violation) = crate::role_gate::enforce_role(
+                actor,
+                event,
+                scope,
+                write.role_cache(),
+                write.cove_cache(),
+            ) {
+                let _ = tx.rollback().await;
+                return Err(CalmError::Forbidden(violation.to_string()));
+            }
+        }
+        let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
+        for (actor, scope, event) in &events {
+            match Self::event_append_in_tx(&mut tx, actor, scope, correlation, event).await {
+                Ok(id) => event_ids.push(id),
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            }
+        }
+        let mut wave_events = HashMap::<WaveId, (i64, Vec<Event>)>::new();
+        for ((_, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
+            if let Some(wave_id) = scope.wave_id() {
+                let entry = wave_events
+                    .entry(wave_id.clone())
+                    .or_insert_with(|| (*event_id, Vec::new()));
+                entry.0 = *event_id;
+                entry.1.push(event.clone());
+            }
+        }
+        for (wave_id, (event_id, events_for_wave)) in &wave_events {
+            if let Err(e) = wave_vcs::commit_events_in_tx(
+                &mut tx,
+                wave_id,
+                *event_id,
+                events_for_wave,
+                wave_vcs::MANIFEST_SCHEMA_VERSION,
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
+        tx.commit().await?;
+        for (id, (actor, scope, event)) in event_ids.iter().zip(events) {
+            bus.emit_envelope(BroadcastEnvelope {
+                id: *id,
+                event_version: SYNC_EVENT_VERSION,
+                actor,
+                scope,
+                event,
+            });
+        }
+        Ok(event_ids)
+    }
+
     async fn log_pure_event(
         &self,
         actor: ActorId,
@@ -4137,7 +4244,12 @@ impl RepoEventWrite for SqlxRepo {
         Ok(out)
     }
 
-    async fn events_for_wave(&self, wave_id: &str, kinds: &[&str]) -> Result<Vec<WaveEvent>> {
+    async fn events_for_wave(
+        &self,
+        wave_id: &str,
+        kinds: &[&str],
+        since_id: Option<i64>,
+    ) -> Result<Vec<WaveEvent>> {
         if kinds.is_empty() {
             return Ok(Vec::new());
         }
@@ -4161,6 +4273,10 @@ impl RepoEventWrite for SqlxRepo {
                WHERE scope_wave = "#,
         );
         query.push_bind(wave_id);
+        if let Some(since_id) = since_id {
+            query.push(" AND id > ");
+            query.push_bind(since_id);
+        }
         query.push(" AND kind IN (");
         let mut separated = query.separated(", ");
         for kind in kinds {

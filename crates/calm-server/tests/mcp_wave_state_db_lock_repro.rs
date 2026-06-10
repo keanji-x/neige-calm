@@ -142,6 +142,7 @@ async fn append_worker_event(boot: &Boot, task: usize, iter: usize) -> anyhow::R
             Event::TaskFailed {
                 idempotency_key: format!("worker-{task}-{iter}"),
                 reason: "db-lock-repro".into(),
+                agent_message: None,
             },
         )
         .await?;

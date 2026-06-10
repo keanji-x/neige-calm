@@ -51,6 +51,7 @@ use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::{Card, Cove, Overlay, Wave, WaveLifecycle};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::ops::Deref;
 use tokio::sync::broadcast;
 use ts_rs::TS;
 
@@ -98,6 +99,43 @@ impl From<&str> for ArtifactRef {
 impl std::fmt::Display for ArtifactRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WaveUpdatedPayload — wave row plus optional agent rationale
+// ---------------------------------------------------------------------------
+
+/// Payload for `Event::WaveUpdated`.
+///
+/// `wave` is flattened to preserve the historical wire shape: the event data
+/// is still the full wave row at top level, with `agent_message` added as an
+/// optional adjacent field for #597. Older persisted rows that lack the field
+/// deserialize with `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct WaveUpdatedPayload {
+    #[serde(flatten)]
+    pub wave: Wave,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_message: Option<String>,
+}
+
+impl WaveUpdatedPayload {
+    pub fn new(wave: Wave, agent_message: Option<String>) -> Self {
+        Self {
+            wave,
+            agent_message,
+        }
+    }
+}
+
+impl Deref for WaveUpdatedPayload {
+    type Target = Wave;
+
+    fn deref(&self) -> &Self::Target {
+        &self.wave
     }
 }
 
@@ -325,7 +363,7 @@ pub enum Event {
     CoveDeleted { id: CoveId },
 
     #[serde(rename = "wave.updated")]
-    WaveUpdated(Wave),
+    WaveUpdated(WaveUpdatedPayload),
     #[serde(rename = "wave.deleted")]
     WaveDeleted { id: WaveId, cove_id: CoveId },
 
@@ -352,6 +390,9 @@ pub enum Event {
         cove_id: CoveId,
         from: WaveLifecycle,
         to: WaveLifecycle,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
     },
 
     #[serde(rename = "card.added")]
@@ -456,6 +497,9 @@ pub enum Event {
         summary_after: String,
         body_before: String,
         body_after: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
     },
 
     #[serde(rename = "overlay.set")]
@@ -561,6 +605,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         acceptance_criteria: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
     },
 
     /// Spec card asks the kernel dispatcher to spawn a terminal worker
@@ -575,6 +622,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
     },
 
     /// Worker card reports task completion. PR4 schema-only; the
@@ -593,6 +643,9 @@ pub enum Event {
         #[ts(type = "unknown")]
         result: Value,
         artifacts: Vec<ArtifactRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
     },
 
     /// Worker card reports task failure. PR4 schema-only; the dispatcher's
@@ -605,6 +658,9 @@ pub enum Event {
     TaskFailed {
         idempotency_key: String,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
     },
 }
 
@@ -1436,6 +1492,7 @@ mod scope_tests {
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
+            agent_message: None,
         };
         assert_eq!(codex_req.kind_tag(), "codex.worker_requested");
 
@@ -1443,6 +1500,7 @@ mod scope_tests {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,
+            agent_message: None,
         };
         assert_eq!(term_req.kind_tag(), "terminal.worker_requested");
 
@@ -1450,12 +1508,14 @@ mod scope_tests {
             idempotency_key: "k".into(),
             result: serde_json::Value::Null,
             artifacts: vec![],
+            agent_message: None,
         };
         assert_eq!(done.kind_tag(), "task.completed");
 
         let failed = Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            agent_message: None,
         };
         assert_eq!(failed.kind_tag(), "task.failed");
 
@@ -1696,6 +1756,7 @@ mod scope_tests {
             goal: "refactor X".into(),
             context: serde_json::json!({ "cwd": "/tmp", "hints": [1, 2] }),
             acceptance_criteria: Some("tests pass".into()),
+            agent_message: Some("dispatch rationale".into()),
         };
         let json = serde_json::to_value(&ev).unwrap();
         // Pin the exact wire shape: `{ev, data}` envelope, snake_case keys.
@@ -1704,6 +1765,7 @@ mod scope_tests {
         assert_eq!(json["data"]["goal"], "refactor X");
         assert_eq!(json["data"]["context"]["cwd"], "/tmp");
         assert_eq!(json["data"]["acceptance_criteria"], "tests pass");
+        assert_eq!(json["data"]["agent_message"], "dispatch rationale");
 
         // Round-trip via the Event enum.
         let back: Event = serde_json::from_value(json.clone()).unwrap();
@@ -1722,6 +1784,7 @@ mod scope_tests {
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
+            agent_message: None,
         };
         let v = serde_json::to_value(&no_ac).unwrap();
         assert!(
@@ -1736,18 +1799,21 @@ mod scope_tests {
             idempotency_key: "idem-2".into(),
             cmd: "cargo test".into(),
             cwd: Some("/repo".into()),
+            agent_message: Some("terminal rationale".into()),
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["ev"], "terminal.worker_requested");
         assert_eq!(json["data"]["idempotency_key"], "idem-2");
         assert_eq!(json["data"]["cmd"], "cargo test");
         assert_eq!(json["data"]["cwd"], "/repo");
+        assert_eq!(json["data"]["agent_message"], "terminal rationale");
 
         // `cwd = None` absent on the wire.
         let no_cwd = Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,
+            agent_message: None,
         };
         let v = serde_json::to_value(&no_cwd).unwrap();
         assert!(
@@ -1772,11 +1838,13 @@ mod scope_tests {
             idempotency_key: "idem-3".into(),
             result: serde_json::json!({ "summary": "ok", "lines": 42 }),
             artifacts: vec![ArtifactRef::from("a-1"), ArtifactRef::from("a-2")],
+            agent_message: Some("accepted rationale".into()),
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["ev"], "task.completed");
         assert_eq!(json["data"]["idempotency_key"], "idem-3");
         assert_eq!(json["data"]["result"]["summary"], "ok");
+        assert_eq!(json["data"]["agent_message"], "accepted rationale");
         // Artifacts are transparent strings on the wire — assert the array
         // shape so a future #129 expansion can't silently regress.
         assert_eq!(json["data"]["artifacts"][0], "a-1");
@@ -1791,11 +1859,13 @@ mod scope_tests {
         let ev = Event::TaskFailed {
             idempotency_key: "idem-4".into(),
             reason: "process exited with code 137".into(),
+            agent_message: Some("rejected rationale".into()),
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["ev"], "task.failed");
         assert_eq!(json["data"]["idempotency_key"], "idem-4");
         assert_eq!(json["data"]["reason"], "process exited with code 137");
+        assert_eq!(json["data"]["agent_message"], "rejected rationale");
 
         let back: Event = serde_json::from_value(json).unwrap();
         assert_eq!(back.kind_tag(), "task.failed");
@@ -1871,6 +1941,7 @@ mod scope_tests {
                 summary_after,
                 body_before,
                 body_after,
+                ..
             } => {
                 assert_eq!(wave_id.as_str(), "w-1");
                 assert_eq!(card_id.as_str(), "card-1");
@@ -1995,6 +2066,7 @@ mod scope_tests {
             summary_after: "new summary".into(),
             body_before: "old body".into(),
             body_after: "new body".into(),
+            agent_message: None,
         }
     }
 
@@ -2004,7 +2076,10 @@ mod scope_tests {
             Event::CoveDeleted {
                 id: CoveId::from("cove-deleted"),
             },
-            Event::WaveUpdated(wave_sample("wave-updated", "cove-1")),
+            Event::WaveUpdated(WaveUpdatedPayload::new(
+                wave_sample("wave-updated", "cove-1"),
+                None,
+            )),
             Event::WaveDeleted {
                 id: WaveId::from("wave-deleted"),
                 cove_id: CoveId::from("cove-1"),
@@ -2014,6 +2089,7 @@ mod scope_tests {
                 cove_id: CoveId::from("cove-1"),
                 from: WaveLifecycle::Draft,
                 to: WaveLifecycle::Planning,
+                agent_message: None,
             },
             Event::CardAdded(card_sample("card-added", "wave-1")),
             Event::CardUpdated(card_sample("card-updated", "wave-1")),
@@ -2078,20 +2154,24 @@ mod scope_tests {
                 goal: "g".into(),
                 context: serde_json::Value::Null,
                 acceptance_criteria: None,
+                agent_message: None,
             },
             Event::TerminalWorkerRequested {
                 idempotency_key: "k".into(),
                 cmd: "ls".into(),
                 cwd: None,
+                agent_message: None,
             },
             Event::TaskCompleted {
                 idempotency_key: "k".into(),
                 result: serde_json::Value::Null,
                 artifacts: vec![],
+                agent_message: None,
             },
             Event::TaskFailed {
                 idempotency_key: "k".into(),
                 reason: "boom".into(),
+                agent_message: None,
             },
         ]
     }
@@ -2293,6 +2373,7 @@ mod filter_tests {
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
+            agent_message: None,
         }
     }
 
@@ -2300,6 +2381,7 @@ mod filter_tests {
         Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            agent_message: None,
         }
     }
 

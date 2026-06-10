@@ -36,13 +36,13 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
-use calm_server::ids::{CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{
     TOOL_REPORT_EDIT, TOOL_REPORT_READ, TOOL_REPORT_WRITE,
 };
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
@@ -84,6 +84,16 @@ async fn boot() -> Boot {
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_update(
+            wave.id.as_str(),
+            WavePatch {
+                lifecycle: Some(WaveLifecycle::Planning),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     let spec_card = repo
@@ -199,6 +209,15 @@ async fn collect_n(events: &EventBus, n: usize) -> Vec<calm_server::event::Broad
     out
 }
 
+async fn recv_env(
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+) -> calm_server::event::BroadcastEnvelope {
+    tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("bus delivers within timeout")
+        .expect("bus open")
+}
+
 // ---------------------------------------------------------------------------
 // calm.report.read
 // ---------------------------------------------------------------------------
@@ -254,7 +273,8 @@ async fn write_replaces_body_and_emits_card_updated() {
         spec_identity(&boot),
         json!({
             "body": "# Goal\n\nrefactored everything\n",
-            "summary": "done refactoring"
+            "summary": "done refactoring",
+            "message": "rewrite report"
         }),
     )
     .await
@@ -300,6 +320,7 @@ async fn write_replaces_body_and_emits_card_updated() {
             summary_after,
             body_before,
             body_after,
+            agent_message,
         } => {
             assert_eq!(w, &wave_id, "wave_id matches the report card's wave");
             assert_eq!(c, &report_id, "card_id matches the report card");
@@ -311,6 +332,7 @@ async fn write_replaces_body_and_emits_card_updated() {
             // the User-author regression. Spec attribution stays the
             // contract for every spec-MCP write.
             assert_eq!(*author, EditAuthor::Spec, "MCP path tags Spec");
+            assert_eq!(agent_message.as_deref(), Some("rewrite report"));
             // edit_id must be a non-empty UUID-shaped string. Don't pin
             // the exact value — it's a fresh UUID per call.
             assert!(!edit_id.is_empty(), "edit_id must be a non-empty UUID");
@@ -360,6 +382,280 @@ async fn write_replaces_body_and_emits_card_updated() {
     assert_eq!(payload.body, "# Goal\n\nrefactored everything\n");
 }
 
+#[tokio::test]
+async fn write_requires_non_empty_message() {
+    let boot = boot().await;
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({ "body": "missing message\n" }),
+    )
+    .await
+    .expect_err("missing message must be rejected");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("message must be non-empty"),
+        "msg = {err:?}"
+    );
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({ "body": "empty message\n", "message": "   " }),
+    )
+    .await
+    .expect_err("empty message must be rejected");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("message must be non-empty"),
+        "msg = {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn write_without_lifecycle_keeps_wave_state_and_records_agent_message() {
+    let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "no lifecycle body\n",
+            "message": "write without lifecycle"
+        }),
+    )
+    .await
+    .expect("write succeeds");
+
+    let card_env = recv_env(&mut rx).await;
+    assert!(matches!(card_env.event, Event::CardUpdated(_)));
+    let report_env = recv_env(&mut rx).await;
+    match &report_env.event {
+        Event::WaveReportEdited { agent_message, .. } => {
+            assert_eq!(agent_message.as_deref(), Some("write without lifecycle"))
+        }
+        other => panic!("expected WaveReportEdited, got {other:?}"),
+    }
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Planning);
+    let no_more = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(no_more.is_err(), "unexpected lifecycle event: {no_more:?}");
+}
+
+#[tokio::test]
+async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
+    let boot = boot().await;
+    boot.repo
+        .wave_update(
+            boot.wave_id.as_str(),
+            WavePatch {
+                lifecycle: Some(WaveLifecycle::Draft),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("set draft lifecycle");
+    let mut rx = boot.ctx.events.subscribe();
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "auto-promote body\n",
+            "message": "write from draft"
+        }),
+    )
+    .await
+    .expect("write succeeds");
+
+    let changed_env = recv_env(&mut rx).await;
+    assert!(matches!(changed_env.actor, ActorId::Kernel));
+    match changed_env.event {
+        Event::WaveLifecycleChanged {
+            id,
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(id, boot.wave_id);
+            assert_eq!(from, WaveLifecycle::Draft);
+            assert_eq!(to, WaveLifecycle::Planning);
+            assert_eq!(agent_message, None);
+        }
+        other => panic!("expected auto WaveLifecycleChanged first, got {other:?}"),
+    }
+
+    let updated_env = recv_env(&mut rx).await;
+    assert!(matches!(updated_env.actor, ActorId::Kernel));
+    match updated_env.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, boot.wave_id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
+            assert_eq!(payload.agent_message, None);
+        }
+        other => panic!("expected auto WaveUpdated second, got {other:?}"),
+    }
+    assert!(matches!(
+        recv_env(&mut rx).await.event,
+        Event::CardUpdated(_)
+    ));
+    match recv_env(&mut rx).await.event {
+        Event::WaveReportEdited {
+            agent_message,
+            body_after,
+            ..
+        } => {
+            assert_eq!(agent_message.as_deref(), Some("write from draft"));
+            assert_eq!(body_after, "auto-promote body\n");
+        }
+        other => panic!("expected WaveReportEdited fourth, got {other:?}"),
+    }
+
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Planning);
+    let no_more = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(no_more.is_err(), "unexpected extra event: {no_more:?}");
+}
+
+#[tokio::test]
+async fn write_lifecycle_legal_emits_wave_updated_and_report_events() {
+    let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "dispatching body\n",
+            "message": "report moves dispatching",
+            "lifecycle": "dispatching"
+        }),
+    )
+    .await
+    .expect("write with lifecycle succeeds");
+
+    let changed_env = recv_env(&mut rx).await;
+    match &changed_env.event {
+        Event::WaveLifecycleChanged {
+            id,
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(id, &boot.wave_id);
+            assert_eq!(*from, WaveLifecycle::Planning);
+            assert_eq!(*to, WaveLifecycle::Dispatching);
+            assert_eq!(agent_message.as_deref(), Some("report moves dispatching"));
+        }
+        other => panic!("expected WaveLifecycleChanged first, got {other:?}"),
+    }
+    let updated_env = recv_env(&mut rx).await;
+    match &updated_env.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, boot.wave_id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Dispatching);
+            assert_eq!(
+                payload.agent_message.as_deref(),
+                Some("report moves dispatching")
+            );
+        }
+        other => panic!("expected WaveUpdated second, got {other:?}"),
+    }
+    assert!(matches!(
+        recv_env(&mut rx).await.event,
+        Event::CardUpdated(_)
+    ));
+    match recv_env(&mut rx).await.event {
+        Event::WaveReportEdited {
+            agent_message,
+            body_after,
+            ..
+        } => {
+            assert_eq!(agent_message.as_deref(), Some("report moves dispatching"));
+            assert_eq!(body_after, "dispatching body\n");
+        }
+        other => panic!("expected WaveReportEdited fourth, got {other:?}"),
+    }
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+}
+
+#[tokio::test]
+async fn write_lifecycle_illegal_rolls_back_report_and_events() {
+    let boot = boot().await;
+    let before_wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let before_card = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rx = boot.ctx.events.subscribe();
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "should rollback\n",
+            "message": "illegal report lifecycle",
+            "lifecycle": "done"
+        }),
+    )
+    .await
+    .expect_err("planning -> done is illegal");
+    assert_eq!(err.code, -32403);
+
+    let after_wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_wave.lifecycle, before_wave.lifecycle);
+    let after_card = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_card.payload, before_card.payload);
+    let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_event.is_err(),
+        "illegal transition emitted event: {no_event:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // PR2 of #247 — Event::WaveReportEdited coverage.
 // ---------------------------------------------------------------------------
@@ -372,7 +668,11 @@ async fn edit_emits_wave_report_edited_alongside_card_updated() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "before XYZ after\n", "summary": "before-summary" }),
+        json!({
+            "body": "before XYZ after\n",
+            "summary": "before-summary",
+            "message": "seed report"
+        }),
     )
     .await
     .expect("seed write");
@@ -390,7 +690,11 @@ async fn edit_emits_wave_report_edited_alongside_card_updated() {
         &boot,
         TOOL_REPORT_EDIT,
         spec_identity(&boot),
-        json!({ "old_string": "XYZ", "new_string": "ABC" }),
+        json!({
+            "old_string": "XYZ",
+            "new_string": "ABC",
+            "message": "edit report"
+        }),
     )
     .await
     .expect("edit succeeds");
@@ -415,10 +719,12 @@ async fn edit_emits_wave_report_edited_alongside_card_updated() {
             summary_after,
             body_before,
             body_after,
+            agent_message,
         } => {
             assert_eq!(w, &wave_id);
             assert_eq!(c, &report_id);
             assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(agent_message.as_deref(), Some("edit report"));
             assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
             // Summary unchanged by report.edit — both before and after
             // are the seeded summary.
@@ -442,7 +748,11 @@ async fn write_with_unchanged_content_still_emits_wave_report_edited() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "stable body\n", "summary": "stable summary" }),
+        json!({
+            "body": "stable body\n",
+            "summary": "stable summary",
+            "message": "first stable report"
+        }),
     )
     .await
     .expect("first write");
@@ -456,7 +766,11 @@ async fn write_with_unchanged_content_still_emits_wave_report_edited() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "stable body\n", "summary": "stable summary" }),
+        json!({
+            "body": "stable body\n",
+            "summary": "stable summary",
+            "message": "second stable report"
+        }),
     )
     .await
     .expect("second write (content-equal)");
@@ -504,7 +818,11 @@ async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "scoped body\n", "summary": "scoped summary" }),
+        json!({
+            "body": "scoped body\n",
+            "summary": "scoped summary",
+            "message": "scoped report"
+        }),
     )
     .await
     .expect("write succeeds");
@@ -569,7 +887,11 @@ async fn write_preserves_summary_when_omitted() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "a", "summary": "preserved" }),
+        json!({
+            "body": "a",
+            "summary": "preserved",
+            "message": "set summary"
+        }),
     )
     .await
     .unwrap();
@@ -578,7 +900,7 @@ async fn write_preserves_summary_when_omitted() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "b" }),
+        json!({ "body": "b", "message": "preserve summary" }),
     )
     .await
     .unwrap();
@@ -601,7 +923,7 @@ async fn write_refuses_worker() {
         &boot,
         TOOL_REPORT_WRITE,
         worker_identity(&boot),
-        json!({ "body": "evil" }),
+        json!({ "body": "evil", "message": "worker write" }),
     )
     .await
     .expect_err("worker must be denied");
@@ -615,7 +937,7 @@ async fn write_rejects_missing_body() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "summary": "no body" }),
+        json!({ "summary": "no body", "message": "missing body" }),
     )
     .await
     .expect_err("missing body must be rejected");
@@ -635,7 +957,10 @@ async fn edit_unique_substring_replacement_happy_path() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "# Goal\n\nuntouched marker XYZ here\n" }),
+        json!({
+            "body": "# Goal\n\nuntouched marker XYZ here\n",
+            "message": "seed edit body"
+        }),
     )
     .await
     .unwrap();
@@ -644,7 +969,11 @@ async fn edit_unique_substring_replacement_happy_path() {
         &boot,
         TOOL_REPORT_EDIT,
         spec_identity(&boot),
-        json!({ "old_string": "XYZ", "new_string": "ABC" }),
+        json!({
+            "old_string": "XYZ",
+            "new_string": "ABC",
+            "message": "replace marker"
+        }),
     )
     .await
     .expect("happy edit");
@@ -661,13 +990,253 @@ async fn edit_unique_substring_replacement_happy_path() {
 }
 
 #[tokio::test]
+async fn edit_requires_non_empty_message() {
+    let boot = boot().await;
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        spec_identity(&boot),
+        json!({ "old_string": "Goal", "new_string": "Plan" }),
+    )
+    .await
+    .expect_err("missing message must be rejected");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("message must be non-empty"),
+        "msg = {err:?}"
+    );
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        spec_identity(&boot),
+        json!({
+            "old_string": "Goal",
+            "new_string": "Plan",
+            "message": "\n\t "
+        }),
+    )
+    .await
+    .expect_err("empty message must be rejected");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("message must be non-empty"),
+        "msg = {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn edit_without_lifecycle_keeps_wave_state_and_records_agent_message() {
+    let boot = boot().await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "before XYZ after\n",
+            "message": "seed edit no lifecycle"
+        }),
+    )
+    .await
+    .expect("seed body");
+    let mut rx = boot.ctx.events.subscribe();
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        spec_identity(&boot),
+        json!({
+            "old_string": "XYZ",
+            "new_string": "ABC",
+            "message": "edit without lifecycle"
+        }),
+    )
+    .await
+    .expect("edit succeeds");
+
+    assert!(matches!(
+        recv_env(&mut rx).await.event,
+        Event::CardUpdated(_)
+    ));
+    match recv_env(&mut rx).await.event {
+        Event::WaveReportEdited {
+            agent_message,
+            body_after,
+            ..
+        } => {
+            assert_eq!(agent_message.as_deref(), Some("edit without lifecycle"));
+            assert_eq!(body_after, "before ABC after\n");
+        }
+        other => panic!("expected WaveReportEdited, got {other:?}"),
+    }
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Planning);
+    let no_more = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(no_more.is_err(), "unexpected lifecycle event: {no_more:?}");
+}
+
+#[tokio::test]
+async fn edit_lifecycle_legal_emits_wave_updated_and_report_events() {
+    let boot = boot().await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "before XYZ after\n",
+            "message": "seed edit lifecycle"
+        }),
+    )
+    .await
+    .expect("seed body");
+    let mut rx = boot.ctx.events.subscribe();
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        spec_identity(&boot),
+        json!({
+            "old_string": "XYZ",
+            "new_string": "ABC",
+            "message": "edit moves dispatching",
+            "lifecycle": "dispatching"
+        }),
+    )
+    .await
+    .expect("edit with lifecycle succeeds");
+
+    match recv_env(&mut rx).await.event {
+        Event::WaveLifecycleChanged {
+            id,
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(id, boot.wave_id);
+            assert_eq!(from, WaveLifecycle::Planning);
+            assert_eq!(to, WaveLifecycle::Dispatching);
+            assert_eq!(agent_message.as_deref(), Some("edit moves dispatching"));
+        }
+        other => panic!("expected WaveLifecycleChanged first, got {other:?}"),
+    }
+    match recv_env(&mut rx).await.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, boot.wave_id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Dispatching);
+            assert_eq!(
+                payload.agent_message.as_deref(),
+                Some("edit moves dispatching")
+            );
+        }
+        other => panic!("expected WaveUpdated second, got {other:?}"),
+    }
+    assert!(matches!(
+        recv_env(&mut rx).await.event,
+        Event::CardUpdated(_)
+    ));
+    match recv_env(&mut rx).await.event {
+        Event::WaveReportEdited {
+            agent_message,
+            body_after,
+            ..
+        } => {
+            assert_eq!(agent_message.as_deref(), Some("edit moves dispatching"));
+            assert_eq!(body_after, "before ABC after\n");
+        }
+        other => panic!("expected WaveReportEdited fourth, got {other:?}"),
+    }
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+}
+
+#[tokio::test]
+async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
+    let boot = boot().await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "before XYZ after\n",
+            "message": "seed illegal edit"
+        }),
+    )
+    .await
+    .expect("seed body");
+    let before_wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let before_card = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rx = boot.ctx.events.subscribe();
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        spec_identity(&boot),
+        json!({
+            "old_string": "XYZ",
+            "new_string": "ABC",
+            "message": "illegal edit lifecycle",
+            "lifecycle": "done"
+        }),
+    )
+    .await
+    .expect_err("planning -> done is illegal");
+    assert_eq!(err.code, -32403);
+
+    let after_wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_wave.lifecycle, before_wave.lifecycle);
+    let after_card = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_card.payload, before_card.payload);
+    let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_event.is_err(),
+        "illegal transition emitted event: {no_event:?}"
+    );
+}
+
+#[tokio::test]
 async fn edit_rejects_old_string_not_found() {
     let boot = boot().await;
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
         spec_identity(&boot),
-        json!({ "old_string": "nowhere-in-body", "new_string": "x" }),
+        json!({
+            "old_string": "nowhere-in-body",
+            "new_string": "x",
+            "message": "missing old string"
+        }),
     )
     .await
     .expect_err("missing old_string must error");
@@ -682,7 +1251,10 @@ async fn edit_rejects_duplicate_without_replace_all() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "TODO foo\nTODO bar\n" }),
+        json!({
+            "body": "TODO foo\nTODO bar\n",
+            "message": "seed duplicates"
+        }),
     )
     .await
     .unwrap();
@@ -690,7 +1262,11 @@ async fn edit_rejects_duplicate_without_replace_all() {
         &boot,
         TOOL_REPORT_EDIT,
         spec_identity(&boot),
-        json!({ "old_string": "TODO", "new_string": "DONE" }),
+        json!({
+            "old_string": "TODO",
+            "new_string": "DONE",
+            "message": "duplicate replace"
+        }),
     )
     .await
     .expect_err("duplicate without replace_all must error");
@@ -706,7 +1282,10 @@ async fn edit_replace_all_on_duplicates() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "TODO foo\nTODO bar\nTODO baz\n" }),
+        json!({
+            "body": "TODO foo\nTODO bar\nTODO baz\n",
+            "message": "seed replace all"
+        }),
     )
     .await
     .unwrap();
@@ -717,7 +1296,8 @@ async fn edit_replace_all_on_duplicates() {
         json!({
             "old_string": "TODO",
             "new_string": "DONE",
-            "replace_all": true
+            "replace_all": true,
+            "message": "replace all"
         }),
     )
     .await
@@ -753,7 +1333,11 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "stable\n", "summary": "stable-summary" }),
+        json!({
+            "body": "stable\n",
+            "summary": "stable-summary",
+            "message": "seed equal edit"
+        }),
     )
     .await
     .unwrap();
@@ -777,7 +1361,11 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
         &boot,
         TOOL_REPORT_EDIT,
         spec_identity(&boot),
-        json!({ "old_string": "stable", "new_string": "stable" }),
+        json!({
+            "old_string": "stable",
+            "new_string": "stable",
+            "message": "equal edit"
+        }),
     )
     .await
     .expect("equal-strings edit succeeds (content-equal write)");
@@ -812,10 +1400,12 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
             summary_after,
             body_before,
             body_after,
+            agent_message,
         } => {
             assert_eq!(w, &wave_id, "wave_id matches");
             assert_eq!(c, &report_id, "card_id matches");
             assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(agent_message.as_deref(), Some("equal edit"));
             assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
             // The defining assertion: equal-strings replacement is
             // the identity map, so before == after on both fields.
@@ -852,7 +1442,11 @@ async fn edit_refuses_worker() {
         &boot,
         TOOL_REPORT_EDIT,
         worker_identity(&boot),
-        json!({ "old_string": "Goal", "new_string": "Pwn" }),
+        json!({
+            "old_string": "Goal",
+            "new_string": "Pwn",
+            "message": "worker edit"
+        }),
     )
     .await
     .expect_err("worker must be denied");
@@ -930,7 +1524,11 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         &boot,
         TOOL_REPORT_WRITE,
         spec2_identity,
-        json!({ "body": "wave 2 only\n", "summary": "wave 2" }),
+        json!({
+            "body": "wave 2 only\n",
+            "summary": "wave 2",
+            "message": "wave 2 report"
+        }),
     )
     .await
     .expect("spec2 writes its own wave's report");

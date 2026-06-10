@@ -120,6 +120,31 @@ describe('wireEventSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('preserves agent_message on wave.updated payloads', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'wave.updated',
+      data: {
+        id: 'wave_1',
+        cove_id: 'cove_1',
+        title: 'hello',
+        sort: 0,
+        archived_at: null,
+        pinned_at: null,
+        lifecycle: 'dispatching',
+        cwd: '/repo',
+        terminal_at: null,
+        created_at: 1,
+        updated_at: 2,
+        agent_message: 'moving to dispatch',
+      },
+    });
+    expect(parsed.ev).toBe('wave.updated');
+    if (parsed.ev === 'wave.updated') {
+      expect(parsed.data.agent_message).toBe('moving to dispatch');
+      expect(parsed.data.lifecycle).toBe('dispatching');
+    }
+  });
+
   it('parses a valid claude.hook event', () => {
     const payload = { hook_event_name: 'PreToolUse', tool_name: 'Bash' };
     const parsed = wireEventSchema.parse({
@@ -215,12 +240,14 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
         goal: 'refactor X',
         context: { cwd: '/tmp', hints: [1, 2] },
         acceptance_criteria: 'tests pass',
+        agent_message: 'dispatch codex rationale',
       },
     });
     expect(parsed.ev).toBe('codex.worker_requested');
     if (parsed.ev === 'codex.worker_requested') {
       expect(parsed.data.idempotency_key).toBe('idem-1');
       expect(parsed.data.goal).toBe('refactor X');
+      expect(parsed.data.agent_message).toBe('dispatch codex rationale');
     }
   });
 
@@ -235,12 +262,18 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   it('parses a valid terminal.worker_requested (cwd present)', () => {
     const parsed = wireEventSchema.parse({
       ev: 'terminal.worker_requested',
-      data: { idempotency_key: 'idem-2', cmd: 'cargo test', cwd: '/repo' },
+      data: {
+        idempotency_key: 'idem-2',
+        cmd: 'cargo test',
+        cwd: '/repo',
+        agent_message: 'dispatch terminal rationale',
+      },
     });
     expect(parsed.ev).toBe('terminal.worker_requested');
     if (parsed.ev === 'terminal.worker_requested') {
       expect(parsed.data.cmd).toBe('cargo test');
       expect(parsed.data.cwd).toBe('/repo');
+      expect(parsed.data.agent_message).toBe('dispatch terminal rationale');
     }
   });
 
@@ -261,11 +294,13 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
         idempotency_key: 'idem-3',
         result: { summary: 'ok', lines: 42 },
         artifacts: ['a-1', 'a-2'],
+        agent_message: 'worker completed rationale',
       },
     });
     expect(parsed.ev).toBe('task.completed');
     if (parsed.ev === 'task.completed') {
       expect(parsed.data.artifacts).toEqual(['a-1', 'a-2']);
+      expect(parsed.data.agent_message).toBe('worker completed rationale');
     }
   });
 
@@ -283,11 +318,13 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
       data: {
         idempotency_key: 'idem-4',
         reason: 'process exited with code 137',
+        agent_message: 'worker failed rationale',
       },
     });
     expect(parsed.ev).toBe('task.failed');
     if (parsed.ev === 'task.failed') {
       expect(parsed.data.reason).toBe('process exited with code 137');
+      expect(parsed.data.agent_message).toBe('worker failed rationale');
     }
   });
 
@@ -319,6 +356,7 @@ describe('PR2 of #247: wave.report_edited', () => {
         summary_after: 'new summary',
         body_before: 'old body',
         body_after: 'new body',
+        agent_message: 'report rationale',
       },
     });
     expect(parsed.ev).toBe('wave.report_edited');
@@ -327,6 +365,7 @@ describe('PR2 of #247: wave.report_edited', () => {
       expect(parsed.data.wave_id).toBe('w-1');
       expect(parsed.data.card_id).toBe('card-1');
       expect(parsed.data.body_after).toBe('new body');
+      expect(parsed.data.agent_message).toBe('report rationale');
     }
   });
 
@@ -499,6 +538,7 @@ describe('entity sub-schemas', () => {
         cove_id: 'c1',
         from: 'draft',
         to: 'planning',
+        agent_message: 'planning rationale',
       },
     };
     const parsed = wireEventSchema.parse(env);
@@ -506,6 +546,7 @@ describe('entity sub-schemas', () => {
     if (parsed.ev === 'wave.lifecycle_changed') {
       expect(parsed.data.from).toBe('draft');
       expect(parsed.data.to).toBe('planning');
+      expect(parsed.data.agent_message).toBe('planning rationale');
     }
   });
 });

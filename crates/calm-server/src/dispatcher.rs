@@ -24,10 +24,12 @@ use dashmap::DashMap;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use crate::db::{Repo, RouteRepo};
+use crate::db::sqlite::events_append_for_operation_tx;
+use crate::db::{Repo, RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{
-    BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
+    BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SYNC_EVENT_VERSION,
+    SubscribeFilter, SubscribeScope,
 };
 use crate::event_cursor::EventCursorCache;
 use crate::harness::{
@@ -35,7 +37,7 @@ use crate::harness::{
     is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::CardRole;
+use crate::model::{CardRole, WaveLifecycle};
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{
@@ -64,17 +66,25 @@ pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
 const DEFAULT_PERMITS: usize = 8;
+const SQLITE_BUSY_MAX_RETRIES: usize = 5;
 
-pub(crate) fn event_warrants_spec_push(event: &Event, write: &WriteContext) -> bool {
-    event_warrants_spec_push_with_role(event, |card_id| write.verify_role(card_id))
+pub(crate) fn event_warrants_spec_push(
+    event: &Event,
+    actor: &ActorId,
+    write: &WriteContext,
+) -> bool {
+    event_warrants_spec_push_with_role(event, actor, |card_id| write.verify_role(card_id))
 }
 
 pub(crate) fn event_warrants_spec_push_with_role(
     event: &Event,
+    actor: &ActorId,
     mut role_for_card: impl FnMut(&CardId) -> Option<CardRole>,
 ) -> bool {
     match event {
-        Event::TaskCompleted { .. } | Event::TaskFailed { .. } => true,
+        Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
+            !matches!(actor, ActorId::AiSpec(_))
+        }
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
@@ -83,6 +93,68 @@ pub(crate) fn event_warrants_spec_push_with_role(
         }
         _ => false,
     }
+}
+
+async fn promote_dispatching_to_working_or_emit_failure<P, PFut, L, LFut>(
+    idempotency_key: &str,
+    scope: EventScope,
+    mut promote: P,
+    log_failure: L,
+) -> bool
+where
+    P: FnMut() -> PFut,
+    PFut: std::future::Future<Output = crate::error::Result<()>>,
+    L: FnOnce(EventScope, Event) -> LFut,
+    LFut: std::future::Future<Output = crate::error::Result<()>>,
+{
+    let mut promote_backoff = Duration::from_millis(10);
+    let mut promote_err = None;
+    for attempt in 0..=SQLITE_BUSY_MAX_RETRIES {
+        match promote().await {
+            Ok(()) => {
+                promote_err = None;
+                break;
+            }
+            Err(e) if is_sqlite_busy(&e) && attempt < SQLITE_BUSY_MAX_RETRIES => {
+                tracing::debug!(
+                    idempotency_key = %idempotency_key,
+                    attempt,
+                    error = %e,
+                    "dispatcher: transient SQLite contention on promotion; retrying"
+                );
+                tokio::time::sleep(promote_backoff).await;
+                promote_backoff = (promote_backoff * 2).min(Duration::from_millis(200));
+                continue;
+            }
+            Err(e) => {
+                promote_err = Some(e);
+                break;
+            }
+        }
+    }
+
+    if let Some(e) = promote_err {
+        tracing::warn!(
+            idempotency_key = %idempotency_key,
+            error = %e,
+            "dispatcher: lifecycle promotion failed permanently; emitting task.failed without spawning"
+        );
+        let fail_event = Event::TaskFailed {
+            idempotency_key: idempotency_key.to_string(),
+            reason: format!("lifecycle promotion failed: {e}"),
+            agent_message: None,
+        };
+        if let Err(e2) = log_failure(scope, fail_event).await {
+            tracing::warn!(
+                idempotency_key = %idempotency_key,
+                error = %e2,
+                "dispatcher: failed to log lifecycle-promotion task.failed event batch"
+            );
+        }
+        return false;
+    }
+
+    true
 }
 
 #[allow(deprecated, clippy::too_many_arguments)]
@@ -602,7 +674,7 @@ impl Inner {
         // untouched.
         match &envelope.event {
             Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                if event_warrants_spec_push(&envelope.event, &self.write) {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.observe_harness(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -620,7 +692,7 @@ impl Inner {
             } => {
                 // Only user edits warrant a push. The spec authored
                 // Spec/Kernel edits itself; re-notifying it would loop.
-                if event_warrants_spec_push(&envelope.event, &self.write) {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
                 } else {
@@ -642,7 +714,7 @@ impl Inner {
                 // worker cards should notify the spec. Stop hooks carry no
                 // result/artifacts, so the pushed observation is a light
                 // wake-up that asks the spec to re-read wave state.
-                if event_warrants_spec_push(&envelope.event, &self.write) {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.observe_harness(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -677,6 +749,7 @@ impl Inner {
                 goal,
                 context,
                 acceptance_criteria,
+                ..
             } => DispatchRequest::Codex {
                 idempotency_key: idempotency_key.clone(),
                 goal: goal.clone(),
@@ -687,6 +760,7 @@ impl Inner {
                 idempotency_key,
                 cmd,
                 cwd,
+                ..
             } => DispatchRequest::Terminal {
                 idempotency_key: idempotency_key.clone(),
                 cmd: cmd.clone(),
@@ -703,6 +777,40 @@ impl Inner {
         let idem = req.idempotency_key().to_string();
         let scope = envelope.scope.clone();
 
+        // Promote Dispatching -> Working before spawning the worker so a fast
+        // worker's task.completed (which auto-promotes Working -> Reviewing)
+        // never races ahead of the promotion. A permanent promotion failure
+        // aborts the dispatch before the worker starts, otherwise the wave can
+        // remain stuck in Dispatching after the worker finishes.
+        let promote_inner = Arc::clone(&self);
+        let promote_scope = scope.clone();
+        let log_inner = Arc::clone(&self);
+        if !promote_dispatching_to_working_or_emit_failure(
+            &idem,
+            scope.clone(),
+            move || {
+                let promote_inner = Arc::clone(&promote_inner);
+                let promote_scope = promote_scope.clone();
+                async move {
+                    promote_inner
+                        .auto_promote_dispatching_to_working(&promote_scope)
+                        .await
+                }
+            },
+            move |scope, fail_event| {
+                let log_inner = Arc::clone(&log_inner);
+                async move {
+                    log_inner
+                        .log_task_failure_and_maybe_promote_working_to_reviewing(scope, fail_event)
+                        .await
+                }
+            },
+        )
+        .await
+        {
+            return;
+        }
+
         // Retry on transient SQLite BUSY/locked errors. With more
         // than one dispatcher in flight (permits > 1), SQLite can
         // refuse a write with "database is locked" or "deadlocked"
@@ -712,8 +820,7 @@ impl Inner {
         // and emitting `task.failed`.
         let mut last_err: Option<crate::error::CalmError> = None;
         let mut backoff = Duration::from_millis(10);
-        const MAX_RETRIES: usize = 5;
-        for attempt in 0..=MAX_RETRIES {
+        for attempt in 0..=SQLITE_BUSY_MAX_RETRIES {
             match self
                 .dispatch(req.clone(), scope.clone(), envelope.actor.clone())
                 .await
@@ -722,7 +829,7 @@ impl Inner {
                     last_err = None;
                     break;
                 }
-                Err(e) if is_sqlite_busy(&e) && attempt < MAX_RETRIES => {
+                Err(e) if is_sqlite_busy(&e) && attempt < SQLITE_BUSY_MAX_RETRIES => {
                     tracing::debug!(
                         idempotency_key = %idem,
                         attempt,
@@ -745,33 +852,22 @@ impl Inner {
                 error = %e,
                 "dispatcher: spawn failed; emitting task.failed"
             );
-            // Emit a TaskFailed so the dispatcher's push path delivers
-            // the failure to the requesting spec card as a turn input.
-            // Scope mirrors the request envelope's scope so the push can
-            // route on it.
+            // Emit TaskFailed and any Working -> Reviewing promotion in one
+            // audited transaction so TaskFailed observers never wake on stale
+            // wave lifecycle state.
             let fail_event = Event::TaskFailed {
                 idempotency_key: idem.clone(),
                 reason: format!("{e}"),
+                agent_message: None,
             };
-            // Allow on `WriteContext::role_cache()`/`cove_cache()` deprecation, not on `log_pure_event`.
-            #[allow(deprecated)]
             let log_result = self
-                .repo
-                .log_pure_event(
-                    ActorId::KernelDispatcher,
-                    scope,
-                    None,
-                    &self.events,
-                    self.write.role_cache(),
-                    self.write.cove_cache(),
-                    fail_event,
-                )
+                .log_task_failure_and_maybe_promote_working_to_reviewing(scope.clone(), fail_event)
                 .await;
             if let Err(e2) = log_result {
                 tracing::warn!(
                     idempotency_key = %idem,
                     error = %e2,
-                    "dispatcher: failed to log task.failed event"
+                    "dispatcher: failed to log task.failed event batch"
                 );
             }
         }
@@ -946,6 +1042,151 @@ impl Inner {
         }
     }
 
+    async fn auto_promote_dispatching_to_working(
+        self: &Arc<Self>,
+        scope: &EventScope,
+    ) -> crate::error::Result<()> {
+        self.auto_promote_wave_lifecycle(
+            scope,
+            WaveLifecycle::Dispatching,
+            WaveLifecycle::Working,
+            Some("[auto] worker spawned".to_string()),
+        )
+        .await
+    }
+
+    async fn auto_promote_wave_lifecycle(
+        self: &Arc<Self>,
+        scope: &EventScope,
+        from: WaveLifecycle,
+        to: WaveLifecycle,
+        agent_message: Option<String>,
+    ) -> crate::error::Result<()> {
+        let Some(wave_id) = scope.wave_id().cloned() else {
+            return Ok(());
+        };
+        let cove_id = scope.cove_id().cloned().ok_or_else(|| {
+            CalmError::Internal(format!(
+                "dispatcher: request scope has wave {} but no cove",
+                wave_id.as_str()
+            ))
+        })?;
+        let wave_scope = EventScope::Wave {
+            wave: wave_id.clone(),
+            cove: cove_id,
+        };
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Internal("dispatcher lifecycle auto-promotion requires sqlite repo".into())
+        })?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let events = match crate::wave_lifecycle::auto_transition_if_current_in_tx(
+            &mut tx,
+            &wave_id,
+            from,
+            to,
+            &ActorId::KernelDispatcher,
+            agent_message,
+        )
+        .await
+        {
+            Ok(Some(events)) => events,
+            Ok(None) => {
+                let _ = tx.rollback().await;
+                return Ok(());
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        for event in &events {
+            #[allow(deprecated)]
+            if let Err(violation) = crate::role_gate::enforce_role(
+                &ActorId::KernelDispatcher,
+                event,
+                &wave_scope,
+                self.write.role_cache(),
+                self.write.cove_cache(),
+            ) {
+                let _ = tx.rollback().await;
+                return Err(CalmError::Forbidden(violation.to_string()));
+            }
+        }
+
+        let event_ids = match events_append_for_operation_tx(
+            &mut tx,
+            &ActorId::KernelDispatcher,
+            &wave_scope,
+            None,
+            &events,
+        )
+        .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        let emitted = event_ids.into_iter().zip(events).collect::<Vec<_>>();
+        tx.commit().await?;
+        for (event_id, event) in emitted {
+            self.events.emit_envelope(BroadcastEnvelope {
+                id: event_id,
+                event_version: SYNC_EVENT_VERSION,
+                actor: ActorId::KernelDispatcher,
+                scope: wave_scope.clone(),
+                event,
+            });
+        }
+        Ok(())
+    }
+
+    async fn log_task_failure_and_maybe_promote_working_to_reviewing(
+        self: &Arc<Self>,
+        scope: EventScope,
+        fail_event: Event,
+    ) -> crate::error::Result<()> {
+        let wave_id = scope.wave_id().cloned();
+        let wave_scope = wave_id
+            .clone()
+            .zip(scope.cove_id().cloned())
+            .map(|(wave, cove)| EventScope::Wave { wave, cove });
+
+        write_with_actor_events_typed::<(), _>(
+            self.repo.as_ref(),
+            None,
+            &self.events,
+            &self.write,
+            move |tx| {
+                Box::pin(async move {
+                    let mut events = vec![(ActorId::KernelDispatcher, scope, fail_event)];
+                    if let (Some(wave_id), Some(wave_scope)) = (wave_id, wave_scope)
+                        && let Some(auto_events) =
+                            crate::wave_lifecycle::auto_transition_if_current_in_tx(
+                                tx,
+                                &wave_id,
+                                WaveLifecycle::Working,
+                                WaveLifecycle::Reviewing,
+                                &ActorId::KernelDispatcher,
+                                None,
+                            )
+                            .await?
+                    {
+                        events.extend(
+                            auto_events.into_iter().map(|event| {
+                                (ActorId::KernelDispatcher, wave_scope.clone(), event)
+                            }),
+                        );
+                    }
+                    Ok(((), events))
+                })
+            },
+        )
+        .await
+        .map(|_| ())
+    }
+
     async fn dispatch(
         self: &Arc<Self>,
         req: DispatchRequest,
@@ -1065,6 +1306,7 @@ pub(crate) fn harness_observation_from_event(
         Event::TaskFailed {
             idempotency_key,
             reason,
+            ..
         } => Some(HarnessObservation::TaskFailed {
             idempotency_key: idempotency_key.clone(),
             error: reason.clone(),
@@ -1221,6 +1463,75 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn pre_spawn_promotion_hard_failure_emits_task_failed_and_aborts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let promote_calls = Arc::new(AtomicUsize::new(0));
+        let logged = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let wave = WaveId::from("wave-promotion-hard-fail");
+        let cove = CoveId::from("cove-promotion-hard-fail");
+        let scope = wave_scope(&wave, &cove);
+
+        let should_spawn = promote_dispatching_to_working_or_emit_failure(
+            "promotion-hard-fail",
+            scope.clone(),
+            {
+                let promote_calls = Arc::clone(&promote_calls);
+                move || {
+                    promote_calls.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Err::<(), _>(CalmError::Internal("forced promotion failure".to_string()))
+                    }
+                }
+            },
+            {
+                let logged = Arc::clone(&logged);
+                move |scope, event| {
+                    let logged = Arc::clone(&logged);
+                    async move {
+                        logged.lock().await.push((scope, event));
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            !should_spawn,
+            "permanent promotion failure must abort before spawning the worker"
+        );
+        assert_eq!(
+            promote_calls.load(Ordering::SeqCst),
+            1,
+            "hard promotion errors should not be retried"
+        );
+
+        let logged = logged.lock().await;
+        assert_eq!(logged.len(), 1, "promotion failure should log TaskFailed");
+        assert_eq!(logged[0].0, scope);
+        match &logged[0].1 {
+            Event::TaskFailed {
+                idempotency_key,
+                reason,
+                agent_message,
+            } => {
+                assert_eq!(idempotency_key, "promotion-hard-fail");
+                assert!(
+                    reason.contains("lifecycle promotion failed"),
+                    "TaskFailed reason should identify promotion failure: {reason}"
+                );
+                assert!(
+                    reason.contains("forced promotion failure"),
+                    "TaskFailed reason should include the original error: {reason}"
+                );
+                assert_eq!(agent_message, &None);
+            }
+            other => panic!("expected TaskFailed for promotion failure, got {other:?}"),
+        }
+    }
+
     /// The dispatcher's `SubscribeFilter` must now match the push kinds in
     /// addition to the two worker_requested kinds. We reconstruct the
     /// exact filter the spawn site builds and assert `matches()` for each
@@ -1259,21 +1570,25 @@ mod tests {
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,
+            agent_message: None,
         })));
         // The push kinds match.
         assert!(filter.matches(&env(Event::TaskCompleted {
             idempotency_key: "k".into(),
             result: serde_json::Value::Null,
             artifacts: Vec::<ArtifactRef>::new(),
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::WaveReportEdited {
             wave_id: wave.clone(),
@@ -1284,6 +1599,7 @@ mod tests {
             summary_after: String::new(),
             body_before: String::new(),
             body_after: String::new(),
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::CodexHook {
             card_id: CardId::from("worker-codex"),
@@ -1333,14 +1649,34 @@ mod tests {
             idempotency_key: "done".into(),
             result: serde_json::Value::Null,
             artifacts: Vec::new(),
+            agent_message: None,
         };
-        assert!(event_warrants_spec_push(&completed, &write));
+        assert!(event_warrants_spec_push(
+            &completed,
+            &ActorId::AiCodex(worker.clone()),
+            &write
+        ));
+        assert!(!event_warrants_spec_push(
+            &completed,
+            &ActorId::AiSpec(spec.clone()),
+            &write
+        ));
 
         let failed = Event::TaskFailed {
             idempotency_key: "fail".into(),
             reason: "boom".into(),
+            agent_message: None,
         };
-        assert!(event_warrants_spec_push(&failed, &write));
+        assert!(event_warrants_spec_push(
+            &failed,
+            &ActorId::AiCodex(worker.clone()),
+            &write
+        ));
+        assert!(!event_warrants_spec_push(
+            &failed,
+            &ActorId::AiSpec(spec.clone()),
+            &write
+        ));
 
         let report = |author| Event::WaveReportEdited {
             wave_id: wave.clone(),
@@ -1351,11 +1687,21 @@ mod tests {
             summary_after: String::new(),
             body_before: String::new(),
             body_after: String::new(),
+            agent_message: None,
         };
-        assert!(event_warrants_spec_push(&report(EditAuthor::User), &write));
-        assert!(!event_warrants_spec_push(&report(EditAuthor::Spec), &write));
+        assert!(event_warrants_spec_push(
+            &report(EditAuthor::User),
+            &ActorId::User,
+            &write
+        ));
+        assert!(!event_warrants_spec_push(
+            &report(EditAuthor::Spec),
+            &ActorId::User,
+            &write
+        ));
         assert!(!event_warrants_spec_push(
             &report(EditAuthor::Kernel),
+            &ActorId::User,
             &write
         ));
 
@@ -1373,34 +1719,42 @@ mod tests {
         };
         assert!(event_warrants_spec_push(
             &codex_hook(worker.clone(), "hook.codex.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(event_warrants_spec_push(
             &claude_hook(worker.clone(), "hook.claude.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(spec.clone(), "hook.codex.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &claude_hook(spec.clone(), "hook.claude.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(unknown.clone(), "hook.codex.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &claude_hook(unknown, "hook.claude.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(worker.clone(), "hook.codex.permission_request"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(worker, "hook.codex.post_tool_use"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
@@ -1408,6 +1762,7 @@ mod tests {
                 id: wave,
                 cove_id: cove,
             },
+            &ActorId::User,
             &write
         ));
     }

@@ -53,13 +53,16 @@ Branches:
   * reviewing → failed        when the wave cannot be completed
   * (only the user may drive cancellation / reopen)
 
-You drive transitions by calling `calm.update_wave_state` with a \
-`lifecycle` argument naming the target state. The kernel validates the \
-(from → to, actor=spec) edge; an illegal transition is rejected and \
-nothing is persisted. Move the wave to `planning` as soon as you read \
-the goal, `dispatching` before your first `calm.task.dispatch`, \
-`working` once a worker is running, `reviewing` when results land, and \
-`done` only after acceptance.
+Lifecycle transitions are a side effect of every write. Pass \
+`lifecycle=\"...\"` on `calm.task.dispatch`, \
+`calm.task.verdict`, `calm.report.write`, or `calm.report.edit` \
+to drive the wave state machine in the same atomic operation as your \
+action. Every write also requires `message`, a short human-readable \
+rationale for the event. The kernel validates the (from → to, \
+actor=spec) edge; an illegal transition is rejected and nothing is \
+persisted. The kernel auto-drives `draft → planning` on your first \
+write, `dispatching → working` when a worker daemon spawns, and \
+`working → reviewing` when the first task report lands.
 
 ## How you are driven
 
@@ -83,28 +86,23 @@ writes are transactional.
    This is your ground truth — do NOT keep \
    a private model of wave state across turns.
 2. Decide what to do next and act:
-   * Advance lifecycle via `calm.update_wave_state(lifecycle=...)` — \
-     `planning` once you've read the goal, `dispatching` before your \
-     first `calm.task.dispatch`, `working` once a worker is running, \
-     `reviewing` when results land, `done` only after acceptance, \
-     `blocked` when you need the user.
    * Dispatch sub-jobs via `calm.task.dispatch`. Required args: \
      `kind` (\"codex\" or \"terminal\"), `idempotency_key` (stable \
      across retries so a redelivered observation can't double-dispatch), \
-     plus `goal` (codex) or `cmd` (terminal).
+     `message`, plus `goal` (codex) or `cmd` (terminal). Optional \
+     `lifecycle` advances the wave in the same write.
    * Record verdicts via `calm.task.verdict(status=...)` when worker \
-     output is ready to validate.
-   * Keep the wave report current (see below).
+     output is ready to validate. Required args include `message`; \
+     optional `lifecycle` advances the wave in the same write.
+   * Keep the wave report current with `calm.report.write` or \
+     `calm.report.edit`. Each requires `message` and accepts optional \
+     `lifecycle`.
 3. **END YOUR TURN.** Do NOT poll or loop waiting for the next event. \
    The kernel pushes the next observation as a fresh turn the moment it \
    arrives — you will be re-invoked automatically. If there is nothing \
    left to do this turn, just stop; if the wave is `done`/`failed`/ \
    `blocked` and you're waiting on the user, stop and wait to be \
    re-invoked.
-
-Update other wave metadata (title, archive status) only when it genuinely \
-changes. Worker cards must NOT touch the wave row; the kernel's role gate \
-enforces this.
 
 ## Wave Report (issue #229)
 
@@ -114,8 +112,8 @@ updated. READ the current body with `neige cat report.md` (returns the \
 report body). WRITE/EDIT via MCP tools that target the wave's report \
 instead of a disk path:
 
-  * `calm.report.write(body, summary?)` — wholesale replace (like Write).
-  * `calm.report.edit(old_string, new_string, replace_all?)` — string \
+  * `calm.report.write(body, summary?, message, lifecycle?)` — wholesale replace (like Write).
+  * `calm.report.edit(old_string, new_string, replace_all?, message, lifecycle?)` — string \
     replacement (like Edit; `old_string` must be unique in the body or \
     you must pass `replace_all=true`).
 
@@ -200,7 +198,8 @@ in `neige state`.
 The view is READ-ONLY. To act on what you read, call \
 `calm.task.verdict(idempotency_key=K, status=\"accepted\" | \
 \"rejected\")` to record a verdict, and/or `calm.task.dispatch` to \
-start follow-up work — the same tools as before.
+start follow-up work. Each write requires `message` and can include \
+`lifecycle=...`.
 
 Wave is implicit — derived from your card identity. Do NOT pass a \
 `wave_id` (these tools have no such parameter; cross-wave reads are \
@@ -242,9 +241,9 @@ You were spawned to execute one job. Your contract:
    spec card as a pushed turn input, and the spec continues the wave \
    from there. You do not wait for or observe anything.
 
-You may NOT call `calm.update_wave_state` or `calm.task.verdict` — \
-those are spec-only tools and the kernel's role gate will refuse you. \
-You also may NOT mint new workers via `calm.task.dispatch` — the \
+You may NOT call `calm.task.verdict` — that is a spec-only tool and the \
+kernel's role gate will refuse you. You also may NOT mint new workers \
+via `calm.task.dispatch` — the \
 kernel's role gate (#583) refuses worker-actor dispatch emits. If the \
 job needs further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
@@ -317,7 +316,9 @@ mod tests {
     fn render_system_prompt_preserves_role_template_content() {
         let spec = render_system_prompt(SeededCardRole::Spec.prompt_template(), "wave-abc");
         assert!(spec.contains("You are the spec agent for wave `wave-abc`."));
-        assert!(spec.contains("calm.update_wave_state"));
+        assert!(!spec.contains("calm.update_wave_state"));
+        assert!(spec.contains("calm.task.dispatch"));
+        assert!(spec.contains("calm.task.verdict"));
 
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
         assert!(worker.contains("You are a worker agent under spec card on wave `wave-abc`."));
@@ -360,10 +361,12 @@ mod tests {
             "prompt must read state via neige and still dispatch via MCP"
         );
         assert!(
-            p.contains("calm.update_wave_state")
+            !p.contains("calm.update_wave_state")
                 && p.contains("calm.task.dispatch")
-                && p.contains("calm.task.verdict"),
-            "prompt must still document wave/task write tools"
+                && p.contains("calm.task.verdict")
+                && p.contains("calm.report.write")
+                && p.contains("calm.report.edit"),
+            "prompt must document retained wave/task write tools and omit retired update_wave_state"
         );
         assert!(
             !p.contains("Call `calm.wave.state`"),
