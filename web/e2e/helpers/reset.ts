@@ -169,7 +169,13 @@ export async function seedWaveViewMode(
   waveId: string,
   mode: 'grid' | 'list' | 'report',
 ): Promise<void> {
-  const url = `http://127.0.0.1:${REPLAY_PORT}/api/overlays`;
+  // Relative path on purpose: unlike the other helpers in this file (which
+  // are replay-suite-only and pin REPLAY_PORT), this one is also called from
+  // the chromium docker project (wave-report-view.spec.ts), where 4141 does
+  // not exist. Both projects' request contexts resolve /api against the
+  // right stack — the a11y vite server proxies /api to the replay binary
+  // via VITE_API_PROXY_TARGET.
+  const url = `/api/overlays`;
   const response = await request.post(url, {
     data: {
       plugin_id: 'kernel',
