@@ -55,6 +55,7 @@ export interface WaveReportCardData {
   id?: string;
   summary: string;
   body: string;
+  updatedAt?: number;
   unsupportedVersion?: number;
 }
 
@@ -602,6 +603,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
         id: k.id,
         summary: '',
         body: '',
+        updatedAt: k.updated_at,
         unsupportedVersion: version,
       };
     }
@@ -619,6 +621,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
       id: k.id,
       summary: parsed.data.summary,
       body: parsed.data.body,
+      updatedAt: k.updated_at,
     };
   },
   // NO addPanel — wave-report cards are kernel-minted. The user

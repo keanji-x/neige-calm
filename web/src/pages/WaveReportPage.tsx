@@ -1,0 +1,146 @@
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { Wave, WaveCardSlot } from '../types';
+import { waveDisplayTitle } from '../shared/waveTitle';
+import type { WaveReportCardData } from '../cards/builtins/wave-report';
+
+export interface WaveReportPageProps {
+  wave: Wave;
+  cards: WaveCardSlot[];
+}
+
+type CardSlot = Extract<WaveCardSlot, { kind: 'card' }>;
+type ReportCardSlot = CardSlot & { card: WaveReportCardData };
+
+function isReportSlot(slot: WaveCardSlot): slot is ReportCardSlot {
+  return slot.kind === 'card' && slot.card.type === 'wave-report';
+}
+
+function selectReportCards(cards: WaveCardSlot[]): ReportCardSlot[] {
+  const reports = cards.filter(isReportSlot);
+  return reports.slice().sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+}
+
+function formatUpdatedAt(updatedAt?: number): string {
+  if (
+    typeof updatedAt !== 'number' ||
+    !Number.isFinite(updatedAt) ||
+    updatedAt <= 0
+  ) {
+    return 'Updated -';
+  }
+
+  const diffMs = Math.max(0, Date.now() - updatedAt);
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return 'Updated just now';
+  if (minutes < 60) return `Updated ${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Updated ${hours}h ago`;
+
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `Updated ${days}d ago`;
+
+  return `Updated ${new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(updatedAt))}`;
+}
+
+function readTime(body: string | undefined): string {
+  const words = (body ?? '').trim().split(/\s+/).filter(Boolean).length;
+  if (words === 0) return 'Read time -';
+  return `${Math.max(1, Math.ceil(words / 220))} min read`;
+}
+
+function ReportByline({ report }: { report?: WaveReportCardData }) {
+  return (
+    <div className="report-byline" aria-label="Report metadata">
+      <span className="report-byline-author">
+        <span className="report-byline-avatar" aria-hidden="true">
+          R
+        </span>
+        <span>Research Agent</span>
+      </span>
+      <span className="report-byline-sep" aria-hidden="true" />
+      <span>{formatUpdatedAt(report?.updatedAt)}</span>
+      <span className="report-byline-sep" aria-hidden="true" />
+      <span>Sources -</span>
+      <span className="report-byline-sep" aria-hidden="true" />
+      <span>{readTime(report?.body)}</span>
+    </div>
+  );
+}
+
+function DuplicateReportBanner({ count }: { count: number }) {
+  return (
+    <div className="report-duplicate" role="status" data-count={count}>
+      Multiple report cards found. Showing the earliest.
+    </div>
+  );
+}
+
+function ReportEmptyState() {
+  return (
+    <div className="report-empty" role="status">
+      Report not ready. The spec agent has not produced a report yet.
+    </div>
+  );
+}
+
+export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
+  const title = waveDisplayTitle(wave.title);
+  const reportSlots = selectReportCards(cards);
+  const reportCard = reportSlots[0]?.card;
+
+  return (
+    <div className="report-page">
+      <main className="report-center">
+        <article className="report-doc">
+          {reportSlots.length > 1 && (
+            <DuplicateReportBanner count={reportSlots.length} />
+          )}
+          <h1 className="report-title">{title}</h1>
+          <ReportByline report={reportCard} />
+          {reportCard ? (
+            <div className="report-prose">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {reportCard.body}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <ReportEmptyState />
+          )}
+        </article>
+      </main>
+      <aside className="report-rail" aria-label="Report context">
+        <section className="report-rail-section" aria-label="Files">
+          <header className="report-rail-head">
+            <span>Files</span>
+          </header>
+          <div className="report-rail-placeholder">
+            Wave files appear here. (Wired in PR-B.)
+          </div>
+        </section>
+        <section className="report-rail-section" aria-label="Event line">
+          <header className="report-rail-head">
+            <span>Event line</span>
+          </header>
+          <div className="report-rail-placeholder">
+            Activity timeline appears here. (Wired in PR-E.)
+          </div>
+        </section>
+      </aside>
+      <div className="report-chat" aria-label="Ask the research agent">
+        <button type="button" className="report-chat-pill" disabled>
+          <span className="report-chat-avatar" aria-hidden="true">
+            R
+          </span>
+          <span className="report-chat-label">Ask the Research Agent</span>
+          <span className="sr-only">(Wired in PR-C)</span>
+        </button>
+      </div>
+    </div>
+  );
+}

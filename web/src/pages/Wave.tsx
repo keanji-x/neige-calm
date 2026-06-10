@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useId, useRef } from 'react';
+import { lazy, Suspense, useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
@@ -13,6 +13,9 @@ import { CalmApiError } from '../api/calm';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
 import { waveDisplayTitle } from '../shared/waveTitle';
+import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
+import { excludeReportCards } from '../cards/excludeReportCards';
+import { WaveReportPage } from './WaveReportPage';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
 // heaviest single dependency on this page. Loading it lazily keeps the
@@ -34,17 +37,18 @@ const WaveList = lazy(() =>
  *  `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')`.
  *  Kept separate from the layout overlay so users in list-only mode never
  *  have to mint a layout row just to flip the toggle. */
-type ViewMode = 'grid' | 'list';
+type ViewMode = 'grid' | 'list' | 'report';
 interface ViewModeOverlay {
   schemaVersion?: number;
-  mode: ViewMode;
+  mode?: ViewMode;
 }
-const VIEW_MODE_DEFAULT: ViewModeOverlay = { mode: 'grid' };
+const VIEW_MODE_DEFAULT: ViewModeOverlay = {};
+const EMPTY_CARD_SLOTS: WaveCardSlot[] = [];
 
 /** True when `s` is a recognized view mode. Hardens against an unknown
  *  string drifting in from a future server schema. */
 function isViewMode(s: unknown): s is ViewMode {
-  return s === 'grid' || s === 'list';
+  return s === 'grid' || s === 'list' || s === 'report';
 }
 
 function formatCreateCardError(err: unknown): string {
@@ -95,7 +99,7 @@ export function WavePage({
   onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
   const pct = Math.round(wave.progress * 100);
-  const cards: WaveCardSlot[] = wave.cards || [];
+  const cards: WaveCardSlot[] = wave.cards ?? EMPTY_CARD_SLOTS;
   const displayTitle = waveDisplayTitle(wave.title);
   // Schema-driven AddPanel selections open a modal SchemaForm — kept in
   // local state, never reaches the kernel until submit.
@@ -193,69 +197,85 @@ export function WavePage({
 
   const showPct = wave.progress > 0 && wave.progress < 1.0;
 
-  // Per-wave view-mode preference (Slice 9 of #56). Read-only in this
-  // demo: the #594 binary toggle dropped the Grid↔List UI entry, but
-  // waves whose overlay already holds `list` keep rendering as a list
-  // when Report is off. PR2 of #594 restores a writable three-state
-  // ViewMode ('grid' | 'list' | 'report') and with it the setter.
-  const [viewModeOverlay] = useOverlayState<ViewModeOverlay>({
+  const hasReportCard = useMemo(
+    () =>
+      cards.some(
+        (slot) => slot.kind === 'card' && slot.card.type === 'wave-report',
+      ),
+    [cards],
+  );
+  // Forward-compat gate for kernels that may not mint a report card for every
+  // wave. Current kernels do mint one at create time; this must not drive the
+  // default view mode.
+  const workerCardSlots = useMemo(() => excludeReportCards(cards), [cards]);
+  const workerCards = useMemo(
+    () => workerCardSlots.map((entry) => entry.slot),
+    [workerCardSlots],
+  );
+
+  const [viewModeOverlay, setViewModeOverlay] = useOverlayState<ViewModeOverlay>({
     entity_kind: 'view',
     entity_id: wave.id,
     kind: 'view-mode',
     default: VIEW_MODE_DEFAULT,
   });
-  const viewMode: ViewMode = isViewMode(viewModeOverlay.mode)
-    ? viewModeOverlay.mode
-    : 'grid';
+  const overlayMode = viewModeOverlay.mode;
+  // Default to grid. The wave-report card is kernel-minted for every wave at
+  // create time (crates/calm-server/src/wave_report.rs:3), so the previous
+  // "report when hasReportCard" rule defaulted every new wave into report mode
+  // and hid the AddPanel. Users opt into report explicitly via the toggle.
+  // PR-E's 3-state control will revisit this.
+  const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'grid';
 
-  // Demo toggle for the unified Report view (issue #594). Deliberately
-  // plain useState, NOT overlay-persisted: the report content is the
-  // static design sandbox (`web/public/_design/Report.html`), and
-  // persisting "this wave shows the report" across reloads while the
-  // data is fake would mislead. PR2 of #594 replaces this with a real
-  // three-state ViewMode ('grid' | 'list' | 'report') on the overlay.
-  const [reportPreview, setReportPreview] = useState(false);
+  const setViewMode = (mode: ViewMode) => {
+    setViewModeOverlay({
+      schemaVersion: OVERLAY_VIEW_MODE_SCHEMA_VERSION,
+      mode,
+    });
+  };
 
   return (
     // Issue #229 PR B — wrap with WaveContext so the WaveReport card
     // (rendered deep inside WaveGrid/WaveList) can read the wave's
     // lifecycle for its header badge without prop-drilling. Other
     // cards ignore the context.
-    <WaveContext.Provider
-      value={{ id: wave.id, lifecycle: wave.lifecycle }}
-    >
-    <div className={'workbench' + (reportPreview ? ' workbench--report' : '')}>
-      <header className="wave-header">
-        <button
-          className="wave-back"
-          onClick={() => onGo({ name: 'cove', coveId: cove.id })}
-          title={'Back to ' + cove.name}
-        >
-          <Icon n="back" s={14} sw={1.7} />
-        </button>
-        {/* Surface flip (issue #594 demo) — leftmost control cluster:
-            与 back 钮并列, 表达模式切换 (icon-only). Slice-9 label
-            convention: visible icon = current surface, action verb in
-            aria-label / noun in title. The grid/list overlay is read-only here
-            (no UI entry for List in the demo); PR2 of #594 swaps this
-            for the persisted three-state ViewMode control. */}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={reportPreview}
-          className="view-flip"
-          onClick={() => setReportPreview((v) => !v)}
-          aria-label={
-            reportPreview
-              ? 'Switch wave to cards view'
-              : 'Switch wave to report view'
-          }
-          title={
-            reportPreview ? 'Cards' : 'Report'
-          }
-        >
-          <Icon n={reportPreview ? 'report' : 'grid'} s={14} sw={1.7} />
-        </button>
+    <WaveContext.Provider value={{ id: wave.id, lifecycle: wave.lifecycle }}>
+      <div
+        className={
+          'workbench' + (viewMode === 'report' ? ' workbench--report' : '')
+        }
+      >
+        <header className="wave-header">
+          <button
+            className="wave-back"
+            onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+            title={'Back to ' + cove.name}
+          >
+            <Icon n="back" s={14} sw={1.7} />
+          </button>
+          {hasReportCard && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={viewMode === 'report'}
+              className="view-flip"
+              onClick={() =>
+                setViewMode(viewMode === 'report' ? 'grid' : 'report')
+              }
+              aria-label={
+                viewMode === 'report'
+                  ? 'Switch wave to cards view'
+                  : 'Switch wave to report view'
+              }
+              title={viewMode === 'report' ? 'Cards' : 'Report'}
+            >
+              <Icon
+                n={viewMode === 'report' ? 'report' : 'grid'}
+                s={14}
+                sw={1.7}
+              />
+            </button>
+          )}
         <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
           <button
@@ -342,7 +362,7 @@ export function WavePage({
             </p>
           )}
           <span className="wave-action-cluster">
-            {!reportPreview && <AddPanel onSelect={beginAdd} />}
+            {viewMode !== 'report' && <AddPanel onSelect={beginAdd} />}
             {onDeleteWave && (
               <DeleteButton
                 label={`Delete wave "${displayTitle}"`}
@@ -357,16 +377,8 @@ export function WavePage({
       </header>
 
       <section className="workbench-main">
-        {reportPreview ? (
-          // Static design sandbox served from `web/public/_design/`.
-          // Pure iframe — no wave data flows in yet; PR2 of #594 swaps
-          // this for a real WaveReportPage fed by the wave's
-          // spec + wave-report cards.
-          <iframe
-            className="wave-report-demo-frame"
-            src="/calm/_design/Report.html"
-            title="Report view demo (#594)"
-          />
+        {viewMode === 'report' ? (
+          <WaveReportPage wave={wave} cards={cards} />
         ) : (
           <Suspense
             fallback={
@@ -378,14 +390,20 @@ export function WavePage({
             {viewMode === 'list' ? (
               <WaveList
                 waveId={wave.id}
-                cards={cards}
-                onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+                cards={workerCards}
+                onRemoveCard={(filteredIdx) => {
+                  const original = workerCardSlots[filteredIdx]?.originalIndex;
+                  if (original !== undefined) onRemoveCard(wave.id, original);
+                }}
               />
             ) : (
               <WaveGrid
                 waveId={wave.id}
-                cards={cards}
-                onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+                cards={workerCards}
+                onRemoveCard={(filteredIdx) => {
+                  const original = workerCardSlots[filteredIdx]?.originalIndex;
+                  if (original !== undefined) onRemoveCard(wave.id, original);
+                }}
               />
             )}
           </Suspense>
