@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use similar::TextDiff;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -781,6 +781,10 @@ pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
 
 /// One unreferenced-object sweep pass. Public so integration tests can drive
 /// cleanup deterministically without waiting for the hourly task.
+///
+/// This deliberately performs one `O(commits)` scan inside the writer
+/// transaction to seed live tree refs. It is single-writer fallback GC; revisit
+/// with streaming/snapshot+reverify if commit counts grow.
 pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
     let cutoff_ms = now_ms().saturating_sub(OBJECT_SWEEP_GRACE_MS);
     let mut tx = begin_immediate_tx(pool).await?;
@@ -821,22 +825,22 @@ async fn sweep_unreferenced_objects_tx(
     .execute(&mut **tx)
     .await?;
 
-    let tree_rows: Vec<(Vec<u8>,)> = sqlx::query_as(
-        r#"SELECT o.bytes
-           FROM wave_vcs_objects AS o
-           WHERE o.kind = 'tree'
-             AND EXISTS (
-               SELECT 1
-               FROM wave_vcs_commits AS c
-               WHERE c.tree_hash = o.hash
-             )"#,
+    let tree_rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+        r#"SELECT refs.hash, o.bytes
+           FROM wave_vcs_sweep_refs AS refs
+           JOIN wave_vcs_objects AS o ON o.hash = refs.hash
+           WHERE o.kind = 'tree'"#,
     )
     .fetch_all(&mut **tx)
     .await?;
 
     let mut blob_hashes = BTreeSet::new();
-    for (bytes,) in tree_rows {
-        let manifest: TreeManifest = serde_json::from_slice(&bytes)?;
+    for (tree_hash, bytes) in tree_rows {
+        let manifest: TreeManifest = serde_json::from_slice(&bytes).map_err(|e| {
+            CalmError::Internal(format!(
+                "wave_vcs: parse tree manifest object {tree_hash}: {e}"
+            ))
+        })?;
         blob_hashes.extend(manifest.entries.into_values().map(|entry| entry.blob_hash));
     }
     insert_sweep_refs_tx(tx, blob_hashes).await?;

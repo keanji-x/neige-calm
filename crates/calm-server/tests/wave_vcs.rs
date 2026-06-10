@@ -800,6 +800,44 @@ async fn object_sweep_keeps_objects_referenced_by_live_commits() {
 }
 
 #[tokio::test]
+async fn object_sweep_reports_corrupt_tree_object_hash() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+
+    let tree_hash: String = sqlx::query_scalar(
+        r#"SELECT tree_hash
+           FROM wave_vcs_commits
+           WHERE wave_id = ?1
+           ORDER BY created_at DESC
+           LIMIT 1"#,
+    )
+    .bind(wave.id.as_str())
+    .fetch_one(repo.pool())
+    .await
+    .expect("tree hash");
+
+    sqlx::query("UPDATE wave_vcs_objects SET bytes = ?1 WHERE hash = ?2")
+        .bind(b"not-json".to_vec())
+        .bind(&tree_hash)
+        .execute(repo.pool())
+        .await
+        .expect("corrupt tree object");
+
+    let err = wave_vcs::sweep_unreferenced_objects_once(repo.pool())
+        .await
+        .expect_err("corrupt tree manifest fails closed");
+
+    assert!(
+        err.to_string().contains(&tree_hash),
+        "error should include corrupt tree object hash: {err}"
+    );
+}
+
+#[tokio::test]
 async fn object_sweep_keeps_blob_shared_by_deleted_and_live_waves() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
