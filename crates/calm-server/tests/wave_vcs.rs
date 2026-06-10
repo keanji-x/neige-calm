@@ -4,8 +4,8 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, card_update_tx, runtime_start_tx, terminal_create_tx,
-    wave_update_tx,
+    SqlxRepo, card_create_with_id_tx, card_update_tx, runtime_set_status_tx, runtime_start_tx,
+    terminal_create_tx, wave_update_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope, WaveUpdatedPayload};
 use calm_server::harness::HarnessSnapshot;
@@ -296,8 +296,9 @@ async fn start_codex_runtime_with_event(
     wave_id: &WaveId,
     cove_id: &CoveId,
     card_id: &CardId,
-) {
+) -> String {
     let runtime_id = new_id();
+    let returned_runtime_id = runtime_id.clone();
     let card_id_for_runtime = card_id.clone();
     let scope = EventScope::Card {
         card: card_id.clone(),
@@ -356,6 +357,52 @@ async fn start_codex_runtime_with_event(
     )
     .await
     .expect("runtime started event");
+    returned_runtime_id
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn set_runtime_status_with_event(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    write: &WriteContext,
+    wave_id: &WaveId,
+    cove_id: &CoveId,
+    card_id: &CardId,
+    runtime_id: &str,
+    old_status: RunStatus,
+    new_status: RunStatus,
+) {
+    let runtime_id = runtime_id.to_string();
+    let card_id_for_event = card_id.clone();
+    let scope = EventScope::Card {
+        card: card_id.clone(),
+        wave: wave_id.clone(),
+        cove: cove_id.clone(),
+    };
+    repo.write_with_event(
+        ActorId::Kernel,
+        scope,
+        None,
+        bus,
+        write,
+        Box::new(move |tx| {
+            let runtime_id = runtime_id.clone();
+            let card_id = card_id_for_event.clone();
+            let old_status = old_status.clone();
+            let new_status = new_status.clone();
+            Box::pin(async move {
+                runtime_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
+                Ok(Event::RuntimeStatusChanged {
+                    runtime_id,
+                    card_id: card_id.to_string(),
+                    old_status,
+                    new_status,
+                })
+            })
+        }),
+    )
+    .await
+    .expect("runtime status changed event");
 }
 
 fn write_context() -> (CardRoleCache, WaveCoveCache, WriteContext) {
@@ -491,6 +538,68 @@ async fn head_manifest(repo: &SqlxRepo, wave_id: &WaveId) -> wave_vcs::TreeManif
         .await
         .expect("tree query")
         .expect("tree")
+}
+
+async fn seed_head_payload_blob(
+    repo: &SqlxRepo,
+    wave_id: &WaveId,
+    payload_path: &str,
+    payload: serde_json::Value,
+) -> String {
+    let parent = wave_vcs::head(repo.pool(), wave_id)
+        .await
+        .expect("head query")
+        .expect("head");
+    let mut manifest = wave_vcs::tree_at(repo.pool(), &parent)
+        .await
+        .expect("tree query")
+        .expect("tree");
+    let payload_bytes = serde_json::to_vec(&payload).expect("legacy payload json");
+
+    let mut tx = repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin legacy payload seed");
+    let blob_hash = wave_vcs::put_blob(&mut tx, "blob", &payload_bytes)
+        .await
+        .expect("put legacy payload blob");
+    let entry = manifest
+        .entries
+        .get_mut(payload_path)
+        .expect("payload entry");
+    entry.blob_hash = blob_hash.clone();
+    entry.byte_len = payload_bytes.len() as u64;
+    entry.content_type = "application/json".into();
+    let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest json");
+    let tree_hash = format!("legacy-tree-{}", new_id());
+    sqlx::query(
+        r#"INSERT INTO wave_vcs_objects (hash, kind, bytes, created_at)
+           VALUES (?1, 'tree', ?2, ?3)"#,
+    )
+    .bind(&tree_hash)
+    .bind(manifest_bytes)
+    .bind(now_ms())
+    .execute(&mut *tx)
+    .await
+    .expect("insert legacy tree object");
+    let tree = wave_vcs::TreeSnapshot {
+        tree_hash,
+        manifest,
+    };
+    wave_vcs::commit_tree(
+        &mut tx,
+        wave_id,
+        Some(&parent),
+        &tree,
+        None,
+        "legacy projected payload seed",
+        MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("commit legacy payload seed");
+    tx.commit().await.expect("commit legacy payload seed");
+    blob_hash
 }
 
 #[tokio::test]
@@ -2079,6 +2188,130 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
     assert_eq!(runtime["thread_id"], "spec-thread");
     assert_eq!(runtime["source"], "shared");
     assert_eq!(runtime["thread_status"], "started");
+}
+
+#[tokio::test]
+async fn runtime_event_heals_legacy_projected_payload_blob_once() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "legacy-heal", "goal": "heal"}),
+    )
+    .await;
+    let runtime_id =
+        start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &cove.id, &worker.id).await;
+    let payload_path = format!("cards/{}/payload.json", worker.id.as_str());
+
+    let legacy_hash = seed_head_payload_blob(
+        &repo,
+        &wave.id,
+        &payload_path,
+        json!({
+            "schemaVersion": 1,
+            "idempotency_key": "legacy-heal",
+            "goal": "heal",
+            "terminal_id": "legacy-terminal",
+            "codex_thread_id": "legacy-thread",
+            "codex_thread_status": "started"
+        }),
+    )
+    .await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .unwrap();
+    set_runtime_status_with_event(
+        &repo,
+        &bus,
+        &write,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        &runtime_id,
+        RunStatus::Running,
+        RunStatus::Idle,
+    )
+    .await;
+    let after_heal = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let diff = wave_vcs::diff(repo.pool(), &before, &after_heal, None)
+        .await
+        .expect("heal diff");
+    let payload_entries = diff
+        .iter()
+        .filter(|entry| entry.path == payload_path)
+        .collect::<Vec<_>>();
+    assert_eq!(payload_entries.len(), 1, "diff = {diff:?}");
+    assert_eq!(payload_entries[0].status, DiffStatus::Modified);
+    assert_eq!(
+        payload_entries[0].old_hash.as_deref(),
+        Some(legacy_hash.as_str())
+    );
+
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+        .await
+        .expect("since-last-turn block")
+        .block
+        .expect("payload heal block");
+    let payload_line = format!("- {payload_path} edited\n");
+    assert_eq!(block.matches(&payload_line).count(), 1, "{block}");
+
+    let healed_manifest = head_manifest(&repo, &wave.id).await;
+    let healed_entry = healed_manifest
+        .entries
+        .get(&payload_path)
+        .expect("healed payload entry");
+    let healed_payload: serde_json::Value =
+        serde_json::from_str(&blob_text(&repo, &healed_entry.blob_hash).await).unwrap();
+    assert!(
+        healed_payload.get("terminal_id").is_none(),
+        "{healed_payload:?}"
+    );
+    assert!(
+        healed_payload.get("codex_thread_id").is_none(),
+        "{healed_payload:?}"
+    );
+    assert!(
+        healed_payload.get("codex_thread_status").is_none(),
+        "{healed_payload:?}"
+    );
+    set_runtime_status_with_event(
+        &repo,
+        &bus,
+        &write,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        &runtime_id,
+        RunStatus::Idle,
+        RunStatus::Running,
+    )
+    .await;
+    let after_second_runtime_event = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let second_diff = wave_vcs::diff(repo.pool(), &after_heal, &after_second_runtime_event, None)
+        .await
+        .expect("second runtime diff");
+    assert!(
+        second_diff.iter().all(|entry| entry.path != payload_path),
+        "payload heal should be one-time: {second_diff:?}"
+    );
 }
 
 #[tokio::test]

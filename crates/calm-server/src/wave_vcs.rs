@@ -1754,6 +1754,12 @@ fn add_card_payload_path(delta: &mut PathDelta, card_id: &str) {
 }
 
 fn add_card_runtime_paths(delta: &mut PathDelta, card_id: &str) {
+    // Post-#618 payload rendering is runtime-independent. Re-rendering this
+    // path on runtime events is byte-stable for current-schema blobs, and it
+    // heals pre-#618 manifests whose HEAD payload blobs still contain
+    // projected runtime fields: the first runtime event rewrites them to raw,
+    // producing a one-time `edited` entry.
+    delta.add(format!("cards/{card_id}/payload.json"));
     delta.add(format!("cards/{card_id}/runtime.json"));
 }
 
