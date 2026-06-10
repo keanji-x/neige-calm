@@ -2267,7 +2267,7 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         .expect("since-last-turn block")
         .block
         .expect("payload heal block");
-    let payload_line = format!("- {payload_path} edited\n");
+    let payload_line = format!("- {payload_path} edited (by kernel)\n");
     assert_eq!(block.matches(&payload_line).count(), 1, "{block}");
 
     let healed_manifest = head_manifest(&repo, &wave.id).await;

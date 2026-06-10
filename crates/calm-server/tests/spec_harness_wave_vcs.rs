@@ -811,6 +811,10 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         2,
     )
     .await;
+    let turn_two_issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
+        .await
+        .issued_turn_head
+        .expect("turn two issued head");
     assert!(
         !second_text.contains("Wave state changes since your last turn"),
         "unchanged baseline should not produce a diff block: {second_text}"
@@ -822,12 +826,12 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         .unwrap()
         .unwrap();
     complete_latest_turn(&boot).await;
-    assert_eq!(wait_for_any_last_seen_head(&boot).await, before);
-    let after_completion_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_ne!(mid_turn_head, before);
+    wait_for_runtime_snapshot(&boot, |s| {
+        s.last_seen_head.as_deref() == Some(turn_two_issued_head.as_str())
+            && s.issued_turn_head.is_none()
+    })
+    .await;
+    assert_ne!(mid_turn_head, turn_two_issued_head);
 
     let third_text = issue_observation(
         &boot,
@@ -838,12 +842,16 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         3,
     )
     .await;
+    let turn_three_issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
+        .await
+        .issued_turn_head
+        .expect("turn three issued head");
 
     assert!(third_text.starts_with("## Wave state changes since your last turn"));
     assert!(third_text.contains(&format!(
         "HEAD {} -> {}",
-        short(&before),
-        short(&after_completion_head)
+        short(&turn_two_issued_head),
+        short(&turn_three_issued_head)
     )));
     assert!(third_text.contains("report.md new"));
     assert!(third_text.contains("idempotency_key=turn-three"));
