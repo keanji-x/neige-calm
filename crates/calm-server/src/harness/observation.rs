@@ -29,6 +29,11 @@ pub enum Observation {
         #[serde(default)]
         idempotency_key: String,
     },
+    /// Review fold-in (#609): forwarded to the LLM as a user message.
+    /// Hard-fired so the new turn issues immediately after the current
+    /// turn completes (no debounce idle wait) and so the queue cannot
+    /// evict it under backpressure. Does NOT interrupt in-flight turns
+    /// (`can_issue_turn()` still gates new-turn issuance).
     UserMessage {
         text: String,
     },
@@ -48,6 +53,7 @@ impl Observation {
             Observation::TaskCompleted { .. }
                 | Observation::TaskFailed { .. }
                 | Observation::WorkerHookStop { .. }
+                | Observation::UserMessage { .. }
         )
     }
 
@@ -61,7 +67,7 @@ impl Observation {
     pub fn to_turn_text(&self) -> String {
         match self {
             Observation::WaveGoal { text } => text.clone(),
-            Observation::UserMessage { text } => text.clone(),
+            Observation::UserMessage { text } => format!("User says:\n{text}"),
             Observation::ReportEdited { .. } => {
                 "The user edited the wave report. Re-read the wave state.".to_string()
             }
@@ -82,5 +88,32 @@ impl Observation {
                 "A worker card finished a turn. Re-read the wave state to incorporate any changes.\n(hook_id={idempotency_key})"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_message_is_hard_fire() {
+        let obs = Observation::UserMessage { text: "hi".into() };
+        assert!(obs.is_hard_fire());
+    }
+
+    #[test]
+    fn user_message_to_turn_text_includes_framing() {
+        let obs = Observation::UserMessage {
+            text: "Did you check Korean refiners?".into(),
+        };
+        let text = obs.to_turn_text();
+        assert!(
+            text.starts_with("User says:"),
+            "framing prefix missing: {text}"
+        );
+        assert!(
+            text.contains("Did you check Korean refiners?"),
+            "raw text missing: {text}"
+        );
     }
 }

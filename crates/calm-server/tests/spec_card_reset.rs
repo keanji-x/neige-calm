@@ -617,6 +617,46 @@ async fn send_spec_input_happy() {
 }
 
 #[tokio::test]
+async fn send_spec_input_accepts_max_chars() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let text: String = "a".repeat(32_768);
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_rejects_over_max_chars() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let text: String = "a".repeat(32_769);
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("32768") || e.contains("at most")),
+        "body={body}"
+    );
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
 async fn send_spec_input_empty_400() {
     let boot = boot().await;
     let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
