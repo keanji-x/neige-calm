@@ -1137,6 +1137,10 @@ async fn card_retarget_from_wave_report_removes_report_blob() {
     let bus = EventBus::new();
     let (roles, _coves, write) = write_context();
     let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let before_head = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before retarget");
     let before = head_manifest(&repo, &wave.id).await;
     assert!(before.entries.contains_key("report.md"));
 
@@ -1157,6 +1161,112 @@ async fn card_retarget_from_wave_report_removes_report_blob() {
 
     let after = head_manifest(&repo, &wave.id).await;
     assert!(!after.entries.contains_key("report.md"));
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before_head), None)
+        .await
+        .unwrap()
+        .block
+        .expect("diff block");
+    assert!(block.contains("report.md deleted"), "block = {block}");
+    assert!(
+        !block.contains("report.md deleted (unified patch follows)"),
+        "deleted report should not advertise an inline hunk: {block}"
+    );
+    assert!(
+        !block.contains("--- a/report.md"),
+        "deleted report should not include a full-content patch: {block}"
+    );
+}
+
+#[tokio::test]
+async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let payload = |body: &str| {
+        serde_json::to_value(WaveReportPayload {
+            schema_version: WaveReportPayload::SCHEMA_VERSION,
+            summary: String::new(),
+            body: body.to_string(),
+        })
+        .expect("report payload")
+    };
+    let old_body = "# Goal\n\n```text\nstable\n```\n\nold line\n";
+    let new_body = "# Goal\n\n```text\nstable\n```\n\nnew line\n";
+    let report = update_card_with_event(
+        &repo,
+        &bus,
+        &write,
+        &report,
+        &cove.id,
+        CardPatch {
+            kind: None,
+            sort: None,
+            payload: Some(payload(old_body)),
+            deletable: None,
+        },
+    )
+    .await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before report edit");
+
+    update_card_with_event(
+        &repo,
+        &bus,
+        &write,
+        &report,
+        &cove.id,
+        CardPatch {
+            kind: None,
+            sort: None,
+            payload: Some(payload(new_body)),
+            deletable: None,
+        },
+    )
+    .await;
+    let after = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after report edit");
+
+    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+        .await
+        .unwrap();
+    assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
+    let block = since.block.expect("diff block");
+    assert!(
+        block.contains("report.md edited (unified patch follows)"),
+        "block = {block}"
+    );
+    assert!(
+        block.contains("````diff\n--- a/report.md"),
+        "dynamic fence should grow beyond the triple backtick run: {block}"
+    );
+    assert_eq!(
+        block.lines().filter(|line| *line == "````diff").count(),
+        1,
+        "block = {block}"
+    );
+    assert_eq!(
+        block.lines().filter(|line| *line == "````").count(),
+        1,
+        "block = {block}"
+    );
+    let diff_start = block.find("````diff\n").expect("opening fence") + "````diff\n".len();
+    let diff_end = diff_start + block[diff_start..].find("\n````\n").expect("closing fence");
+    let diff_body = &block[diff_start..diff_end];
+    assert!(
+        diff_body.contains("\n ```\n"),
+        "diff should contain the markdown code fence context line: {block}"
+    );
+    assert!(
+        diff_body.contains("\n-old line\n+new line"),
+        "diff should contain the report edit hunk: {block}"
+    );
 }
 
 #[tokio::test]

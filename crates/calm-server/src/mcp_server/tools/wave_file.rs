@@ -131,7 +131,7 @@ fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
     Ok(normalize_path(path))
 }
 
-async fn resolve_wave_for_identity(
+pub(crate) async fn resolve_wave_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
 ) -> Result<(Card, Wave), RpcError> {

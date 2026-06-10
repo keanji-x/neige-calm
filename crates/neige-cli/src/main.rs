@@ -20,6 +20,9 @@ const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
 const TOOL_WAVE_LS: &str = "calm.wave.ls";
 const TOOL_WAVE_CAT: &str = "calm.wave.cat";
 const TOOL_WAVE_STATE: &str = "calm.wave.state";
+const TOOL_WAVE_DIFF: &str = "calm.wave.diff";
+const TOOL_WAVE_CAT_AT: &str = "calm.wave.cat_at";
+const TOOL_WAVE_LOG: &str = "calm.wave.log";
 const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 const TOOL_TASK_FAIL: &str = "calm.task.fail";
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -62,8 +65,11 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     let raw = call_wave_tool(&socket, &token, &cli).await?;
     match cli.command {
         Command::Ls { json_output, .. } => render_ls(&raw, json_output, cli.json_errors()),
-        Command::Cat { .. } => render_cat(&raw, cli.json_errors()),
+        Command::Cat { .. } => render_cat_like(&raw, TOOL_WAVE_CAT, cli.json_errors()),
         Command::State { json_output } => render_state(&raw, json_output, cli.json_errors()),
+        Command::Diff { json_output, .. } => render_diff(&raw, json_output, cli.json_errors()),
+        Command::CatAt { .. } => render_cat_like(&raw, TOOL_WAVE_CAT_AT, cli.json_errors()),
+        Command::Log { json_output, .. } => render_log(&raw, json_output, cli.json_errors()),
         Command::TaskCompleted { .. } | Command::TaskFailed { .. } => {
             let serialized = serde_json::to_string(&raw).map_err(|e| {
                 AppError::new(
@@ -123,6 +129,34 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
         Command::Ls { path, .. } => (TOOL_WAVE_LS, json!({ "path": path })),
         Command::Cat { path, .. } => (TOOL_WAVE_CAT, json!({ "path": path })),
         Command::State { .. } => (TOOL_WAVE_STATE, json!({})),
+        Command::Diff { from, to, path, .. } => {
+            let mut args = serde_json::Map::new();
+            args.insert("from".into(), Value::String(from.clone()));
+            if let Some(to) = to {
+                args.insert("to".into(), Value::String(to.clone()));
+            }
+            if let Some(path) = path {
+                args.insert("path".into(), Value::String(path.clone()));
+            }
+            (TOOL_WAVE_DIFF, Value::Object(args))
+        }
+        Command::CatAt { commit, path, .. } => (
+            TOOL_WAVE_CAT_AT,
+            json!({
+                "commit": commit,
+                "path": path,
+            }),
+        ),
+        Command::Log { path, limit, .. } => {
+            let mut args = serde_json::Map::new();
+            if let Some(path) = path {
+                args.insert("path".into(), Value::String(path.clone()));
+            }
+            if let Some(limit) = limit {
+                args.insert("limit".into(), Value::from(*limit));
+            }
+            (TOOL_WAVE_LOG, Value::Object(args))
+        }
         Command::TaskCompleted {
             idempotency_key,
             result,
@@ -315,16 +349,16 @@ fn render_ls(value: &Value, json_output: bool, json_error: bool) -> Result<(), A
     Ok(())
 }
 
-fn render_cat(value: &Value, json_error: bool) -> Result<(), AppError> {
+fn render_cat_like(value: &Value, tool: &str, json_error: bool) -> Result<(), AppError> {
     let content = value
         .get("content")
         .and_then(Value::as_str)
         .ok_or_else(|| {
             AppError::new(
-                "calm.wave.cat returned content without a string content field",
+                format!("{tool} returned content without a string content field"),
                 4,
                 json_error,
-                json!({ "kind": "shape", "tool": TOOL_WAVE_CAT, "value": value }),
+                json!({ "kind": "shape", "tool": tool, "value": value }),
             )
         })?;
     let content_type = value
@@ -384,6 +418,162 @@ fn render_state(value: &Value, json_output: bool, json_error: bool) -> Result<()
     Ok(())
 }
 
+fn render_diff(value: &Value, json_output: bool, json_error: bool) -> Result<(), AppError> {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(value).map_err(|e| {
+                AppError::new(
+                    format!("serialize diff JSON: {e}"),
+                    4,
+                    json_error,
+                    json!({ "kind": "shape", "message": e.to_string() }),
+                )
+            })?
+        );
+        return Ok(());
+    }
+    let files = value
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::new(
+                "calm.wave.diff returned non-array files",
+                4,
+                json_error,
+                json!({ "kind": "shape", "tool": TOOL_WAVE_DIFF, "value": value }),
+            )
+        })?;
+    let mut stdout = io::stdout();
+    for file in files {
+        let path = file.get("path").and_then(Value::as_str).ok_or_else(|| {
+            AppError::new(
+                "calm.wave.diff file missing path",
+                4,
+                json_error,
+                json!({ "kind": "shape", "tool": TOOL_WAVE_DIFF, "file": file }),
+            )
+        })?;
+        let status = file
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("modified");
+        writeln!(stdout, "{path} {}", diff_status_for_display(status)).map_err(|e| {
+            AppError::new(
+                format!("write stdout: {e}"),
+                4,
+                json_error,
+                json!({ "kind": "io", "message": e.to_string() }),
+            )
+        })?;
+        if let Some(patch) = file.get("patch").and_then(Value::as_str) {
+            write!(stdout, "{patch}").map_err(|e| {
+                AppError::new(
+                    format!("write stdout: {e}"),
+                    4,
+                    json_error,
+                    json!({ "kind": "io", "message": e.to_string() }),
+                )
+            })?;
+            if !patch.ends_with('\n') {
+                writeln!(stdout).map_err(|e| {
+                    AppError::new(
+                        format!("write stdout: {e}"),
+                        4,
+                        json_error,
+                        json!({ "kind": "io", "message": e.to_string() }),
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_log(value: &Value, json_output: bool, json_error: bool) -> Result<(), AppError> {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(value).map_err(|e| {
+                AppError::new(
+                    format!("serialize log JSON: {e}"),
+                    4,
+                    json_error,
+                    json!({ "kind": "shape", "message": e.to_string() }),
+                )
+            })?
+        );
+        return Ok(());
+    }
+    let commits = value
+        .get("commits")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::new(
+                "calm.wave.log returned non-array commits",
+                4,
+                json_error,
+                json!({ "kind": "shape", "tool": TOOL_WAVE_LOG, "value": value }),
+            )
+        })?;
+    let mut stdout = io::stdout();
+    for commit in commits {
+        let hash = commit.get("hash").and_then(Value::as_str).ok_or_else(|| {
+            AppError::new(
+                "calm.wave.log commit missing hash",
+                4,
+                json_error,
+                json!({ "kind": "shape", "tool": TOOL_WAVE_LOG, "commit": commit }),
+            )
+        })?;
+        let lifecycle = commit
+            .get("lifecycle")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let event_id = commit.get("event_id").and_then(Value::as_i64);
+        let message = commit.get("message").and_then(Value::as_str).unwrap_or("");
+        match event_id {
+            Some(event_id) => writeln!(
+                stdout,
+                "{} event={} {} {}",
+                short_hash(hash),
+                event_id,
+                lifecycle,
+                message
+            ),
+            None => writeln!(
+                stdout,
+                "{} event=- {} {}",
+                short_hash(hash),
+                lifecycle,
+                message
+            ),
+        }
+        .map_err(|e| {
+            AppError::new(
+                format!("write stdout: {e}"),
+                4,
+                json_error,
+                json!({ "kind": "io", "message": e.to_string() }),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn diff_status_for_display(status: &str) -> &str {
+    match status {
+        "added" => "new",
+        "deleted" => "deleted",
+        "modified" => "edited",
+        other => other,
+    }
+}
+
+fn short_hash(hash: &str) -> &str {
+    hash.get(..8).unwrap_or(hash)
+}
+
 fn emit_error(err: &AppError) {
     if err.json {
         let _ = writeln!(io::stderr(), "{}", err.structured);
@@ -407,7 +597,7 @@ impl Cli {
         }
         let command = iter.next().ok_or_else(|| {
             AppError::usage(
-                "missing command; expected `ls`, `cat`, `state`, `task-completed`, or `task-failed`",
+                "missing command; expected `ls`, `cat`, `state`, `diff`, `cat-at`, `log`, `task-completed`, or `task-failed`",
                 json,
             )
         })?;
@@ -462,6 +652,143 @@ impl Cli {
                 }
                 Ok(Self {
                     command: Command::State { json_output: json },
+                })
+            }
+            "diff" => {
+                let mut positionals: Vec<String> = Vec::new();
+                let mut to: Option<String> = None;
+                let mut path: Option<String> = None;
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--json" => json = true,
+                        "--to" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage("diff requires a value after --to", json)
+                            })?;
+                            if value.is_empty() {
+                                return Err(AppError::usage(
+                                    "diff requires a non-empty --to value",
+                                    json,
+                                ));
+                            }
+                            if to.replace(value).is_some() {
+                                return Err(AppError::usage("diff accepts --to once", json));
+                            }
+                        }
+                        "--path" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage("diff requires a value after --path", json)
+                            })?;
+                            if value.is_empty() {
+                                return Err(AppError::usage(
+                                    "diff requires a non-empty --path value",
+                                    json,
+                                ));
+                            }
+                            if path.replace(value).is_some() {
+                                return Err(AppError::usage("diff accepts --path once", json));
+                            }
+                        }
+                        other if other.starts_with('-') => {
+                            return Err(AppError::usage(format!("unknown option `{other}`"), json));
+                        }
+                        other => positionals.push(other.to_string()),
+                    }
+                }
+                if positionals.is_empty() {
+                    return Err(AppError::usage("diff requires a from commit", json));
+                }
+                if positionals.len() > 3 {
+                    return Err(AppError::usage(
+                        "diff accepts at most: <from> [to] [path]",
+                        json,
+                    ));
+                }
+                let from = positionals.remove(0);
+                if let Some(positional_to) = positionals.first()
+                    && to.replace(positional_to.clone()).is_some()
+                {
+                    return Err(AppError::usage(
+                        "diff accepts either positional to or --to, not both",
+                        json,
+                    ));
+                }
+                if positionals.len() == 2 && path.replace(positionals[1].clone()).is_some() {
+                    return Err(AppError::usage(
+                        "diff accepts either positional path or --path, not both",
+                        json,
+                    ));
+                }
+                Ok(Self {
+                    command: Command::Diff {
+                        from,
+                        to,
+                        path,
+                        json_output: json,
+                    },
+                })
+            }
+            "cat-at" => {
+                let mut positionals: Vec<String> = Vec::new();
+                for arg in iter {
+                    if arg == "--json" {
+                        json = true;
+                    } else if arg.starts_with('-') {
+                        return Err(AppError::usage(format!("unknown option `{arg}`"), json));
+                    } else {
+                        positionals.push(arg);
+                    }
+                }
+                if positionals.len() != 2 {
+                    return Err(AppError::usage("cat-at requires <commit> <path>", json));
+                }
+                Ok(Self {
+                    command: Command::CatAt {
+                        commit: positionals.remove(0),
+                        path: positionals.remove(0),
+                        json_errors: json,
+                    },
+                })
+            }
+            "log" => {
+                let mut path: Option<String> = None;
+                let mut limit: Option<u64> = None;
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--json" => json = true,
+                        "--limit" => {
+                            let value = iter.next().ok_or_else(|| {
+                                AppError::usage("log requires a value after --limit", json)
+                            })?;
+                            let parsed = value.parse::<u64>().map_err(|_| {
+                                AppError::usage("log --limit must be a positive integer", json)
+                            })?;
+                            if parsed == 0 {
+                                return Err(AppError::usage(
+                                    "log --limit must be a positive integer",
+                                    json,
+                                ));
+                            }
+                            if limit.replace(parsed).is_some() {
+                                return Err(AppError::usage("log accepts --limit once", json));
+                            }
+                        }
+                        other if other.starts_with('-') => {
+                            return Err(AppError::usage(format!("unknown option `{other}`"), json));
+                        }
+                        other => {
+                            if path.replace(other.to_string()).is_some() {
+                                return Err(AppError::usage("log accepts at most one path", json));
+                            }
+                        }
+                    }
+                }
+                Ok(Self {
+                    command: Command::Log {
+                        path,
+                        limit,
+                        json_output: json,
+                    },
                 })
             }
             "task-completed" => {
@@ -621,6 +948,9 @@ impl Cli {
             Command::Ls { json_output, .. } => json_output,
             Command::Cat { json_errors, .. } => json_errors,
             Command::State { json_output } => json_output,
+            Command::Diff { json_output, .. } => json_output,
+            Command::CatAt { json_errors, .. } => json_errors,
+            Command::Log { json_output, .. } => json_output,
             Command::TaskCompleted { json_errors, .. } => json_errors,
             Command::TaskFailed { json_errors, .. } => json_errors,
         }
@@ -638,6 +968,22 @@ enum Command {
         json_errors: bool,
     },
     State {
+        json_output: bool,
+    },
+    Diff {
+        from: String,
+        to: Option<String>,
+        path: Option<String>,
+        json_output: bool,
+    },
+    CatAt {
+        commit: String,
+        path: String,
+        json_errors: bool,
+    },
+    Log {
+        path: Option<String>,
+        limit: Option<u64>,
         json_output: bool,
     },
     TaskCompleted {
@@ -684,7 +1030,7 @@ impl AppError {
             json,
             json!({
                 "kind": "usage",
-                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text>",
+                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige diff <from> [to] [path] | neige cat-at <commit> <path> | neige log [path] [--limit N] | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text>",
             }),
         )
     }
@@ -727,6 +1073,9 @@ mod tests {
             }
             Command::Cat { .. } => panic!("expected ls"),
             Command::State { .. } => panic!("expected ls"),
+            Command::Diff { .. } | Command::CatAt { .. } | Command::Log { .. } => {
+                panic!("expected ls")
+            }
             Command::TaskCompleted { .. } | Command::TaskFailed { .. } => panic!("expected ls"),
         }
     }
@@ -738,6 +1087,9 @@ mod tests {
             Command::State { json_output } => assert!(!json_output),
             Command::Ls { .. }
             | Command::Cat { .. }
+            | Command::Diff { .. }
+            | Command::CatAt { .. }
+            | Command::Log { .. }
             | Command::TaskCompleted { .. }
             | Command::TaskFailed { .. } => panic!("expected state"),
         }
@@ -755,6 +1107,87 @@ mod tests {
         let err = Cli::parse(["--token", "secret", "ls"].into_iter().map(String::from))
             .expect_err("token flag must not parse");
         assert!(err.message.contains("--token"), "err = {err:?}");
+    }
+
+    #[test]
+    fn diff_parses_from_to_and_path() {
+        let cli = Cli::parse(
+            ["--json", "diff", "abc123", "def456", "report.md"]
+                .into_iter()
+                .map(String::from),
+        )
+        .expect("parse");
+        match cli.command {
+            Command::Diff {
+                from,
+                to,
+                path,
+                json_output,
+            } => {
+                assert_eq!(from, "abc123");
+                assert_eq!(to.as_deref(), Some("def456"));
+                assert_eq!(path.as_deref(), Some("report.md"));
+                assert!(json_output);
+            }
+            _ => panic!("expected diff"),
+        }
+    }
+
+    #[test]
+    fn diff_parses_path_without_to() {
+        let cli = Cli::parse(
+            ["diff", "abc123", "--path", "report.md"]
+                .into_iter()
+                .map(String::from),
+        )
+        .expect("parse");
+        match cli.command {
+            Command::Diff { from, to, path, .. } => {
+                assert_eq!(from, "abc123");
+                assert!(to.is_none());
+                assert_eq!(path.as_deref(), Some("report.md"));
+            }
+            _ => panic!("expected diff"),
+        }
+    }
+
+    #[test]
+    fn cat_at_parses_commit_and_path() {
+        let cli = Cli::parse(
+            ["cat-at", "abc123", "report.md"]
+                .into_iter()
+                .map(String::from),
+        )
+        .expect("parse");
+        match cli.command {
+            Command::CatAt { commit, path, .. } => {
+                assert_eq!(commit, "abc123");
+                assert_eq!(path, "report.md");
+            }
+            _ => panic!("expected cat-at"),
+        }
+    }
+
+    #[test]
+    fn log_parses_path_and_limit() {
+        let cli = Cli::parse(
+            ["log", "report.md", "--limit", "7"]
+                .into_iter()
+                .map(String::from),
+        )
+        .expect("parse");
+        match cli.command {
+            Command::Log {
+                path,
+                limit,
+                json_output,
+            } => {
+                assert_eq!(path.as_deref(), Some("report.md"));
+                assert_eq!(limit, Some(7));
+                assert!(!json_output);
+            }
+            _ => panic!("expected log"),
+        }
     }
 
     #[test]
@@ -786,7 +1219,12 @@ mod tests {
                 assert_eq!(artifacts, vec!["out.log"]);
                 assert!(json_errors);
             }
-            Command::Ls { .. } | Command::Cat { .. } | Command::State { .. } => {
+            Command::Ls { .. }
+            | Command::Cat { .. }
+            | Command::State { .. }
+            | Command::Diff { .. }
+            | Command::CatAt { .. }
+            | Command::Log { .. } => {
                 panic!("expected task-completed")
             }
             Command::TaskFailed { .. } => panic!("expected task-completed"),
@@ -819,7 +1257,12 @@ mod tests {
                 assert!(artifacts.is_empty());
                 assert!(!json_errors);
             }
-            Command::Ls { .. } | Command::Cat { .. } | Command::State { .. } => {
+            Command::Ls { .. }
+            | Command::Cat { .. }
+            | Command::State { .. }
+            | Command::Diff { .. }
+            | Command::CatAt { .. }
+            | Command::Log { .. } => {
                 panic!("expected task-completed")
             }
             Command::TaskFailed { .. } => panic!("expected task-completed"),

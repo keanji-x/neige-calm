@@ -281,6 +281,142 @@ async fn state_json_outputs_compact_wave_state_json() {
 }
 
 #[tokio::test]
+async fn diff_passthrough_renders_patch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+    let child = spawn_neige(&socket_path, &["diff", "abc123", "def456", "report.md"]).await;
+
+    let (mut reader, mut wr) = accept_initialized(listener).await;
+    let call = read_frame(&mut reader).await;
+    assert_eq!(call["params"]["name"], json!("calm.wave.diff"));
+    assert_eq!(
+        call["params"]["arguments"],
+        json!({ "from": "abc123", "to": "def456", "path": "report.md" })
+    );
+    write_frame(
+        &mut wr,
+        tool_result(
+            2,
+            json!({
+                "from": "abc123",
+                "to": "def456",
+                "path": "report.md",
+                "files": [{
+                    "path": "report.md",
+                    "status": "modified",
+                    "patch": "--- a/report.md\n+++ b/report.md\n@@ -1 +1 @@\n-old\n+new\n",
+                    "patch_truncated": false
+                }]
+            }),
+        ),
+    )
+    .await;
+
+    let out = timeout(TEST_BUDGET, child.wait_with_output())
+        .await
+        .expect("child exited")
+        .expect("wait ok");
+    assert!(
+        out.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("report.md edited"), "stdout = {stdout:?}");
+    assert!(stdout.contains("@@ -1 +1 @@"), "stdout = {stdout:?}");
+    assert!(stdout.contains("+new"), "stdout = {stdout:?}");
+}
+
+#[tokio::test]
+async fn cat_at_passthrough_writes_historical_content() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+    let child = spawn_neige(&socket_path, &["cat-at", "abc123", "report.md"]).await;
+
+    let (mut reader, mut wr) = accept_initialized(listener).await;
+    let call = read_frame(&mut reader).await;
+    assert_eq!(call["params"]["name"], json!("calm.wave.cat_at"));
+    assert_eq!(
+        call["params"]["arguments"],
+        json!({ "commit": "abc123", "path": "report.md" })
+    );
+    write_frame(
+        &mut wr,
+        tool_result(
+            2,
+            json!({
+                "commit": "abc123",
+                "path": "report.md",
+                "content": "# Historical\n",
+                "content_type": "text/markdown"
+            }),
+        ),
+    )
+    .await;
+
+    let out = timeout(TEST_BUDGET, child.wait_with_output())
+        .await
+        .expect("child exited")
+        .expect("wait ok");
+    assert!(
+        out.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "# Historical\n");
+}
+
+#[tokio::test]
+async fn log_passthrough_renders_commit_lines() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+    let child = spawn_neige(&socket_path, &["log", "report.md", "--limit", "3"]).await;
+
+    let (mut reader, mut wr) = accept_initialized(listener).await;
+    let call = read_frame(&mut reader).await;
+    assert_eq!(call["params"]["name"], json!("calm.wave.log"));
+    assert_eq!(
+        call["params"]["arguments"],
+        json!({ "path": "report.md", "limit": 3 })
+    );
+    write_frame(
+        &mut wr,
+        tool_result(
+            2,
+            json!({
+                "commits": [{
+                    "hash": "abcdef123456",
+                    "parent_hash": "111111",
+                    "lifecycle": "working",
+                    "event_id": 42,
+                    "created_at": 123,
+                    "message": "wave.report_edited",
+                    "changed_paths": ["report.md"]
+                }]
+            }),
+        ),
+    )
+    .await;
+
+    let out = timeout(TEST_BUDGET, child.wait_with_output())
+        .await
+        .expect("child exited")
+        .expect("wait ok");
+    assert!(
+        out.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("abcdef12"), "stdout = {stdout:?}");
+    assert!(stdout.contains("event=42"), "stdout = {stdout:?}");
+    assert!(stdout.contains("wave.report_edited"), "stdout = {stdout:?}");
+}
+
+#[tokio::test]
 async fn missing_token_env_exits_nonzero() {
     let out = timeout(
         TEST_BUDGET,

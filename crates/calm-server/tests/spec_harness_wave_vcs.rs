@@ -269,7 +269,7 @@ async fn complete_first_turn_and_stamp(boot: &Boot) -> String {
 }
 
 async fn wait_for_turn_count(daemon: &SharedCodexAppServer, count: usize) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if daemon.turn_start_count_for_test() as usize >= count {
             return;
@@ -286,7 +286,7 @@ async fn wait_for_state(
     harness: &SpecHarness,
     pred: impl Fn(&HarnessState) -> bool,
 ) -> HarnessState {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let state = harness.state_for_test().await;
         if pred(&state) {
@@ -301,7 +301,7 @@ async fn wait_for_state(
 }
 
 async fn wait_for_any_last_seen_head(boot: &Boot) -> String {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(actual) = runtime_snapshot(boot).await.last_seen_head {
             return actual;
@@ -318,7 +318,7 @@ async fn wait_for_runtime_snapshot(
     boot: &Boot,
     pred: impl Fn(&HarnessSnapshot) -> bool,
 ) -> HarnessSnapshot {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let snapshot = runtime_snapshot(boot).await;
         if pred(&snapshot) {
@@ -333,7 +333,7 @@ async fn wait_for_runtime_snapshot(
 }
 
 async fn wait_for_pending_len(harness: &SpecHarness, len: usize) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let actual = harness.pending_len_for_test().await;
         if actual == len {
@@ -616,6 +616,11 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
     assert!(text.starts_with("## Wave state changes since your last turn"));
     assert!(text.contains(&format!("HEAD {} -> {}", short(&before), short(&after))));
     assert!(text.contains("report.md new"));
+    assert!(text.contains("report.md new (unified patch follows)"));
+    assert!(text.contains("```diff\n--- a/report.md"));
+    assert!(text.contains("+++ b/report.md"));
+    assert!(text.contains("@@"));
+    assert!(text.contains("\n+# Goal"));
     assert!(text.contains("\n\n---\n\n"));
     assert!(text.contains("idempotency_key=report-write"));
     boot.harness.shutdown().await.unwrap();

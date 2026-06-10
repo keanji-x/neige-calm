@@ -15,13 +15,17 @@ use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
-use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
+use calm_server::mcp_server::tools::wave_history::{
+    TOOL_WAVE_CAT_AT, TOOL_WAVE_DIFF, TOOL_WAVE_LOG,
+};
+use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_READ, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::wave_report::WaveReportPayload;
+use calm_server::wave_vcs;
 use serde_json::{Value, json};
 
 struct Boot {
@@ -151,6 +155,7 @@ async fn boot() -> Boot {
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
+        wave_vcs_pool: Some(sqlx_repo.pool().clone()),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
@@ -1902,6 +1907,84 @@ async fn report_md_matches_report_read_body() {
     .expect("report.md cat works");
     assert_eq!(file["content_type"], json!("text/markdown"));
     assert_eq!(file["content"].as_str(), Some(report_body));
+}
+
+#[tokio::test]
+async fn hidden_wave_history_tools_are_callable_and_patch_report() {
+    let boot = boot().await;
+    wave_vcs::backfill_existing_waves(boot.sqlx_repo.pool())
+        .await
+        .expect("backfill VCS baseline");
+    let before = wave_vcs::head(boot.sqlx_repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "# Report\n\n- visible change\n",
+            "summary": "changed",
+            "message": "write report for VCS diff"
+        }),
+    )
+    .await
+    .expect("report write works");
+    let after = wave_vcs::head(boot.sqlx_repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(before, after);
+
+    let diff = call_tool(
+        &boot,
+        TOOL_WAVE_DIFF,
+        spec_identity(&boot),
+        json!({ "from": before.clone(), "to": after.clone(), "path": "report.md" }),
+    )
+    .await
+    .expect("hidden diff is callable");
+    let files = diff["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 1, "diff = {diff:#?}");
+    assert_eq!(files[0]["path"], json!("report.md"));
+    assert_eq!(files[0]["status"], json!("modified"));
+    let patch = files[0]["patch"].as_str().expect("text patch");
+    assert!(patch.contains("--- a/report.md"), "patch = {patch}");
+    assert!(patch.contains("+++ b/report.md"), "patch = {patch}");
+    assert!(patch.contains("@@"), "patch = {patch}");
+    assert!(patch.contains("+# Report"), "patch = {patch}");
+
+    let cat = call_tool(
+        &boot,
+        TOOL_WAVE_CAT_AT,
+        spec_identity(&boot),
+        json!({ "commit": after.clone(), "path": "report.md" }),
+    )
+    .await
+    .expect("hidden cat_at is callable");
+    assert_eq!(cat["content_type"], json!("text/markdown"));
+    assert_eq!(cat["content"], json!("# Report\n\n- visible change\n"));
+
+    let log = call_tool(
+        &boot,
+        TOOL_WAVE_LOG,
+        spec_identity(&boot),
+        json!({ "path": "report.md", "limit": 5 }),
+    )
+    .await
+    .expect("hidden log is callable");
+    assert_eq!(log["truncated"], json!(false));
+    let commits = log["commits"].as_array().expect("commits array");
+    assert!(
+        commits.iter().any(|commit| commit["changed_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path == "report.md")),
+        "log should include report.md changes: {log:#?}"
+    );
 }
 
 #[tokio::test]
