@@ -19,9 +19,9 @@ const ENV_SOCKET: &str = "NEIGE_MCP_SOCKET";
 const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
 const TOOL_WAVE_LS: &str = "calm.wave.ls";
 const TOOL_WAVE_CAT: &str = "calm.wave.cat";
-const TOOL_GET_WAVE_STATE: &str = "calm.get_wave_state";
-const TOOL_TASK_COMPLETED: &str = "calm.task_completed";
-const TOOL_TASK_FAILED: &str = "calm.task_failed";
+const TOOL_WAVE_STATE: &str = "calm.wave.state";
+const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
+const TOOL_TASK_FAIL: &str = "calm.task.fail";
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 #[tokio::main(flavor = "current_thread")]
@@ -122,14 +122,14 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
     let (name, arguments) = match &cli.command {
         Command::Ls { path, .. } => (TOOL_WAVE_LS, json!({ "path": path })),
         Command::Cat { path, .. } => (TOOL_WAVE_CAT, json!({ "path": path })),
-        Command::State { .. } => (TOOL_GET_WAVE_STATE, json!({})),
+        Command::State { .. } => (TOOL_WAVE_STATE, json!({})),
         Command::TaskCompleted {
             idempotency_key,
             result,
             artifacts,
             ..
         } => (
-            TOOL_TASK_COMPLETED,
+            TOOL_TASK_COMPLETE,
             json!({
                 "idempotency_key": idempotency_key,
                 "result": result.clone().unwrap_or(Value::Null),
@@ -141,7 +141,7 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
             reason,
             ..
         } => (
-            TOOL_TASK_FAILED,
+            TOOL_TASK_FAIL,
             json!({
                 "idempotency_key": idempotency_key,
                 "reason": reason,
@@ -361,10 +361,10 @@ fn render_cat(value: &Value, json_error: bool) -> Result<(), AppError> {
 fn render_state(value: &Value, json_output: bool, json_error: bool) -> Result<(), AppError> {
     if !value.is_object() {
         return Err(AppError::new(
-            "calm.get_wave_state returned non-object structuredContent",
+            "calm.wave.state returned non-object structuredContent",
             4,
             json_error,
-            json!({ "kind": "shape", "tool": TOOL_GET_WAVE_STATE, "value": value }),
+            json!({ "kind": "shape", "tool": TOOL_WAVE_STATE, "value": value }),
         ));
     }
     let serialized = if json_output {

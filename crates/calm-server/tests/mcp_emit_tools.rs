@@ -1,6 +1,6 @@
 //! PR7a.1 (#136 followup) — integration tests for the three PR7a emit
-//! tools (`calm.dispatch_request`, `calm.task_completed`,
-//! `calm.task_failed`) over the real MCP server transport.
+//! tools (`calm.task.dispatch`, `calm.task.complete`,
+//! `calm.task.fail`) over the real MCP server transport.
 //!
 //! Each test:
 //!   * Boots an `McpServer` against an in-memory `SqlxRepo`.
@@ -46,7 +46,7 @@ async fn dispatch_request_codex_emits_codex_worker_requested() {
         &mut wr,
         tools_call_frame(
             10,
-            "calm.dispatch_request",
+            "calm.task.dispatch",
             &b.thread_id,
             json!({
                 "kind": "codex",
@@ -95,7 +95,7 @@ async fn dispatch_request_rejects_worker_identity() {
         &mut wr,
         tools_call_frame(
             50,
-            "calm.dispatch_request",
+            "calm.task.dispatch",
             &b.thread_id,
             json!({"kind": "codex", "idempotency_key": "dr-w-1", "goal": "x"}),
         ),
@@ -126,7 +126,7 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
         &mut wr,
         tools_call_frame(
             20,
-            "calm.task_completed",
+            "calm.task.complete",
             &b.thread_id,
             json!({"idempotency_key": "tc-1", "result": {"ok": true}}),
         ),
@@ -148,6 +148,40 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
 }
 
 #[tokio::test]
+async fn legacy_alias_task_completed_still_dispatches_via_warn() {
+    let b = boot_with_role(CardRole::Worker).await;
+    let mut rx = b.events.subscribe_filtered();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            21,
+            "calm.task_completed",
+            &b.thread_id,
+            json!({"idempotency_key": "tc-legacy", "result": {"ok": true}}),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let env = wait_for_kind(&mut rx, "task.completed").await;
+    match &env.actor {
+        ActorId::AiCodex(cid) => assert_eq!(cid.as_str(), b.card_id.as_str()),
+        other => panic!("expected AiCodex actor; got {other:?}"),
+    }
+    match &env.event {
+        Event::TaskCompleted {
+            idempotency_key, ..
+        } => assert_eq!(idempotency_key, "tc-legacy"),
+        other => panic!("expected TaskCompleted; got {other:?}"),
+    }
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
 async fn task_failed_emits_task_failed_with_worker_actor() {
     let b = boot_with_role(CardRole::Worker).await;
     let mut rx = b.events.subscribe_filtered();
@@ -158,7 +192,7 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
         &mut wr,
         tools_call_frame(
             30,
-            "calm.task_failed",
+            "calm.task.fail",
             &b.thread_id,
             json!({"idempotency_key": "tf-1", "reason": "stub failure"}),
         ),
@@ -198,7 +232,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
         &mut wr,
         tools_call_frame(
             40,
-            "calm.task_completed",
+            "calm.task.complete",
             &b.thread_id,
             json!({
                 "idempotency_key": "tc-smuggle",
@@ -246,7 +280,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
 // renderer entry is registered, AND worker compensation actively DELETEs
 // the pre-committed card row when the spawn errors out.
 //
-// Under the new semantics, driving `calm.dispatch_request[codex]`
+// Under the new semantics, driving `calm.task.dispatch[codex]`
 // against a missing proc-supervisor socket must:
 //   (a) return success from the MCP tool (the spec just enqueued a
 //       `codex.worker_requested` event — the failure is downstream),
@@ -303,7 +337,7 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
         &mut wr,
         tools_call_frame(
             50,
-            "calm.dispatch_request",
+            "calm.task.dispatch",
             &b.thread_id,
             json!({
                 "kind": "codex",

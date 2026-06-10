@@ -44,7 +44,7 @@ Spec card shared path: `operation/spec_harness_start_adapter.rs:359` sends per-t
 
 Worker shared path: `dispatcher.rs:1298` prepares worker spawn env; `:1307` folds worker `NEIGE_MCP_TOKEN` and `NEIGE_MCP_SOCKET`; `:1335` starts the worker via shared daemon; `:2124` sets `CODEX_HOME` to `shared_codex_appserver.status_snapshot().codex_home`.
 
-Who can call: spec and worker cards can get MCP identity; plain cards do not. `spec_card.rs:338` says token/socket are threaded only for Spec/Worker, and `db/sqlite.rs:1380` mints MCP tokens only for `CardRole::Spec | CardRole::Worker`. Role gates still restrict tools: e.g. `calm.get_wave_state` allows Spec/Worker at `wave_state.rs:127`, while `calm.update_wave_state` is described as spec-only at `wave_state.rs:168` and enforced at `wave_state.rs:208`.
+Who can call: spec and worker cards can get MCP identity; plain cards do not. `spec_card.rs:338` says token/socket are threaded only for Spec/Worker, and `db/sqlite.rs:1380` mints MCP tokens only for `CardRole::Spec | CardRole::Worker`. Role gates still restrict tools: e.g. `calm.wave.state` allows Spec/Worker at `wave_state.rs:127`, while `calm.update_wave_state` is described as spec-only at `wave_state.rs:168` and enforced at `wave_state.rs:208`.
 
 So the answer to "MCP only spec card?" is no: both spec and worker Codex instances can call MCP, but not the same write tools.
 

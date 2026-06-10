@@ -545,7 +545,7 @@ async fn tools_call_malformed_meta_rejects_even_when_legacy_token_present() {
             "method": "tools/call",
             "_meta": "not-an-object",
             "params": {
-                "name": "calm.get_wave_state",
+                "name": "calm.wave.state",
                 "arguments": {}
             }
         }),
@@ -575,7 +575,7 @@ async fn tools_call_malformed_params_meta_also_rejects() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "calm.get_wave_state",
+                "name": "calm.wave.state",
                 "arguments": {},
                 "_meta": ["array-not-object"]
             }
@@ -689,14 +689,7 @@ async fn worker_tools_call_with_unknown_thread_id_falls_back_to_worker_legacy_id
 #[tokio::test]
 async fn default_wave_state_tool_without_thread_id_uses_legacy_spec_identity() {
     let boot = boot_with_registry(build_default_registry()).await;
-    let resp = call_with_token(
-        &boot,
-        &boot.raw_token,
-        "calm.get_wave_state",
-        None,
-        json!({}),
-    )
-    .await;
+    let resp = call_with_token(&boot, &boot.raw_token, "calm.wave.state", None, json!({})).await;
     assert!(
         resp.get("error").is_none(),
         "shell-neige style legacy token fallback must succeed: {resp:#?}"
@@ -711,7 +704,7 @@ async fn tools_call_without_thread_id_and_without_legacy_token_rejects() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(2, "calm.get_wave_state", None, json!({})),
+        tools_call_frame(2, "calm.wave.state", None, json!({})),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
@@ -730,7 +723,7 @@ async fn legacy_identity_does_not_bypass_role_gate() {
     let resp = call_with_token(
         &boot,
         &report.legacy_token,
-        "calm.get_wave_state",
+        "calm.wave.state",
         None,
         json!({}),
     )
@@ -759,7 +752,7 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
 
     let cases = [
         (
-            "calm.dispatch_request",
+            "calm.task.dispatch",
             json!({
                 "kind": "codex",
                 "idempotency_key": "report-dispatch",
@@ -767,19 +760,19 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
             }),
         ),
         (
-            "calm.task_completed",
+            "calm.task.complete",
             json!({ "idempotency_key": "report-completed" }),
         ),
         (
-            "calm.task_failed",
+            "calm.task.fail",
             json!({
                 "idempotency_key": "report-failed",
                 "reason": "should not run"
             }),
         ),
-        ("calm.get_wave_state", json!({})),
+        ("calm.wave.state", json!({})),
         (
-            "calm.update_task_meta",
+            "calm.task.verdict",
             json!({
                 "idempotency_key": "report-meta",
                 "status": "accepted"

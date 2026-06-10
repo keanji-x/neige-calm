@@ -216,8 +216,12 @@ async fn shim_round_trip_initialize_and_tools_call_completes() {
     let call = json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {
-            "name": "calm.update_wave_state",
-            "arguments": { "title": "renamed-by-e2e" },
+            "name": "calm.task.verdict",
+            "arguments": {
+                "idempotency_key": "shim-round-trip",
+                "status": "accepted",
+                "reason": "round-trip probe"
+            },
             "_meta": { "threadId": boot.thread_id }
         }
     });
@@ -232,7 +236,7 @@ async fn shim_round_trip_initialize_and_tools_call_completes() {
     );
     assert_eq!(resp2["result"]["isError"], json!(false));
     let structured = &resp2["result"]["structuredContent"];
-    assert_eq!(structured["wave"]["title"], json!("renamed-by-e2e"));
+    assert_eq!(structured["ok"], json!(true));
 
     drop(stdin);
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;

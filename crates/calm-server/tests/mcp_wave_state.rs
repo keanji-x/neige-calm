@@ -7,7 +7,7 @@
 //!
 //! Coverage:
 //!
-//!   1. `get_wave_state` (spec card) returns the wave row + the cards
+//!   1. `calm.wave.state` (spec card) returns the wave row + the cards
 //!      list with `role` populated.
 //!   2. `update_wave_state` from a spec card patches the wave row,
 //!      stamps `updated_at`, and emits exactly one `wave.updated`
@@ -15,7 +15,7 @@
 //!   3. `update_wave_state` from a worker card is refused at the MCP
 //!      entry with `-32602` (soft role gate) **before** any DB write
 //!      runs.
-//!   4. `update_task_meta` with `status=accepted` emits
+//!   4. `calm.task.verdict` with `status=accepted` emits
 //!      `task.completed` carrying the spec's `{status,reason}` verdict
 //!      in `result`; `status=rejected` emits `task.failed` with the
 //!      reason verbatim.
@@ -35,7 +35,7 @@ use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_state::{
-    TOOL_GET_WAVE_STATE, TOOL_UPDATE_TASK_META, TOOL_UPDATE_WAVE_STATE,
+    TOOL_TASK_VERDICT, TOOL_UPDATE_WAVE_STATE, TOOL_WAVE_STATE,
 };
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave};
@@ -173,13 +173,13 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
 }
 
 // ---------------------------------------------------------------------------
-// get_wave_state
+// calm.wave.state
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn get_wave_state_returns_wave_and_cards_for_spec() {
     let boot = boot().await;
-    let out = call_tool(&boot, TOOL_GET_WAVE_STATE, spec_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_WAVE_STATE, spec_identity(&boot), json!({}))
         .await
         .expect("spec can read wave state");
 
@@ -227,14 +227,9 @@ async fn get_wave_state_returns_wave_and_cards_for_spec() {
 async fn get_wave_state_callable_by_worker() {
     // Confirms the spec-only soft role gate doesn't fire on read.
     let boot = boot().await;
-    let out = call_tool(
-        &boot,
-        TOOL_GET_WAVE_STATE,
-        worker_identity(&boot),
-        json!({}),
-    )
-    .await
-    .expect("worker can also read wave state — no role gate on read");
+    let out = call_tool(&boot, TOOL_WAVE_STATE, worker_identity(&boot), json!({}))
+        .await
+        .expect("worker can also read wave state — no role gate on read");
     assert_eq!(
         out.get("wave")
             .and_then(|w| w.get("id"))
@@ -387,17 +382,17 @@ async fn update_wave_state_archive_and_unarchive() {
 }
 
 // ---------------------------------------------------------------------------
-// update_task_meta
+// calm.task.verdict
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn update_task_meta_accepted_emits_task_completed() {
+async fn task_verdict_accepted_emits_task_completed() {
     let boot = boot().await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
         &boot,
-        TOOL_UPDATE_TASK_META,
+        TOOL_TASK_VERDICT,
         spec_identity(&boot),
         json!({
             "idempotency_key": "job-xyz",
@@ -434,13 +429,52 @@ async fn update_task_meta_accepted_emits_task_completed() {
 }
 
 #[tokio::test]
-async fn update_task_meta_rejected_emits_task_failed() {
+async fn legacy_alias_update_task_meta_still_dispatches_via_warn() {
     let boot = boot().await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
         &boot,
-        TOOL_UPDATE_TASK_META,
+        "calm.update_task_meta",
+        spec_identity(&boot),
+        json!({
+            "idempotency_key": "legacy-job",
+            "status": "accepted",
+            "reason": "legacy alias forwards"
+        }),
+    )
+    .await
+    .expect("legacy alias forwards to task verdict");
+    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
+
+    let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers")
+        .expect("bus open");
+    match envelope.event {
+        Event::TaskCompleted {
+            idempotency_key,
+            result,
+            ..
+        } => {
+            assert_eq!(idempotency_key, "legacy-job");
+            assert_eq!(
+                result.get("status").and_then(Value::as_str),
+                Some("accepted")
+            );
+        }
+        other => panic!("expected TaskCompleted, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn task_verdict_rejected_emits_task_failed() {
+    let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    let out = call_tool(
+        &boot,
+        TOOL_TASK_VERDICT,
         spec_identity(&boot),
         json!({
             "idempotency_key": "job-xyz",
@@ -469,11 +503,11 @@ async fn update_task_meta_rejected_emits_task_failed() {
 }
 
 #[tokio::test]
-async fn update_task_meta_unknown_status_rejected() {
+async fn task_verdict_unknown_status_rejected() {
     let boot = boot().await;
     let err = call_tool(
         &boot,
-        TOOL_UPDATE_TASK_META,
+        TOOL_TASK_VERDICT,
         spec_identity(&boot),
         json!({
             "idempotency_key": "k",
@@ -487,11 +521,11 @@ async fn update_task_meta_unknown_status_rejected() {
 }
 
 #[tokio::test]
-async fn update_task_meta_worker_refused_at_mcp_entry() {
+async fn task_verdict_worker_refused_at_mcp_entry() {
     let boot = boot().await;
     let err = call_tool(
         &boot,
-        TOOL_UPDATE_TASK_META,
+        TOOL_TASK_VERDICT,
         worker_identity(&boot),
         json!({
             "idempotency_key": "k",

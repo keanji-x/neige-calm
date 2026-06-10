@@ -16,7 +16,7 @@ use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
-use calm_server::mcp_server::tools::wave_state::TOOL_UPDATE_TASK_META;
+use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
@@ -359,7 +359,7 @@ async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) -> i64 
 async fn accept_run(boot: &Boot, key: &str, reason: &str) {
     call_tool(
         boot,
-        TOOL_UPDATE_TASK_META,
+        TOOL_TASK_VERDICT,
         spec_identity(boot),
         json!({
             "idempotency_key": key,
@@ -374,7 +374,7 @@ async fn accept_run(boot: &Boot, key: &str, reason: &str) {
 async fn reject_run(boot: &Boot, key: &str, reason: &str) {
     call_tool(
         boot,
-        TOOL_UPDATE_TASK_META,
+        TOOL_TASK_VERDICT,
         spec_identity(boot),
         json!({
             "idempotency_key": key,

@@ -4,10 +4,9 @@
 //! ## What lives here
 //!
 //! [`ToolRegistry`] is a name -> handler map the transport consults on
-//! every `tools/call`. PR7a registers the three emit handlers
-//! (`calm.dispatch_request`, `calm.task_completed`, `calm.task_failed`);
-//! PR7b registers `calm.update_wave_state` / `calm.get_wave_state` /
-//! `calm.update_task_meta` and #229 PR B the three `calm.report.*` tools.
+//! every `tools/call`. Tool modules register their descriptors and handlers
+//! here so the transport can route calls by name and expose role-filtered
+//! discovery.
 //! Each handler is `Send + Sync + 'static` and receives:
 //!
 //!   * an [`AppContext`] — repo, event bus, role cache, and the codex
@@ -96,7 +95,7 @@ impl ToolCallIdentity {
 /// in-tx gate would otherwise produce after speculatively reading the
 /// wave row.
 ///
-/// Use at the top of every spec-only handler. `calm.get_wave_state` is
+/// Use at the top of every spec-only handler. `calm.wave.state` is
 /// callable by both Spec and Worker (a worker may need to peek wave
 /// metadata before reporting), so it uses [`require_role_any`] instead.
 pub fn require_role(identity: &ToolCallIdentity, required: CardRole) -> Result<(), RpcError> {
@@ -258,6 +257,42 @@ impl ToolRegistry {
     }
 }
 
+/// Register `old_name` as a hidden alias for an already-registered tool
+/// (`new_name`). On invocation, logs a `warn!` and delegates to the new
+/// handler. Hidden from every role's `tools/list` (`visible_to_roles: &[]`).
+///
+/// MUST be called AFTER the real handler is registered. The real descriptor
+/// stays untouched.
+pub fn register_deprecated_alias(
+    registry: &mut ToolRegistry,
+    old_name: &'static str,
+    new_name: &'static str,
+) {
+    let real = registry
+        .lookup(new_name)
+        .unwrap_or_else(|| panic!("register_deprecated_alias: {new_name} not registered yet"));
+    let new_for_log = new_name;
+    let old_for_log = old_name;
+    let handler: ToolHandler = Arc::new(move |ctx, identity, args| {
+        tracing::warn!(
+            target: "mcp_alias",
+            card_id = %identity.card_id,
+            old_name = old_for_log,
+            new_name = new_for_log,
+            "deprecated MCP tool name; please migrate"
+        );
+        real(ctx, identity, args)
+    });
+    let alias_descriptor = ToolDescriptor {
+        name: old_name.into(),
+        description: format!("[deprecated] Use `{new_name}` instead. Hidden from tools/list."),
+        input_schema: json!({ "type": "object", "additionalProperties": true }),
+        annotations: None,
+        visible_to_roles: &[],
+    };
+    registry.register(alias_descriptor, handler);
+}
+
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
@@ -267,6 +302,12 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::state::WriteContext;
+    use crate::wave_cove_cache::WaveCoveCache;
+
     fn identity_with_role(role: CardRole) -> ToolCallIdentity {
         ToolCallIdentity {
             card_id: "card-1".to_string(),
@@ -294,5 +335,99 @@ mod tests {
             err.message.contains("Worker"),
             "error should mention actual role: {err:?}"
         );
+    }
+
+    fn fake_descriptor(name: &str, visible_to_roles: &'static [CardRole]) -> ToolDescriptor {
+        ToolDescriptor {
+            name: name.to_string(),
+            description: "fake".to_string(),
+            input_schema: json!({ "type": "object" }),
+            annotations: None,
+            visible_to_roles,
+        }
+    }
+
+    fn fake_handler(who: &'static str) -> ToolHandler {
+        Arc::new(move |_ctx, _identity, _args| Box::pin(async move { Ok(json!({ "who": who })) }))
+    }
+
+    async fn fake_context() -> Arc<AppContext> {
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let route_repo: Arc<dyn RouteRepo> = repo;
+        Arc::new(AppContext {
+            repo: route_repo,
+            events: EventBus::new(),
+            write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            daemon_token_hash: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn deprecated_alias_forwards_to_real_handler() {
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            fake_descriptor("calm.foo.bar", &[CardRole::Spec]),
+            fake_handler("real"),
+        );
+        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
+
+        let handler = registry
+            .lookup("calm.foo_bar")
+            .expect("alias handler registered");
+        let out = handler(
+            fake_context().await,
+            identity_with_role(CardRole::Spec),
+            json!({ "anything": true }),
+        )
+        .await
+        .expect("alias forwards to real handler");
+
+        assert_eq!(out, json!({ "who": "real" }));
+    }
+
+    #[test]
+    fn deprecated_alias_is_hidden_from_tools_list() {
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            fake_descriptor("calm.foo.bar", &[CardRole::Spec]),
+            fake_handler("real"),
+        );
+        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
+
+        let names = registry
+            .descriptors_for_role(CardRole::Spec)
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"calm.foo.bar".to_string()));
+        assert!(!names.contains(&"calm.foo_bar".to_string()));
+    }
+
+    #[tokio::test]
+    async fn deprecated_alias_does_not_overwrite_real_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            fake_descriptor("calm.foo.bar", &[CardRole::Spec]),
+            fake_handler("real"),
+        );
+        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
+
+        let handler = registry
+            .lookup("calm.foo.bar")
+            .expect("real handler still registered");
+        let out = handler(
+            fake_context().await,
+            identity_with_role(CardRole::Spec),
+            json!({}),
+        )
+        .await
+        .expect("real handler still callable");
+
+        assert_eq!(out, json!({ "who": "real" }));
     }
 }

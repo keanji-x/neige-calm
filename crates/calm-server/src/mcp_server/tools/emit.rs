@@ -1,5 +1,4 @@
-//! PR7a (#136) emit tools — `calm.dispatch_request`,
-//! `calm.task_completed`, `calm.task_failed`.
+//! Emit tools for dispatching workers and recording worker outcomes.
 //!
 //! All three lower a JSON `arguments` object to a single eventized
 //! write. The kernel translates the per-call [`ToolCallIdentity`]
@@ -9,15 +8,15 @@
 //!
 //! ## Tool surface
 //!
-//! * `calm.dispatch_request` — Spec card asks the kernel dispatcher to
+//! * `calm.task.dispatch` — Spec card asks the kernel dispatcher to
 //!   spawn a worker (codex or terminal). Two variants distinguished by
 //!   `kind: "codex" | "terminal"`. Maps to
 //!   `Event::CodexWorkerRequested` / `Event::TerminalWorkerRequested`.
 //!
-//! * `calm.task_completed` — Worker reports success with an opaque
+//! * `calm.task.complete` — Worker reports success with an opaque
 //!   result + artifact list. Maps to `Event::TaskCompleted`.
 //!
-//! * `calm.task_failed` — Worker reports failure with a free-form
+//! * `calm.task.fail` — Worker reports failure with a free-form
 //!   reason. Maps to `Event::TaskFailed`.
 //!
 //! ## Scope construction
@@ -36,20 +35,23 @@ use crate::ids::CardId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role, role_gated_write_annotations,
+    register_deprecated_alias, require_role, role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_DISPATCH_REQUEST: &str = "calm.dispatch_request";
-pub const TOOL_TASK_COMPLETED: &str = "calm.task_completed";
-pub const TOOL_TASK_FAILED: &str = "calm.task_failed";
+pub const TOOL_TASK_DISPATCH: &str = "calm.task.dispatch";
+pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
+pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(dispatch_request_descriptor(), wrap(dispatch_request));
     registry.register(task_completed_descriptor(), wrap(task_completed));
     registry.register(task_failed_descriptor(), wrap(task_failed));
+    register_deprecated_alias(registry, "calm.dispatch_request", TOOL_TASK_DISPATCH);
+    register_deprecated_alias(registry, "calm.task_completed", TOOL_TASK_COMPLETE);
+    register_deprecated_alias(registry, "calm.task_failed", TOOL_TASK_FAIL);
 }
 
 /// Common wrapper that turns a typed async fn into the boxed-future
@@ -64,12 +66,12 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// calm.dispatch_request
+// calm.task.dispatch
 // ---------------------------------------------------------------------------
 
 fn dispatch_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_DISPATCH_REQUEST.into(),
+        name: TOOL_TASK_DISPATCH.into(),
         description: "Spec-only: request that the kernel dispatcher spawn a worker card. \
              `kind` selects codex vs terminal; `idempotency_key` must be \
              stable across retries so the dispatcher dedupes."
@@ -163,12 +165,12 @@ async fn dispatch_request(
 }
 
 // ---------------------------------------------------------------------------
-// calm.task_completed
+// calm.task.complete
 // ---------------------------------------------------------------------------
 
 fn task_completed_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TASK_COMPLETED.into(),
+        name: TOOL_TASK_COMPLETE.into(),
         description: "Report that a worker card has completed its task. \
              `idempotency_key` should echo the matching `*.worker_requested` \
              so the spec card can correlate."
@@ -220,12 +222,12 @@ async fn task_completed(
 }
 
 // ---------------------------------------------------------------------------
-// calm.task_failed
+// calm.task.fail
 // ---------------------------------------------------------------------------
 
 fn task_failed_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TASK_FAILED.into(),
+        name: TOOL_TASK_FAIL.into(),
         description: "Report that a worker card has failed its task. \
              `reason` is free-form and persisted verbatim on the event row."
             .into(),

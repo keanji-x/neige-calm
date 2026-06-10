@@ -57,7 +57,7 @@ You drive transitions by calling `calm.update_wave_state` with a \
 `lifecycle` argument naming the target state. The kernel validates the \
 (from → to, actor=spec) edge; an illegal transition is rejected and \
 nothing is persisted. Move the wave to `planning` as soon as you read \
-the goal, `dispatching` before your first `calm.dispatch_request`, \
+the goal, `dispatching` before your first `calm.task.dispatch`, \
 `working` once a worker is running, `reviewing` when results land, and \
 `done` only after acceptance.
 
@@ -79,19 +79,20 @@ Read wave state with the `neige` shell CLI (`neige state`, `neige ls`, \
 writes are transactional.
 
 1. Run `neige state` to read the wave's current shape (lifecycle, \
-   dispatched jobs, task results). This is your ground truth — do NOT keep \
+   wave/card metadata; results are in `runs/*` views, not in `neige state`). \
+   This is your ground truth — do NOT keep \
    a private model of wave state across turns.
 2. Decide what to do next and act:
    * Advance lifecycle via `calm.update_wave_state(lifecycle=...)` — \
      `planning` once you've read the goal, `dispatching` before your \
-     first `calm.dispatch_request`, `working` once a worker is running, \
+     first `calm.task.dispatch`, `working` once a worker is running, \
      `reviewing` when results land, `done` only after acceptance, \
      `blocked` when you need the user.
-   * Dispatch sub-jobs via `calm.dispatch_request`. Required args: \
+   * Dispatch sub-jobs via `calm.task.dispatch`. Required args: \
      `kind` (\"codex\" or \"terminal\"), `idempotency_key` (stable \
      across retries so a redelivered observation can't double-dispatch), \
      plus `goal` (codex) or `cmd` (terminal).
-   * Record verdicts via `calm.update_task_meta(status=...)` when worker \
+   * Record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate.
    * Keep the wave report current (see below).
 3. **END YOUR TURN.** Do NOT poll or loop waiting for the next event. \
@@ -181,7 +182,7 @@ Available `<path>` values for `neige cat` / `neige ls`:
   * `runs/<idempotency_key>.json` — structured projection. \
     `events.completed.payload.result` is the worker's actual output; \
     `events.failed` carries failures; `verdict` holds any \
-    `update_task_meta` accept/reject you recorded; `worker_card.payload` \
+    `task.verdict` accept/reject you recorded; `worker_card.payload` \
     has the dispatch context.
   * `runs/index.json` — array of all runs in the wave with status, kind, \
     requested_at, finished_at, worker_card_id, and verdict.
@@ -197,8 +198,8 @@ observation is just a notification; the result lives in this view, not \
 in `neige state`.
 
 The view is READ-ONLY. To act on what you read, call \
-`calm.update_task_meta(idempotency_key=K, status=\"accepted\" | \
-\"rejected\")` to record a verdict, and/or `calm.dispatch_request` to \
+`calm.task.verdict(idempotency_key=K, status=\"accepted\" | \
+\"rejected\")` to record a verdict, and/or `calm.task.dispatch` to \
 start follow-up work — the same tools as before.
 
 Wave is implicit — derived from your card identity. Do NOT pass a \
@@ -210,7 +211,7 @@ Do not mint new spec cards from within this session.
 
 /// Worker-agent system prompt. PR8 (#136) replaces the PR6 stub with
 /// the production prompt: workers are short-lived, fire-and-forget,
-/// driven by the spec card via `calm.dispatch_request`. They run one
+/// driven by the spec card via `calm.task.dispatch`. They run one
 /// job and exit.
 ///
 /// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
@@ -241,9 +242,9 @@ You were spawned to execute one job. Your contract:
    spec card as a pushed turn input, and the spec continues the wave \
    from there. You do not wait for or observe anything.
 
-You may NOT call `calm.update_wave_state` or `calm.update_task_meta` — \
+You may NOT call `calm.update_wave_state` or `calm.task.verdict` — \
 those are spec-only tools and the kernel's role gate will refuse you. \
-You also may NOT mint new workers via `calm.dispatch_request` — the \
+You also may NOT mint new workers via `calm.task.dispatch` — the \
 kernel's role gate (#583) refuses worker-actor dispatch emits. If the \
 job needs further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
@@ -355,17 +356,17 @@ mod tests {
         );
         // Reads go through the shell CLI; writes still go through MCP.
         assert!(
-            p.contains("Run `neige state`") && p.contains("calm.dispatch_request"),
+            p.contains("Run `neige state`") && p.contains("calm.task.dispatch"),
             "prompt must read state via neige and still dispatch via MCP"
         );
         assert!(
             p.contains("calm.update_wave_state")
-                && p.contains("calm.dispatch_request")
-                && p.contains("calm.update_task_meta"),
+                && p.contains("calm.task.dispatch")
+                && p.contains("calm.task.verdict"),
             "prompt must still document wave/task write tools"
         );
         assert!(
-            !p.contains("Call `calm.get_wave_state`"),
+            !p.contains("Call `calm.wave.state`"),
             "prompt must not instruct state reads via MCP"
         );
     }
