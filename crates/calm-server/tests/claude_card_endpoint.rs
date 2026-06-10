@@ -256,6 +256,50 @@ fn recording_spawn_hook(
     (count, hook)
 }
 
+fn renderer_entry_spawn_hook(
+    renderer: Arc<calm_server::terminal_renderer::TerminalRendererRegistry>,
+    saw_existing_entry: Arc<tokio::sync::Mutex<Vec<bool>>>,
+) -> (Arc<AtomicUsize>, TestSpawnHook) {
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_for_hook = count.clone();
+    let hook = Arc::new(
+        move |terminal_id: String,
+              program: String,
+              cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let renderer = renderer.clone();
+            let saw_existing_entry = saw_existing_entry.clone();
+            let count = count_for_hook.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                saw_existing_entry
+                    .lock()
+                    .await
+                    .push(renderer.get(&terminal_id).is_some());
+                renderer.insert_test_entry(RendererConfig {
+                    terminal_id: terminal_id.clone(),
+                    cols: 80,
+                    rows: 24,
+                    buffer_bytes: 1 << 20,
+                    terminal_fg: (216, 219, 226),
+                    terminal_bg: (15, 20, 24),
+                    program,
+                    args: Vec::new(),
+                    envs: Vec::new(),
+                    cwd,
+                    supervisor_sock: PathBuf::from("/tmp/missing-calm-supervisor.sock"),
+                });
+                Ok(SpawnHandle::Terminal {
+                    renderer_id: terminal_id.clone(),
+                    terminal_id,
+                })
+            })
+        },
+    );
+    (count, hook)
+}
+
 fn silent_spawn_hook() -> TestSpawnHook {
     Arc::new(
         move |terminal_id: String,
@@ -539,6 +583,51 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     assert_eq!(second_terminal, terminal_id);
     assert_eq!(first_session, session_id);
     assert_eq!(second_session, session_id);
+}
+
+#[tokio::test]
+async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
+    let _guard = ENV_LOCK.lock().await;
+    let saw_existing_entry = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let saw_existing_entry_for_factory = saw_existing_entry.clone();
+    let boot = boot_with_spawn_hook_factory(move |_, renderer| {
+        renderer_entry_spawn_hook(renderer, saw_existing_entry_for_factory)
+    })
+    .await;
+
+    let (create_status, created) =
+        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap();
+    let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
+    let stale_entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("initial renderer entry seeded by spawn hook");
+    boot.repo
+        .runtime_complete_for_card(card_id, RunStatus::Exited)
+        .await
+        .unwrap();
+
+    let (restart_status, restarted) = post_restart(boot.app.clone(), card_id).await;
+    assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
+    let observations = saw_existing_entry.lock().await.clone();
+    assert_eq!(
+        observations,
+        vec![false, false],
+        "restart spawn must not see the stale registry entry"
+    );
+    let current_entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("restart spawn seeded a fresh renderer entry");
+    assert!(
+        !Arc::ptr_eq(&stale_entry, &current_entry),
+        "restart must replace the stale renderer entry"
+    );
 }
 
 #[tokio::test]

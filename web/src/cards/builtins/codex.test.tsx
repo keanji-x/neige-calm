@@ -183,6 +183,33 @@ describe('Codex card controller behavior', () => {
     await waitFor(() =>
       expect(restartClaudeCard).toHaveBeenCalledWith('card_claude'),
     );
+    await waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not refresh XtermView when Claude restart fails', async () => {
+    mocks.getTerminalForCard.mockResolvedValue({
+      exit_code: 0,
+      signal_killed: false,
+    });
+    mocks.restartClaudeCard.mockRejectedValue(new Error('restart failed'));
+    const card: ClaudeCardData = {
+      type: 'claude',
+      id: 'card_claude',
+      terminalId: 'term_claude',
+    };
+
+    renderAgentCard(card, { deletable: false });
+
+    const restart = await screen.findByRole('button', { name: 'Restart' });
+    fireEvent.click(restart);
+
+    await waitFor(() =>
+      expect(restartClaudeCard).toHaveBeenCalledWith('card_claude'),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'restart failed',
+    );
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
   it('does not show Restart for exited Codex cards', async () => {

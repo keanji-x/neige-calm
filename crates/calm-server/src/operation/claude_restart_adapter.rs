@@ -145,6 +145,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .ok_or_else(|| CalmError::Forbidden("Claude card has no terminal".into()))?;
 
         if let Some(active) = runtime_get_active_for_card_tx(tx, &card_id).await? {
+            // Claude runtimes only reach Starting/Running here today;
+            // Idle/TurnPending are not part of the Claude state machine.
             if matches!(active.status, RunStatus::Starting | RunStatus::Running) {
                 return Err(CalmError::Conflict(
                     "kill or wait for child exit before restart".into(),
@@ -256,6 +258,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+        ctx.terminal_renderer.drop_entry(&terminal_id).await;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)

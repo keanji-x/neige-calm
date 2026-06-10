@@ -290,12 +290,13 @@ function CodexCardImpl({
     try {
       await restartClaudeCard(cardId);
       setExit(null);
+      xtermRefSlot.current?.refresh();
     } catch (err) {
       setRestartError(err instanceof Error ? err.message : 'Restart failed');
     } finally {
       setRestartPending(false);
     }
-  }, [cardId, provider]);
+  }, [cardId, provider, xtermRefSlot]);
 
   useEffect(() => {
     if (!cardId) return;
