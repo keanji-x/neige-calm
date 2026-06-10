@@ -7,13 +7,22 @@
 //! is invisible to subscribers. Replay re-emits events through the same trait
 //! methods, so commits regenerate as a side effect; there is no separate replay
 //! path for wave-vcs.
+//!
+//! Commit hashes include the commit `created_at` timestamp. The tree hash is
+//! the deterministic content anchor; replaying the same logical wave state can
+//! reproduce the same tree hash without necessarily reproducing the same commit
+//! hash. Fixture paths that seed events with `EventScope::System` also do not
+//! generate wave-vcs commits because they are outside any wave scope.
 
 use crate::db::WaveEvent;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, Wave, WaveLifecycle, now_ms};
+use crate::model::{Card, Wave, now_ms};
 use crate::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeKind};
+use crate::wave_fs_view::{
+    self, HookEventProjection, RunEventProjection, RunProjection, RunVerdictProjection,
+};
 use crate::wave_report::WaveReportPayload;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -76,7 +85,7 @@ pub enum DiffStatus {
 #[derive(Clone, Debug)]
 struct BlobContent {
     bytes: Vec<u8>,
-    content_type: &'static str,
+    content_type: String,
 }
 
 #[derive(Clone, Debug)]
@@ -85,34 +94,10 @@ struct CardProjection {
     role: String,
 }
 
-#[derive(Clone, Debug)]
-struct RunEventProjection {
-    event_id: i64,
-    at: i64,
-    kind: &'static str,
-    payload: Value,
-}
-
-#[derive(Clone, Debug)]
-struct RunVerdictProjection {
-    status: String,
-    reason: Option<String>,
-    at: i64,
-}
-
-#[derive(Clone, Debug)]
-struct RunProjection {
-    idempotency_key: String,
-    status: &'static str,
-    kind: String,
-    requested_at: Option<i64>,
-    finished_at: Option<i64>,
-    worker_card: Option<CardProjection>,
-    requested_event: Option<RunEventProjection>,
-    completed_event: Option<RunEventProjection>,
-    failed_event: Option<RunEventProjection>,
-    verdict: Option<RunVerdictProjection>,
-    verdict_event: Option<RunEventProjection>,
+#[derive(Clone, Copy)]
+enum CardVisibility {
+    AnnouncedOnly,
+    AllRows,
 }
 
 #[derive(Default)]
@@ -120,7 +105,9 @@ struct PathDelta {
     exact: BTreeSet<String>,
     remove_prefixes: BTreeSet<String>,
     run_keys: BTreeSet<String>,
-    refresh_all_runs: bool,
+    run_card_ids: BTreeSet<String>,
+    /// Safety valve for future schema-wide projection changes. The current
+    /// event set is intentionally handled as path-level deltas.
     full_snapshot: bool,
 }
 
@@ -137,11 +124,15 @@ impl PathDelta {
         self.run_keys.insert(key.into());
     }
 
+    fn add_run_card_id(&mut self, card_id: impl Into<String>) {
+        self.run_card_ids.insert(card_id.into());
+    }
+
     fn merge(&mut self, other: PathDelta) {
         self.exact.extend(other.exact);
         self.remove_prefixes.extend(other.remove_prefixes);
         self.run_keys.extend(other.run_keys);
-        self.refresh_all_runs |= other.refresh_all_runs;
+        self.run_card_ids.extend(other.run_card_ids);
         self.full_snapshot |= other.full_snapshot;
     }
 }
@@ -183,6 +174,7 @@ async fn backfill_existing_waves_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<
             MANIFEST_SCHEMA_VERSION,
             created_at,
             &Some(wave.clone()),
+            CardVisibility::AllRows,
         )
         .await?;
         commit_tree_at_tx(
@@ -209,7 +201,15 @@ pub async fn snapshot_tree(
     wave_id: &WaveId,
     schema_version: i64,
 ) -> Result<TreeSnapshot> {
-    snapshot_tree_at_tx(tx, wave_id, schema_version, now_ms(), &None).await
+    snapshot_tree_at_tx(
+        tx,
+        wave_id,
+        schema_version,
+        now_ms(),
+        &None,
+        CardVisibility::AnnouncedOnly,
+    )
+    .await
 }
 
 async fn snapshot_tree_at_tx(
@@ -218,12 +218,14 @@ async fn snapshot_tree_at_tx(
     schema_version: i64,
     object_created_at: i64,
     prefetched_wave: &Option<Wave>,
+    card_visibility: CardVisibility,
 ) -> Result<TreeSnapshot> {
     let wave = match prefetched_wave {
         Some(wave) => wave.clone(),
         None => load_wave_tx(tx, wave_id).await?,
     };
-    let cards = cards_for_wave_tx(tx, wave_id).await?;
+    let mut cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
+    project_runtime_into_cards_tx(tx, &mut cards).await?;
     let runs = project_runs_tx(tx, wave_id, &cards).await?;
     let mut entries = BTreeMap::new();
 
@@ -243,14 +245,9 @@ async fn snapshot_tree_at_tx(
         object_created_at,
     )
     .await?;
-    put_rendered_entry(
-        tx,
-        &mut entries,
-        "report.md",
-        report_markdown(&cards),
-        object_created_at,
-    )
-    .await?;
+    if let Some(report) = report_markdown(&cards)? {
+        put_rendered_entry(tx, &mut entries, "report.md", report, object_created_at).await?;
+    }
     put_rendered_entry(
         tx,
         &mut entries,
@@ -375,13 +372,29 @@ pub async fn commit_events_in_tx(
             delta.merge(paths_changed_by_event(event, wave_id));
         }
         if delta.full_snapshot {
-            snapshot_tree_at_tx(tx, wave_id, manifest_schema_version, now, &None).await?
+            snapshot_tree_at_tx(
+                tx,
+                wave_id,
+                manifest_schema_version,
+                now,
+                &None,
+                CardVisibility::AnnouncedOnly,
+            )
+            .await?
         } else {
             apply_delta_tx(tx, wave_id, &mut parent_manifest, delta, now).await?;
             store_tree(tx, manifest_schema_version, parent_manifest.entries, now).await?
         }
     } else {
-        snapshot_tree_at_tx(tx, wave_id, manifest_schema_version, now, &None).await?
+        snapshot_tree_at_tx(
+            tx,
+            wave_id,
+            manifest_schema_version,
+            now,
+            &None,
+            CardVisibility::AnnouncedOnly,
+        )
+        .await?
     };
 
     commit_tree_at_tx(
@@ -607,19 +620,23 @@ async fn apply_delta_tx(
             .entries
             .retain(|path, _| !path.starts_with(prefix.as_str()));
     }
-    if delta.refresh_all_runs {
-        manifest
-            .entries
-            .retain(|path, _| !path.starts_with("runs/"));
-        let cards = cards_for_wave_tx(tx, wave_id).await?;
-        let runs = project_runs_tx(tx, wave_id, &cards).await?;
-        insert_run_entries(tx, &mut manifest.entries, &runs, object_created_at).await?;
-    } else if !delta.run_keys.is_empty() {
+    let mut run_keys = delta.run_keys;
+    for card_id in delta.run_card_ids {
+        if let Some(key) = run_key_for_worker_card_tx(tx, wave_id, &card_id).await? {
+            run_keys.insert(key);
+        }
+        if let Some(key) =
+            run_key_for_worker_card_in_index_tx(tx, &manifest.entries, &card_id).await?
+        {
+            run_keys.insert(key);
+        }
+    }
+    if !run_keys.is_empty() {
         apply_run_key_delta_tx(
             tx,
             wave_id,
             &mut manifest.entries,
-            delta.run_keys,
+            run_keys,
             object_created_at,
         )
         .await?;
@@ -650,12 +667,8 @@ async fn render_path_tx(
                 Some(wave) => wave,
                 None => return Ok(None),
             };
-            let card_count: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE wave_id = ?1")
-                    .bind(wave_id.as_str())
-                    .fetch_one(&mut **tx)
-                    .await?;
-            Ok(Some(index_markdown(&wave, card_count as usize)))
+            let cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            Ok(Some(index_markdown(&wave, cards.len())))
         }
         "wave.json" => {
             let Some(wave) = load_wave_optional_tx(tx, wave_id).await? else {
@@ -664,21 +677,23 @@ async fn render_path_tx(
             Ok(Some(wave_json(&wave)?))
         }
         "report.md" => {
-            let cards = cards_for_wave_tx(tx, wave_id).await?;
-            Ok(Some(report_markdown(&cards)))
+            let cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            report_markdown(&cards)
         }
         "cards/index.json" => {
-            let cards = cards_for_wave_tx(tx, wave_id).await?;
+            let cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
             Ok(Some(cards_index_json(&cards)?))
         }
         path if path.starts_with("cards/") => render_card_path_tx(tx, wave_id, path).await,
         "runs/index.json" => {
-            let cards = cards_for_wave_tx(tx, wave_id).await?;
+            let mut cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            project_runtime_into_cards_tx(tx, &mut cards).await?;
             let runs = project_runs_tx(tx, wave_id, &cards).await?;
             Ok(Some(runs_index_json(&runs)?))
         }
         path if path.starts_with("runs/") => {
-            let cards = cards_for_wave_tx(tx, wave_id).await?;
+            let mut cards = cards_for_wave_tx(tx, wave_id, CardVisibility::AnnouncedOnly).await?;
+            project_runtime_into_cards_tx(tx, &mut cards).await?;
             let runs = project_runs_tx(tx, wave_id, &cards).await?;
             render_run_path(path, &runs)
         }
@@ -700,7 +715,11 @@ async fn render_card_path_tx(
     };
     match parts[2] {
         "meta.json" => Ok(Some(card_meta_json(&card)?)),
-        "payload.json" => Ok(Some(card_payload_json(&card.card)?)),
+        "payload.json" => {
+            let mut card = card;
+            project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
+            Ok(Some(card_payload_json(&card.card)?))
+        }
         "events.json" => {
             let events = hook_events_for_card_tx(tx, wave_id, &card.card.id).await?;
             Ok(Some(hook_events_json(&events)?))
@@ -774,7 +793,7 @@ async fn put_rendered_entry(
         ManifestEntry {
             blob_hash: hash,
             byte_len: content.bytes.len() as u64,
-            content_type: content.content_type.into(),
+            content_type: content.content_type,
         },
     );
     Ok(())
@@ -795,6 +814,14 @@ async fn insert_run_entries(
     )
     .await?;
     for run in runs {
+        if wave_fs_view::is_reserved_run_key(&run.idempotency_key) {
+            tracing::error!(
+                target: "wave_vcs",
+                idempotency_key = %run.idempotency_key,
+                "runs projection: skipping idempotency_key that collides with reserved path"
+            );
+            continue;
+        }
         put_rendered_entry(
             tx,
             entries,
@@ -825,10 +852,18 @@ async fn apply_run_key_delta_tx(
     let mut index = load_runs_index_map_tx(tx, entries).await?;
 
     for key in run_keys {
+        if wave_fs_view::is_reserved_run_key(&key) {
+            tracing::error!(
+                target: "wave_vcs",
+                idempotency_key = %key,
+                "runs projection: skipping idempotency_key that collides with reserved path"
+            );
+            continue;
+        }
         index.remove(&key);
         match project_run_by_key_tx(tx, wave_id, &key).await? {
             Some(run) => {
-                index.insert(key.clone(), run_index_value(&run)?);
+                index.insert(key.clone(), wave_fs_view::run_index_entry(&run));
                 put_rendered_entry(
                     tx,
                     entries,
@@ -887,6 +922,41 @@ async fn load_runs_index_map_tx(
     Ok(index)
 }
 
+async fn run_key_for_worker_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+    card_id: &str,
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        r#"SELECT json_extract(payload, '$.idempotency_key') AS idempotency_key
+           FROM cards
+           WHERE id = ?1
+             AND wave_id = ?2
+             AND role = 'worker'
+             AND json_extract(payload, '$.idempotency_key') IS NOT NULL"#,
+    )
+    .bind(card_id)
+    .bind(wave_id.as_str())
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|(key,)| key))
+}
+
+async fn run_key_for_worker_card_in_index_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    entries: &BTreeMap<String, ManifestEntry>,
+    card_id: &str,
+) -> Result<Option<String>> {
+    let index = load_runs_index_map_tx(tx, entries).await?;
+    Ok(index.into_iter().find_map(|(key, value)| {
+        value
+            .get("worker_card_id")
+            .and_then(Value::as_str)
+            .filter(|worker_card_id| *worker_card_id == card_id)
+            .map(|_| key)
+    }))
+}
+
 async fn load_blob_bytes_tx(
     tx: &mut Transaction<'_, Sqlite>,
     hash: &str,
@@ -928,23 +998,27 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         }
         Event::CardAdded(card) | Event::CardUpdated(card) => {
             add_card_paths(&mut delta, &card.id);
+            delta.add("index.md");
             delta.add("cards/index.json");
             if card.kind == "wave-report" {
                 delta.add("report.md");
             }
-            delta.refresh_all_runs = true;
+            if let Some(key) = idempotency_key_from_payload(&card.payload) {
+                delta.add_run_key(key);
+            }
+            delta.add_run_card_id(card.id.as_str());
         }
         Event::CardDeleted { id, .. } => {
             delta.remove_prefix(format!("cards/{}/", id.as_str()));
             delta.add("cards/index.json");
             delta.add("index.md");
-            delta.refresh_all_runs = true;
+            delta.add_run_card_id(id.as_str());
         }
         Event::RuntimeStarted { card_id, .. }
         | Event::RuntimeStatusChanged { card_id, .. }
         | Event::RuntimeSuperseded { card_id, .. } => {
             add_card_payload_path(&mut delta, card_id);
-            delta.refresh_all_runs = true;
+            delta.add_run_card_id(card_id);
         }
         Event::HarnessItemAdded { card_id, .. }
         | Event::HarnessPhaseChanged { card_id, .. }
@@ -1101,16 +1175,33 @@ async fn load_wave_optional_tx(
 async fn cards_for_wave_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
+    visibility: CardVisibility,
 ) -> Result<Vec<CardProjection>> {
-    let rows = sqlx::query(
-        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
-           FROM cards
-           WHERE wave_id = ?1
-           ORDER BY sort ASC, id ASC"#,
-    )
-    .bind(wave_id.as_str())
-    .fetch_all(&mut **tx)
-    .await?;
+    let sql = match visibility {
+        CardVisibility::AnnouncedOnly => {
+            r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
+               FROM cards
+               WHERE wave_id = ?1
+                 AND EXISTS (
+                   SELECT 1
+                   FROM events
+                   WHERE events.scope_wave = cards.wave_id
+                     AND events.kind = 'card.added'
+                     AND json_extract(events.payload, '$.id') = cards.id
+                 )
+               ORDER BY sort ASC, id ASC"#
+        }
+        CardVisibility::AllRows => {
+            r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
+               FROM cards
+               WHERE wave_id = ?1
+               ORDER BY sort ASC, id ASC"#
+        }
+    };
+    let rows = sqlx::query(sql)
+        .bind(wave_id.as_str())
+        .fetch_all(&mut **tx)
+        .await?;
     rows.into_iter().map(card_projection_from_row).collect()
 }
 
@@ -1122,7 +1213,14 @@ async fn card_in_wave_tx(
     let row = sqlx::query(
         r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at
            FROM cards
-           WHERE id = ?1 AND wave_id = ?2"#,
+           WHERE id = ?1 AND wave_id = ?2
+             AND EXISTS (
+               SELECT 1
+               FROM events
+               WHERE events.scope_wave = cards.wave_id
+                 AND events.kind = 'card.added'
+                 AND json_extract(events.payload, '$.id') = cards.id
+             )"#,
     )
     .bind(card_id)
     .bind(wave_id.as_str())
@@ -1155,68 +1253,101 @@ async fn hook_events_for_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     card_id: &CardId,
-) -> Result<Vec<WaveEvent>> {
-    let mut out = Vec::new();
-    for row in wave_events_tx(tx, wave_id).await? {
-        if row.scope.card_id() != Some(card_id) {
-            continue;
-        }
-        if matches!(
-            row.event,
-            Event::CodexHook { .. } | Event::ClaudeHook { .. }
-        ) {
-            out.push(row);
-        }
-    }
-    Ok(out)
-}
-
-async fn wave_events_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &WaveId,
-) -> Result<Vec<WaveEvent>> {
-    type EventRow = (
-        i64,
-        String,
-        String,
-        String,
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    );
+) -> Result<Vec<HookEventProjection>> {
     let rows: Vec<EventRow> = sqlx::query_as(
         r#"SELECT id, kind, payload, actor, at,
                   scope_kind, scope_cove, scope_wave, scope_card
            FROM events
            WHERE scope_wave = ?1
+             AND scope_card = ?2
+             AND kind IN ('codex.hook', 'claude.hook')
+           ORDER BY id ASC"#,
+    )
+    .bind(wave_id.as_str())
+    .bind(card_id.as_str())
+    .fetch_all(&mut **tx)
+    .await?;
+
+    rows.into_iter()
+        .map(wave_event_from_row)
+        .map(|row| {
+            row.and_then(|row| match row.event {
+                Event::CodexHook { kind, payload, .. } => Ok(HookEventProjection {
+                    event_id: row.id,
+                    at: row.at,
+                    kind: "codex.hook",
+                    hook_kind: kind,
+                    payload,
+                }),
+                Event::ClaudeHook { kind, payload, .. } => Ok(HookEventProjection {
+                    event_id: row.id,
+                    at: row.at,
+                    kind: "claude.hook",
+                    hook_kind: kind,
+                    payload,
+                }),
+                _ => Err(CalmError::Internal(
+                    "wave-vcs: non-hook event returned from hook query".into(),
+                )),
+            })
+        })
+        .collect()
+}
+
+type EventRow = (
+    i64,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+async fn run_events_for_wave_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+) -> Result<Vec<WaveEvent>> {
+    let rows: Vec<EventRow> = sqlx::query_as(
+        r#"SELECT id, kind, payload, actor, at,
+                  scope_kind, scope_cove, scope_wave, scope_card
+           FROM events
+           WHERE scope_wave = ?1
+             AND kind IN (
+               'codex.worker_requested',
+               'terminal.worker_requested',
+               'task.completed',
+               'task.failed'
+             )
            ORDER BY id ASC"#,
     )
     .bind(wave_id.as_str())
     .fetch_all(&mut **tx)
     .await?;
 
-    let mut out = Vec::with_capacity(rows.len());
-    for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
-        let payload = serde_json::from_str(&payload_text)?;
-        let actor = serde_json::from_str::<ActorId>(&actor_text)?;
-        let scope = EventScope::from_row(
-            sk.as_deref(),
-            sc.as_deref(),
-            sw.as_deref(),
-            scard.as_deref(),
-        );
-        let event = Event::from_kind_and_payload(&kind, payload)?;
-        out.push(WaveEvent {
-            id,
-            at,
-            actor,
-            scope,
-            event,
-        });
-    }
-    Ok(out)
+    rows.into_iter().map(wave_event_from_row).collect()
+}
+
+fn wave_event_from_row(row: EventRow) -> Result<WaveEvent> {
+    let (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) = row;
+    let payload = serde_json::from_str(&payload_text)?;
+    let actor = serde_json::from_str::<ActorId>(&actor_text)?;
+    let scope = EventScope::from_row(
+        sk.as_deref(),
+        sc.as_deref(),
+        sw.as_deref(),
+        scard.as_deref(),
+    );
+    let event = Event::from_kind_and_payload(&kind, payload)?;
+    Ok(WaveEvent {
+        id,
+        at,
+        actor,
+        scope,
+        event,
+    })
 }
 
 async fn project_runs_tx(
@@ -1224,19 +1355,17 @@ async fn project_runs_tx(
     wave_id: &WaveId,
     cards: &[CardProjection],
 ) -> Result<Vec<RunProjection>> {
-    let mut projected_cards = cards.to_vec();
-    project_runtime_into_cards_tx(tx, &mut projected_cards).await?;
-    let events = wave_events_tx(tx, wave_id).await?;
+    let events = run_events_for_wave_tx(tx, wave_id).await?;
 
     let mut keys = BTreeSet::new();
     let mut worker_cards = BTreeMap::new();
-    for card in projected_cards {
+    for card in cards.iter().cloned() {
         if card.role != "worker" {
             continue;
         }
         if let Some(key) = idempotency_key_from_payload(&card.card.payload) {
             keys.insert(key.to_string());
-            worker_cards.entry(key.to_string()).or_insert(card);
+            worker_cards.entry(key.to_string()).or_insert(card.card);
         }
     }
 
@@ -1306,6 +1435,7 @@ async fn project_runs_tx(
 
     Ok(keys
         .into_iter()
+        .filter(|key| run_key_is_visible(key))
         .map(|key| {
             let worker_card = worker_cards.remove(&key);
             let requested_event = requested.remove(&key);
@@ -1348,10 +1478,14 @@ async fn project_run_by_key_tx(
     wave_id: &WaveId,
     key: &str,
 ) -> Result<Option<RunProjection>> {
-    let mut worker_card = worker_card_for_run_key_tx(tx, wave_id, key).await?;
-    if let Some(card) = worker_card.as_mut() {
+    if !run_key_is_visible(key) {
+        return Ok(None);
+    }
+    let mut worker_projection = worker_card_for_run_key_tx(tx, wave_id, key).await?;
+    if let Some(card) = worker_projection.as_mut() {
         project_runtime_into_cards_tx(tx, std::slice::from_mut(card)).await?;
     }
+    let worker_card = worker_projection.map(|projection| projection.card);
     let events = run_events_for_key_tx(tx, wave_id, key).await?;
     if worker_card.is_none() && events.is_empty() {
         return Ok(None);
@@ -1794,12 +1928,24 @@ fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
     payload.get("idempotency_key").and_then(Value::as_str)
 }
 
-fn run_kind_from_card(card: &CardProjection) -> Option<&'static str> {
-    match card.card.kind.as_str() {
+fn run_key_is_visible(key: &str) -> bool {
+    if wave_fs_view::is_reserved_run_key(key) {
+        tracing::error!(
+            target: "wave_vcs",
+            idempotency_key = %key,
+            "runs projection: skipping idempotency_key that collides with reserved path"
+        );
+        false
+    } else {
+        true
+    }
+}
+
+fn run_kind_from_card(card: &Card) -> Option<&'static str> {
+    match card.kind.as_str() {
         "codex" => Some("codex"),
         "terminal" => Some("terminal"),
         _ => card
-            .card
             .payload
             .get("role_request")
             .and_then(Value::as_str)
@@ -1812,43 +1958,25 @@ fn run_kind_from_card(card: &CardProjection) -> Option<&'static str> {
 }
 
 fn index_markdown(wave: &Wave, card_count: usize) -> BlobContent {
-    content_markdown(format!(
-        "# Wave {}\n\n- Title: {}\n- Cards: {}\n- Report: [report.md](report.md)\n",
-        wave.id.as_str(),
-        wave.title,
-        card_count
-    ))
+    content_markdown(wave_fs_view::index_markdown(wave, card_count))
 }
 
 fn wave_json(wave: &Wave) -> Result<BlobContent> {
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
-    map.insert("archived_at".into(), option_i64(wave.archived_at));
-    map.insert("cove_id".into(), Value::String(wave.cove_id.to_string()));
-    map.insert("created_at".into(), Value::from(wave.created_at));
-    map.insert("cwd".into(), Value::String(wave.cwd.clone()));
-    map.insert("id".into(), Value::String(wave.id.to_string()));
-    map.insert("lifecycle".into(), lifecycle_value(wave.lifecycle)?);
-    map.insert("pinned_at".into(), option_i64(wave.pinned_at));
-    map.insert("terminal_at".into(), option_i64(wave.terminal_at));
-    map.insert("title".into(), Value::String(wave.title.clone()));
-    map.insert("updated_at".into(), Value::from(wave.updated_at));
-    content_json(&map)
+    content_json(wave)
 }
 
-fn lifecycle_value(lifecycle: WaveLifecycle) -> Result<Value> {
-    Ok(serde_json::to_value(lifecycle)?)
-}
-
-fn report_markdown(cards: &[CardProjection]) -> BlobContent {
-    let body = cards
-        .iter()
-        .find(|card| card.card.kind == "wave-report")
-        .and_then(|card| {
-            serde_json::from_value::<WaveReportPayload>(card.card.payload.clone()).ok()
-        })
-        .map(|payload| payload.body)
-        .unwrap_or_default();
-    content_markdown(body)
+fn report_markdown(cards: &[CardProjection]) -> Result<Option<BlobContent>> {
+    let Some(report_card) = cards.iter().find(|card| card.card.kind == "wave-report") else {
+        return Ok(None);
+    };
+    let payload = serde_json::from_value::<WaveReportPayload>(report_card.card.payload.clone())
+        .map_err(|e| {
+            CalmError::Internal(format!(
+                "wave_report: malformed payload on card {}: {e}",
+                report_card.card.id.as_str()
+            ))
+        })?;
+    Ok(Some(content_markdown(payload.body)))
 }
 
 fn cards_index_json(cards: &[CardProjection]) -> Result<BlobContent> {
@@ -1864,325 +1992,53 @@ fn card_meta_json(card: &CardProjection) -> Result<BlobContent> {
 }
 
 fn card_meta_value(card: &CardProjection) -> Result<Value> {
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
-    map.insert("created_at".into(), Value::from(card.card.created_at));
-    map.insert("deletable".into(), Value::from(card.card.deletable));
-    map.insert("id".into(), Value::String(card.card.id.to_string()));
-    map.insert("kind".into(), Value::String(card.card.kind.clone()));
-    map.insert("role".into(), Value::String(card.role.clone()));
-    map.insert("updated_at".into(), Value::from(card.card.updated_at));
-    Ok(serde_json::to_value(map)?)
+    Ok(wave_fs_view::card_meta_value(
+        &card.card,
+        Value::String(card.role.clone()),
+    ))
 }
 
 fn card_payload_json(card: &Card) -> Result<BlobContent> {
     content_json(&card.payload)
 }
 
-fn hook_events_json(events: &[WaveEvent]) -> Result<BlobContent> {
-    let values = events
-        .iter()
-        .filter_map(|row| match &row.event {
-            Event::CodexHook { kind, payload, .. } => Some(hook_event_value(
-                row.id,
-                row.at,
-                "codex.hook",
-                kind,
-                payload.clone(),
-            )),
-            Event::ClaudeHook { kind, payload, .. } => Some(hook_event_value(
-                row.id,
-                row.at,
-                "claude.hook",
-                kind,
-                payload.clone(),
-            )),
-            _ => None,
-        })
-        .collect::<Result<Vec<_>>>()?;
-    content_json(&values)
+fn hook_events_json(events: &[HookEventProjection]) -> Result<BlobContent> {
+    content_json(&wave_fs_view::hook_events_json(events))
 }
 
-fn hook_event_value(
-    event_id: i64,
-    at: i64,
-    kind: &str,
-    hook_kind: &str,
-    payload: Value,
-) -> Result<Value> {
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
-    map.insert("created_at".into(), Value::from(at));
-    map.insert("event_id".into(), Value::from(event_id));
-    map.insert("hook_kind".into(), Value::String(hook_kind.to_string()));
-    map.insert("kind".into(), Value::String(kind.to_string()));
-    map.insert("payload".into(), payload);
-    Ok(serde_json::to_value(map)?)
-}
-
-fn conversation_markdown(card_id: &CardId, events: &[WaveEvent]) -> String {
-    let mut out = String::new();
-    out.push_str("> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth.\n\n");
-    out.push_str(&format!("# Conversation - card {}\n\n", card_id.as_str()));
-    if events.is_empty() {
-        out.push_str("_No hook events recorded._\n");
-        return out;
-    }
-    for row in events {
-        let (hook_kind, payload) = match &row.event {
-            Event::CodexHook { kind, payload, .. } | Event::ClaudeHook { kind, payload, .. } => {
-                (kind, payload)
-            }
-            _ => continue,
-        };
-        if hook_event_is(hook_kind, payload, "user_prompt_submit", "UserPromptSubmit") {
-            if let Some(prompt) = payload.get("prompt").and_then(Value::as_str) {
-                out.push_str("## User\n\n");
-                out.push_str(prompt);
-                out.push_str("\n\n");
-            }
-        } else if hook_event_is(hook_kind, payload, "stop", "Stop") {
-            if let Some(message) = payload
-                .get("last_assistant_message")
-                .and_then(Value::as_str)
-            {
-                out.push_str("## Assistant\n\n");
-                out.push_str(message);
-                out.push_str("\n\n");
-            }
-        } else if hook_event_is_tool_use(hook_kind, payload)
-            && let Some(tool_name) = payload.get("tool_name").and_then(Value::as_str)
-        {
-            out.push_str(&format!("- tool: {tool_name}\n\n"));
-        }
-    }
-    out
-}
-
-fn hook_event_is(
-    payload_kind: &str,
-    payload: &Value,
-    snake_suffix: &str,
-    pascal_name: &str,
-) -> bool {
-    payload_kind
-        .rsplit('.')
-        .next()
-        .is_some_and(|segment| segment.eq_ignore_ascii_case(snake_suffix))
-        || payload
-            .get("hook_event_name")
-            .and_then(Value::as_str)
-            .is_some_and(|name| {
-                normalize_hook_event_name(name) == normalize_hook_event_name(pascal_name)
-            })
-}
-
-fn hook_event_is_tool_use(payload_kind: &str, payload: &Value) -> bool {
-    let kind = payload_kind.to_ascii_lowercase();
-    if kind.contains("tool_use") {
-        return true;
-    }
-    payload
-        .get("hook_event_name")
-        .and_then(Value::as_str)
-        .is_some_and(|name| normalize_hook_event_name(name).contains("tooluse"))
-}
-
-fn normalize_hook_event_name(name: &str) -> String {
-    name.chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
+fn conversation_markdown(card_id: &CardId, events: &[HookEventProjection]) -> String {
+    wave_fs_view::conversation_markdown(card_id, events)
 }
 
 fn runs_index_json(runs: &[RunProjection]) -> Result<BlobContent> {
     let values = runs
         .iter()
-        .map(run_index_value)
-        .collect::<Result<Vec<_>>>()?;
+        .map(wave_fs_view::run_index_entry)
+        .collect::<Vec<_>>();
     content_json(&values)
 }
 
 fn run_json(run: &RunProjection) -> Result<BlobContent> {
-    content_json(&run_value(run)?)
-}
-
-fn run_index_value(run: &RunProjection) -> Result<Value> {
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
-    map.insert("finished_at".into(), option_i64(run.finished_at));
-    map.insert(
-        "idempotency_key".into(),
-        Value::String(run.idempotency_key.clone()),
-    );
-    map.insert("kind".into(), Value::String(run.kind.clone()));
-    map.insert("requested_at".into(), option_i64(run.requested_at));
-    map.insert("status".into(), Value::String(run.status.to_string()));
-    map.insert("verdict".into(), run_verdict_index_json(run)?);
-    map.insert(
-        "worker_card_id".into(),
-        run.worker_card
-            .as_ref()
-            .map(|card| Value::String(card.card.id.to_string()))
-            .unwrap_or(Value::Null),
-    );
-    Ok(serde_json::to_value(map)?)
-}
-
-fn run_value(run: &RunProjection) -> Result<Value> {
-    let mut events: BTreeMap<String, Value> = BTreeMap::new();
-    events.insert(
-        "completed".into(),
-        run.completed_event
-            .as_ref()
-            .map(event_value)
-            .transpose()?
-            .unwrap_or(Value::Null),
-    );
-    events.insert(
-        "failed".into(),
-        run.failed_event
-            .as_ref()
-            .map(event_value)
-            .transpose()?
-            .unwrap_or(Value::Null),
-    );
-    events.insert(
-        "requested".into(),
-        run.requested_event
-            .as_ref()
-            .map(event_value)
-            .transpose()?
-            .unwrap_or(Value::Null),
-    );
-    events.insert(
-        "verdict".into(),
-        run.verdict_event
-            .as_ref()
-            .map(event_value)
-            .transpose()?
-            .unwrap_or(Value::Null),
-    );
-
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
-    map.insert("events".into(), serde_json::to_value(events)?);
-    map.insert("finished_at".into(), option_i64(run.finished_at));
-    map.insert(
-        "idempotency_key".into(),
-        Value::String(run.idempotency_key.clone()),
-    );
-    map.insert("kind".into(), Value::String(run.kind.clone()));
-    map.insert("requested_at".into(), option_i64(run.requested_at));
-    map.insert("status".into(), Value::String(run.status.to_string()));
-    map.insert("verdict".into(), run_verdict_full_json(run)?);
-    map.insert(
-        "worker_card_id".into(),
-        run.worker_card
-            .as_ref()
-            .map(|card| Value::String(card.card.id.to_string()))
-            .unwrap_or(Value::Null),
-    );
-    map.insert(
-        "worker_card_payload".into(),
-        run.worker_card
-            .as_ref()
-            .map(|card| card.card.payload.clone())
-            .unwrap_or(Value::Null),
-    );
-    Ok(serde_json::to_value(map)?)
-}
-
-fn event_value(event: &RunEventProjection) -> Result<Value> {
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
-    map.insert("created_at".into(), Value::from(event.at));
-    map.insert("event_id".into(), Value::from(event.event_id));
-    map.insert("kind".into(), Value::String(event.kind.to_string()));
-    map.insert("payload".into(), event.payload.clone());
-    Ok(serde_json::to_value(map)?)
-}
-
-fn run_verdict_index_json(run: &RunProjection) -> Result<Value> {
-    match run.verdict.as_ref() {
-        Some(verdict) => {
-            let mut map: BTreeMap<String, Value> = BTreeMap::new();
-            map.insert("at".into(), Value::from(verdict.at));
-            map.insert("status".into(), Value::String(verdict.status.clone()));
-            Ok(serde_json::to_value(map)?)
-        }
-        None => Ok(Value::Null),
-    }
-}
-
-fn run_verdict_full_json(run: &RunProjection) -> Result<Value> {
-    match run.verdict.as_ref() {
-        Some(verdict) => {
-            let mut map: BTreeMap<String, Value> = BTreeMap::new();
-            map.insert("at".into(), Value::from(verdict.at));
-            map.insert(
-                "reason".into(),
-                verdict
-                    .reason
-                    .as_ref()
-                    .map(|reason| Value::String(reason.clone()))
-                    .unwrap_or(Value::Null),
-            );
-            map.insert("status".into(), Value::String(verdict.status.clone()));
-            Ok(serde_json::to_value(map)?)
-        }
-        None => Ok(Value::Null),
-    }
+    content_json(&wave_fs_view::run_json(run))
 }
 
 fn run_markdown(run: &RunProjection) -> String {
-    let mut out = String::new();
-    out.push_str("> READ-ONLY PROJECTION: derived from wave events and worker card payloads. This is not the source of truth.\n\n");
-    out.push_str(&format!("# Run `{}`\n\n", run.idempotency_key));
-    out.push_str(&format!("- Status: {}\n", run.status));
-    out.push_str(&format!("- Kind: {}\n", run.kind));
-    out.push_str(&format!(
-        "- Worker card: {}\n",
-        run.worker_card
-            .as_ref()
-            .map(|card| card.card.id.to_string())
-            .unwrap_or_else(|| "not materialized".into())
-    ));
-    out.push_str(&format!(
-        "- Requested at: {}\n",
-        format_optional_i64(run.requested_at)
-    ));
-    out.push_str(&format!(
-        "- Finished at: {}\n",
-        format_optional_i64(run.finished_at)
-    ));
-    if let Some(verdict) = run.verdict.as_ref() {
-        let reason = verdict.reason.as_deref().unwrap_or("");
-        out.push_str(&format!(
-            "\n## Verdict\n\nVerdict: {} by spec at {}: {}\n",
-            verdict.status, verdict.at, reason
-        ));
-    }
-    out
+    wave_fs_view::run_markdown(run)
 }
 
 fn content_markdown(content: String) -> BlobContent {
-    BlobContent {
-        bytes: content.into_bytes(),
-        content_type: "text/markdown",
-    }
+    blob_from_fs_content(wave_fs_view::content_markdown(content))
 }
 
 fn content_json<T: Serialize>(value: &T) -> Result<BlobContent> {
-    Ok(BlobContent {
-        bytes: canonical_json_bytes(value)?,
-        content_type: "application/json",
-    })
+    Ok(blob_from_fs_content(wave_fs_view::content_json(value)?))
 }
 
-fn option_i64(value: Option<i64>) -> Value {
-    value.map(Value::from).unwrap_or(Value::Null)
-}
-
-fn format_optional_i64(value: Option<i64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "null".into())
+fn blob_from_fs_content(content: wave_fs_view::WaveFsContent) -> BlobContent {
+    BlobContent {
+        bytes: content.content.into_bytes(),
+        content_type: content.content_type,
+    }
 }
 
 pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {

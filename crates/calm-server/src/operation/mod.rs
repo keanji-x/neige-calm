@@ -17,6 +17,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tokio::sync::{Mutex, broadcast};
 
+use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, EventBus};
 use crate::model::{new_id, now_ms};
@@ -1330,7 +1331,7 @@ impl OperationRepo for SqlxOperationRepo {
         op: &Operation,
         adapter: &dyn ProviderAdapter,
     ) -> Result<Option<(Operation, Vec<BroadcastEnvelope>)>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let output = match adapter.prepare_tx(&mut tx, &op.payload, op).await {
             Ok(output) => output,
             Err(e) => {
@@ -1964,6 +1965,92 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, CalmError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn operation_event_append_creates_wave_vcs_commit() {
+        use crate::card_role_cache::CardRoleCache;
+        use crate::db::prelude::*;
+        use crate::db::sqlite::{
+            begin_immediate_tx, card_create_with_id_tx, event_append_for_operation_tx,
+        };
+        use crate::event::{Event, EventScope};
+        use crate::ids::{ActorId, CardId};
+        use crate::model::{CardRole, NewCard, NewCove, NewWave};
+        use crate::routes::theme::RequestTheme;
+        use crate::wave_report::WaveReportPayload;
+
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let cove = sqlx_repo
+            .cove_create(NewCove {
+                name: "cove".into(),
+                color: "#abcdef".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = sqlx_repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "wave".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let roles = CardRoleCache::new();
+        let card_id = new_id();
+        let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+        let report = card_create_with_id_tx(
+            &mut tx,
+            card_id.clone(),
+            NewCard {
+                wave_id: wave.id.clone(),
+                kind: "wave-report".into(),
+                sort: None,
+                payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+            },
+            CardRole::ReportCard,
+            false,
+            &roles,
+        )
+        .await
+        .unwrap();
+        let scope = EventScope::Card {
+            card: CardId::from(card_id),
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        };
+        let event = Event::CardAdded(report);
+        let event_id =
+            event_append_for_operation_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+
+        let head = crate::wave_vcs::head(sqlx_repo.pool(), &wave.id)
+            .await
+            .unwrap()
+            .expect("vcs head");
+        let stored_event_id: i64 =
+            sqlx::query_scalar("SELECT updated_event_id FROM wave_vcs_refs WHERE wave_id = ?1")
+                .bind(wave.id.as_str())
+                .fetch_one(sqlx_repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored_event_id, event_id);
+        assert!(
+            crate::wave_vcs::tree_at(sqlx_repo.pool(), &head)
+                .await
+                .unwrap()
+                .expect("tree")
+                .entries
+                .contains_key("report.md")
+        );
     }
 
     #[tokio::test]

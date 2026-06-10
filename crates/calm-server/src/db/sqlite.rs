@@ -17,10 +17,6 @@
 //! closure so the entity write and the `INSERT INTO events ...` run in
 //! the same transaction. See `db::mod`'s sync-engine comment.
 
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use sqlx::ConnectOptions;
@@ -31,7 +27,9 @@ use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use tokio::sync::Mutex;
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::time::Duration;
 
 use super::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonRecord,
@@ -78,7 +76,6 @@ pub struct SqlxRepo {
     /// `AppState::new` seeds from the same pool). Both converge on
     /// the persisted `waves` table.
     wave_cove_cache: WaveCoveCache,
-    event_write_lock: Arc<Mutex<()>>,
 }
 
 impl SqlxRepo {
@@ -145,7 +142,6 @@ impl SqlxRepo {
             pool,
             card_role_cache,
             wave_cove_cache,
-            event_write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -265,7 +261,50 @@ pub(crate) async fn event_append_for_operation_tx(
     correlation: Option<&str>,
     event: &Event,
 ) -> Result<i64> {
-    SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await
+    let event_id = SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?;
+    if let Some(wave_id) = scope.wave_id() {
+        wave_vcs::commit_in_tx(
+            tx,
+            wave_id,
+            event_id,
+            event,
+            wave_vcs::MANIFEST_SCHEMA_VERSION,
+        )
+        .await?;
+    }
+    Ok(event_id)
+}
+
+pub(crate) async fn begin_immediate_tx<'a>(
+    pool: &'a SqlitePool,
+) -> Result<Transaction<'a, Sqlite>> {
+    const MAX_RETRIES: usize = 6;
+    let mut backoff = Duration::from_millis(10);
+
+    for attempt in 0..=MAX_RETRIES {
+        match pool.begin_with("BEGIN IMMEDIATE").await {
+            Ok(tx) => return Ok(tx),
+            Err(e) if is_sqlite_busy(&e) && attempt < MAX_RETRIES => {
+                tracing::debug!(
+                    attempt,
+                    error = %e,
+                    "sqlite: BEGIN IMMEDIATE hit transient writer contention; retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(250));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    unreachable!("bounded retry loop must return or error");
+}
+
+fn is_sqlite_busy(e: &sqlx::Error) -> bool {
+    let Some(db_err) = e.as_database_error() else {
+        return false;
+    };
+    matches!(db_err.code().as_deref(), Some("5") | Some("6"))
 }
 
 pub(crate) async fn terminal_get_by_card_tx(
@@ -508,6 +547,20 @@ pub async fn cove_update_tx(
 }
 
 pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+    let wave_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE cove_id = ?1")
+        .bind(id)
+        .fetch_all(&mut **tx)
+        .await?;
+    for (wave_id,) in wave_ids {
+        sqlx::query("DELETE FROM wave_vcs_refs WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("DELETE FROM wave_vcs_commits WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .execute(&mut **tx)
+            .await?;
+    }
     let res = sqlx::query("DELETE FROM coves WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -3830,8 +3883,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let event_write_guard = self.event_write_lock.lock().await;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         // Run the caller-supplied entity write.
         let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
         let event = match fut.await {
@@ -3882,7 +3934,6 @@ impl RepoEventWrite for SqlxRepo {
         }
         // Commit before any externally-visible side effect.
         tx.commit().await?;
-        drop(event_write_guard);
         // Commit-then-emit invariant: now (and only now) do we broadcast.
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
@@ -3903,8 +3954,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let event_write_guard = self.event_write_lock.lock().await;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         // Run the caller-supplied entity write — closure returns one
         // or more (scope, event) pairs for this tx.
         let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
@@ -3978,7 +4028,6 @@ impl RepoEventWrite for SqlxRepo {
         }
         // Commit before any externally-visible side effect.
         tx.commit().await?;
-        drop(event_write_guard);
         // Commit-then-emit invariant: broadcast in the same order the
         // closure produced.
         for (id, (scope, event)) in event_ids.iter().zip(events) {
@@ -4004,8 +4053,7 @@ impl RepoEventWrite for SqlxRepo {
         event: Event,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let event_write_guard = self.event_write_lock.lock().await;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         // PR3 (#136) — gate. Pure events don't have an entity write to
         // populate the cache from, so the role lookup uses the cache's
         // current contents. `log_pure_event` callers (codex hook
@@ -4040,7 +4088,6 @@ impl RepoEventWrite for SqlxRepo {
             return Err(e);
         }
         tx.commit().await?;
-        drop(event_write_guard);
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
@@ -4059,8 +4106,7 @@ impl RepoEventWrite for SqlxRepo {
     /// this returns. See [`crate::db::WriteInTxFn`] for the rationale.
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let _event_write_guard = self.event_write_lock.lock().await;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
         match fut.await {
             Ok(()) => {}
