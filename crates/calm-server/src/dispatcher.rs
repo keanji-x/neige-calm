@@ -1169,7 +1169,7 @@ impl Inner {
                                 WaveLifecycle::Working,
                                 WaveLifecycle::Reviewing,
                                 &ActorId::KernelDispatcher,
-                                None,
+                                Some("[auto] worker spawn failed".to_string()),
                             )
                             .await?
                     {

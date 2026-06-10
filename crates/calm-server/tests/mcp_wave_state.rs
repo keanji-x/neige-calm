@@ -9,13 +9,7 @@
 //!
 //!   1. `calm.wave.state` (spec card) returns the wave row + the cards
 //!      list with `role` populated.
-//!   2. `update_wave_state` from a spec card patches the wave row,
-//!      stamps `updated_at`, and emits exactly one `wave.updated`
-//!      event on the bus + in the persisted events log.
-//!   3. `update_wave_state` from a worker card is refused at the MCP
-//!      entry with `-32602` (soft role gate) **before** any DB write
-//!      runs.
-//!   4. `calm.task.verdict` with `status=accepted` emits
+//!   2. `calm.task.verdict` with `status=accepted` emits
 //!      `task.completed` carrying the spec's `{status,reason}` verdict
 //!      in `result`; `status=rejected` emits `task.failed` with the
 //!      reason verbatim.
@@ -31,12 +25,10 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::wave_state::{
-    TOOL_TASK_VERDICT, TOOL_UPDATE_WAVE_STATE, TOOL_WAVE_STATE,
-};
+use calm_server::mcp_server::tools::wave_state::{TOOL_TASK_VERDICT, TOOL_WAVE_STATE};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
     CardRole, CardRuntimeView, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch,
@@ -254,180 +246,6 @@ async fn get_wave_state_callable_by_worker() {
 }
 
 // ---------------------------------------------------------------------------
-// update_wave_state
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn update_wave_state_from_spec_patches_and_emits() {
-    let boot = boot().await;
-
-    // Subscribe BEFORE the emit so we don't race the bus.
-    let mut rx = boot.ctx.events.subscribe();
-
-    let pre = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-
-    let out = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        spec_identity(&boot),
-        json!({"title": "patched"}),
-    )
-    .await
-    .expect("spec can update wave state");
-
-    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
-    let wave = out.get("wave").expect("response carries `wave`");
-    assert_eq!(
-        wave.get("title").and_then(Value::as_str),
-        Some("patched"),
-        "response reflects the patched title",
-    );
-
-    let persisted = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(persisted.title, "patched", "row persisted with new title");
-    assert!(
-        persisted.updated_at >= pre.updated_at,
-        "updated_at advanced (or stayed the same on a same-ms boot)",
-    );
-
-    // The first spec write auto-promotes the draft wave before the
-    // title patch, so the bus sees the auto lifecycle/update pair and
-    // then the title's WaveUpdated envelope.
-    let changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers within 1s")
-        .expect("bus channel not closed");
-    assert!(matches!(changed.actor, ActorId::Kernel));
-    assert!(
-        matches!(
-            changed.event,
-            Event::WaveLifecycleChanged {
-                from: WaveLifecycle::Draft,
-                to: WaveLifecycle::Planning,
-                agent_message: None,
-                ..
-            }
-        ),
-        "first envelope is auto WaveLifecycleChanged: {:?}",
-        changed.event,
-    );
-
-    let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers auto update")
-        .expect("bus channel not closed");
-    assert!(matches!(auto_updated.actor, ActorId::Kernel));
-    assert!(
-        matches!(auto_updated.event, Event::WaveUpdated(ref w) if w.id == boot.wave_id),
-        "second envelope is auto WaveUpdated for the bound wave: {:?}",
-        auto_updated.event,
-    );
-
-    let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers title update")
-        .expect("bus channel not closed");
-    assert!(
-        matches!(envelope.event, Event::WaveUpdated(ref w) if w.id == boot.wave_id && w.title == "patched"),
-        "third envelope is title WaveUpdated for the bound wave: {:?}",
-        envelope.event,
-    );
-    assert!(
-        matches!(envelope.scope, EventScope::Wave { ref wave, ref cove }
-                 if wave == &boot.wave_id && cove == &boot.cove_id),
-        "envelope scope is the wave's scope: {:?}",
-        envelope.scope,
-    );
-}
-
-#[tokio::test]
-async fn update_wave_state_from_worker_refused_with_soft_gate() {
-    let boot = boot().await;
-
-    // Pre-state for the no-op check.
-    let pre = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-
-    let err = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        worker_identity(&boot),
-        json!({"title": "should-not-stick"}),
-    )
-    .await
-    .expect_err("worker must be denied at MCP entry");
-
-    // -32602 is the soft gate's chosen code (INVALID_PARAMS).
-    assert_eq!(err.code, -32602, "soft role gate returns invalid-params");
-    assert!(
-        err.message.contains("Spec"),
-        "error mentions the required role: {err:?}"
-    );
-
-    // And nothing was persisted (the DB write never ran).
-    let post = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(post.title, pre.title, "wave row unchanged");
-    assert_eq!(post.updated_at, pre.updated_at, "updated_at unchanged");
-}
-
-#[tokio::test]
-async fn update_wave_state_archive_and_unarchive() {
-    let boot = boot().await;
-
-    // Archive.
-    let out = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        spec_identity(&boot),
-        json!({"archived_at": 99999}),
-    )
-    .await
-    .expect("archive ok");
-    assert_eq!(
-        out.get("wave")
-            .and_then(|w| w.get("archived_at"))
-            .and_then(Value::as_i64),
-        Some(99999),
-    );
-
-    // Unarchive.
-    let out = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        spec_identity(&boot),
-        json!({"archived_at": null}),
-    )
-    .await
-    .expect("unarchive ok");
-    assert!(
-        out.get("wave")
-            .and_then(|w| w.get("archived_at"))
-            .map(Value::is_null)
-            .unwrap_or(false),
-        "archived_at cleared: {out}",
-    );
-}
-
-// ---------------------------------------------------------------------------
 // calm.task.verdict
 // ---------------------------------------------------------------------------
 
@@ -461,16 +279,20 @@ async fn task_verdict_accepted_emits_task_completed() {
         Event::WaveLifecycleChanged {
             from: WaveLifecycle::Draft,
             to: WaveLifecycle::Planning,
-            agent_message: None,
+            agent_message: Some(ref message),
             ..
-        }
+        } if message == "[auto] first spec write"
     ));
     let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers auto update")
         .expect("bus open");
     assert!(matches!(auto_updated.actor, ActorId::Kernel));
-    assert!(matches!(auto_updated.event, Event::WaveUpdated(_)));
+    assert!(matches!(
+        auto_updated.event,
+        Event::WaveUpdated(ref payload)
+            if payload.agent_message.as_deref() == Some("[auto] first spec write")
+    ));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
@@ -566,16 +388,20 @@ async fn task_verdict_rejected_emits_task_failed() {
         Event::WaveLifecycleChanged {
             from: WaveLifecycle::Draft,
             to: WaveLifecycle::Planning,
-            agent_message: None,
+            agent_message: Some(ref message),
             ..
-        }
+        } if message == "[auto] first spec write"
     ));
     let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers auto update")
         .expect("bus open");
     assert!(matches!(auto_updated.actor, ActorId::Kernel));
-    assert!(matches!(auto_updated.event, Event::WaveUpdated(_)));
+    assert!(matches!(
+        auto_updated.event,
+        Event::WaveUpdated(ref payload)
+            if payload.agent_message.as_deref() == Some("[auto] first spec write")
+    ));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
@@ -842,7 +668,7 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #145 — lifecycle transitions via update_wave_state
+// Wave lifecycle defaults
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -859,327 +685,4 @@ async fn new_wave_defaults_to_draft_lifecycle() {
         calm_server::model::WaveLifecycle::Draft,
         "freshly minted wave starts in Draft"
     );
-}
-
-#[tokio::test]
-async fn update_wave_state_lifecycle_happy_path_emits_change_event() {
-    let boot = boot().await;
-    let mut rx = boot.ctx.events.subscribe();
-
-    let out = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        spec_identity(&boot),
-        json!({"lifecycle": "planning"}),
-    )
-    .await
-    .expect("spec can drive draft -> planning");
-    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
-    assert_eq!(
-        out.get("wave")
-            .and_then(|w| w.get("lifecycle"))
-            .and_then(Value::as_str),
-        Some("planning"),
-        "response carries the new lifecycle"
-    );
-
-    // First pair: #597's kernel auto-promotion. The deprecated
-    // handler then emits its historical lifecycle event + WaveUpdated.
-    let env1 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    assert!(matches!(env1.actor, ActorId::Kernel));
-    match env1.event {
-        Event::WaveLifecycleChanged {
-            ref id,
-            ref cove_id,
-            from,
-            to,
-            ref agent_message,
-        } => {
-            assert_eq!(id, &boot.wave_id);
-            assert_eq!(cove_id, &boot.cove_id);
-            assert_eq!(from, calm_server::model::WaveLifecycle::Draft);
-            assert_eq!(to, calm_server::model::WaveLifecycle::Planning);
-            assert_eq!(agent_message, &None);
-        }
-        other => panic!("expected auto WaveLifecycleChanged first, got {other:?}"),
-    }
-
-    let env2 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    assert!(matches!(env2.actor, ActorId::Kernel));
-    match env2.event {
-        Event::WaveUpdated(ref payload) => {
-            assert_eq!(payload.id, boot.wave_id);
-            assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
-            assert_eq!(payload.agent_message, None);
-        }
-        other => panic!("expected auto WaveUpdated second, got {other:?}"),
-    }
-
-    let env3 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    match env3.event {
-        Event::WaveLifecycleChanged {
-            ref id,
-            ref cove_id,
-            from,
-            to,
-            ref agent_message,
-        } => {
-            assert_eq!(id, &boot.wave_id);
-            assert_eq!(cove_id, &boot.cove_id);
-            assert_eq!(from, calm_server::model::WaveLifecycle::Draft);
-            assert_eq!(to, calm_server::model::WaveLifecycle::Planning);
-            assert_eq!(agent_message, &None);
-        }
-        other => panic!("expected deprecated WaveLifecycleChanged third, got {other:?}"),
-    }
-
-    let env4 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    assert!(matches!(env4.event, Event::WaveUpdated(_)));
-
-    // DB is also persisted.
-    let persisted = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        persisted.lifecycle,
-        calm_server::model::WaveLifecycle::Planning
-    );
-}
-
-#[tokio::test]
-async fn update_wave_state_lifecycle_illegal_transition_refused_no_persistence() {
-    let boot = boot().await;
-    let mut rx = boot.ctx.events.subscribe();
-
-    // draft -> done is illegal regardless of actor — the validator
-    // catches it before the row is written.
-    let err = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        spec_identity(&boot),
-        json!({"lifecycle": "done"}),
-    )
-    .await
-    .expect_err("draft -> done must be refused");
-    assert_eq!(err.code, -32403, "forbidden code");
-    assert!(
-        err.message.to_lowercase().contains("lifecycle"),
-        "error mentions lifecycle: {err:?}"
-    );
-
-    // DB row unchanged.
-    let persisted = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        persisted.lifecycle,
-        calm_server::model::WaveLifecycle::Draft,
-        "lifecycle still Draft — no row write"
-    );
-
-    // No envelope on the bus (commit-then-emit holds when the
-    // validator rejects up front).
-    let res = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
-    assert!(
-        res.is_err(),
-        "no event should be broadcast on illegal transition (got {res:?})"
-    );
-}
-
-#[tokio::test]
-async fn update_wave_state_lifecycle_worker_actor_refused() {
-    // Worker cards may not transition lifecycle. The MCP soft gate
-    // refuses *any* update_wave_state call from a worker before we
-    // even reach validate_transition; this test pins that behavior.
-    let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        worker_identity(&boot),
-        json!({"lifecycle": "planning"}),
-    )
-    .await
-    .expect_err("worker can't call update_wave_state at all");
-    assert_eq!(err.code, -32602);
-}
-
-#[tokio::test]
-async fn update_wave_state_same_state_lifecycle_is_idempotent_no_event() {
-    // Issue #145 followup — a spec resending `lifecycle: <current>`
-    // (e.g. on retry after a transient network blip) must succeed
-    // silently: no `WaveLifecycleChanged` envelope, no `WaveUpdated`
-    // envelope (lifecycle was the only field), and the row's
-    // `updated_at` stays put. This pins the idempotent semantics
-    // chosen in PR #145 followup.
-    let boot = boot().await;
-    let mut rx = boot.ctx.events.subscribe();
-
-    let pre = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        pre.lifecycle,
-        calm_server::model::WaveLifecycle::Draft,
-        "boot fixture lands in Draft",
-    );
-
-    let out = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        spec_identity(&boot),
-        json!({"lifecycle": "draft"}),
-    )
-    .await
-    .expect("same-state lifecycle is a silent success");
-    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
-    assert_eq!(
-        out.get("wave")
-            .and_then(|w| w.get("lifecycle"))
-            .and_then(Value::as_str),
-        Some("draft"),
-        "response carries the (unchanged) lifecycle",
-    );
-
-    // No bus envelope at all — the row wasn't written and no
-    // lifecycle change happened.
-    let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
-    assert!(
-        bus.is_err(),
-        "no event should be emitted for an idempotent no-op (got {bus:?})",
-    );
-
-    // Row untouched: same lifecycle, same `updated_at` (the no-op
-    // path returns the existing row without calling `wave_update_tx`).
-    let post = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(post.lifecycle, calm_server::model::WaveLifecycle::Draft);
-    assert_eq!(
-        post.updated_at, pre.updated_at,
-        "updated_at must not advance on a lifecycle-only no-op",
-    );
-}
-
-#[tokio::test]
-async fn update_wave_state_same_state_lifecycle_plus_other_field_still_writes() {
-    // Companion to the no-op test above: when the spec sends a
-    // same-state `lifecycle` together with another genuine change
-    // (here: `title`), we still emit `WaveUpdated` for the title
-    // change but must NOT emit a `WaveLifecycleChanged` envelope
-    // (nothing changed about lifecycle). Pins the boundary case so
-    // a future refactor that strips the whole patch on lifecycle
-    // no-op surfaces here.
-    let boot = boot().await;
-    let mut rx = boot.ctx.events.subscribe();
-
-    let out = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        spec_identity(&boot),
-        json!({"lifecycle": "draft", "title": "renamed"}),
-    )
-    .await
-    .expect("same-state lifecycle + title change succeeds");
-    assert_eq!(
-        out.get("wave")
-            .and_then(|w| w.get("title"))
-            .and_then(Value::as_str),
-        Some("renamed"),
-    );
-
-    // Three envelopes: kernel auto-promotes Draft -> Planning with its
-    // lifecycle/update pair, then the deprecated handler writes the
-    // title. No explicit WaveLifecycleChanged is emitted for the
-    // requested same-state lifecycle against the pre-auto row.
-    let changed_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    assert!(matches!(changed_env.actor, ActorId::Kernel));
-    match changed_env.event {
-        Event::WaveLifecycleChanged {
-            from,
-            to,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(from, WaveLifecycle::Draft);
-            assert_eq!(to, WaveLifecycle::Planning);
-            assert_eq!(agent_message, None);
-        }
-        other => panic!("first envelope is auto WaveLifecycleChanged, got {other:?}"),
-    }
-
-    let updated_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    assert!(matches!(updated_env.actor, ActorId::Kernel));
-    assert!(
-        matches!(updated_env.event, Event::WaveUpdated(_)),
-        "second envelope is auto WaveUpdated, got {:?}",
-        updated_env.event,
-    );
-
-    let title_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers title write")
-        .expect("bus open");
-    assert!(
-        matches!(title_env.event, Event::WaveUpdated(ref w) if w.title == "renamed"),
-        "third envelope is title WaveUpdated, got {:?}",
-        title_env.event,
-    );
-
-    // No follow-up explicit lifecycle-change envelope.
-    let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
-    assert!(
-        bus.is_err(),
-        "no WaveLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
-    );
-}
-
-#[tokio::test]
-async fn update_wave_state_same_state_lifecycle_still_rejects_worker() {
-    // Idempotency only applies to actors with lifecycle authority.
-    // A Worker resending `lifecycle: <current>` must still be
-    // refused — silently accepting would hide a real bug (workers
-    // emitting wave-level mutations).
-    let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_UPDATE_WAVE_STATE,
-        worker_identity(&boot),
-        json!({"lifecycle": "draft"}),
-    )
-    .await
-    .expect_err("worker still denied even on same-state");
-    // Soft role gate at the MCP entry fires first (`-32602`) —
-    // the worker can't call `update_wave_state` at all, regardless
-    // of payload. The lifecycle validator never runs.
-    assert_eq!(err.code, -32602);
 }

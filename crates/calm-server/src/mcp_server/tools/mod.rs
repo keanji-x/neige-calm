@@ -18,8 +18,8 @@ pub mod wave_state;
 /// Register every default tool onto a fresh registry. Callers build
 /// the final `Arc<ToolRegistry>` from the result.
 ///
-/// The default set covers emit tools, wave-state tools, wave-report
-/// tools, and read-only wave-file views.
+/// The default set covers emit tools, wave-state reads, verdict writes,
+/// wave-report tools, and read-only wave-file views.
 ///
 /// #293 cutover: the old `calm.wait_for_events` long-poll tool is gone —
 /// spec agents are driven by pushed turn inputs, not polling.

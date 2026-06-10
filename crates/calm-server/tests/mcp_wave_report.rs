@@ -492,7 +492,7 @@ async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
             assert_eq!(id, boot.wave_id);
             assert_eq!(from, WaveLifecycle::Draft);
             assert_eq!(to, WaveLifecycle::Planning);
-            assert_eq!(agent_message, None);
+            assert_eq!(agent_message.as_deref(), Some("[auto] first spec write"));
         }
         other => panic!("expected auto WaveLifecycleChanged first, got {other:?}"),
     }
@@ -503,7 +503,10 @@ async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
         Event::WaveUpdated(payload) => {
             assert_eq!(payload.id, boot.wave_id);
             assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
-            assert_eq!(payload.agent_message, None);
+            assert_eq!(
+                payload.agent_message.as_deref(),
+                Some("[auto] first spec write")
+            );
         }
         other => panic!("expected auto WaveUpdated second, got {other:?}"),
     }

@@ -3,8 +3,8 @@
 //! ## Architecture
 //!
 //! The codex daemons spawned for Spec / Worker cards need a write path
-//! back into the kernel for dispatch, task outcomes, wave-state changes,
-//! and report updates. (The old `wait_for_events` pull tool was removed
+//! back into the kernel for dispatch, task outcomes, verdicts, and report
+//! updates. (The old `wait_for_events` pull tool was removed
 //! in the #293 cutover.) The chosen transport is **MCP over a
 //! Unix domain socket** so the per-card identity binding is
 //! cryptographic (per-card token in `card_mcp_tokens`) and the wire
@@ -53,8 +53,8 @@ pub use transport::{McpServer, McpShimConfig};
 
 use std::sync::Arc;
 
-/// Build the default `ToolRegistry` populated with the emit, wave-state,
-/// and wave-report tools (see [`tools::register_default_tools`]).
+/// Build the default `ToolRegistry` populated with the emit, wave-state read,
+/// verdict, and wave-report tools (see [`tools::register_default_tools`]).
 pub fn build_default_registry() -> Arc<ToolRegistry> {
     let mut r = ToolRegistry::new();
     tools::register_default_tools(&mut r);

@@ -154,7 +154,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
 async fn post_permission_request(app: &axum::Router, card_id: &str) {
     let body = serde_json::json!({
         "hook_event_name": "PermissionRequest",
-        "tool_name": "calm__update_wave_state",
+        "tool_name": "calm__report__write",
         "tool_input": {},
     })
     .to_string();

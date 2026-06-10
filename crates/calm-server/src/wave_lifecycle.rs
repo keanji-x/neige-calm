@@ -111,8 +111,8 @@ pub fn actor_kind(actor: &ActorId) -> ActorKind {
 /// `Ok(())` so retries and idempotent client behavior succeed
 /// silently. The caller is responsible for not emitting a
 /// `WaveLifecycleChanged` event when nothing changed; see
-/// `routes::waves::update_wave` and
-/// `mcp_server::tools::wave_state::update_wave_state`.
+/// `routes::waves::update_wave` and the MCP per-write lifecycle
+/// handlers.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TransitionError {
     /// The (from → to) edge is structurally impossible regardless of
@@ -150,7 +150,7 @@ pub enum TransitionError {
 /// **not** emit `WaveLifecycleChanged`, must not bump `updated_at`
 /// solely on account of the lifecycle field, and must return success
 /// to the client. This idempotent shortcut keeps client retries clean
-/// (an LLM re-sending the same `update_wave_state` doesn't pollute
+/// (an LLM re-sending the same lifecycle target doesn't pollute
 /// the event log) without softening the actor-authority check below:
 /// a Worker card sending `lifecycle: planning` while the wave is
 /// already planning still hits `NotAuthorized`.
@@ -285,13 +285,18 @@ pub async fn auto_promote_draft_in_tx(
         WaveLifecycle::Draft,
         WaveLifecycle::Planning,
         &ActorId::Kernel,
-        None,
+        Some("[auto] first spec write".to_string()),
     )
     .await
 }
 
 /// Apply an explicit spec-requested lifecycle transition inside the caller's
 /// write tx and return the lifecycle/update events for the same batch.
+///
+/// If the requested target equals current lifecycle, no lifecycle events are
+/// emitted and the caller's `agent_message` is discarded. This is intentional —
+/// without a transition there is no lifecycle event to carry the message, and
+/// bumping `WaveUpdated.agent_message` on a no-op would emit a spurious event.
 pub async fn apply_requested_transition_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &crate::ids::WaveId,
@@ -367,7 +372,7 @@ pub async fn auto_transition_if_current_in_tx(
             cove_id: updated.cove_id.clone(),
             from: current.lifecycle,
             to,
-            agent_message: None,
+            agent_message: agent_message.clone(),
         },
         Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
             updated,
@@ -613,8 +618,7 @@ mod tests {
         // An authorized actor (User, SpecAgent / Kernel) asking for
         // the state the wave is already in is a silent success. The
         // caller is then expected to skip the `WaveLifecycleChanged`
-        // emit; this contract is verified at the call-site
-        // integration tests in `mcp_wave_state.rs`.
+        // emit; call-site integration tests cover the no-event path.
         for state in ALL_STATES {
             for actor in [user(), spec(), ActorId::Kernel, ActorId::KernelDispatcher] {
                 let res = validate_transition(state, state, &actor);
