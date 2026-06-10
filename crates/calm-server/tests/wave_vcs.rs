@@ -71,7 +71,34 @@ async fn add_card_with_event(
     role: CardRole,
     payload: serde_json::Value,
 ) -> Card {
-    let card_id = new_id();
+    add_card_with_id_with_event(
+        repo,
+        bus,
+        roles,
+        write,
+        wave_id,
+        cove_id,
+        new_id(),
+        kind,
+        role,
+        payload,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn add_card_with_id_with_event(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    roles: &CardRoleCache,
+    write: &WriteContext,
+    wave_id: &WaveId,
+    cove_id: &CoveId,
+    card_id: String,
+    kind: &str,
+    role: CardRole,
+    payload: serde_json::Value,
+) -> Card {
     let lookup_card_id = card_id.clone();
     let scope = EventScope::Card {
         card: CardId::from(card_id.clone()),
@@ -754,6 +781,11 @@ async fn incremental_commit_changes_only_expected_wave_paths() {
     let diff = wave_vcs::diff(repo.pool(), &first, &second, None)
         .await
         .expect("diff");
+    let root_diff = wave_vcs::diff(repo.pool(), &first, &second, Some("/"))
+        .await
+        .expect("root diff");
+    assert_eq!(root_diff, diff);
+
     let paths = diff
         .iter()
         .map(|entry| (entry.path.as_str(), entry.status))
@@ -937,35 +969,37 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
     let wave = make_wave(&repo, cove.id.as_str()).await;
     let bus = EventBus::new();
     let (roles, coves, write) = write_context();
-    let first = add_card_with_event(
+    let high_id = add_card_with_id_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
         &cove.id,
+        "worker-z-card".into(),
         "codex",
         CardRole::Worker,
-        json!({"schemaVersion": 1, "idempotency_key": "dup-key", "name": "first"}),
+        json!({"schemaVersion": 1, "idempotency_key": "dup-key", "name": "high-id"}),
     )
     .await;
-    let second = add_card_with_event(
+    let low_id = add_card_with_id_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
         &cove.id,
+        "worker-a-card".into(),
         "codex",
         CardRole::Worker,
-        json!({"schemaVersion": 1, "idempotency_key": "dup-key", "name": "second"}),
+        json!({"schemaVersion": 1, "idempotency_key": "dup-key", "name": "low-id"}),
     )
     .await;
-    let first = update_card_with_event(
+    let high_id = update_card_with_event(
         &repo,
         &bus,
         &write,
-        &first,
+        &high_id,
         &cove.id,
         CardPatch {
             kind: None,
@@ -975,11 +1009,11 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         },
     )
     .await;
-    let second = update_card_with_event(
+    let low_id = update_card_with_event(
         &repo,
         &bus,
         &write,
-        &second,
+        &low_id,
         &cove.id,
         CardPatch {
             kind: None,
@@ -989,8 +1023,7 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         },
     )
     .await;
-    let mut expected_ids = vec![first.id.to_string(), second.id.to_string()];
-    expected_ids.sort();
+    let expected_ids = vec![low_id.id.to_string(), high_id.id.to_string()];
 
     let live_ids = repo
         .cards_by_wave(wave.id.as_str())

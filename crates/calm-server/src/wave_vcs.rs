@@ -543,7 +543,7 @@ pub async fn sweep_unreferenced_objects_once(_pool: &SqlitePool) -> Result<u64> 
 }
 
 fn diff_manifests(from: &TreeManifest, to: &TreeManifest, path: Option<&str>) -> Vec<DiffEntry> {
-    let normalized = path.map(normalize_path);
+    let normalized = path.map(normalize_path).filter(|prefix| !prefix.is_empty());
     let mut paths = BTreeSet::new();
     paths.extend(from.entries.keys().cloned());
     paths.extend(to.entries.keys().cloned());
@@ -1270,6 +1270,8 @@ async fn cards_for_wave_tx(
     wave_id: &WaveId,
     visibility: &CardVisibility,
 ) -> Result<Vec<CardProjection>> {
+    // Keep this ORDER BY aligned with SqlxRepo::cards_by_wave in db/sqlite.rs;
+    // tests pin the sort ASC, id ASC tie-break for duplicate worker run keys.
     let rows = sqlx::query(
         r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at,
                   EXISTS (

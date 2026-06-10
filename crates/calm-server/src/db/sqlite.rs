@@ -2586,6 +2586,8 @@ impl RepoRead for SqlxRepo {
 
     // ---------------------------------------------------------------- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
+        // Keep this ORDER BY aligned with wave_vcs::cards_for_wave_tx; tests pin
+        // the sort ASC, id ASC tie-break for duplicate worker run keys.
         let rows = sqlx::query_as::<_, Card>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC, id ASC"#,
