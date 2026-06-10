@@ -76,15 +76,24 @@ export function AddPanel({
       emptyClassName="add-panel-empty"
       emptyState="No card kinds registered"
       trigger={({ ref, onClick, 'aria-haspopup': ariaHasPopup, 'aria-expanded': ariaExpanded }) => (
+        // Glyph-only trigger: a `+` that rotates 45° into a `×` while
+        // the menu is open (one span, CSS transform — see
+        // `.add-panel-glyph` in calm.css). The dashed border stays —
+        // it's this system's "insert here" vocabulary. The glyph is
+        // aria-hidden; the accessible name comes from aria-label and
+        // flips with the expanded state so AT hears the actual verb.
         <button
           ref={ref}
           className="add-panel"
           onClick={onClick}
           aria-expanded={ariaExpanded}
           aria-haspopup={ariaHasPopup}
-          title="Add card"
+          aria-label={ariaExpanded ? 'Close add menu' : 'Add card'}
+          title={ariaExpanded ? 'Close add menu' : 'Add card'}
         >
-          + Add
+          <span className="add-panel-glyph" aria-hidden="true">
+            +
+          </span>
         </button>
       )}
     />

@@ -1412,7 +1412,13 @@ select:-webkit-autofill {
 }
 .wave-crumb {
   display: flex; align-items: center; gap: var(--space-4);
-  min-width: 0; flex: 1;
+  /* Content-sized (shrinkable, min-width:0 keeps the title ellipsis
+     working) rather than greedy `flex: 1`: the #594 view-flip toggle
+     sits immediately after the crumb in the header's LEFT region, and
+     a greedy crumb would shove it against the right-side meta cluster.
+     The free space now lives between the toggle and `.wave-meta`
+     (margin-left: auto below). */
+  min-width: 0; flex: 0 1 auto;
   font-size: var(--text-md);
 }
 .wave-cove-dot {
@@ -1561,6 +1567,9 @@ select:-webkit-autofill {
 .wave-meta {
   display: flex; align-items: center; gap: var(--space-7);
   flex-shrink: 0;
+  /* Soak up the header's free space on the left — `.wave-crumb` is
+     content-sized since the #594 toggle moved next to it. */
+  margin-left: auto;
 }
 .status-pill {
   display: inline-flex; align-items: center; gap: var(--space-4);
@@ -1598,7 +1607,7 @@ select:-webkit-autofill {
   align-self: stretch;
   flex: 1;
   min-height: 0;
-  padding-bottom: 0;
+  padding-bottom: var(--space-0);
 }
 .workbench--report .workbench-main {
   flex: 1;
@@ -1742,81 +1751,57 @@ select:-webkit-autofill {
   position: relative;
 }
 .add-panel {
-  height: 28px; padding: var(--space-0) var(--space-6);
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  padding: var(--space-0);
   border: 1.5px dashed var(--hairline-strong);
   border-radius: var(--r);
   color: var(--text-3);
-  font-size: var(--text-sm);
-  font-weight: 500;
+  font-size: var(--text-lg);
+  line-height: var(--leading-none);
   transition: color var(--motion-quick), border-color var(--motion-quick);
   background: transparent;
 }
 .add-panel:hover { color: var(--text); border-color: var(--text-3); }
 .add-panel[aria-expanded="true"] { color: var(--text); border-color: var(--text-3); }
+/* The `+` glyph rotates 45° into a `×` while the menu is open — one
+   span, one transform, two verbs (insert / dismiss). aria-label on the
+   trigger flips in step (see AddPanel.tsx); the reduced-motion override
+   at the bottom of this file collapses the spin for vestibular users. */
+.add-panel-glyph {
+  display: block;
+  transition: transform var(--motion-quick);
+}
+.add-panel[aria-expanded="true"] .add-panel-glyph { transform: rotate(45deg); }
 
-/* View-mode toggle — Slice 9 of issue #56. Visually matches the AddPanel
-   trigger (same height, same dashed border vocabulary) so the two header
-   controls read as a small cluster, not competing affordances. The
-   `is-list` modifier swaps to a solid border so the bound state is
-   distinguishable for low-vision users who can't rely on the label
-   change alone (the role="switch" + aria-checked carries the same
-   signal to AT). */
-.view-toggle {
-  height: 28px; padding: var(--space-0) var(--space-6);
-  border: 1.5px dashed var(--hairline-strong);
-  border-radius: var(--r);
+/* Wave surface flip (issue #594 demo) — ONE binary Grid↔Report switch
+   in the wave header's LEFT region, right after the breadcrumb. Solid
+   hairline pill on purpose: dashed is AddPanel's "insert here"
+   vocabulary, and a mode switch must read as chrome, not as an insert
+   slot. Checked (= report) fills with --surface-card so the bound
+   state survives a squint; aria-checked carries it to AT. Height sits
+   on the 28px header-control row shared with AddPanel. PR2 of #594
+   replaces this with the persisted three-state ViewMode control. */
+.view-flip {
+  height: 28px;
+  padding: var(--space-0) var(--space-6);
+  flex-shrink: 0;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-pill);
   color: var(--text-3);
   font-size: var(--text-sm);
   font-weight: 500;
   background: transparent;
   transition: color var(--motion-quick), border-color var(--motion-quick), background var(--motion-quick);
 }
-.view-toggle:hover { color: var(--text); border-color: var(--text-3); }
-.view-toggle.is-list {
-  border-style: solid;
+.view-flip:hover { color: var(--text); border-color: var(--text-3); }
+.view-flip[aria-checked="true"] {
+  background: var(--surface-card);
   color: var(--text);
-  border-color: var(--text-3);
 }
-.view-toggle:focus-visible {
+.view-flip:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-/* Wave surface picker (issue #594 demo) — one segmented radiogroup
-   [Grid | List | Report] in the wave header. Vocabulary borrowed from
-   the calendar's .cal-toggle (recessed --surface-toggle-overlay track,
-   selected segment raised on --paper); height tuned to the 28px
-   header-control row shared with AddPanel/.view-toggle. */
-.view-seg {
-  display: inline-flex;
-  align-items: center;
-  height: 28px;
-  padding: var(--space-1);
-  gap: var(--space-px);
-  background: var(--surface-toggle-overlay);
-  border-radius: var(--radius-md);
-}
-.view-seg button {
-  height: 100%;
-  padding: var(--space-0) var(--space-5);
-  border-radius: calc(var(--radius-md) - 2px);
-  font-size: var(--text-xs);
-  font-weight: 600;
-  letter-spacing: var(--tracking-wide);
-  color: var(--text-3);
-  transition: background var(--motion-quick), color var(--motion-quick);
-}
-.view-seg button:hover { color: var(--text); }
-.view-seg button.on {
-  background: var(--paper);
-  color: var(--text);
-  box-shadow: 0 1px 2px rgba(20,30,55,.05);
-}
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .view-seg button.on { background: oklch(28% 0.01 245); } /* same landing as .cal-toggle's dark on */
-.view-seg button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 
 .add-panel-menu {

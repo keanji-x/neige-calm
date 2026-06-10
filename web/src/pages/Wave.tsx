@@ -12,7 +12,6 @@ import { WaveContext } from '../shared/components/WaveContext';
 import { CalmApiError } from '../api/calm';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
-import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 import { waveDisplayTitle } from '../shared/waveTitle';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
@@ -194,12 +193,12 @@ export function WavePage({
 
   const showPct = wave.progress > 0 && wave.progress < 1.0;
 
-  // Per-wave view-mode preference. Defaults to grid (no breaking change
-  // for mouse users); the toggle in the wave-header flips it and the
-  // overlay persists across reloads. The hook handles optimistic update,
-  // WS replay, and IndexedDB rehydration the same way the layout
-  // overlay does.
-  const [viewModeOverlay, setViewModeOverlay] = useOverlayState<ViewModeOverlay>({
+  // Per-wave view-mode preference (Slice 9 of #56). Read-only in this
+  // demo: the #594 binary toggle dropped the Grid↔List UI entry, but
+  // waves whose overlay already holds `list` keep rendering as a list
+  // when Report is off. PR2 of #594 restores a writable three-state
+  // ViewMode ('grid' | 'list' | 'report') and with it the setter.
+  const [viewModeOverlay] = useOverlayState<ViewModeOverlay>({
     entity_kind: 'view',
     entity_id: wave.id,
     kind: 'view-mode',
@@ -208,12 +207,6 @@ export function WavePage({
   const viewMode: ViewMode = isViewMode(viewModeOverlay.mode)
     ? viewModeOverlay.mode
     : 'grid';
-  const toggleViewMode = () => {
-    setViewModeOverlay({
-      schemaVersion: OVERLAY_VIEW_MODE_SCHEMA_VERSION,
-      mode: viewMode === 'grid' ? 'list' : 'grid',
-    });
-  };
 
   // Demo toggle for the unified Report view (issue #594). Deliberately
   // plain useState, NOT overlay-persisted: the report content is the
@@ -222,21 +215,6 @@ export function WavePage({
   // data is fake would mislead. PR2 of #594 replaces this with a real
   // three-state ViewMode ('grid' | 'list' | 'report') on the overlay.
   const [reportPreview, setReportPreview] = useState(false);
-  // One three-segment control, one selected surface — not two stacked
-  // two-state switches (those had contradictory label conventions: one
-  // showed the target state, the other the current state). Grid/List
-  // still flow through the persisted overlay; Report stays local. The
-  // interaction model maps 1:1 onto PR2's three-state ViewMode.
-  const surface: 'grid' | 'list' | 'report' = reportPreview
-    ? 'report'
-    : viewMode;
-  const pickSurface = (s: 'grid' | 'list' | 'report') => {
-    setReportPreview(s === 'report');
-    // Re-use the existing overlay-persistence path for grid↔list; a
-    // report→grid/list exit restores whatever mode the overlay held
-    // unless the user picked the other one.
-    if (s !== 'report' && s !== viewMode) toggleViewMode();
-  };
 
   return (
     // Issue #229 PR B — wrap with WaveContext so the WaveReport card
@@ -320,36 +298,32 @@ export function WavePage({
             </>
           )}
         </span>
+        {/* Surface flip (issue #594 demo) — ONE binary Grid↔Report
+            switch, sitting after the breadcrumb. Slice-9 label
+            convention: visible label = current surface, action verb in
+            aria-label/title. The grid/list overlay is read-only here
+            (no UI entry for List in the demo); PR2 of #594 swaps this
+            for the persisted three-state ViewMode control. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={reportPreview}
+          className="view-flip"
+          onClick={() => setReportPreview((v) => !v)}
+          aria-label={
+            reportPreview
+              ? 'Switch wave to cards view'
+              : 'Switch wave to report view'
+          }
+          title={
+            reportPreview
+              ? 'Switch to cards view'
+              : 'Unified report view (design demo, #594)'
+          }
+        >
+          {reportPreview ? 'Report' : 'Grid'}
+        </button>
         <span className="wave-meta">
-          {/* Wave surface picker (issue #594 demo). One segmented
-              radiogroup [Grid | List | Report] replaces the previous
-              two-state Grid/List switch (Slice 9 of #56) for the demo:
-              three exclusive surfaces are one selection, not two
-              switches. Visual vocabulary borrowed from the calendar's
-              `.cal-toggle` (recessed track + raised selected segment).
-              PR2 of #594 keeps this control and moves the Report state
-              into the persisted three-state ViewMode overlay. */}
-          <div className="view-seg" role="radiogroup" aria-label="Wave view">
-            {(['grid', 'list', 'report'] as const).map((s) => (
-              <button
-                key={s}
-                type="button"
-                role="radio"
-                aria-checked={surface === s}
-                className={surface === s ? 'on' : undefined}
-                onClick={() => pickSurface(s)}
-                title={
-                  s === 'report'
-                    ? 'Unified report view (design demo, #594)'
-                    : s === 'list'
-                      ? 'List view (keyboard-friendly)'
-                      : 'Grid view'
-                }
-              >
-                {s === 'grid' ? 'Grid' : s === 'list' ? 'List' : 'Report'}
-              </button>
-            ))}
-          </div>
           {!reportPreview && <AddPanel onSelect={beginAdd} />}
           {directAddError && (
             <p

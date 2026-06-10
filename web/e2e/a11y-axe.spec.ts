@@ -33,7 +33,11 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
-import { resetReplayServer, createWaveInCove } from './helpers/reset';
+import {
+  resetReplayServer,
+  createWaveInCove,
+  seedWaveViewMode,
+} from './helpers/reset';
 
 /** Themes the axe matrix scans every route under. `light` is the default
  *  the app boots into; `dark` is applied via `enableDarkTheme()` below
@@ -211,8 +215,8 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
 test.describe('a11y · axe', () => {
   test.beforeEach(async ({ request, page }) => {
     // Hermetic per-test state — see `helpers/reset.ts`. Axe scans don't
-    // mutate state themselves, but `ids(page)` clicks through "+ Add" /
-    // codex modals in some tests and we don't want their residue (extra
+    // mutate state themselves, but some tests click through the AddPanel
+    // trigger / codex modals and we don't want their residue (extra
     // cards, opened modals' overlay payloads) leaking into the next
     // spec's DOM.
     await resetReplayServer(request);
@@ -270,7 +274,8 @@ test.describe('a11y · axe', () => {
         await waitForBootstrap(page);
         // WaveGrid is lazy-loaded — wait for AddPanel to render before
         // scanning so the wave page's full role tree is in the DOM.
-        await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
+        // The trigger is glyph-only since #594; aria-label "Add card".
+        await expect(page.getByRole('button', { name: /add card/i })).toBeVisible();
         await applyTheme(page, theme);
         const { violations } = await axe(page).analyze();
         expect(violations, formatViolations(violations)).toEqual([]);
@@ -305,8 +310,9 @@ test.describe('a11y · axe', () => {
         // Open the menu via keyboard so we're scanning the same
         // transient state a real user would land in. Slice 7 may rework
         // the menu's keyboard semantics but the open-on-Enter contract
-        // holds today.
-        const trigger = page.getByRole('button', { name: /\+\s*add/i });
+        // holds today. The trigger is glyph-only since #594; accessible
+        // name is the aria-label "Add card" while closed.
+        const trigger = page.getByRole('button', { name: /add card/i });
         await expect(trigger).toBeVisible();
         await trigger.focus();
         await page.keyboard.press('Enter');
@@ -322,18 +328,22 @@ test.describe('a11y · axe', () => {
 
   // Slice 9: the list-view alternative to WaveGrid. Same role/name
   // hygiene applies — labels, roles, landmark structure should come
-  // out clean. The view picker is a three-segment radiogroup
-  // [Grid | List | Report] since the #594 demo; we flip to List via
-  // its radio and scan the populated list state.
+  // out clean. The #594 demo removed the Grid↔List UI entry (the only
+  // header view control is now the binary Grid↔Report switch), so we
+  // enter list mode by seeding the per-wave `view-mode` overlay via
+  // REST — the same row the removed control wrote — before the page
+  // loads, then scan the populated list state.
   test.describe('Wave list view', () => {
     for (const theme of THEMES) {
       test(`${theme} mode · no violations`, async ({ page }) => {
         const { waveId } = await ids(page);
+        await seedWaveViewMode(page.request, waveId, 'list');
         await page.goto(`/calm/wave/${waveId}?trace=1`);
         await waitForBootstrap(page);
-        // Wait for the wave page to fully render before flipping the
-        // toggle — WaveGrid is lazy-loaded.
-        const addBtn = page.getByRole('button', { name: /\+\s*add/i });
+        // Wait for the wave page to fully render — the AddPanel trigger
+        // (glyph-only since #594; aria-label "Add card") mounts with
+        // the header and stays visible in list mode.
+        const addBtn = page.getByRole('button', { name: /add card/i });
         await expect(addBtn).toBeVisible();
         // Post-#175 the wave from `ids()` is freshly minted with zero
         // cards (the default Today PTY lives in the hidden system cove,
@@ -343,13 +353,8 @@ test.describe('a11y · axe', () => {
         // render — what we're scanning is the populated list state.
         await addBtn.click();
         await page.getByRole('menuitem', { name: /terminal/i }).first().click();
-        await page.waitForTimeout(500);
-        const listRadio = page
-          .getByRole('radiogroup', { name: /wave view/i })
-          .getByRole('radio', { name: /^list$/i });
-        await expect(listRadio).toBeVisible();
-        await listRadio.click();
-        // List mode lazily mounts; wait for the <ul> before the scan.
+        // List mode lazily mounts; wait for the <ul> (now non-empty —
+        // the card.added WS event lands the new row) before the scan.
         await expect(page.getByRole('list', { name: /wave cards/i })).toBeVisible({
           timeout: 5_000,
         });
@@ -367,9 +372,11 @@ test.describe('a11y · axe', () => {
         await page.goto(`/calm/wave/${waveId}?trace=1`);
         await waitForBootstrap(page);
         await applyTheme(page, theme);
-        // Same path as the keyboard spec: open AddPanel, pick the codex
-        // menuitem (the only built-in with a createSchema → modal).
-        const trigger = page.getByRole('button', { name: /\+\s*add/i });
+        // Same path as the keyboard spec: open AddPanel (glyph-only
+        // trigger since #594; aria-label "Add card" while closed), pick
+        // the codex menuitem (the only built-in with a createSchema →
+        // modal).
+        const trigger = page.getByRole('button', { name: /add card/i });
         await trigger.focus();
         await page.keyboard.press('Enter');
         const codexItem = page.getByRole('menuitem', { name: /codex/i });
