@@ -204,6 +204,9 @@ export function WavePage({
       ),
     [cards],
   );
+  // Forward-compat gate for kernels that may not mint a report card for every
+  // wave. Current kernels do mint one at create time; this must not drive the
+  // default view mode.
   const workerCardSlots = useMemo(() => excludeReportCards(cards), [cards]);
   const workerCards = useMemo(
     () => workerCardSlots.map((entry) => entry.slot),
@@ -217,13 +220,12 @@ export function WavePage({
     default: VIEW_MODE_DEFAULT,
   });
   const overlayMode = viewModeOverlay.mode;
-  const viewMode: ViewMode = isViewMode(overlayMode)
-    ? overlayMode === 'report' && !hasReportCard
-      ? 'grid'
-      : overlayMode
-    : hasReportCard
-      ? 'report'
-      : 'grid';
+  // Default to grid. The wave-report card is kernel-minted for every wave at
+  // create time (crates/calm-server/src/wave_report.rs:3), so the previous
+  // "report when hasReportCard" rule defaulted every new wave into report mode
+  // and hid the AddPanel. Users opt into report explicitly via the toggle.
+  // PR-E's 3-state control will revisit this.
+  const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'grid';
 
   const setViewMode = (mode: ViewMode) => {
     setViewModeOverlay({

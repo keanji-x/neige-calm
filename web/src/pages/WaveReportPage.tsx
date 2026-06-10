@@ -75,7 +75,7 @@ function ReportByline({ report }: { report?: WaveReportCardData }) {
 
 function DuplicateReportBanner({ count }: { count: number }) {
   return (
-    <div className="report-duplicate" role="alert" data-count={count}>
+    <div className="report-duplicate" role="status" data-count={count}>
       Multiple report cards found. Showing the earliest.
     </div>
   );

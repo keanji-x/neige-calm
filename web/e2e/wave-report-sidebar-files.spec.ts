@@ -20,8 +20,8 @@ test.afterEach(async ({ request }) => {
 
 // PR-A of #594 hides the legacy wave-report card from worker grid/list views
 // and moves the first-class Files rail onto WaveReportPage as a placeholder.
-// PR-B wires that rail to real files and should replace this old card-sidebar
-// smoke with an equivalent report-page assertion.
+// TODO(#594 PR-B): rewrite this as an equivalent report-page assertion using
+// the real WaveFileTree, then remove the .skip.
 test.skip('Report card file sidebar opens a real wave file', async ({ page }) => {
   const ts = Date.now();
   const coveRes = await page.request.post('/api/coves', {

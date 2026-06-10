@@ -79,7 +79,7 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(screen.getByRole('alert')).toHaveTextContent(
+    expect(screen.getByRole('status')).toHaveTextContent(
       'Multiple report cards found. Showing the earliest.',
     );
     expect(screen.getByText('Earliest body')).toBeInTheDocument();
