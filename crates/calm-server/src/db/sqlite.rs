@@ -47,7 +47,10 @@ use crate::runtime_repo::{
     RuntimeId, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution,
     Tx as RuntimeTx,
 };
-use crate::runtime_row::{card_runtime_from_row, run_status_from_db};
+use crate::runtime_row::{
+    card_runtime_from_row, projectable_runtimes_for_cards_from_rows,
+    projectable_runtimes_for_cards_query, run_status_from_db,
+};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
 };
@@ -1828,39 +1831,9 @@ async fn runtime_get_projectable_for_cards_from_pool(
         return Ok(HashMap::new());
     }
 
-    // See `runtime_get_projectable_for_card_from_pool` for the projection
-    // semantics — include terminal-state rows so last-known identity surfaces,
-    // exclude 'superseded' so the replacement active row is preferred.
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE status != 'superseded'
-             AND card_id IN ("#,
-    );
-    let mut separated = query.separated(", ");
-    for card_id in card_ids {
-        separated.push_bind(card_id);
-    }
-    separated.push_unseparated(
-        r#") ORDER BY card_id ASC,
-             CASE
-                 WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
-                 ELSE 1
-             END ASC,
-             updated_at_ms DESC, created_at_ms DESC, id DESC"#,
-    );
-
+    let mut query = projectable_runtimes_for_cards_query(card_ids);
     let rows = query.build().fetch_all(pool).await?;
-    let mut out = HashMap::new();
-    for row in rows {
-        let runtime = card_runtime_from_row(&row)?;
-        let card_id = runtime.card_id.clone();
-        out.entry(card_id).or_insert(runtime);
-    }
-    Ok(out)
+    projectable_runtimes_for_cards_from_rows(rows)
 }
 
 async fn runtime_get_active_by_thread_from_pool(
