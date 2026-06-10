@@ -65,18 +65,23 @@
 //! since the verdict is wave-level metadata about a worker the spec
 //! supervises, not the spec's own card state.
 
-use crate::db::{write_with_event_typed, write_with_events_typed};
+use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
-use crate::ids::WaveId;
+use crate::ids::{ActorId, WaveId};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, register_deprecated_alias, require_role, require_role_any,
     role_gated_write_annotations,
 };
+use crate::mcp_server::tools::lifecycle_args::{
+    lifecycle_schema, message_schema, parse_write_args,
+};
 use crate::model::{CardRole, Wave, WaveLifecycle, WavePatch};
-use crate::wave_lifecycle::validate_transition;
+use crate::wave_lifecycle::{
+    apply_requested_transition_in_tx, auto_promote_draft_in_tx, validate_transition,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -209,7 +214,7 @@ fn update_wave_state_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[],
     }
 }
 
@@ -218,6 +223,12 @@ async fn update_wave_state(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
+    tracing::warn!(
+        target: "calm.deprecated",
+        card_id = %identity.card_id,
+        "calm.update_wave_state called by card {} - retire per #597; use lifecycle arg on per-write tools",
+        identity.card_id
+    );
     require_role(&identity, CardRole::Spec)?;
 
     let patch = parse_wave_patch(&args)?;
@@ -279,9 +290,8 @@ async fn update_wave_state(
     let scope_for_tx = scope.clone();
     let patch_for_tx = patch.clone();
     let ((updated_wave, _emitted_lifecycle), _ids) =
-        write_with_events_typed::<(Wave, Option<(WaveLifecycle, WaveLifecycle)>), _>(
+        write_with_actor_events_typed::<(Wave, Option<(WaveLifecycle, WaveLifecycle)>), _>(
             ctx.repo.as_ref(),
-            actor,
             None,
             &ctx.events,
             &ctx.write,
@@ -291,11 +301,16 @@ async fn update_wave_state(
                 let patch_inner = patch_for_tx.clone();
                 let wave_id_event = wave_id_for_event.clone();
                 let cove_id_event = cove_id_for_event.clone();
+                let actor = actor.clone();
                 Box::pin(async move {
+                    let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
+                    if let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id_inner).await? {
+                        events.push((ActorId::Kernel, scope_inner.clone(), auto));
+                    }
                     let updated = apply_wave_patch_tx(tx, &wave_id_inner, patch_inner).await?;
-                    let mut events: Vec<(EventScope, Event)> = Vec::new();
                     if let Some((from, to)) = lifecycle_change {
                         events.push((
+                            actor.clone(),
                             scope_inner.clone(),
                             Event::WaveLifecycleChanged {
                                 id: wave_id_event,
@@ -305,7 +320,14 @@ async fn update_wave_state(
                             },
                         ));
                     }
-                    events.push((scope_inner, Event::WaveUpdated(updated.clone())));
+                    events.push((
+                        actor,
+                        scope_inner,
+                        Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
+                            updated.clone(),
+                            None,
+                        )),
+                    ));
                     Ok(((updated, lifecycle_change), events))
                 })
             },
@@ -448,16 +470,22 @@ fn update_task_meta_descriptor() -> ToolDescriptor {
              a worker's prior result. `idempotency_key` echoes the original \
              `*.worker_requested`. `status = \"accepted\"` emits \
              `task.completed`; `status = \"rejected\"` emits `task.failed` \
-             with `reason` (free-form). The verdict is persisted on the \
-             events log so audit replay surfaces the spec's rationale."
+             with `reason` (free-form). `message` is required and should \
+             explain the verdict; it is persisted as `agent_message`. \
+             Optional `lifecycle` drives the wave state machine in the same \
+             atomic write when accepting, rejecting, blocking, or continuing \
+             the wave. The verdict is persisted on the events log so audit \
+             replay surfaces the spec's rationale."
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["idempotency_key", "status"],
+            "required": ["idempotency_key", "status", "message"],
             "properties": {
                 "idempotency_key": { "type": "string", "minLength": 1 },
                 "status": { "type": "string", "enum": ["accepted", "rejected"] },
-                "reason": { "type": "string" }
+                "reason": { "type": "string" },
+                "message": message_schema(),
+                "lifecycle": lifecycle_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -471,6 +499,7 @@ async fn update_task_meta(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
+    let write_args = parse_write_args(&args, "update_task_meta")?;
 
     let idempotency_key = args
         .get("idempotency_key")
@@ -504,6 +533,7 @@ async fn update_task_meta(
                 "reason": reason.unwrap_or_default(),
             }),
             artifacts: vec![],
+            agent_message: Some(write_args.message.clone()),
         },
         "rejected" => Event::TaskFailed {
             idempotency_key,
@@ -512,6 +542,7 @@ async fn update_task_meta(
             // for "no reason given" — we don't second-guess the
             // verdict).
             reason: reason.unwrap_or_default(),
+            agent_message: Some(write_args.message.clone()),
         },
         other => {
             return Err(RpcError::invalid_params(format!(
@@ -527,17 +558,40 @@ async fn update_task_meta(
     };
     let actor = identity.to_actor_id();
     let kind_tag = event.kind_tag();
+    let wave_id = wave.id.clone();
+    let wave_scope = scope.clone();
 
-    let res = write_with_event_typed::<(), _>(
+    let res = write_with_actor_events_typed::<(), _>(
         ctx.repo.as_ref(),
-        actor,
-        scope,
         None,
         &ctx.events,
         &ctx.write,
-        move |_tx| {
+        move |tx| {
             let event = event.clone();
-            Box::pin(async move { Ok(((), event)) })
+            let actor = actor.clone();
+            let scope = scope.clone();
+            let wave_scope = wave_scope.clone();
+            let wave_id = wave_id.clone();
+            let message = write_args.message.clone();
+            Box::pin(async move {
+                let mut events = Vec::new();
+                if let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id).await? {
+                    events.push((ActorId::Kernel, wave_scope.clone(), auto));
+                }
+                if let Some(target) = write_args.lifecycle {
+                    let lifecycle_event = apply_requested_transition_in_tx(
+                        tx,
+                        &wave_id,
+                        target,
+                        &actor,
+                        message.clone(),
+                    )
+                    .await?;
+                    events.push((actor.clone(), wave_scope, lifecycle_event));
+                }
+                events.push((actor, scope, event));
+                Ok(((), events))
+            })
         },
     )
     .await;

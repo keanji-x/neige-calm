@@ -149,6 +149,7 @@ fn codex_req(idem: &str, goal: &str) -> Event {
         goal: goal.into(),
         context: json!({"from": "worker-shared-test"}),
         acceptance_criteria: Some("finish".into()),
+        agent_message: None,
     }
 }
 

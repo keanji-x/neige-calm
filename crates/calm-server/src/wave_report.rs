@@ -35,12 +35,13 @@
 
 use crate::db::RouteRepo;
 use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx};
-use crate::db::write_with_events_typed;
+use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::ActorId;
-use crate::model::{Card, CardPatch, Wave};
+use crate::model::{Card, CardPatch, Wave, WaveLifecycle};
 use crate::state::WriteContext;
+use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -225,6 +226,9 @@ pub async fn persist_report(
     report_card: Card,
     current_payload: WaveReportPayload,
     next: WaveReportPayload,
+    agent_message: Option<String>,
+    lifecycle: Option<WaveLifecycle>,
+    auto_promote_draft: bool,
 ) -> Result<Card, CalmError> {
     let report_card_id = report_card.id.clone();
     let wave_id = wave.id.clone();
@@ -234,17 +238,41 @@ pub async fn persist_report(
         wave: wave_id.clone(),
         cove: cove_id.clone(),
     };
+    let wave_scope = EventScope::Wave {
+        wave: wave_id.clone(),
+        cove: cove_id,
+    };
     let report_card_id_inner = report_card_id.clone();
     let wave_id_for_event = wave_id.clone();
     let (updated, _ids) =
-        write_with_events_typed::<Card, _>(repo, actor, None, events, write, move |tx| {
+        write_with_actor_events_typed::<Card, _>(repo, None, events, write, move |tx| {
             let id = report_card_id_inner.as_str().to_string();
             let report_card_id = report_card_id_inner.clone();
             let wave_id = wave_id_for_event.clone();
             let scope = scope.clone();
+            let wave_scope = wave_scope.clone();
             let current_payload = current_payload.clone();
             let next = next.clone();
+            let actor = actor.clone();
+            let agent_message = agent_message.clone();
             Box::pin(async move {
+                let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
+                if auto_promote_draft
+                    && let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id).await?
+                {
+                    events.push((ActorId::Kernel, wave_scope.clone(), auto));
+                }
+                if let Some(target) = lifecycle {
+                    let lifecycle_event = apply_requested_transition_in_tx(
+                        tx,
+                        &wave_id,
+                        target,
+                        &actor,
+                        agent_message.clone().unwrap_or_default(),
+                    )
+                    .await?;
+                    events.push((actor.clone(), wave_scope, lifecycle_event));
+                }
                 // 1. Load (or lazy-init) the CRDT doc for this card.
                 let existing = card_body_crdt_get_tx(tx, &id).await?;
                 let mut doc = match existing {
@@ -300,11 +328,14 @@ pub async fn persist_report(
                     summary_after,
                     body_before,
                     body_after,
+                    agent_message,
                 };
-                let events = vec![
-                    (scope.clone(), Event::CardUpdated(updated.clone())),
-                    (scope, report_edited),
-                ];
+                events.push((
+                    actor.clone(),
+                    scope.clone(),
+                    Event::CardUpdated(updated.clone()),
+                ));
+                events.push((actor, scope, report_edited));
                 Ok((updated, events))
             })
         })

@@ -481,7 +481,13 @@ async fn dev_force_wave_lifecycle(
                             to,
                         },
                     ),
-                    (scope, Event::WaveUpdated(wave.clone())),
+                    (
+                        scope,
+                        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
+                            wave.clone(),
+                            None,
+                        )),
+                    ),
                 ];
                 Ok((wave, events))
             })

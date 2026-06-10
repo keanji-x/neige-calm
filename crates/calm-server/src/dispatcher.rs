@@ -24,10 +24,12 @@ use dashmap::DashMap;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
+use crate::db::sqlite::event_append_for_operation_tx;
 use crate::db::{Repo, RouteRepo};
 use crate::error::CalmError;
 use crate::event::{
-    BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
+    BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SYNC_EVENT_VERSION,
+    SubscribeFilter, SubscribeScope,
 };
 use crate::event_cursor::EventCursorCache;
 use crate::harness::{
@@ -65,16 +67,23 @@ pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
 const DEFAULT_PERMITS: usize = 8;
 
-pub(crate) fn event_warrants_spec_push(event: &Event, write: &WriteContext) -> bool {
-    event_warrants_spec_push_with_role(event, |card_id| write.verify_role(card_id))
+pub(crate) fn event_warrants_spec_push(
+    event: &Event,
+    actor: &ActorId,
+    write: &WriteContext,
+) -> bool {
+    event_warrants_spec_push_with_role(event, actor, |card_id| write.verify_role(card_id))
 }
 
 pub(crate) fn event_warrants_spec_push_with_role(
     event: &Event,
+    actor: &ActorId,
     mut role_for_card: impl FnMut(&CardId) -> Option<CardRole>,
 ) -> bool {
     match event {
-        Event::TaskCompleted { .. } | Event::TaskFailed { .. } => true,
+        Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
+            !matches!(actor, ActorId::AiSpec(_))
+        }
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
@@ -602,7 +611,7 @@ impl Inner {
         // untouched.
         match &envelope.event {
             Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                if event_warrants_spec_push(&envelope.event, &self.write) {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.observe_harness(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -620,7 +629,7 @@ impl Inner {
             } => {
                 // Only user edits warrant a push. The spec authored
                 // Spec/Kernel edits itself; re-notifying it would loop.
-                if event_warrants_spec_push(&envelope.event, &self.write) {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
                 } else {
@@ -642,7 +651,7 @@ impl Inner {
                 // worker cards should notify the spec. Stop hooks carry no
                 // result/artifacts, so the pushed observation is a light
                 // wake-up that asks the spec to re-read wave state.
-                if event_warrants_spec_push(&envelope.event, &self.write) {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.observe_harness(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -677,6 +686,7 @@ impl Inner {
                 goal,
                 context,
                 acceptance_criteria,
+                ..
             } => DispatchRequest::Codex {
                 idempotency_key: idempotency_key.clone(),
                 goal: goal.clone(),
@@ -687,6 +697,7 @@ impl Inner {
                 idempotency_key,
                 cmd,
                 cwd,
+                ..
             } => DispatchRequest::Terminal {
                 idempotency_key: idempotency_key.clone(),
                 cmd: cmd.clone(),
@@ -719,6 +730,13 @@ impl Inner {
                 .await
             {
                 Ok(()) => {
+                    if let Err(e) = self.auto_promote_dispatching_to_working(&scope).await {
+                        tracing::warn!(
+                            idempotency_key = %idem,
+                            error = %e,
+                            "dispatcher: worker spawned but lifecycle auto-promotion failed"
+                        );
+                    }
                     last_err = None;
                     break;
                 }
@@ -752,6 +770,7 @@ impl Inner {
             let fail_event = Event::TaskFailed {
                 idempotency_key: idem.clone(),
                 reason: format!("{e}"),
+                agent_message: None,
             };
             // Allow on `WriteContext::role_cache()`/`cove_cache()` deprecation, not on `log_pure_event`.
             #[allow(deprecated)]
@@ -946,6 +965,84 @@ impl Inner {
         }
     }
 
+    async fn auto_promote_dispatching_to_working(
+        self: &Arc<Self>,
+        scope: &EventScope,
+    ) -> crate::error::Result<()> {
+        let Some(wave_id) = scope.wave_id().cloned() else {
+            return Ok(());
+        };
+        let cove_id = scope.cove_id().cloned().ok_or_else(|| {
+            CalmError::Internal(format!(
+                "dispatcher: request scope has wave {} but no cove",
+                wave_id.as_str()
+            ))
+        })?;
+        let wave_scope = EventScope::Wave {
+            wave: wave_id.clone(),
+            cove: cove_id,
+        };
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Internal("dispatcher lifecycle auto-promotion requires sqlite repo".into())
+        })?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let event = match crate::wave_lifecycle::auto_transition_if_current_in_tx(
+            &mut tx,
+            &wave_id,
+            crate::model::WaveLifecycle::Dispatching,
+            crate::model::WaveLifecycle::Working,
+            &ActorId::KernelDispatcher,
+            Some("[auto] worker spawned".to_string()),
+        )
+        .await
+        {
+            Ok(Some(event)) => event,
+            Ok(None) => {
+                let _ = tx.rollback().await;
+                return Ok(());
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        #[allow(deprecated)]
+        if let Err(violation) = crate::role_gate::enforce_role(
+            &ActorId::KernelDispatcher,
+            &event,
+            &wave_scope,
+            self.write.role_cache(),
+            self.write.cove_cache(),
+        ) {
+            let _ = tx.rollback().await;
+            return Err(CalmError::Forbidden(violation.to_string()));
+        }
+        let event_id = match event_append_for_operation_tx(
+            &mut tx,
+            &ActorId::KernelDispatcher,
+            &wave_scope,
+            None,
+            &event,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        tx.commit().await?;
+        self.events.emit_envelope(BroadcastEnvelope {
+            id: event_id,
+            event_version: SYNC_EVENT_VERSION,
+            actor: ActorId::KernelDispatcher,
+            scope: wave_scope,
+            event,
+        });
+        Ok(())
+    }
+
     async fn dispatch(
         self: &Arc<Self>,
         req: DispatchRequest,
@@ -1065,6 +1162,7 @@ pub(crate) fn harness_observation_from_event(
         Event::TaskFailed {
             idempotency_key,
             reason,
+            ..
         } => Some(HarnessObservation::TaskFailed {
             idempotency_key: idempotency_key.clone(),
             error: reason.clone(),
@@ -1259,21 +1357,25 @@ mod tests {
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,
+            agent_message: None,
         })));
         // The push kinds match.
         assert!(filter.matches(&env(Event::TaskCompleted {
             idempotency_key: "k".into(),
             result: serde_json::Value::Null,
             artifacts: Vec::<ArtifactRef>::new(),
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::WaveReportEdited {
             wave_id: wave.clone(),
@@ -1284,6 +1386,7 @@ mod tests {
             summary_after: String::new(),
             body_before: String::new(),
             body_after: String::new(),
+            agent_message: None,
         })));
         assert!(filter.matches(&env(Event::CodexHook {
             card_id: CardId::from("worker-codex"),
@@ -1333,14 +1436,34 @@ mod tests {
             idempotency_key: "done".into(),
             result: serde_json::Value::Null,
             artifacts: Vec::new(),
+            agent_message: None,
         };
-        assert!(event_warrants_spec_push(&completed, &write));
+        assert!(event_warrants_spec_push(
+            &completed,
+            &ActorId::AiCodex(worker.clone()),
+            &write
+        ));
+        assert!(!event_warrants_spec_push(
+            &completed,
+            &ActorId::AiSpec(spec.clone()),
+            &write
+        ));
 
         let failed = Event::TaskFailed {
             idempotency_key: "fail".into(),
             reason: "boom".into(),
+            agent_message: None,
         };
-        assert!(event_warrants_spec_push(&failed, &write));
+        assert!(event_warrants_spec_push(
+            &failed,
+            &ActorId::AiCodex(worker.clone()),
+            &write
+        ));
+        assert!(!event_warrants_spec_push(
+            &failed,
+            &ActorId::AiSpec(spec.clone()),
+            &write
+        ));
 
         let report = |author| Event::WaveReportEdited {
             wave_id: wave.clone(),
@@ -1351,11 +1474,21 @@ mod tests {
             summary_after: String::new(),
             body_before: String::new(),
             body_after: String::new(),
+            agent_message: None,
         };
-        assert!(event_warrants_spec_push(&report(EditAuthor::User), &write));
-        assert!(!event_warrants_spec_push(&report(EditAuthor::Spec), &write));
+        assert!(event_warrants_spec_push(
+            &report(EditAuthor::User),
+            &ActorId::User,
+            &write
+        ));
+        assert!(!event_warrants_spec_push(
+            &report(EditAuthor::Spec),
+            &ActorId::User,
+            &write
+        ));
         assert!(!event_warrants_spec_push(
             &report(EditAuthor::Kernel),
+            &ActorId::User,
             &write
         ));
 
@@ -1373,34 +1506,42 @@ mod tests {
         };
         assert!(event_warrants_spec_push(
             &codex_hook(worker.clone(), "hook.codex.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(event_warrants_spec_push(
             &claude_hook(worker.clone(), "hook.claude.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(spec.clone(), "hook.codex.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &claude_hook(spec.clone(), "hook.claude.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(unknown.clone(), "hook.codex.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &claude_hook(unknown, "hook.claude.stop"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(worker.clone(), "hook.codex.permission_request"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
             &codex_hook(worker, "hook.codex.post_tool_use"),
+            &ActorId::User,
             &write
         ));
         assert!(!event_warrants_spec_push(
@@ -1408,6 +1549,7 @@ mod tests {
                 id: wave,
                 cove_id: cove,
             },
+            &ActorId::User,
             &write
         ));
     }

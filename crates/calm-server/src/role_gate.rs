@@ -376,7 +376,7 @@ mod tests {
     }
 
     fn wave_updated() -> Event {
-        Event::WaveUpdated(wave("w", "c"))
+        Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave("w", "c"), None))
     }
 
     fn cove_updated() -> Event {
@@ -915,6 +915,7 @@ mod tests {
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
+            agent_message: None,
         }
     }
 
@@ -923,6 +924,7 @@ mod tests {
             idempotency_key: "idem-1".into(),
             cmd: "echo hi".into(),
             cwd: None,
+            agent_message: None,
         }
     }
 
@@ -931,6 +933,7 @@ mod tests {
             idempotency_key: "idem-1".into(),
             result: serde_json::Value::Null,
             artifacts: vec![ArtifactRef::from("a-1")],
+            agent_message: None,
         }
     }
 

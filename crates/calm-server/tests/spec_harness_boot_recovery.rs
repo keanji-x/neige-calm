@@ -353,6 +353,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
                 summary_after: "missed summary".into(),
                 body_before: String::new(),
                 body_after: "missed body".into(),
+                agent_message: None,
             },
         )
         .await
@@ -377,6 +378,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
                 summary_after: "queued summary".into(),
                 body_before: String::new(),
                 body_after: "queued body".into(),
+                agent_message: None,
             },
         )
         .await

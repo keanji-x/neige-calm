@@ -129,6 +129,7 @@ fn task_completed(idem: &str) -> Event {
         idempotency_key: idem.into(),
         result: serde_json::Value::Null,
         artifacts: Vec::new(),
+        agent_message: None,
     }
 }
 
@@ -563,6 +564,7 @@ async fn spec_emitting_wave_scope_is_accepted() {
                 goal: "go".into(),
                 context: Value::Null,
                 acceptance_criteria: None,
+                agent_message: None,
             },
         )
         .await;

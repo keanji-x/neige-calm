@@ -334,7 +334,10 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                     &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
                 .await?;
-                Ok((wave.clone(), Event::WaveUpdated(wave)))
+                Ok((
+                    wave.clone(),
+                    Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(wave, None)),
+                ))
             })
         },
     )
@@ -444,7 +447,10 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         &calm_server::wave_cove_cache::WaveCoveCache::new(),
                     )
                     .await?;
-                    Ok((w.clone(), Event::WaveUpdated(w)))
+                    Ok((
+                        w.clone(),
+                        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                    ))
                 })
             },
         )
@@ -511,7 +517,10 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         &calm_server::wave_cove_cache::WaveCoveCache::new(),
                     )
                     .await?;
-                    Ok((w.clone(), Event::WaveUpdated(w)))
+                    Ok((
+                        w.clone(),
+                        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                    ))
                 })
             },
         )
@@ -642,7 +651,12 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                             &calm_server::wave_cove_cache::WaveCoveCache::new(),
                         )
                         .await?;
-                        Ok((w.clone(), Event::WaveUpdated(w)))
+                        Ok((
+                            w.clone(),
+                            Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
+                                w, None,
+                            )),
+                        ))
                     })
                 },
             )

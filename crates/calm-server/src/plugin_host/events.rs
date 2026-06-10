@@ -200,7 +200,12 @@ mod tests {
             id: "k".into(),
             wave_id: "w".into(),
         }));
-        assert!(!f.matches(&Event::WaveUpdated(wave("w", "c"))));
+        assert!(
+            !f.matches(&Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
+                wave("w", "c"),
+                None
+            ),))
+        );
     }
 
     #[test]

@@ -35,7 +35,9 @@ use calm_server::event::{
     ArtifactRef, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms};
+use calm_server::model::{
+    NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{CodexClient, DaemonClient};
@@ -116,6 +118,7 @@ fn codex_req(idem: &str, goal: &str) -> Event {
         goal: goal.into(),
         context: serde_json::Value::Null,
         acceptance_criteria: None,
+        agent_message: None,
     }
 }
 
@@ -332,6 +335,7 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
         Event::TaskFailed {
             idempotency_key: "k2".into(),
             reason: "x".into(),
+            agent_message: None,
         },
     );
     events.emit(ActorId::User, codex_req("k3", "g3"));
@@ -479,6 +483,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
                 if let Event::TaskFailed {
                     idempotency_key,
                     reason,
+                    ..
                 } = &env.event
                     && idempotency_key == idem
                 {
@@ -605,6 +610,7 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
@@ -650,6 +656,91 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 }
 
 #[tokio::test]
+async fn dispatcher_spawn_success_auto_promotes_dispatching_to_working() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Dispatching),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("set wave dispatching");
+
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        proc_supervisor_sock: None,
+    });
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        codex,
+        daemon,
+        None,
+        stub_shared(&repo),
+        4,
+    );
+
+    let mut rx = events.subscribe();
+    let idem = "auto-working-terminal";
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalWorkerRequested {
+            idempotency_key: idem.into(),
+            cmd: "/bin/true".into(),
+            cwd: None,
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_auto = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if matches!(env.actor, ActorId::KernelDispatcher)
+                    && let Event::WaveUpdated(payload) = env.event
+                    && payload.id == wave_id
+                {
+                    assert_eq!(payload.lifecycle, WaveLifecycle::Working);
+                    assert_eq!(
+                        payload.agent_message.as_deref(),
+                        Some("[auto] worker spawned")
+                    );
+                    saw_auto = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        saw_auto,
+        "dispatcher must emit kernel-dispatcher WaveUpdated after worker spawn success"
+    );
+
+    let wave = repo
+        .wave_get(wave_id.as_str())
+        .await
+        .unwrap()
+        .expect("wave exists");
+    assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+}
+
+#[tokio::test]
 async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
@@ -689,6 +780,7 @@ async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
             idempotency_key: idem.into(),
             cmd: cmd.into(),
             cwd: None,
+            agent_message: None,
         },
     )
     .await
@@ -704,6 +796,7 @@ async fn dispatcher_terminal_worker_cwd_normalization_reuses_idempotency_key() {
             idempotency_key: idem.into(),
             cmd: cmd.into(),
             cwd: Some(String::new()),
+            agent_message: None,
         },
     )
     .await
@@ -825,6 +918,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     let mut rx = events.subscribe();
@@ -909,6 +1003,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     repo.log_pure_event(
         ActorId::User,
@@ -1032,6 +1127,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         idempotency_key: idem.into(),
         cmd: "/bin/true".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     let mut rx = events.subscribe();
@@ -1156,6 +1252,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         // Fast-exit command for the real supervised shell.
         cmd: "printf done\n".into(),
         cwd: None,
+        agent_message: None,
     };
     let scope = wave_scope(&wave_id, &cove_id);
     repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)

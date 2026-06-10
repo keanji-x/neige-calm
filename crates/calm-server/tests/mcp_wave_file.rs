@@ -335,6 +335,7 @@ async fn request_codex(boot: &Boot, key: &str) -> i64 {
             goal: format!("goal for {key}"),
             context: json!({ "key": key }),
             acceptance_criteria: Some(format!("accept {key}")),
+            agent_message: None,
         },
     )
     .await
@@ -351,6 +352,7 @@ async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) -> i64 
             idempotency_key: key.into(),
             result,
             artifacts: vec![],
+            agent_message: None,
         },
     )
     .await
@@ -365,6 +367,7 @@ async fn accept_run(boot: &Boot, key: &str, reason: &str) {
             "idempotency_key": key,
             "status": "accepted",
             "reason": reason,
+            "message": format!("accept {key}"),
         }),
     )
     .await
@@ -380,6 +383,7 @@ async fn reject_run(boot: &Boot, key: &str, reason: &str) {
             "idempotency_key": key,
             "status": "rejected",
             "reason": reason,
+            "message": format!("reject {key}"),
         }),
     )
     .await
@@ -392,6 +396,7 @@ async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
         Event::TaskFailed {
             idempotency_key: key.into(),
             reason: reason.into(),
+            agent_message: None,
         },
     )
     .await
@@ -1192,6 +1197,7 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
             idempotency_key: "verdict-mtime".into(),
             result: json!({ "status": "accepted", "reason": "checked later" }),
             artifacts: vec![],
+            agent_message: None,
         },
     )
     .await;
@@ -1301,6 +1307,7 @@ async fn wave_scoped_dispatcher_failure_is_not_spec_verdict() {
             goal: "wave-scoped dispatcher request".into(),
             context: json!({}),
             acceptance_criteria: None,
+            agent_message: None,
         },
     )
     .await;
@@ -1312,6 +1319,7 @@ async fn wave_scoped_dispatcher_failure_is_not_spec_verdict() {
         Event::TaskFailed {
             idempotency_key: "dispatcher-wave-failed".into(),
             reason: "spawn failed".into(),
+            agent_message: None,
         },
     )
     .await;
@@ -1585,6 +1593,7 @@ async fn verdict_before_worker_completion_still_preserves_worker_output() {
             idempotency_key: "out-of-order".into(),
             result: json!({ "status": "accepted", "reason": "early LGTM" }),
             artifacts: vec![],
+            agent_message: None,
         },
     )
     .await;

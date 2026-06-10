@@ -314,19 +314,22 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
     cache.insert(spec_id.clone(), CardRole::Spec, WaveId::from("w"));
 
     // A WaveUpdated event from AiSpec(spec_id) under Wave scope.
-    let evt = Event::WaveUpdated(calm_server::model::Wave {
-        id: "w".into(),
-        cove_id: "c".into(),
-        title: "t".into(),
-        sort: 1.0,
-        archived_at: None,
-        pinned_at: None,
-        lifecycle: calm_server::model::WaveLifecycle::Draft,
-        cwd: String::new(),
-        terminal_at: None,
-        created_at: 0,
-        updated_at: 0,
-    });
+    let evt = Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
+        calm_server::model::Wave {
+            id: "w".into(),
+            cove_id: "c".into(),
+            title: "t".into(),
+            sort: 1.0,
+            archived_at: None,
+            pinned_at: None,
+            lifecycle: calm_server::model::WaveLifecycle::Draft,
+            cwd: String::new(),
+            terminal_at: None,
+            created_at: 0,
+            updated_at: 0,
+        },
+        None,
+    ));
     let scope = EventScope::Wave {
         wave: "w".into(),
         cove: "c".into(),
@@ -409,7 +412,12 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                     (),
                     vec![
                         (cove_scope, Event::CoveUpdated(cove)),
-                        (wave_scope, Event::WaveUpdated(wave)),
+                        (
+                            wave_scope,
+                            Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
+                                wave, None,
+                            )),
+                        ),
                     ],
                 ))
             })
@@ -571,7 +579,12 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                         // Cove scope — section 2 of enforce_role only
                         // gates WaveUpdated). Second one violates.
                         (cove_scope, Event::CoveUpdated(cove)),
-                        (wave_scope, Event::WaveUpdated(wave)),
+                        (
+                            wave_scope,
+                            Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
+                                wave, None,
+                            )),
+                        ),
                     ],
                 ))
             })

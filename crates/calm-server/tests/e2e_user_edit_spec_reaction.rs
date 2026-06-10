@@ -358,6 +358,7 @@ async fn user_edit_via_rest_reaches_wave_subscriber_and_spec_reads_back_user_bod
         json!({
             "body": initial_body,
             "summary": "initial summary from spec",
+            "message": "seed initial report",
         }),
     )
     .await
@@ -520,6 +521,7 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wave_stream() {
         json!({
             "body": "# Goal\n\npriming body\n",
             "summary": "priming",
+            "message": "prime report stream",
         }),
     )
     .await
@@ -543,6 +545,7 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wave_stream() {
         json!({
             "body": "# Goal\n\nsecond spec write\n",
             "summary": "self echo",
+            "message": "second spec report write",
         }),
     )
     .await

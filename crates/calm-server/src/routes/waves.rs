@@ -537,7 +537,13 @@ async fn create_wave_with_spec_harness(
                 )
                 .await?;
                 let events = vec![
-                    (wave_scope.clone(), Event::WaveUpdated(wave.clone())),
+                    (
+                        wave_scope.clone(),
+                        Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
+                            wave.clone(),
+                            None,
+                        )),
+                    ),
                     (spec_card_scope, Event::CardAdded(spec_card)),
                     (report_card_scope, Event::CardAdded(report_card)),
                     (wave_scope, Event::OverlaySet(layout_overlay)),
@@ -758,7 +764,10 @@ pub(crate) async fn update_wave(
                         },
                     ));
                 }
-                events.push((scope, Event::WaveUpdated(wave.clone())));
+                events.push((
+                    scope,
+                    Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave.clone(), None)),
+                ));
                 Ok((wave, events))
             })
         },
@@ -1037,6 +1046,9 @@ pub(crate) async fn update_wave_report(
         report_card,
         current_payload,
         next,
+        None,
+        None,
+        false,
     )
     .await?;
 

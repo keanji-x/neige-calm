@@ -53,7 +53,6 @@ async fn tools_list_for_spec_role_returns_only_writes() {
             "calm.report.write",
             "calm.task.dispatch",
             "calm.task.verdict",
-            "calm.update_wave_state",
         ]
     );
 }
@@ -61,16 +60,17 @@ async fn tools_list_for_spec_role_returns_only_writes() {
 #[tokio::test]
 async fn tools_list_for_spec_role_does_not_leak_aliases() {
     let names = tools_list_names_for_role(CardRole::Spec).await;
-    for old_name in [
+    for hidden_name in [
         "calm.dispatch_request",
         "calm.task_completed",
         "calm.task_failed",
         "calm.get_wave_state",
         "calm.update_task_meta",
+        "calm.update_wave_state",
     ] {
         assert!(
-            !names.iter().any(|name| name == old_name),
-            "deprecated alias leaked in tools/list: {old_name}; names={names:?}",
+            !names.iter().any(|name| name == hidden_name),
+            "hidden tool leaked in tools/list: {hidden_name}; names={names:?}",
         );
     }
 }
@@ -111,8 +111,8 @@ async fn tools_list_for_shared_daemon_resolves_thread_role() {
     );
     assert_eq!(
         names.len(),
-        5,
-        "spec thread sees the 5 write tools, got: {names:?}"
+        4,
+        "spec thread sees the 4 retained write tools, got: {names:?}"
     );
     let _ = (&boot.server, &boot.repo);
 }

@@ -20,16 +20,60 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::event::{Event, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::CardRole;
+use calm_server::model::{CardRole, Wave, WaveLifecycle, WavePatch};
 use serde_json::json;
 use tokio::time::timeout;
 
 mod support;
 
 use support::mcp::{
-    TEST_BUDGET, boot_with_role, connect, handshake, recv_frame, send_frame, tools_call_frame,
-    wait_for_kind,
+    CardBoot, TEST_BUDGET, boot_with_role, connect, handshake, recv_frame, send_frame,
+    tools_call_frame, wait_for_kind,
 };
+
+async fn boot_wave(b: &CardBoot) -> Wave {
+    let card = b
+        .repo
+        .card_get(b.card_id.as_str())
+        .await
+        .expect("card lookup")
+        .expect("boot card exists");
+    b.repo
+        .wave_get(card.wave_id.as_str())
+        .await
+        .expect("wave lookup")
+        .expect("boot wave exists")
+}
+
+async fn set_boot_wave_lifecycle(b: &CardBoot, lifecycle: WaveLifecycle) -> Wave {
+    let wave = boot_wave(b).await;
+    b.repo
+        .wave_update(
+            wave.id.as_str(),
+            WavePatch {
+                lifecycle: Some(lifecycle),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("set test wave lifecycle")
+}
+
+async fn recv_bus(
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+) -> calm_server::event::BroadcastEnvelope {
+    timeout(TEST_BUDGET, rx.recv())
+        .await
+        .expect("bus envelope within budget")
+        .expect("bus open")
+}
+
+fn rpc_error_code(resp: &serde_json::Value) -> i64 {
+    resp.get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| panic!("response has no error code: {resp:#?}"))
+}
 
 // ---------------------------------------------------------------------------
 // Per-tool happy paths.
@@ -51,7 +95,8 @@ async fn dispatch_request_codex_emits_codex_worker_requested() {
             json!({
                 "kind": "codex",
                 "idempotency_key": "dr-codex-1",
-                "goal": "build a thing"
+                "goal": "build a thing",
+                "message": "dispatch codex worker"
             }),
         ),
     )
@@ -75,14 +120,292 @@ async fn dispatch_request_codex_emits_codex_worker_requested() {
         Event::CodexWorkerRequested {
             goal,
             idempotency_key,
+            agent_message,
             ..
         } => {
             assert_eq!(goal, "build a thing");
             assert_eq!(idempotency_key, "dr-codex-1");
+            assert_eq!(agent_message.as_deref(), Some("dispatch codex worker"));
         }
         other => panic!("expected CodexWorkerRequested; got {other:?}"),
     }
     let _ = &b.server;
+}
+
+#[tokio::test]
+async fn dispatch_request_requires_non_empty_message() {
+    let b = boot_with_role(CardRole::Spec).await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            11,
+            "calm.task.dispatch",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-missing-message",
+                "goal": "missing message"
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(rpc_error_code(&resp), -32602);
+    assert!(
+        resp["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("message must be non-empty"),
+        "missing-message error mentions message: {resp:#?}"
+    );
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            12,
+            "calm.task.dispatch",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-empty-message",
+                "goal": "empty message",
+                "message": " \t\n "
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(rpc_error_code(&resp), -32602);
+    assert!(
+        resp["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("message must be non-empty"),
+        "empty-message error mentions message: {resp:#?}"
+    );
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn dispatch_request_without_lifecycle_keeps_non_draft_wave_and_records_message() {
+    let b = boot_with_role(CardRole::Spec).await;
+    let wave = set_boot_wave_lifecycle(&b, WaveLifecycle::Planning).await;
+    let mut rx = b.events.subscribe();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            13,
+            "calm.task.dispatch",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-no-lifecycle",
+                "goal": "stay planning",
+                "message": "dispatch without lifecycle"
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let env = recv_bus(&mut rx).await;
+    match &env.event {
+        Event::CodexWorkerRequested {
+            idempotency_key,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(idempotency_key, "dr-no-lifecycle");
+            assert_eq!(agent_message.as_deref(), Some("dispatch without lifecycle"));
+        }
+        other => panic!("expected CodexWorkerRequested only, got {other:?}"),
+    }
+    let post = b.repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(post.lifecycle, WaveLifecycle::Planning);
+    let no_more = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(no_more.is_err(), "unexpected extra event: {no_more:?}");
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn dispatch_request_lifecycle_legal_emits_wave_updated_and_request() {
+    let b = boot_with_role(CardRole::Spec).await;
+    let wave = set_boot_wave_lifecycle(&b, WaveLifecycle::Planning).await;
+    let mut rx = b.events.subscribe();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            14,
+            "calm.task.dispatch",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-legal-lifecycle",
+                "goal": "dispatch workers",
+                "message": "move to dispatching",
+                "lifecycle": "dispatching"
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let lifecycle_env = recv_bus(&mut rx).await;
+    match &lifecycle_env.actor {
+        ActorId::AiSpec(card_id) => assert_eq!(card_id.as_str(), b.card_id.as_str()),
+        other => panic!("expected AiSpec lifecycle actor; got {other:?}"),
+    }
+    match &lifecycle_env.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, wave.id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Dispatching);
+            assert_eq!(
+                payload.agent_message.as_deref(),
+                Some("move to dispatching")
+            );
+        }
+        other => panic!("expected WaveUpdated first, got {other:?}"),
+    }
+
+    let request_env = recv_bus(&mut rx).await;
+    match &request_env.event {
+        Event::CodexWorkerRequested {
+            idempotency_key,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(idempotency_key, "dr-legal-lifecycle");
+            assert_eq!(agent_message.as_deref(), Some("move to dispatching"));
+        }
+        other => panic!("expected CodexWorkerRequested second, got {other:?}"),
+    }
+
+    let post = b.repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(post.lifecycle, WaveLifecycle::Dispatching);
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn dispatch_request_lifecycle_illegal_rolls_back_batch() {
+    let b = boot_with_role(CardRole::Spec).await;
+    let wave = set_boot_wave_lifecycle(&b, WaveLifecycle::Planning).await;
+    let mut rx = b.events.subscribe();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            15,
+            "calm.task.dispatch",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-illegal-lifecycle",
+                "goal": "skip to done",
+                "message": "illegal lifecycle",
+                "lifecycle": "done"
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(rpc_error_code(&resp), -32403, "response = {resp:#?}");
+
+    let post = b.repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(post.lifecycle, WaveLifecycle::Planning);
+    let no_event = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_event.is_err(),
+        "illegal transition emitted event: {no_event:?}"
+    );
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn first_spec_write_auto_promotes_draft_and_second_write_is_idempotent() {
+    let b = boot_with_role(CardRole::Spec).await;
+    let wave = boot_wave(&b).await;
+    assert_eq!(wave.lifecycle, WaveLifecycle::Draft);
+    let mut rx = b.events.subscribe();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            16,
+            "calm.task.dispatch",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-auto-1",
+                "goal": "first write",
+                "message": "first spec write"
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let auto = recv_bus(&mut rx).await;
+    assert!(matches!(auto.actor, ActorId::Kernel));
+    match &auto.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, wave.id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Planning);
+            assert_eq!(payload.agent_message, None);
+        }
+        other => panic!("expected auto WaveUpdated first, got {other:?}"),
+    }
+    assert!(matches!(
+        recv_bus(&mut rx).await.event,
+        Event::CodexWorkerRequested { .. }
+    ));
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            17,
+            "calm.task.dispatch",
+            &b.thread_id,
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-auto-2",
+                "goal": "second write",
+                "message": "second spec write"
+            }),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let second = recv_bus(&mut rx).await;
+    match &second.event {
+        Event::CodexWorkerRequested {
+            idempotency_key, ..
+        } => assert_eq!(idempotency_key, "dr-auto-2"),
+        other => panic!("second write should not re-emit promotion, got {other:?}"),
+    }
+    let no_more = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_more.is_err(),
+        "unexpected extra promotion event: {no_more:?}"
+    );
+    let _ = (&b.server, &b.repo);
 }
 
 #[tokio::test]
@@ -97,7 +420,12 @@ async fn dispatch_request_rejects_worker_identity() {
             50,
             "calm.task.dispatch",
             &b.thread_id,
-            json!({"kind": "codex", "idempotency_key": "dr-w-1", "goal": "x"}),
+            json!({
+                "kind": "codex",
+                "idempotency_key": "dr-w-1",
+                "goal": "x",
+                "message": "worker dispatch attempt"
+            }),
         ),
     )
     .await;
@@ -178,6 +506,58 @@ async fn legacy_alias_task_completed_still_dispatches_via_warn() {
         } => assert_eq!(idempotency_key, "tc-legacy"),
         other => panic!("expected TaskCompleted; got {other:?}"),
     }
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
+    let b = boot_with_role(CardRole::Worker).await;
+    let wave = set_boot_wave_lifecycle(&b, WaveLifecycle::Working).await;
+    let mut rx = b.events.subscribe();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            22,
+            "calm.task.complete",
+            &b.thread_id,
+            json!({"idempotency_key": "tc-auto-review", "result": {"ok": true}}),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let task_env = recv_bus(&mut rx).await;
+    match &task_env.actor {
+        ActorId::AiCodex(card_id) => assert_eq!(card_id.as_str(), b.card_id.as_str()),
+        other => panic!("expected worker actor first; got {other:?}"),
+    }
+    assert!(matches!(
+        task_env.event,
+        Event::TaskCompleted {
+            ref idempotency_key,
+            ..
+        } if idempotency_key == "tc-auto-review"
+    ));
+
+    let auto = recv_bus(&mut rx).await;
+    assert!(matches!(auto.actor, ActorId::Kernel));
+    match &auto.event {
+        Event::WaveUpdated(payload) => {
+            assert_eq!(payload.id, wave.id);
+            assert_eq!(payload.lifecycle, WaveLifecycle::Reviewing);
+            assert_eq!(
+                payload.agent_message.as_deref(),
+                Some("[auto] first task report")
+            );
+        }
+        other => panic!("expected auto WaveUpdated after task report, got {other:?}"),
+    }
+    let post = b.repo.wave_get(wave.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(post.lifecycle, WaveLifecycle::Reviewing);
     let _ = (&b.server, &b.repo);
 }
 
@@ -342,7 +722,8 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
             json!({
                 "kind": "codex",
                 "idempotency_key": idem,
-                "goal": "e2e worker spawn"
+                "goal": "e2e worker spawn",
+                "message": "enqueue e2e worker"
             }),
         ),
     )

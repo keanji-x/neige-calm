@@ -28,16 +28,22 @@
 //! their own card scope; the role gate enforces that they can't
 //! escape it.
 
-use crate::db::write_with_event_typed;
+use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
-use crate::ids::CardId;
+use crate::ids::{ActorId, CardId};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     register_deprecated_alias, require_role, role_gated_write_annotations,
 };
+use crate::mcp_server::tools::lifecycle_args::{
+    lifecycle_schema, message_schema, parse_write_args,
+};
 use crate::model::CardRole;
+use crate::wave_lifecycle::{
+    apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -74,11 +80,15 @@ fn dispatch_request_descriptor() -> ToolDescriptor {
         name: TOOL_TASK_DISPATCH.into(),
         description: "Spec-only: request that the kernel dispatcher spawn a worker card. \
              `kind` selects codex vs terminal; `idempotency_key` must be \
-             stable across retries so the dispatcher dedupes."
+             stable across retries so the dispatcher dedupes. `message` is \
+             required and should explain why this dispatch is being made; it \
+             is persisted as `agent_message`. Optional `lifecycle` drives the \
+             wave state machine in the same atomic write when you need to \
+             advance to planning/dispatching/working/blocked/reviewing/done/failed."
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["kind", "idempotency_key"],
+            "required": ["kind", "idempotency_key", "message"],
             "properties": {
                 "kind": { "type": "string", "enum": ["codex", "terminal"] },
                 "idempotency_key": { "type": "string", "minLength": 1 },
@@ -86,7 +96,9 @@ fn dispatch_request_descriptor() -> ToolDescriptor {
                 "context": {},
                 "acceptance_criteria": { "type": ["string", "null"] },
                 "cmd": { "type": "string" },
-                "cwd": { "type": ["string", "null"] }
+                "cwd": { "type": ["string", "null"] },
+                "message": message_schema(),
+                "lifecycle": lifecycle_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -100,6 +112,7 @@ async fn dispatch_request(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
+    let write_args = parse_write_args(&args, "dispatch_request")?;
 
     let idempotency_key = args
         .get("idempotency_key")
@@ -132,6 +145,7 @@ async fn dispatch_request(
                 goal,
                 context,
                 acceptance_criteria,
+                agent_message: Some(write_args.message.clone()),
             }
         }
         "terminal" => {
@@ -150,6 +164,7 @@ async fn dispatch_request(
                 idempotency_key,
                 cmd,
                 cwd,
+                agent_message: Some(write_args.message.clone()),
             }
         }
         other => {
@@ -159,7 +174,14 @@ async fn dispatch_request(
         }
     };
 
-    emit_event_for_identity(&ctx, &identity, event).await?;
+    emit_spec_write_for_identity(
+        &ctx,
+        &identity,
+        event,
+        write_args.lifecycle,
+        write_args.message,
+    )
+    .await?;
 
     Ok(json!({ "status": "emitted" }))
 }
@@ -216,8 +238,9 @@ async fn task_completed(
         idempotency_key,
         result,
         artifacts,
+        agent_message: None,
     };
-    emit_event_for_identity(&ctx, &identity, event).await?;
+    emit_task_report_for_identity(&ctx, &identity, event).await?;
     Ok(json!({ "status": "emitted" }))
 }
 
@@ -268,8 +291,9 @@ async fn task_failed(
     let event = Event::TaskFailed {
         idempotency_key,
         reason,
+        agent_message: None,
     };
-    emit_event_for_identity(&ctx, &identity, event).await?;
+    emit_task_report_for_identity(&ctx, &identity, event).await?;
     Ok(json!({ "status": "emitted" }))
 }
 
@@ -278,10 +302,12 @@ async fn task_failed(
 // the eventized write through the role gate.
 // ---------------------------------------------------------------------------
 
-async fn emit_event_for_identity(
+async fn emit_spec_write_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
     event: Event,
+    lifecycle: Option<crate::model::WaveLifecycle>,
+    message: String,
 ) -> Result<(), RpcError> {
     let actor = identity.to_actor_id();
     let card_id_str = identity.card_id.as_str().to_string();
@@ -316,21 +342,131 @@ async fn emit_event_for_identity(
 
     let scope = EventScope::Card {
         card: CardId::from(card_id_str.clone()),
-        wave: wave.id,
-        cove: wave.cove_id,
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
     };
+    let wave_scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let wave_id = wave.id.clone();
     let kind_tag = event.kind_tag();
 
-    let result = write_with_event_typed::<(), _>(
+    let result = write_with_actor_events_typed::<(), _>(
         ctx.repo.as_ref(),
-        actor,
-        scope,
         None,
         &ctx.events,
         &ctx.write,
-        move |_tx| {
+        move |tx| {
             let event = event.clone();
-            Box::pin(async move { Ok(((), event)) })
+            let wave_id = wave_id.clone();
+            let wave_scope = wave_scope.clone();
+            let scope = scope.clone();
+            let actor = actor.clone();
+            let message = message.clone();
+            Box::pin(async move {
+                let mut events = Vec::new();
+                if let Some(auto) = auto_promote_draft_in_tx(tx, &wave_id).await? {
+                    events.push((ActorId::Kernel, wave_scope.clone(), auto));
+                }
+                if let Some(target) = lifecycle {
+                    let lifecycle_event = apply_requested_transition_in_tx(
+                        tx,
+                        &wave_id,
+                        target,
+                        &actor,
+                        message.clone(),
+                    )
+                    .await?;
+                    events.push((actor.clone(), wave_scope, lifecycle_event));
+                }
+                events.push((actor, scope, event));
+                Ok(((), events))
+            })
+        },
+    )
+    .await;
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
+            -32403,
+            format!("emit {kind_tag}: forbidden: {msg}"),
+        )),
+        Err(e) => Err(RpcError::internal(format!("emit {kind_tag}: {e}"))),
+    }
+}
+
+async fn emit_task_report_for_identity(
+    ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
+    event: Event,
+) -> Result<(), RpcError> {
+    let actor = identity.to_actor_id();
+    let card_id_str = identity.card_id.as_str().to_string();
+
+    let card = ctx
+        .repo
+        .card_get(&card_id_str)
+        .await
+        .map_err(|e| RpcError::internal(format!("emit: card lookup: {e}")))?
+        .ok_or_else(|| {
+            RpcError::internal(format!(
+                "emit: bound card {card_id_str} not found (deleted mid-connection?)"
+            ))
+        })?;
+    let wave = ctx
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(format!("emit: wave lookup: {e}")))?
+        .ok_or_else(|| {
+            RpcError::internal(format!(
+                "emit: wave {} for card {} not found",
+                card.wave_id.as_str(),
+                card_id_str
+            ))
+        })?;
+
+    let scope = EventScope::Card {
+        card: CardId::from(card_id_str.clone()),
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let wave_scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let wave_id = wave.id.clone();
+    let kind_tag = event.kind_tag();
+
+    let result = write_with_actor_events_typed::<(), _>(
+        ctx.repo.as_ref(),
+        None,
+        &ctx.events,
+        &ctx.write,
+        move |tx| {
+            let event = event.clone();
+            let actor = actor.clone();
+            let scope = scope.clone();
+            let wave_scope = wave_scope.clone();
+            let wave_id = wave_id.clone();
+            Box::pin(async move {
+                let mut events = vec![(actor, scope, event)];
+                if let Some(auto) = auto_transition_if_current_in_tx(
+                    tx,
+                    &wave_id,
+                    crate::model::WaveLifecycle::Working,
+                    crate::model::WaveLifecycle::Reviewing,
+                    &ActorId::Kernel,
+                    Some("[auto] first task report".to_string()),
+                )
+                .await?
+                {
+                    events.push((ActorId::Kernel, wave_scope, auto));
+                }
+                Ok(((), events))
+            })
         },
     )
     .await;

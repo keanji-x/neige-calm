@@ -89,6 +89,7 @@ async fn neige_task_completed_emits_task_completed_event() {
             idempotency_key,
             result,
             artifacts,
+            ..
         } => {
             assert_eq!(idempotency_key, "cli-completed-1");
             assert_eq!(result, &json!({ "ok": true }));
@@ -130,6 +131,7 @@ async fn neige_task_failed_emits_task_failed_event() {
         Event::TaskFailed {
             idempotency_key,
             reason,
+            ..
         } => {
             assert_eq!(idempotency_key, "cli-failed-1");
             assert_eq!(reason, "stub failure");

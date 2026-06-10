@@ -292,6 +292,7 @@ pub async fn request_codex(boot: &Boot, key: &str) -> i64 {
                 goal: format!("goal for {key}"),
                 context: json!({ "key": key }),
                 acceptance_criteria: Some(format!("accept {key}")),
+                agent_message: None,
             },
         )
         .await

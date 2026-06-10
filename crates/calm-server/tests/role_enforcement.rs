@@ -105,7 +105,10 @@ async fn spec_card_can_update_wave() {
                     },
                 )
                 .await?;
-                Ok((w.clone(), Event::WaveUpdated(w)))
+                Ok((
+                    w.clone(),
+                    Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                ))
             })
         },
     )
@@ -196,7 +199,10 @@ async fn ai_codex_cannot_update_wave() {
                     },
                 )
                 .await?;
-                Ok((w.clone(), Event::WaveUpdated(w)))
+                Ok((
+                    w.clone(),
+                    Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(w, None)),
+                ))
             })
         },
     )

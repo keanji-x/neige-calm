@@ -148,6 +148,17 @@ pub type WriteWithEventsFn<'a> = Box<
         + 'a,
 >;
 
+/// #597 internal helper shape: like [`WriteWithEventsFn`], but each event
+/// carries its own actor. Used when a kernel-auto lifecycle event must commit
+/// atomically with the spec/worker write that triggered it.
+pub type WriteWithActorEventsFn<'a> = Box<
+    dyn for<'tx> FnOnce(
+            &'tx mut Transaction<'_, Sqlite>,
+        ) -> BoxFuture<'tx, Result<Vec<(ActorId, EventScope, Event)>>>
+        + Send
+        + 'a,
+>;
+
 /// Issue #310 — event-less counterpart to [`WriteWithEventFn`]. Closure
 /// runs in one sqlx transaction and returns nothing; no event row is
 /// appended to the `events` log, no broadcast is sent. Used by the
@@ -495,6 +506,21 @@ pub trait RepoEventWrite: RepoRead {
         bus: &crate::event::EventBus,
         write: &WriteContext,
         f: WriteWithEventsFn<'_>,
+    ) -> Result<Vec<i64>>;
+
+    /// #597 — plural eventized write where each event carries its own actor.
+    ///
+    /// This is reserved for atomic kernel-auto lifecycle hooks: the triggering
+    /// write remains attributed to the spec/worker actor, while the automatic
+    /// `wave.updated` transition is attributed to `Kernel` or
+    /// `KernelDispatcher`. Role enforcement still runs independently for each
+    /// `(actor, scope, event)` tuple and any refusal rolls back the full tx.
+    async fn write_with_actor_events(
+        &self,
+        correlation: Option<&str>,
+        bus: &crate::event::EventBus,
+        write: &WriteContext,
+        f: WriteWithActorEventsFn<'_>,
     ) -> Result<Vec<i64>>;
 
     /// Persist + broadcast a pure event (no associated entity write). Same
@@ -949,6 +975,55 @@ where
         .ok_or_else(|| {
             crate::error::CalmError::Internal(
                 "write_with_events_typed: closure did not set row".into(),
+            )
+        })?;
+    Ok((row, event_ids))
+}
+
+/// #597 typed counterpart to [`RepoEventWrite::write_with_actor_events`].
+pub async fn write_with_actor_events_typed<R, F>(
+    repo: &dyn RepoEventWrite,
+    correlation: Option<&str>,
+    bus: &crate::event::EventBus,
+    write: &WriteContext,
+    f: F,
+) -> Result<(R, Vec<i64>)>
+where
+    R: Send + 'static,
+    F: for<'tx> FnOnce(
+            &'tx mut Transaction<'_, Sqlite>,
+        ) -> BoxFuture<'tx, Result<(R, Vec<(ActorId, EventScope, Event)>)>>
+        + Send
+        + 'static,
+{
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
+    let captured_inner = Arc::clone(&captured);
+
+    let boxed: WriteWithActorEventsFn<'_> = Box::new(move |tx| {
+        let captured_inner = Arc::clone(&captured_inner);
+        Box::pin(async move {
+            let (row, events) = f(tx).await?;
+            *captured_inner.lock().await = Some(row);
+            Ok(events)
+        })
+    });
+
+    let event_ids = repo
+        .write_with_actor_events(correlation, bus, write, boxed)
+        .await?;
+    let row = Arc::try_unwrap(captured)
+        .map_err(|_| {
+            crate::error::CalmError::Internal(
+                "write_with_actor_events_typed: outstanding reference to captured row".into(),
+            )
+        })?
+        .into_inner()
+        .ok_or_else(|| {
+            crate::error::CalmError::Internal(
+                "write_with_actor_events_typed: closure did not set row".into(),
             )
         })?;
     Ok((row, event_ids))

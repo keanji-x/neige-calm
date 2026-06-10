@@ -33,7 +33,8 @@ use std::time::Duration;
 
 use super::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonRecord,
-    SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithEventFn, WriteWithEventsFn,
+    SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
+    WriteWithEventsFn,
 };
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
@@ -3976,6 +3977,64 @@ impl RepoEventWrite for SqlxRepo {
                 id: *id,
                 event_version: SYNC_EVENT_VERSION,
                 actor: actor.clone(),
+                scope,
+                event,
+            });
+        }
+        Ok(event_ids)
+    }
+
+    async fn write_with_actor_events(
+        &self,
+        correlation: Option<&str>,
+        bus: &EventBus,
+        write: &crate::state::WriteContext,
+        f: WriteWithActorEventsFn<'_>,
+    ) -> Result<Vec<i64>> {
+        // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let fut: BoxFuture<'_, Result<Vec<(ActorId, EventScope, Event)>>> = f(&mut tx);
+        let events = match fut.await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        if events.is_empty() {
+            let _ = tx.rollback().await;
+            return Err(CalmError::Internal(
+                "write_with_actor_events: closure returned an empty event batch".into(),
+            ));
+        }
+        for (actor, scope, event) in &events {
+            if let Err(violation) = crate::role_gate::enforce_role(
+                actor,
+                event,
+                scope,
+                write.role_cache(),
+                write.cove_cache(),
+            ) {
+                let _ = tx.rollback().await;
+                return Err(CalmError::Forbidden(violation.to_string()));
+            }
+        }
+        let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
+        for (actor, scope, event) in &events {
+            match Self::event_append_in_tx(&mut tx, actor, scope, correlation, event).await {
+                Ok(id) => event_ids.push(id),
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            }
+        }
+        tx.commit().await?;
+        for (id, (actor, scope, event)) in event_ids.iter().zip(events) {
+            bus.emit_envelope(BroadcastEnvelope {
+                id: *id,
+                event_version: SYNC_EVENT_VERSION,
+                actor,
                 scope,
                 event,
             });
