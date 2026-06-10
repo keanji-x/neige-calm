@@ -215,20 +215,21 @@ pub fn enforce_role(
             Some(CardRole::Worker) => {
                 enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
             }
-            // Bug A carveout — hook bridges run as subprocesses of their
-            // worker regardless of the card's role; they can't easily know
-            // at fire time whether the card is Spec- or Worker-roled.
-            // For the worker's own hook event (a pure lifecycle
-            // observation, *not* a wave-level authority claim) we accept
-            // the write from an AI-worker spec-card actor as long as the
-            // scope matches the card's own home (card_id + wave + cove
-            // cached values — same shape as the Worker arm). Anything
-            // else from that actor is still refused; write authority for
-            // spec-roled cards lives with `AiSpec`. Note that
-            // `Event::WaveUpdated` is already gated in section (2) above
-            // and unconditionally refuses any AI worker actor, so this
-            // carveout cannot regress the wave-authority invariant.
-            Some(CardRole::Spec) if is_own_worker_hook_event(actor, event) => {
+            // Lifecycle carveout — hook bridges run as subprocesses of
+            // their worker regardless of the card's role, and the REST
+            // spec-input route may receive the legacy `ai:codex` header
+            // before route context rebinds it to the spec card. These
+            // events are pure card-scoped observations, *not* wave-level
+            // authority claims, so we accept them from an AI-worker
+            // spec-card actor as long as the scope matches the card's own
+            // home (card_id + wave + cove cached values — same shape as
+            // the Worker arm). Anything else from that actor is still
+            // refused; write authority for spec-roled cards lives with
+            // `AiSpec`. Note that `Event::WaveUpdated` is already gated
+            // in section (2) above and unconditionally refuses any AI
+            // worker actor, so this carveout cannot regress the
+            // wave-authority invariant.
+            Some(CardRole::Spec) if is_own_worker_lifecycle_event(actor, event) => {
                 enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
             }
             // PR3 invariant: spec cards are bound to AiSpec, not an AI
@@ -330,11 +331,15 @@ fn ai_worker_actor_label(actor: &ActorId, card_id: &CardId) -> String {
     }
 }
 
-fn is_own_worker_hook_event(actor: &ActorId, event: &Event) -> bool {
+fn is_own_worker_lifecycle_event(actor: &ActorId, event: &Event) -> bool {
     matches!(
         (actor, event),
         (ActorId::AiCodex(_), Event::CodexHook { .. })
             | (ActorId::AiClaude(_), Event::ClaudeHook { .. })
+            | (
+                ActorId::AiCodex(_) | ActorId::AiClaude(_),
+                Event::HarnessUserMessageEnqueued { .. }
+            )
     )
 }
 
@@ -695,6 +700,15 @@ mod tests {
         }
     }
 
+    fn harness_user_message_enqueued(card: &str, wave: &str) -> Event {
+        Event::HarnessUserMessageEnqueued {
+            runtime_id: "rt-1".into(),
+            card_id: CardId::from(card),
+            wave_id: WaveId::from(wave),
+            char_count: 3,
+        }
+    }
+
     #[test]
     fn spec_codex_hook_in_own_scope_ok() {
         // Bug A regression unit. The codex bridge runs as a subprocess
@@ -722,12 +736,32 @@ mod tests {
     }
 
     #[test]
+    fn spec_codex_harness_user_message_in_own_scope_ok() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("spec-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &harness_user_message_enqueued(id.as_str(), "w"),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            res.is_ok(),
+            "AiCodex(spec) HarnessUserMessageEnqueued in own card scope should be accepted: {res:?}",
+        );
+    }
+
+    #[test]
     fn spec_codex_non_hook_event_still_rejected() {
-        // The Spec-arm carveout is intentionally limited to
-        // `Event::CodexHook`. Anything else from `AiCodex(spec_card)`
-        // is still refused — write authority for spec-roled cards lives
-        // with `AiSpec`, not `AiCodex`. CoveUpdated chosen because it's
-        // a non-hook, non-wave-updated event variant.
+        // The Spec-arm carveout is intentionally limited to pure
+        // lifecycle observations. Anything else from
+        // `AiCodex(spec_card)` is still refused — write authority for
+        // spec-roled cards lives with `AiSpec`, not `AiCodex`.
+        // CoveUpdated chosen because it's outside that lifecycle set and
+        // is not a wave-updated event variant.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");

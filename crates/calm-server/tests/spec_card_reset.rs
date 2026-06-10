@@ -357,6 +357,30 @@ async fn post_json(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Va
     (status, body)
 }
 
+async fn post_json_with_actor(
+    app: axum::Router,
+    uri: &str,
+    body: Value,
+    actor: &str,
+) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", actor)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
 async fn delete_empty(app: axum::Router, uri: &str) -> StatusCode {
     app.oneshot(
         Request::builder()
@@ -680,12 +704,23 @@ async fn send_spec_input_emits_audit_event() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let cove_id = boot
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .cove_id;
     let events = boot.repo.events_since(0, None).await.unwrap();
     let found = events.iter().any(|(_id, _version, scope, event)| {
         matches!(
             (scope, event),
             (
-                calm_server::event::EventScope::Card { card: scope_card, wave: scope_wave, .. },
+                calm_server::event::EventScope::Card {
+                    card: scope_card,
+                    wave: scope_wave,
+                    cove: scope_cove
+                },
                 calm_server::event::Event::HarnessUserMessageEnqueued {
                     runtime_id: ev_rt,
                     card_id: ev_card,
@@ -697,10 +732,104 @@ async fn send_spec_input_emits_audit_event() {
                 && ev_wave == &card.wave_id
                 && scope_card == &card.id
                 && scope_wave == &card.wave_id
+                && scope_cove == &cove_id
                 && *char_count == text.chars().count() as u32
         )
     });
     assert!(found, "expected harness.user_message.enqueued: {events:?}");
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_with_ai_codex_actor_emits_audit_event() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let (status, body) = post_json_with_actor(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "from codex" }),
+        "ai:codex",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let events = boot.repo.events_since(0, None).await.unwrap();
+    let found = events.iter().any(|(_id, _v, _scope, event)| {
+        matches!(
+            event,
+            calm_server::event::Event::HarnessUserMessageEnqueued { card_id, .. }
+                if card_id == &card.id
+        )
+    });
+    assert!(found, "expected harness.user_message.enqueued: {events:?}");
+
+    let actor_row: (String,) = sqlx::query_as(
+        "SELECT actor FROM events \
+         WHERE kind = 'harness.user_message.enqueued' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    let actor_json: Value = serde_json::from_str(&actor_row.0).expect("events.actor is JSON");
+    assert_eq!(
+        actor_json,
+        json!({"kind": "AiCodex", "id": card.id.as_str()}),
+        "ai:codex route actor must be rebound to the spec card id"
+    );
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_wave_missing_returns_404() {
+    let boot = boot().await;
+    let (mut card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+    let missing_wave_id = format!("missing-wave-{}", new_id());
+
+    let mut conn = boot.repo.pool().acquire().await.unwrap();
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET wave_id = ?1 WHERE id = ?2")
+        .bind(&missing_wave_id)
+        .bind(card.id.as_str())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
+    card.wave_id = WaveId::from(missing_wave_id);
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "wave gone" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert!(
+        body["error"].as_str().is_some_and(|e| e.contains("wave")),
+        "body={body}"
+    );
+
+    let events = boot.repo.events_since(0, None).await.unwrap();
+    let any_user_msg = events.iter().any(|(_id, _v, _scope, event)| {
+        matches!(
+            event,
+            calm_server::event::Event::HarnessUserMessageEnqueued { .. }
+        )
+    });
+    assert!(
+        !any_user_msg,
+        "wave_get -> None path must not emit audit: {events:?}"
+    );
 
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
