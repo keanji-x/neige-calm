@@ -3076,6 +3076,13 @@
   },
   "components": {
     "schemas": {
+      "AgentProvider": {
+        "type": "string",
+        "enum": [
+          "codex",
+          "claude"
+        ]
+      },
       "Card": {
         "type": "object",
         "required": [
@@ -3106,6 +3113,16 @@
           "payload": {
             "type": "object",
             "description": "Opaque JSON blob — ts-rs would otherwise emit `unknown` via the\n`serde-json-impl` feature, but we pin it explicitly so a future\nfeature-flag change can't silently widen / narrow the surface."
+          },
+          "runtime": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CardRuntimeView"
+              }
+            ]
           },
           "sort": {
             "type": "number",
@@ -3159,6 +3176,66 @@
           "spec",
           "reportcard"
         ]
+      },
+      "CardRuntimeView": {
+        "type": "object",
+        "description": "Live runtime projection joined from the `runtimes` table when a card is\nfetched or serialized.\n\nThis view is not part of the idempotency contract: across retries the\nruntime row may have advanced, so `Card.runtime` may differ between the\nfirst POST response and a retry POST response returning the same operation\nresult. Future cleanup (#581 item 4) will remove the legacy payload-key\nprojection; this typed view is the forward-compatible reader path.",
+        "required": [
+          "runtime_id",
+          "kind",
+          "status"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RuntimeKind"
+          },
+          "provider": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentProvider"
+              }
+            ]
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "terminal_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thread_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thread_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "Cove": {
         "type": "object",
@@ -4207,6 +4284,27 @@
             "description": "Absolute filesystem path to resolve against every cove's folder\nclaims. Returns the most-specific claim that covers it (longest\nprefix), or `null` if no claim covers the path."
           }
         }
+      },
+      "RunStatus": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "running",
+          "idle",
+          "turn_pending",
+          "failed",
+          "exited",
+          "superseded"
+        ]
+      },
+      "RuntimeKind": {
+        "type": "string",
+        "enum": [
+          "terminal",
+          "codex",
+          "claude",
+          "shared-spec"
+        ]
       },
       "SettingsBag": {
         "type": "object",

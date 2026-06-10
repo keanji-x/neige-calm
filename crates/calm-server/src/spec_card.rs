@@ -231,7 +231,7 @@ You were spawned to execute one job. Your contract:
    — whatever the goal requires.
 3. When the task is done, report exactly once via the `neige` shell CLI:
    * On success: `neige task-completed --idempotency-key K --result <json-or-text>` \
-     where `K` echoes the value from your spawning `*.job_requested` event. \
+     where `K` echoes the value from your spawning `*.worker_requested` event. \
      Append `--artifact <path>` (may repeat) for any file/blob references \
      you produced.
    * On failure: `neige task-failed --idempotency-key K --reason '<text>'` \

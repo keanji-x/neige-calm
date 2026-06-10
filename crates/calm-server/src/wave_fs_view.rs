@@ -230,8 +230,8 @@ impl<'a> WaveFsView<'a> {
             .events_for_wave(
                 wave.id.as_str(),
                 &[
-                    "codex.job_requested",
-                    "terminal.job_requested",
+                    "codex.worker_requested",
+                    "terminal.worker_requested",
                     "task.completed",
                     "task.failed",
                 ],
@@ -449,7 +449,7 @@ fn project_runs(
 
     for row in events {
         match &row.event {
-            Event::CodexJobRequested {
+            Event::CodexWorkerRequested {
                 idempotency_key, ..
             } => {
                 keys.insert(idempotency_key.clone());
@@ -460,12 +460,12 @@ fn project_runs(
                     run_event(
                         row.id,
                         row.at,
-                        "codex.job_requested",
+                        "codex.worker_requested",
                         row.event.payload_value(),
                     ),
                 );
             }
-            Event::TerminalJobRequested {
+            Event::TerminalWorkerRequested {
                 idempotency_key, ..
             } => {
                 keys.insert(idempotency_key.clone());
@@ -476,7 +476,7 @@ fn project_runs(
                     run_event(
                         row.id,
                         row.at,
-                        "terminal.job_requested",
+                        "terminal.worker_requested",
                         row.event.payload_value(),
                     ),
                 );

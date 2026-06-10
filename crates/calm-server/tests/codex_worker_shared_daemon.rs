@@ -144,7 +144,7 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
 }
 
 fn codex_req(idem: &str, goal: &str) -> Event {
-    Event::CodexJobRequested {
+    Event::CodexWorkerRequested {
         idempotency_key: idem.into(),
         goal: goal.into(),
         context: json!({"from": "worker-shared-test"}),

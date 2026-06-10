@@ -287,7 +287,7 @@ pub async fn request_codex(boot: &Boot, key: &str) -> i64 {
             &boot.ctx.events,
             boot.ctx.write.role_cache(),
             boot.ctx.write.cove_cache(),
-            Event::CodexJobRequested {
+            Event::CodexWorkerRequested {
                 idempotency_key: key.into(),
                 goal: format!("goal for {key}"),
                 context: json!({ "key": key }),

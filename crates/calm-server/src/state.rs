@@ -295,10 +295,10 @@ pub struct AppState {
     /// OpenAPI / metrics readers.
     pub card_kind_registry: Arc<CardKindRegistry>,
     /// PR5 (#136) — dispatcher worker handle. Subscribes via
-    /// [`EventBus::subscribe_filtered`] to `*.job_requested` envelopes
-    /// and mints worker-roled cards (+ optionally spawns the codex /
-    /// session daemon) for each, gated by a global semaphore (default
-    /// 8 permits, override via `NEIGE_DISPATCHER_PERMITS`). Held as
+    /// [`EventBus::subscribe_filtered`] to `*.worker_requested` envelopes
+    /// and starts the matching worker operation for each, gated by a
+    /// global semaphore (default 8 permits, override via
+    /// `NEIGE_DISPATCHER_PERMITS`). Held as
     /// `Arc<Dispatcher>` so tests can probe permit counts via
     /// [`Dispatcher::permits`] / [`Dispatcher::semaphore`]; production
     /// callers don't touch the field after construction. Dropping the
@@ -498,7 +498,7 @@ impl AppState {
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
-        // that's silent until something emits a `*.job_requested`
+        // that's silent until something emits a `*.worker_requested`
         // event. Permit count honors `NEIGE_DISPATCHER_PERMITS` for
         // the rare test that twiddles the env var; the default 8 is
         // the value tests will see otherwise.
@@ -880,7 +880,7 @@ impl AppState {
         );
 
         // PR5 (#136) — dispatcher worker. Subscribes to
-        // `*.job_requested` envelopes and mints worker-roled cards
+        // `*.worker_requested` envelopes and starts worker operations
         // (Cap: `NEIGE_DISPATCHER_PERMITS` env override, default 8).
         // Spawned here (between role-cache seed and plugin autospawn)
         // so the bus has at least one *.Requested-aware listener

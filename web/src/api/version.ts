@@ -29,10 +29,14 @@
  * * `1` — initial. Terminal protocol v1.
  * * `2` — terminal protocol v2 (issue #44). XtermView speaks the new
  *   ClientHello/ServerHello + RenderSnapshot/Patch framing.
+ * * `3` — dispatcher request event rename (issue #581). Wire kinds
+ *   `codex.job_requested` / `terminal.job_requested` are renamed to
+ *   `*.worker_requested`. Old frontends' zod schemas reject the new
+ *   kinds and would silently drop invalidation frames, so bump here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 2;
+export const WEB_COMPAT_VERSION = 3;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

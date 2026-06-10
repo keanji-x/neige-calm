@@ -12,9 +12,9 @@
 
 use crate::error::ErrorBody;
 use crate::model::{
-    Card, CardPatch, Cove, CoveFolder, CoveKind, CovePatch, CoveResolve, FolderConflict,
-    FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay, NewWave, Overlay,
-    Plugin, Terminal, Wave, WaveDetail, WavePatch,
+    Card, CardPatch, CardRuntimeView, Cove, CoveFolder, CoveKind, CovePatch, CoveResolve,
+    FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay,
+    NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
 };
 use crate::routes::cards::{CreateCardBody, HarnessItemsQuery, ResetSpecCardResponse, ViaToolCall};
 use crate::routes::claude_cards::NewClaudeCardBody;
@@ -135,6 +135,7 @@ use utoipa::OpenApi;
         UpdateWaveReportBody,
         WaveDetail,
         Card,
+        CardRuntimeView,
         NewCard,
         CardPatch,
         HarnessItem,

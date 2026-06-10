@@ -35,7 +35,7 @@
 //!    or `cove` — is refused.
 //!
 //! 4. **Dispatch-request events are gated to spec cards.** Issue #583.
-//!    `Event::CodexJobRequested` and `Event::TerminalJobRequested` are
+//!    `Event::CodexWorkerRequested` and `Event::TerminalWorkerRequested` are
 //!    refused for any `AiCodex` / `AiClaude` actor, mirroring the
 //!    `WaveUpdated` rule. Spec card (`AiSpec`) with cached role `Spec`
 //!    passes; User / Kernel / KernelDispatcher / Plugin keep their
@@ -166,7 +166,7 @@ pub fn enforce_role(
     // worker-tree mint. Mirrors section (2)'s shape.
     if matches!(
         event,
-        Event::CodexJobRequested { .. } | Event::TerminalJobRequested { .. }
+        Event::CodexWorkerRequested { .. } | Event::TerminalWorkerRequested { .. }
     ) {
         match actor {
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
@@ -893,7 +893,7 @@ mod tests {
     // delivery path (#293) rely on the gate's existing logic to route +
     // authorize them. These tests lock in that behavior:
     //
-    //   * a worker card emitting `codex.job_requested` within its own
+    //   * a worker card emitting `codex.worker_requested` within its own
     //     card scope is permitted (PR5's job request fan-out path);
     //   * a worker card emitting `task.completed` within its own card
     //     scope is permitted (the dispatcher push delivery path);
@@ -909,8 +909,8 @@ mod tests {
 
     use crate::event::ArtifactRef;
 
-    fn codex_job_requested() -> Event {
-        Event::CodexJobRequested {
+    fn codex_worker_requested() -> Event {
+        Event::CodexWorkerRequested {
             idempotency_key: "idem-1".into(),
             goal: "g".into(),
             context: serde_json::Value::Null,
@@ -918,8 +918,8 @@ mod tests {
         }
     }
 
-    fn terminal_job_requested() -> Event {
-        Event::TerminalJobRequested {
+    fn terminal_worker_requested() -> Event {
+        Event::TerminalWorkerRequested {
             idempotency_key: "idem-1".into(),
             cmd: "echo hi".into(),
             cwd: None,
@@ -935,10 +935,10 @@ mod tests {
     }
 
     #[test]
-    fn worker_cannot_emit_codex_job_requested_after_583() {
+    fn worker_cannot_emit_codex_worker_requested_after_583() {
         // Issue #583. Section (2.5) of `enforce_role` now rejects any
-        // Worker-actor `CodexJobRequested` regardless of scope. Replaces
-        // the pre-#583 positive `worker_can_emit_codex_job_requested_in_own_scope`
+        // Worker-actor `CodexWorkerRequested` regardless of scope. Replaces
+        // the pre-#583 positive `worker_can_emit_codex_worker_requested_in_own_scope`
         // which encoded the leaky pre-#583 behavior.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
@@ -946,12 +946,12 @@ mod tests {
         cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
         let err = enforce_role(
             &ActorId::AiCodex(id.clone()),
-            &codex_job_requested(),
+            &codex_worker_requested(),
             &card_scope(id.as_str(), "w", "c"),
             &cache,
             &wcc,
         )
-        .expect_err("worker AI actor must be refused codex.job_requested");
+        .expect_err("worker AI actor must be refused codex.worker_requested");
         assert!(
             matches!(err, RoleViolation::NotSpecForDispatch { .. }),
             "expected NotSpecForDispatch, got {err:?}",
@@ -959,19 +959,19 @@ mod tests {
     }
 
     #[test]
-    fn worker_cannot_emit_terminal_job_requested_after_583() {
+    fn worker_cannot_emit_terminal_worker_requested_after_583() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("worker-1");
         cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
         let err = enforce_role(
             &ActorId::AiCodex(id.clone()),
-            &terminal_job_requested(),
+            &terminal_worker_requested(),
             &card_scope(id.as_str(), "w", "c"),
             &cache,
             &wcc,
         )
-        .expect_err("worker AI actor must be refused terminal.job_requested");
+        .expect_err("worker AI actor must be refused terminal.worker_requested");
         assert!(
             matches!(err, RoleViolation::NotSpecForDispatch { .. }),
             "expected NotSpecForDispatch, got {err:?}",
@@ -979,19 +979,19 @@ mod tests {
     }
 
     #[test]
-    fn spec_can_emit_codex_job_requested_in_own_scope() {
+    fn spec_can_emit_codex_worker_requested_in_own_scope() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let id = CardId::from("spec-1");
         cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
         let res = enforce_role(
             &ActorId::AiSpec(id.clone()),
-            &codex_job_requested(),
+            &codex_worker_requested(),
             &card_scope(id.as_str(), "w", "c"),
             &cache,
             &wcc,
         );
-        assert!(res.is_ok(), "spec emitting codex.job_requested: {res:?}");
+        assert!(res.is_ok(), "spec emitting codex.worker_requested: {res:?}");
     }
 
     #[test]
@@ -1037,13 +1037,13 @@ mod tests {
     #[test]
     fn empty_aispec_card_id_rejected_on_new_variant() {
         // Mirror of the AiCodex case for AiSpec — when PR5 wires the
-        // spec card as the requester of codex.job_requested, the empty
+        // spec card as the requester of codex.worker_requested, the empty
         // CardId path must still be rejected.
         let cache = CardRoleCache::new();
         let wcc = WaveCoveCache::new();
         let res = enforce_role(
             &ActorId::AiSpec(CardId::from("")),
-            &codex_job_requested(),
+            &codex_worker_requested(),
             &EventScope::System,
             &cache,
             &wcc,

@@ -140,6 +140,7 @@ mod tests {
             kind: kind.into(),
             sort: 1.0,
             payload: json!({}),
+            runtime: None,
             deletable: true,
             created_at: 0,
             updated_at: 0,

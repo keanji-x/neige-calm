@@ -561,7 +561,7 @@ describe('EventBridge', () => {
       },
       {
         ev: {
-          ev: 'codex.job_requested',
+          ev: 'codex.worker_requested',
           data: {
             idempotency_key: 'idem-codex',
             goal: 'g',
@@ -572,7 +572,7 @@ describe('EventBridge', () => {
       },
       {
         ev: {
-          ev: 'terminal.job_requested',
+          ev: 'terminal.worker_requested',
           data: {
             idempotency_key: 'idem-terminal',
             cmd: 'echo ok',

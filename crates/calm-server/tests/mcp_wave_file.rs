@@ -320,7 +320,7 @@ async fn request_codex(boot: &Boot, key: &str) -> i64 {
         boot,
         &boot.wave_id,
         &boot.cove_id,
-        Event::CodexJobRequested {
+        Event::CodexWorkerRequested {
             idempotency_key: key.into(),
             goal: format!("goal for {key}"),
             context: json!({ "key": key }),
@@ -1173,7 +1173,7 @@ async fn wave_scoped_dispatcher_failure_is_not_spec_verdict() {
         ActorId::KernelDispatcher,
         &boot.wave_id,
         &boot.cove_id,
-        Event::CodexJobRequested {
+        Event::CodexWorkerRequested {
             idempotency_key: "dispatcher-wave-failed".into(),
             goal: "wave-scoped dispatcher request".into(),
             context: json!({}),

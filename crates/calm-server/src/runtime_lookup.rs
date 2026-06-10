@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::db::RouteRepo;
 use crate::error::Result;
 use crate::event::Event;
-use crate::model::Card;
+use crate::model::{Card, CardRuntimeView};
 use crate::runtime_repo::{
     AgentProvider, CardRuntime, Result as RuntimeResult, RunStatus, RuntimeKind, RuntimeRepo,
 };
@@ -148,63 +148,72 @@ pub async fn project_runtime_into_event_payload<R: RuntimeRepo + ?Sized>(
 }
 
 fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
+    let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
+    let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
+    let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
+    let source = (runtime.kind == RuntimeKind::SharedSpec).then(|| "shared".to_string());
+    let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
+
+    card.runtime = Some(CardRuntimeView {
+        runtime_id: runtime.id.clone(),
+        kind: runtime.kind.clone(),
+        status: runtime.status.clone(),
+        provider: runtime.agent_provider.clone(),
+        terminal_id: terminal_id.clone(),
+        thread_id: thread_id.clone(),
+        session_id: session_id.clone(),
+        source: source.clone(),
+        thread_status: thread_status.clone(),
+    });
+
     let Some(map) = card.payload.as_object_mut() else {
         return;
     };
 
-    if let Some(terminal_id) = non_empty(runtime.terminal_run_id.as_deref()) {
-        map.insert("terminal_id".into(), Value::String(terminal_id.to_string()));
+    if let Some(terminal_id) = terminal_id {
+        map.insert("terminal_id".into(), Value::String(terminal_id));
     }
 
     if runtime.kind == RuntimeKind::ClaudeCard
-        && let Some(session_id) = non_empty(runtime.session_id.as_deref())
+        && let Some(session_id) = session_id
     {
-        map.insert(
-            "claude_session_id".into(),
-            Value::String(session_id.to_string()),
-        );
+        map.insert("claude_session_id".into(), Value::String(session_id));
     }
 
     if matches!(
         runtime.kind,
         RuntimeKind::CodexCard | RuntimeKind::SharedSpec
-    ) && let Some(thread_id) = non_empty(runtime.thread_id.as_deref())
+    ) && let Some(thread_id) = thread_id
     {
-        map.insert(
-            "codex_thread_id".into(),
-            Value::String(thread_id.to_string()),
-        );
+        map.insert("codex_thread_id".into(), Value::String(thread_id));
     }
 
-    if runtime.kind == RuntimeKind::SharedSpec {
-        map.insert("codex_source".into(), Value::String("shared".into()));
+    if let Some(source) = source {
+        map.insert("codex_source".into(), Value::String(source));
     }
 
-    if matches!(
+    if let Some(thread_status) = thread_status {
+        map.insert("codex_thread_status".into(), Value::String(thread_status));
+    }
+}
+
+fn projected_thread_status(runtime: &CardRuntime) -> Option<&'static str> {
+    if !matches!(
         runtime.kind,
         RuntimeKind::CodexCard | RuntimeKind::SharedSpec
     ) {
-        match runtime.status {
-            RunStatus::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
-                map.insert(
-                    "codex_thread_status".into(),
-                    Value::String("pending_thread_start".into()),
-                );
-            }
-            RunStatus::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
-                map.insert(
-                    "codex_thread_status".into(),
-                    Value::String("failed_to_spawn".into()),
-                );
-            }
-            RunStatus::Running if non_empty(runtime.thread_id.as_deref()).is_some() => {
-                map.insert(
-                    "codex_thread_status".into(),
-                    Value::String("started".into()),
-                );
-            }
-            _ => {}
+        return None;
+    }
+
+    match runtime.status {
+        RunStatus::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
+            Some("pending_thread_start")
         }
+        RunStatus::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
+            Some("failed_to_spawn")
+        }
+        RunStatus::Running if non_empty(runtime.thread_id.as_deref()).is_some() => Some("started"),
+        _ => None,
     }
 }
 

@@ -1,6 +1,6 @@
 //! Dispatcher worker.
 //!
-//! Subscribes to `codex.job_requested` / `terminal.job_requested` envelopes,
+//! Subscribes to `codex.worker_requested` / `terminal.worker_requested` envelopes,
 //! plus the task, report, and hook events that drive spec-harness push
 //! observations.
 //!
@@ -479,8 +479,8 @@ impl Dispatcher {
         // by `kind_tag()` here; the exact turn-ending hook discriminators are
         // checked synchronously in the push branch below.
         let kinds: Vec<String> = vec![
-            "codex.job_requested".into(),
-            "terminal.job_requested".into(),
+            "codex.worker_requested".into(),
+            "terminal.worker_requested".into(),
             "task.completed".into(),
             "task.failed".into(),
             "wave.report_edited".into(),
@@ -590,7 +590,7 @@ impl Inner {
         // pushing those back would be a feedback loop. Worker hook events
         // also return from here, even when ignored, because they are
         // lifecycle notices rather than worker-spawn requests. The
-        // worker-spawn path (the two `*.job_requested` kinds) falls through
+        // worker-request path (the two `*.worker_requested` kinds) falls through
         // untouched.
         match &envelope.event {
             Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
@@ -655,7 +655,7 @@ impl Inner {
                 }
                 return;
             }
-            // Everything else (the two `*.job_requested` kinds) falls
+            // Everything else (the two `*.worker_requested` kinds) falls
             // through to the worker-spawn path below, unchanged.
             _ => {}
         }
@@ -664,7 +664,7 @@ impl Inner {
         // already narrowed us to two variants; the `_` arm exists for
         // future-proofing in case the filter ever widens.
         let req = match &envelope.event {
-            Event::CodexJobRequested {
+            Event::CodexWorkerRequested {
                 idempotency_key,
                 goal,
                 context,
@@ -675,7 +675,7 @@ impl Inner {
                 context: context.clone(),
                 acceptance_criteria: acceptance_criteria.clone(),
             },
-            Event::TerminalJobRequested {
+            Event::TerminalWorkerRequested {
                 idempotency_key,
                 cmd,
                 cwd,
@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     /// The dispatcher's `SubscribeFilter` must now match the push kinds in
-    /// addition to the two job_requested kinds. We reconstruct the
+    /// addition to the two worker_requested kinds. We reconstruct the
     /// exact filter the spawn site builds and assert `matches()` for each
     /// kind, plus a non-matching kind to prove the list is still a closed
     /// allowlist (not "match everything").
@@ -1224,8 +1224,8 @@ mod tests {
             scope: SubscribeScope::Any,
             include_descendants: true,
             kinds: Some(vec![
-                "codex.job_requested".into(),
-                "terminal.job_requested".into(),
+                "codex.worker_requested".into(),
+                "terminal.worker_requested".into(),
                 "task.completed".into(),
                 "task.failed".into(),
                 "wave.report_edited".into(),
@@ -1245,14 +1245,14 @@ mod tests {
             event: ev,
         };
 
-        // The two pre-existing job_requested kinds still match.
-        assert!(filter.matches(&env(Event::CodexJobRequested {
+        // The two worker_requested kinds still match.
+        assert!(filter.matches(&env(Event::CodexWorkerRequested {
             idempotency_key: "k".into(),
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
         })));
-        assert!(filter.matches(&env(Event::TerminalJobRequested {
+        assert!(filter.matches(&env(Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,

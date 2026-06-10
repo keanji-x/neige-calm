@@ -36,7 +36,7 @@ use support::mcp::{
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn dispatch_request_codex_emits_codex_job_requested() {
+async fn dispatch_request_codex_emits_codex_worker_requested() {
     let b = boot_with_role(CardRole::Spec).await;
     let mut rx = b.events.subscribe_filtered();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
@@ -59,7 +59,7 @@ async fn dispatch_request_codex_emits_codex_job_requested() {
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
 
-    let env = wait_for_kind(&mut rx, "codex.job_requested").await;
+    let env = wait_for_kind(&mut rx, "codex.worker_requested").await;
     // Spec actor → AiSpec(card_id).
     match &env.actor {
         ActorId::AiSpec(cid) => assert_eq!(cid.as_str(), b.card_id.as_str()),
@@ -72,7 +72,7 @@ async fn dispatch_request_codex_emits_codex_job_requested() {
     }
     // Event carries the goal we sent.
     match &env.event {
-        Event::CodexJobRequested {
+        Event::CodexWorkerRequested {
             goal,
             idempotency_key,
             ..
@@ -80,7 +80,7 @@ async fn dispatch_request_codex_emits_codex_job_requested() {
             assert_eq!(goal, "build a thing");
             assert_eq!(idempotency_key, "dr-codex-1");
         }
-        other => panic!("expected CodexJobRequested; got {other:?}"),
+        other => panic!("expected CodexWorkerRequested; got {other:?}"),
     }
     let _ = &b.server;
 }
@@ -249,7 +249,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
 // Under the new semantics, driving `calm.dispatch_request[codex]`
 // against a missing proc-supervisor socket must:
 //   (a) return success from the MCP tool (the spec just enqueued a
-//       `codex.job_requested` event — the failure is downstream),
+//       `codex.worker_requested` event — the failure is downstream),
 //   (b) emit a `TaskFailed` event with the dispatch's `idempotency_key`
 //       on the bus once the dispatcher drains the request and the spawn
 //       fails, and

@@ -12,7 +12,7 @@
 //! * `calm.dispatch_request` — Spec card asks the kernel dispatcher to
 //!   spawn a worker (codex or terminal). Two variants distinguished by
 //!   `kind: "codex" | "terminal"`. Maps to
-//!   `Event::CodexJobRequested` / `Event::TerminalJobRequested`.
+//!   `Event::CodexWorkerRequested` / `Event::TerminalWorkerRequested`.
 //!
 //! * `calm.task_completed` — Worker reports success with an opaque
 //!   result + artifact list. Maps to `Event::TaskCompleted`.
@@ -125,7 +125,7 @@ async fn dispatch_request(
                 .get("acceptance_criteria")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            Event::CodexJobRequested {
+            Event::CodexWorkerRequested {
                 idempotency_key,
                 goal,
                 context,
@@ -144,7 +144,7 @@ async fn dispatch_request(
                 .get("cwd")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            Event::TerminalJobRequested {
+            Event::TerminalWorkerRequested {
                 idempotency_key,
                 cmd,
                 cwd,
@@ -170,7 +170,7 @@ fn task_completed_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_COMPLETED.into(),
         description: "Report that a worker card has completed its task. \
-             `idempotency_key` should echo the matching `*.job_requested` \
+             `idempotency_key` should echo the matching `*.worker_requested` \
              so the spec card can correlate."
             .into(),
         input_schema: json!({

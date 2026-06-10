@@ -207,9 +207,9 @@ describe('spec harness transcript lifecycle events', () => {
 // Dispatcher will emit these payloads — these tests are the contract
 // they're emitting against.
 describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
-  it('parses a valid codex.job_requested', () => {
+  it('parses a valid codex.worker_requested', () => {
     const parsed = wireEventSchema.parse({
-      ev: 'codex.job_requested',
+      ev: 'codex.worker_requested',
       data: {
         idempotency_key: 'idem-1',
         goal: 'refactor X',
@@ -217,36 +217,36 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
         acceptance_criteria: 'tests pass',
       },
     });
-    expect(parsed.ev).toBe('codex.job_requested');
-    if (parsed.ev === 'codex.job_requested') {
+    expect(parsed.ev).toBe('codex.worker_requested');
+    if (parsed.ev === 'codex.worker_requested') {
       expect(parsed.data.idempotency_key).toBe('idem-1');
       expect(parsed.data.goal).toBe('refactor X');
     }
   });
 
-  it('rejects codex.job_requested missing idempotency_key', () => {
+  it('rejects codex.worker_requested missing idempotency_key', () => {
     const result = wireEventSchema.safeParse({
-      ev: 'codex.job_requested',
+      ev: 'codex.worker_requested',
       data: { goal: 'g', context: {} },
     });
     expect(result.success).toBe(false);
   });
 
-  it('parses a valid terminal.job_requested (cwd present)', () => {
+  it('parses a valid terminal.worker_requested (cwd present)', () => {
     const parsed = wireEventSchema.parse({
-      ev: 'terminal.job_requested',
+      ev: 'terminal.worker_requested',
       data: { idempotency_key: 'idem-2', cmd: 'cargo test', cwd: '/repo' },
     });
-    expect(parsed.ev).toBe('terminal.job_requested');
-    if (parsed.ev === 'terminal.job_requested') {
+    expect(parsed.ev).toBe('terminal.worker_requested');
+    if (parsed.ev === 'terminal.worker_requested') {
       expect(parsed.data.cmd).toBe('cargo test');
       expect(parsed.data.cwd).toBe('/repo');
     }
   });
 
-  it('rejects terminal.job_requested missing cmd', () => {
+  it('rejects terminal.worker_requested missing cmd', () => {
     const result = wireEventSchema.safeParse({
-      ev: 'terminal.job_requested',
+      ev: 'terminal.worker_requested',
       data: { idempotency_key: 'idem-2' },
     });
     expect(result.success).toBe(false);

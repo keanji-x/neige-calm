@@ -760,6 +760,16 @@ async fn runtime_start_tx_claude_records_session_when_present() {
     project_runtime_into_card_payload(&repo, &mut stored)
         .await
         .unwrap();
+    let runtime = stored.runtime.as_ref().expect("projected card runtime");
+    assert_eq!(runtime.runtime_id, active.id);
+    assert_eq!(runtime.kind, RuntimeKind::ClaudeCard);
+    assert_eq!(runtime.status, RunStatus::Starting);
+    assert_eq!(runtime.provider, Some(AgentProvider::Claude));
+    assert_eq!(runtime.terminal_id.as_deref(), Some(term.id.as_str()));
+    assert_eq!(runtime.session_id.as_deref(), Some(session_id.as_str()));
+    assert!(runtime.thread_id.is_none());
+    assert!(runtime.source.is_none());
+    assert!(runtime.thread_status.is_none());
     assert_eq!(stored.payload["terminal_id"], term.id);
     assert_eq!(stored.payload["claude_session_id"], session_id);
 }
@@ -926,6 +936,14 @@ async fn projection_overwrites_stale_legacy_keys_from_runtime() {
     project_runtime_into_card_payload(&repo, &mut projected)
         .await
         .unwrap();
+    let runtime = projected.runtime.as_ref().expect("projected card runtime");
+    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.provider, Some(AgentProvider::Codex));
+    assert_eq!(runtime.terminal_id.as_deref(), Some("NEW"));
+    assert_eq!(runtime.thread_id.as_deref(), Some("abc"));
+    assert!(runtime.source.is_none());
+    assert_eq!(runtime.thread_status.as_deref(), Some("started"));
     assert_eq!(projected.payload["terminal_id"], "NEW");
     assert_eq!(projected.payload["codex_thread_id"], "abc");
     assert_eq!(projected.payload["codex_thread_status"], "started");
@@ -968,6 +986,14 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
     project_runtime_into_card_payload(&repo, &mut projected)
         .await
         .unwrap();
+    let runtime = projected.runtime.as_ref().expect("projected card runtime");
+    assert_eq!(runtime.kind, RuntimeKind::SharedSpec);
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.provider, Some(AgentProvider::Codex));
+    assert!(runtime.terminal_id.is_none());
+    assert_eq!(runtime.thread_id.as_deref(), Some("active-thread"));
+    assert_eq!(runtime.source.as_deref(), Some("shared"));
+    assert_eq!(runtime.thread_status.as_deref(), Some("started"));
     assert_eq!(projected.payload["codex_thread_id"], "active-thread");
     assert_eq!(projected.payload["codex_source"], "shared");
     assert_eq!(projected.payload["codex_thread_status"], "started");

@@ -744,6 +744,8 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        AgentProvider: "codex" | "claude";
         Card: {
             /** Format: int64 */
             created_at: number;
@@ -779,6 +781,7 @@ export interface components {
              *     feature-flag change can't silently widen / narrow the surface.
              */
             payload: Record<string, never>;
+            runtime?: null | components["schemas"]["CardRuntimeView"];
             /** Format: double */
             sort: number;
             /** Format: int64 */
@@ -831,6 +834,27 @@ export interface components {
          * @enum {string}
          */
         CardRole: "worker" | "spec" | "reportcard";
+        /**
+         * @description Live runtime projection joined from the `runtimes` table when a card is
+         *     fetched or serialized.
+         *
+         *     This view is not part of the idempotency contract: across retries the
+         *     runtime row may have advanced, so `Card.runtime` may differ between the
+         *     first POST response and a retry POST response returning the same operation
+         *     result. Future cleanup (#581 item 4) will remove the legacy payload-key
+         *     projection; this typed view is the forward-compatible reader path.
+         */
+        CardRuntimeView: {
+            kind: components["schemas"]["RuntimeKind"];
+            provider?: null | components["schemas"]["AgentProvider"];
+            runtime_id: string;
+            session_id?: string | null;
+            source?: string | null;
+            status: components["schemas"]["RunStatus"];
+            terminal_id?: string | null;
+            thread_id?: string | null;
+            thread_status?: string | null;
+        };
         Cove: {
             color: string;
             /** Format: int64 */
@@ -1381,6 +1405,10 @@ export interface components {
              */
             path: string;
         };
+        /** @enum {string} */
+        RunStatus: "starting" | "running" | "idle" | "turn_pending" | "failed" | "exited" | "superseded";
+        /** @enum {string} */
+        RuntimeKind: "terminal" | "codex" | "claude" | "shared-spec";
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
          *     deterministic ordering in the response so the OpenAPI spec consumers
