@@ -84,6 +84,18 @@ pub enum DiffStatus {
     Modified,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SinceLastTurnBlock {
+    pub current_head: Option<CommitHash>,
+    pub block: Option<String>,
+}
+
+impl SinceLastTurnBlock {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct BlobContent {
     bytes: Vec<u8>,
@@ -302,7 +314,7 @@ async fn snapshot_tree_at_tx(
             tx,
             &mut entries,
             format!("cards/{card_id}/payload.json"),
-            card_payload_json(&card.card)?,
+            card_payload_json(card)?,
             object_created_at,
         )
         .await?;
@@ -501,20 +513,34 @@ pub async fn since_last_turn_block(
     pool: &SqlitePool,
     wave_id: &WaveId,
     last_seen_head: Option<&str>,
-) -> Result<Option<String>> {
+    spec_card_id: Option<&CardId>,
+) -> Result<SinceLastTurnBlock> {
     let Some(current) = head(pool, wave_id).await? else {
-        return Ok(None);
+        return Ok(SinceLastTurnBlock::empty());
     };
     let Some(previous) = last_seen_head else {
-        return Ok(None);
+        return Ok(SinceLastTurnBlock {
+            current_head: Some(current),
+            block: None,
+        });
     };
     if previous == current {
-        return Ok(None);
+        return Ok(SinceLastTurnBlock {
+            current_head: Some(current),
+            block: None,
+        });
     }
 
-    let entries = diff(pool, previous, &current, None).await?;
+    let entries = diff(pool, previous, &current, None)
+        .await?
+        .into_iter()
+        .filter(|entry| !is_internal_observation_diff_path(&entry.path, spec_card_id))
+        .collect::<Vec<_>>();
     if entries.is_empty() {
-        return Ok(None);
+        return Ok(SinceLastTurnBlock {
+            current_head: Some(current),
+            block: None,
+        });
     }
     let mut out = String::new();
     out.push_str(&format!(
@@ -533,7 +559,10 @@ pub async fn since_last_turn_block(
         });
         out.push('\n');
     }
-    Ok(Some(out))
+    Ok(SinceLastTurnBlock {
+        current_head: Some(current),
+        block: Some(out),
+    })
 }
 
 /// Sweeper stub for PR1. Objects are content-addressed and intentionally not
@@ -774,7 +803,7 @@ async fn render_card_path_tx(
         "payload.json" => {
             let mut card = card;
             project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
-            Ok(Some(card_payload_json(&card.card)?))
+            Ok(Some(card_payload_json(&card)?))
         }
         "runtime.json" => {
             let mut card = card;
@@ -1999,8 +2028,18 @@ fn card_meta_value(card: &CardProjection) -> Result<Value> {
     ))
 }
 
-fn card_payload_json(card: &Card) -> Result<BlobContent> {
-    content_json(&card.payload)
+fn card_payload_json(card: &CardProjection) -> Result<BlobContent> {
+    content_json(&card.card.payload)
+}
+
+fn is_internal_observation_diff_path(path: &str, spec_card_id: Option<&CardId>) -> bool {
+    if path.starts_with("cards/") && path.ends_with("/runtime.json") {
+        return true;
+    }
+    let Some(spec_card_id) = spec_card_id else {
+        return false;
+    };
+    path == format!("cards/{}/payload.json", spec_card_id.as_str())
 }
 
 fn card_runtime_json(card: &Card) -> Result<BlobContent> {

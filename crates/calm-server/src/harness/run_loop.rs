@@ -21,6 +21,7 @@ use crate::model::now_ms;
 use crate::runtime_repo::{RunStatus, RuntimeId};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_vcs;
 
 const OBSERVATION_BUFFER: usize = 256;
 const MAX_PENDING_QUEUE_LEN: usize = 256;
@@ -65,7 +66,9 @@ pub(super) struct Inner {
     push_watermark: Mutex<i64>,
     last_turn_id: Mutex<Option<String>>,
     issued_turn_id: Mutex<Option<String>>,
+    issued_turn_head: Mutex<Option<wave_vcs::CommitHash>>,
     last_report_body_sha256: Mutex<Option<String>>,
+    last_seen_head: Mutex<Option<wave_vcs::CommitHash>>,
     debounce: Mutex<DebounceState>,
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
     shutdown: broadcast::Sender<()>,
@@ -251,6 +254,10 @@ impl SpecHarness {
     pub async fn set_issued_turn_id_for_test(&self, turn_id: Option<String>) {
         *self.inner.issued_turn_id.lock().await = turn_id;
     }
+
+    pub async fn set_last_seen_head_for_test(&self, head: Option<String>) {
+        *self.inner.last_seen_head.lock().await = head;
+    }
 }
 
 fn inner_from_params(
@@ -287,7 +294,9 @@ fn inner_from_params(
         push_watermark: Mutex::new(snapshot.push_watermark),
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         issued_turn_id: Mutex::new(None),
+        issued_turn_head: Mutex::new(snapshot.issued_turn_head),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
+        last_seen_head: Mutex::new(snapshot.last_seen_head),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
         shutdown,
@@ -662,7 +671,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
-                return persist_snapshot(inner).await;
+                return persist_snapshot_stamping_issued_head(inner).await;
             }
             let state = inner.state.lock().await.clone();
             let active = state.active_turn_id();
@@ -682,6 +691,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
+            return persist_snapshot_stamping_issued_head(inner).await;
         }
         Notification::Other { method, params } if method == "turn/aborted" => {
             let Some(aborted_turn_id) = other_turn_id(&params).map(ToOwned::to_owned) else {
@@ -718,6 +728,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: target_turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
+            return persist_snapshot_stamping_issued_head(inner).await;
         }
         Notification::Item { method, params } if should_persist_item_method(&method) => {
             let Some(item) = params.get("item") else {
@@ -837,6 +848,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
 
+    {
+        let state = inner.state.lock().await;
+        if !state.can_issue_turn() {
+            return Ok(());
+        }
+    }
+    let diff = since_last_turn_diff_block(inner).await;
+
     let prior_turn = {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
@@ -853,6 +872,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         prior
     };
     *inner.issued_turn_id.lock().await = None;
+    *inner.issued_turn_head.lock().await = None;
     persist_snapshot(inner).await?;
 
     let (drained, drained_envelope_ids) = {
@@ -872,7 +892,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     *inner.debounce.lock().await = DebounceState::default();
 
-    let text = drained
+    let joined_observation_text = drained
         .iter()
         .map(Observation::to_turn_text)
         .collect::<Vec<_>>()
@@ -884,6 +904,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         persist_snapshot(inner).await?;
         return Ok(());
     };
+    let text = prepend_diff_block(diff.block, joined_observation_text);
 
     match IssueTurnHandle::from_reconciliation(inner)
         .issue(&thread_id, vec![InputItem::text(text)])
@@ -892,6 +913,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         Ok(turn_id) => {
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_id.lock().await = Some(turn_id);
+            *inner.issued_turn_head.lock().await = diff.current_head.clone();
             persist_snapshot(inner).await?;
         }
         Err(e) => {
@@ -902,11 +924,61 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                     last_turn_id: "unknown-turn".into(),
                 });
             *inner.issued_turn_id.lock().await = None;
+            *inner.issued_turn_head.lock().await = None;
             persist_snapshot(inner).await?;
             tracing::warn!(error = %e, "spec harness turn/start failed; re-buffered batch");
         }
     }
     Ok(())
+}
+
+async fn since_last_turn_diff_block(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
+    let Some(pool) = inner.repo.sqlite_pool() else {
+        return wave_vcs::SinceLastTurnBlock::empty();
+    };
+    let last_seen_head = inner.last_seen_head.lock().await.clone();
+    match wave_vcs::since_last_turn_block(
+        &pool,
+        &inner.wave_id,
+        last_seen_head.as_deref(),
+        Some(&inner.card_id),
+    )
+    .await
+    {
+        Ok(diff) => diff,
+        Err(e) => {
+            let current_head = match wave_vcs::head(&pool, &inner.wave_id).await {
+                Ok(head) => head,
+                Err(head_err) => {
+                    tracing::warn!(
+                        wave_id = %inner.wave_id,
+                        error = %head_err,
+                        "spec harness could not read wave-vcs head after diff failure"
+                    );
+                    None
+                }
+            };
+            tracing::warn!(
+                wave_id = %inner.wave_id,
+                card_id = %inner.card_id,
+                last_seen_head = ?last_seen_head,
+                current_head = ?current_head,
+                error = %e,
+                "spec harness wave-vcs diff failed; issuing turn without diff block"
+            );
+            wave_vcs::SinceLastTurnBlock {
+                current_head,
+                block: None,
+            }
+        }
+    }
+}
+
+fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> String {
+    match diff_block {
+        Some(diff) => format!("{diff}\n\n---\n\n{observation_text}"),
+        None => observation_text,
+    }
 }
 
 async fn rebuffer_head(
@@ -1079,8 +1151,10 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
+    let issued_turn_head = inner.issued_turn_head.lock().await.clone();
     let last_report_body_sha256 = inner.last_report_body_sha256.lock().await.clone();
-    HarnessSnapshot::from_state(
+    let last_seen_head = inner.last_seen_head.lock().await.clone();
+    let mut snapshot = HarnessSnapshot::from_state(
         &state,
         push_watermark,
         queue,
@@ -1088,14 +1162,38 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
         last_thread_id,
         last_turn_id,
         last_report_body_sha256,
-    )
+    );
+    snapshot.last_seen_head = last_seen_head;
+    snapshot.issued_turn_head = issued_turn_head;
+    snapshot
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    persist_snapshot_inner(inner, None).await
+}
+
+async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()> {
+    let issued_head = inner.issued_turn_head.lock().await.clone();
+    persist_snapshot_inner(inner, issued_head.clone()).await?;
+    if issued_head.is_some() {
+        *inner.last_seen_head.lock().await = issued_head;
+    }
+    *inner.issued_turn_head.lock().await = None;
+    Ok(())
+}
+
+async fn persist_snapshot_inner(
+    inner: &Arc<Inner>,
+    last_seen_head_override: Option<wave_vcs::CommitHash>,
+) -> Result<()> {
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
-    let snapshot = snapshot_for(inner).await;
+    let mut snapshot = snapshot_for(inner).await;
+    if let Some(head) = last_seen_head_override {
+        snapshot.last_seen_head = Some(head);
+        snapshot.issued_turn_head = None;
+    }
     let runtime_id = inner.runtime_id.clone();
     let thread_id = snapshot.last_thread_id.clone();
     let active_turn_id = match snapshot.phase {

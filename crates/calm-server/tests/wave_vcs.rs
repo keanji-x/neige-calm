@@ -8,6 +8,7 @@ use calm_server::db::sqlite::{
     wave_update_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope, WaveUpdatedPayload};
+use calm_server::harness::HarnessSnapshot;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{
     Card, CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch,
@@ -1367,6 +1368,90 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
     let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
     assert!(payload.get("codex_thread_id").is_none(), "{payload:?}");
     assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
+}
+
+#[tokio::test]
+async fn spec_runtime_payload_blob_matches_live_view_with_projected_fields() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let spec = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Spec,
+        json!({"schemaVersion": 1, "spec_harness": true}),
+    )
+    .await;
+
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.last_thread_id = Some("spec-thread".into());
+    let runtime = {
+        let mut tx = repo.pool().begin().await.expect("begin runtime");
+        let runtime = runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: new_id(),
+                card_id: spec.id.to_string(),
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+                terminal_run_id: None,
+                thread_id: Some("spec-thread".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                lease_owner: None,
+                lease_until_ms: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .expect("runtime start");
+        tx.commit().await.expect("commit runtime");
+        runtime
+    };
+
+    repo.log_pure_event(
+        ActorId::Kernel,
+        EventScope::Card {
+            card: spec.id.clone(),
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
+        None,
+        &bus,
+        &roles,
+        &coves,
+        Event::RuntimeStarted {
+            runtime_id: runtime.id,
+            card_id: runtime.card_id,
+            kind: runtime.kind,
+            agent_provider: runtime.agent_provider,
+            status: runtime.status,
+        },
+    )
+    .await
+    .expect("runtime started event");
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    let payload_path = format!("cards/{}/payload.json", spec.id.as_str());
+    let entry = manifest.entries.get(&payload_path).expect("payload entry");
+    let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
+    let view = WaveFsView::new(&repo, &write);
+    let live_payload = view.cat(&wave, &payload_path).await.expect("live payload");
+    assert_eq!(vcs_payload, live_payload.content);
+
+    let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
+    assert_eq!(payload["codex_thread_id"], "spec-thread");
+    assert_eq!(payload["codex_source"], "shared");
+    assert_eq!(payload["codex_thread_status"], "started");
 }
 
 #[tokio::test]
