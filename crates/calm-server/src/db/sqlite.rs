@@ -4196,7 +4196,12 @@ impl RepoEventWrite for SqlxRepo {
         Ok(out)
     }
 
-    async fn events_for_wave(&self, wave_id: &str, kinds: &[&str]) -> Result<Vec<WaveEvent>> {
+    async fn events_for_wave(
+        &self,
+        wave_id: &str,
+        kinds: &[&str],
+        since_id: Option<i64>,
+    ) -> Result<Vec<WaveEvent>> {
         if kinds.is_empty() {
             return Ok(Vec::new());
         }
@@ -4220,6 +4225,10 @@ impl RepoEventWrite for SqlxRepo {
                WHERE scope_wave = "#,
         );
         query.push_bind(wave_id);
+        if let Some(since_id) = since_id {
+            query.push(" AND id > ");
+            query.push_bind(since_id);
+        }
         query.push(" AND kind IN (");
         let mut separated = query.separated(", ");
         for kind in kinds {

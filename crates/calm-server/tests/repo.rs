@@ -223,6 +223,107 @@ async fn wave_lifecycle_round_trips_through_patch() {
 }
 
 #[tokio::test]
+async fn events_for_wave_filters_since_in_query() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::event::{Event, EventBus, EventScope};
+    use calm_server::ids::ActorId;
+    use calm_server::wave_cove_cache::WaveCoveCache;
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let wave = make_wave(&repo, c.id.as_str(), "events-wave").await;
+    let other_wave = make_wave(&repo, c.id.as_str(), "other-wave").await;
+    let bus = EventBus::new();
+    let role_cache = CardRoleCache::new();
+    let cove_cache = WaveCoveCache::new();
+    repo.seed_card_role_cache(&role_cache).await.unwrap();
+    repo.seed_wave_cove_cache(&cove_cache).await.unwrap();
+
+    let scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: c.id.clone(),
+    };
+    let other_scope = EventScope::Wave {
+        wave: other_wave.id.clone(),
+        cove: c.id.clone(),
+    };
+    let first_id = repo
+        .log_pure_event(
+            ActorId::Kernel,
+            scope.clone(),
+            None,
+            &bus,
+            &role_cache,
+            &cove_cache,
+            Event::TaskFailed {
+                idempotency_key: "before-watermark".into(),
+                reason: "before".into(),
+                agent_message: None,
+            },
+        )
+        .await
+        .unwrap();
+    repo.log_pure_event(
+        ActorId::Kernel,
+        other_scope,
+        None,
+        &bus,
+        &role_cache,
+        &cove_cache,
+        Event::TaskFailed {
+            idempotency_key: "other-wave".into(),
+            reason: "other".into(),
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+    let second_id = repo
+        .log_pure_event(
+            ActorId::Kernel,
+            scope,
+            None,
+            &bus,
+            &role_cache,
+            &cove_cache,
+            Event::TaskFailed {
+                idempotency_key: "after-watermark".into(),
+                reason: "after".into(),
+                agent_message: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let all = repo
+        .events_for_wave(wave.id.as_str(), &["task.failed"], None)
+        .await
+        .unwrap();
+    assert_eq!(
+        all.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![first_id, second_id],
+        "unbounded wave query should include both matching events for the wave"
+    );
+
+    let since_first = repo
+        .events_for_wave(wave.id.as_str(), &["task.failed"], Some(first_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        since_first.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![second_id],
+        "bounded wave query should apply id > watermark before returning rows"
+    );
+    assert_eq!(since_first[0].actor, ActorId::Kernel);
+
+    let since_second = repo
+        .events_for_wave(wave.id.as_str(), &["task.failed"], Some(second_id))
+        .await
+        .unwrap();
+    assert!(since_second.is_empty());
+}
+
+#[tokio::test]
 async fn card_crud_round_trip() {
     let repo = fresh_repo().await;
     let c = make_cove(&repo, "C").await;

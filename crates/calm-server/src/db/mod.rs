@@ -608,8 +608,14 @@ pub trait RepoEventWrite: RepoRead {
     /// Read only selected event kinds scoped to one wave. This is for
     /// projection tools that need a bounded audit-log slice, not a replay
     /// cursor: callers must pass the exact kind tags they need and the query
-    /// filters on `scope_wave = ?`.
-    async fn events_for_wave(&self, wave_id: &str, kinds: &[&str]) -> Result<Vec<WaveEvent>>;
+    /// filters on `scope_wave = ?`. When `since_id` is present, the SQL
+    /// additionally filters on `events.id > since_id`.
+    async fn events_for_wave(
+        &self,
+        wave_id: &str,
+        kinds: &[&str],
+        since_id: Option<i64>,
+    ) -> Result<Vec<WaveEvent>>;
 
     /// Lowest live `events.id`, or `None` if the table is empty.
     ///

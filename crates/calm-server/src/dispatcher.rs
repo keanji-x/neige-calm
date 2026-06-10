@@ -37,7 +37,7 @@ use crate::harness::{
     is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::CardRole;
+use crate::model::{CardRole, WaveLifecycle};
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{
@@ -781,7 +781,7 @@ impl Inner {
                 .repo
                 .log_pure_event(
                     ActorId::KernelDispatcher,
-                    scope,
+                    scope.clone(),
                     None,
                     &self.events,
                     self.write.role_cache(),
@@ -794,6 +794,12 @@ impl Inner {
                     idempotency_key = %idem,
                     error = %e2,
                     "dispatcher: failed to log task.failed event"
+                );
+            } else if let Err(e3) = self.auto_promote_working_to_reviewing(&scope).await {
+                tracing::warn!(
+                    idempotency_key = %idem,
+                    error = %e3,
+                    "dispatcher: failed to auto-promote lifecycle after task.failed"
                 );
             }
         }
@@ -972,6 +978,35 @@ impl Inner {
         self: &Arc<Self>,
         scope: &EventScope,
     ) -> crate::error::Result<()> {
+        self.auto_promote_wave_lifecycle(
+            scope,
+            WaveLifecycle::Dispatching,
+            WaveLifecycle::Working,
+            Some("[auto] worker spawned".to_string()),
+        )
+        .await
+    }
+
+    async fn auto_promote_working_to_reviewing(
+        self: &Arc<Self>,
+        scope: &EventScope,
+    ) -> crate::error::Result<()> {
+        self.auto_promote_wave_lifecycle(
+            scope,
+            WaveLifecycle::Working,
+            WaveLifecycle::Reviewing,
+            Some("[auto] first task report".to_string()),
+        )
+        .await
+    }
+
+    async fn auto_promote_wave_lifecycle(
+        self: &Arc<Self>,
+        scope: &EventScope,
+        from: WaveLifecycle,
+        to: WaveLifecycle,
+        agent_message: Option<String>,
+    ) -> crate::error::Result<()> {
         let Some(wave_id) = scope.wave_id().cloned() else {
             return Ok(());
         };
@@ -992,10 +1027,10 @@ impl Inner {
         let events = match crate::wave_lifecycle::auto_transition_if_current_in_tx(
             &mut tx,
             &wave_id,
-            crate::model::WaveLifecycle::Dispatching,
-            crate::model::WaveLifecycle::Working,
+            from,
+            to,
             &ActorId::KernelDispatcher,
-            Some("[auto] worker spawned".to_string()),
+            agent_message,
         )
         .await
         {

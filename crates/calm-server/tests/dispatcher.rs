@@ -435,6 +435,85 @@ impl ProviderAdapter for FastReportAdapter {
     }
 }
 
+const FAILING_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
+
+struct FailingSpawnAdapter;
+
+#[async_trait]
+impl ProviderAdapter for FailingSpawnAdapter {
+    fn kind(&self) -> &'static str {
+        "terminal-worker"
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        FAILING_SPAWN_ADAPTER_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        Ok(TxOutput::new(
+            "failing-spawn",
+            None,
+            serde_json::json!({"ok": false}),
+        ))
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Err(CalmError::Internal(
+            "failing-spawn test fixture unexpected app_server_interact".into(),
+        ))
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnHandle> {
+        Err(CalmError::Internal("forced spawn failure".into()))
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Ok(CompensationStateVersioned {
+            version: 1,
+            from_phase,
+            reason: reason.to_string(),
+            steps: Vec::new(),
+        })
+    }
+
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(CalmError::Internal(
+            "failing-spawn test fixture has no compensation steps".into(),
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. SubscribeFilter integration.
 // ---------------------------------------------------------------------------
@@ -859,6 +938,135 @@ async fn dispatcher_spawn_success_auto_promotes_dispatching_to_working() {
         .unwrap()
         .expect("wave exists");
     assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+}
+
+#[tokio::test]
+async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Dispatching),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("set wave dispatching");
+
+    let operation_repo = Arc::new(SqlxOperationRepo::new(
+        repo.sqlite_pool()
+            .expect("dispatcher test uses sqlite repo"),
+    ));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let spawn_ctx = SpawnCtx::new(route_repo, stub_daemon(), terminal_renderer, events.clone());
+    let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![Arc::new(FailingSpawnAdapter)],
+        events.clone(),
+        spawn_ctx,
+    ));
+    let _dispatcher = Dispatcher::spawn_with_operation_runtime(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        stub_codex(),
+        stub_daemon(),
+        None,
+        stub_shared(&repo),
+        operation_runtime,
+        4,
+    );
+
+    let idem = "spawn-fail-auto-review";
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::TerminalWorkerRequested {
+            idempotency_key: idem.into(),
+            cmd: "force-failure".into(),
+            cwd: None,
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    wait_for(Duration::from_secs(5), || {
+        let repo = repo.clone();
+        let wave_id = wave_id.clone();
+        async move {
+            let wave = repo.wave_get(wave_id.as_str()).await.unwrap()?;
+            (wave.lifecycle == WaveLifecycle::Reviewing).then_some(())
+        }
+    })
+    .await
+    .expect("spawn failure should advance wave to Reviewing");
+
+    let rows = repo.events_since(0, None).await.unwrap();
+    let relevant: Vec<Event> = rows
+        .into_iter()
+        .filter_map(|(_id, _version, scope, event)| {
+            if scope.wave_id() != Some(&wave_id) {
+                return None;
+            }
+            match &event {
+                Event::WaveLifecycleChanged { id, .. } if id == &wave_id => Some(event),
+                Event::WaveUpdated(payload) if payload.id == wave_id => Some(event),
+                Event::TaskFailed {
+                    idempotency_key, ..
+                } if idempotency_key == idem => Some(event),
+                _ => None,
+            }
+        })
+        .collect();
+
+    match relevant.as_slice() {
+        [
+            Event::WaveLifecycleChanged {
+                from: first_from,
+                to: first_to,
+                ..
+            },
+            Event::WaveUpdated(first_update),
+            Event::TaskFailed {
+                idempotency_key,
+                reason,
+                ..
+            },
+            Event::WaveLifecycleChanged {
+                from: second_from,
+                to: second_to,
+                ..
+            },
+            Event::WaveUpdated(second_update),
+        ] => {
+            assert_eq!(*first_from, WaveLifecycle::Dispatching);
+            assert_eq!(*first_to, WaveLifecycle::Working);
+            assert_eq!(first_update.lifecycle, WaveLifecycle::Working);
+            assert_eq!(idempotency_key, idem);
+            assert!(
+                reason.contains("forced spawn failure"),
+                "task.failed should preserve dispatch error, got {reason:?}"
+            );
+            assert_eq!(*second_from, WaveLifecycle::Working);
+            assert_eq!(*second_to, WaveLifecycle::Reviewing);
+            assert_eq!(second_update.lifecycle, WaveLifecycle::Reviewing);
+        }
+        other => panic!("unexpected spawn-failure lifecycle event sequence: {other:#?}"),
+    }
+
+    let wave = repo
+        .wave_get(wave_id.as_str())
+        .await
+        .unwrap()
+        .expect("wave exists");
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
 }
 
 #[tokio::test]

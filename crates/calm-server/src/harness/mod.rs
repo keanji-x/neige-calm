@@ -93,13 +93,11 @@ async fn replay_harness_events_since(
                 "codex.hook",
                 "claude.hook",
             ],
+            Some(watermark),
         )
         .await?;
     let mut replayed = 0usize;
     for row in rows {
-        if row.id <= watermark {
-            continue;
-        }
         let role = role_needed_for_spec_push_filter(repo.as_ref(), &row.event).await?;
         if !dispatcher::event_warrants_spec_push_with_role(&row.event, &row.actor, |_| role) {
             continue;
