@@ -1565,16 +1565,20 @@ select:-webkit-autofill {
 .cove-head:hover .cove-head-delete,
 .cove-head:focus-within .cove-head-delete { opacity: 1; }
 .wave-meta {
-  display: flex; align-items: center; gap: var(--space-7);
+  display: flex; align-items: center; gap: var(--space-4);
   flex-shrink: 0;
   /* Soak up the header's free space on the left — `.wave-crumb` is
      content-sized since the #594 toggle moved next to it. */
   margin-left: auto;
 }
+.wave-action-cluster {
+  display: flex; align-items: center; gap: var(--space-2);
+}
 .status-pill {
   display: inline-flex; align-items: center; gap: var(--space-4);
   font-size: var(--text-sm);
   font-weight: 500;
+  line-height: 26px;
   font-variant-numeric: tabular-nums;
 }
 .status-pill.running { color: var(--accent); }
@@ -1587,6 +1591,8 @@ select:-webkit-autofill {
 .status-pill-dot.warn    { box-shadow: 0 0 0 3px var(--warn-soft); }
 .wave-percent {
   font-size: var(--text-sm); color: var(--text-3);
+  font-weight: 500;
+  line-height: 26px;
   min-width: 36px; text-align: right;
 }
 
@@ -1746,45 +1752,45 @@ select:-webkit-autofill {
 /* ===== Add panel =====
    Now lives in the wave header (wave-meta cluster) so the create entry
    point is up where the user looks first. The wrap drops its old grid-
-   below positioning hints; the meta cluster owns spacing. */
+   below positioning hints; the action cluster owns close control spacing. */
 .add-panel-wrap {
   position: relative;
 }
 .add-panel {
-  width: 28px; height: 28px;
+  width: 26px; height: 26px;
   display: grid; place-items: center;
   padding: var(--space-0);
-  border: 1.5px dashed var(--hairline-strong);
-  border-radius: var(--r);
+  border: none;
+  border-radius: var(--radius-md);
   color: var(--text-3);
   font-size: var(--text-lg);
   line-height: var(--leading-none);
-  transition: color var(--motion-quick), border-color var(--motion-quick);
   background: transparent;
+  transition: color var(--motion-quick), background var(--motion-quick);
 }
-.add-panel:hover { color: var(--text); border-color: var(--text-3); }
-.add-panel[aria-expanded="true"] { color: var(--text); border-color: var(--text-3); }
-/* The `+` glyph rotates 45° into a `×` while the menu is open — one
-   span, one transform, two verbs (insert / dismiss). aria-label on the
-   trigger flips in step (see AddPanel.tsx); the reduced-motion override
-   at the bottom of this file collapses the spin for vestibular users. */
+.add-panel:hover {
+  color: var(--text);
+  background: var(--overlay-hover-strong);
+}
+.add-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .add-panel-glyph {
   display: block;
-  transition: transform var(--motion-quick);
 }
-.add-panel[aria-expanded="true"] .add-panel-glyph { transform: rotate(45deg); }
 
 /* Wave surface flip (issue #594 demo) — ONE binary Grid↔Report switch
    in the wave header's LEFT region, right after the breadcrumb. Solid
-   hairline pill on purpose: dashed is AddPanel's "insert here"
-   vocabulary, and a mode switch must read as chrome, not as an insert
-   slot. Checked (= report) fills with --surface-card so the bound
-   state survives a squint; aria-checked carries it to AT. Height sits
-   on the 28px header-control row shared with AddPanel. PR2 of #594
-   replaces this with the persisted three-state ViewMode control. */
+   hairline pill on purpose; checked (= report) fills with --surface-card
+   so the bound state survives a squint; aria-checked carries it to AT.
+   PR2 of #594 replaces this with the persisted three-state ViewMode
+   control. */
 .view-flip {
-  height: 28px;
-  padding: var(--space-0) var(--space-6);
+  height: 26px;
+  padding: var(--space-0) var(--space-4);
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-pill);

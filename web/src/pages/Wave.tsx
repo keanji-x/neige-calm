@@ -324,15 +324,6 @@ export function WavePage({
           {reportPreview ? 'Report' : 'Grid'}
         </button>
         <span className="wave-meta">
-          {!reportPreview && <AddPanel onSelect={beginAdd} />}
-          {directAddError && (
-            <p
-              className="schema-form-error wave-add-direct-error"
-              role="alert"
-            >
-              {directAddError}
-            </p>
-          )}
           {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
               lifecycle on every wave (defaults to 'draft' on create); this
               renders the current state as a small uppercase pill. After
@@ -344,15 +335,26 @@ export function WavePage({
               rendered separately when set. */}
           <WaveLifecycleBadge lifecycle={wave.lifecycle} />
           {showPct && <span className="wave-percent num">{pct}%</span>}
-          {onDeleteWave && (
-            <DeleteButton
-              label={`Delete wave "${displayTitle}"`}
-              confirmTitle="Delete wave?"
-              confirmLabel="Delete wave"
-              confirmMessage={`Delete wave "${displayTitle}"? Its cards (including any terminals) go too. This cannot be undone.`}
-              onDelete={() => onDeleteWave(wave.id)}
-            />
+          {directAddError && (
+            <p
+              className="schema-form-error wave-add-direct-error"
+              role="alert"
+            >
+              {directAddError}
+            </p>
           )}
+          <span className="wave-action-cluster">
+            {!reportPreview && <AddPanel onSelect={beginAdd} />}
+            {onDeleteWave && (
+              <DeleteButton
+                label={`Delete wave "${displayTitle}"`}
+                confirmTitle="Delete wave?"
+                confirmLabel="Delete wave"
+                confirmMessage={`Delete wave "${displayTitle}"? Its cards (including any terminals) go too. This cannot be undone.`}
+                onDelete={() => onDeleteWave(wave.id)}
+              />
+            )}
+          </span>
         </span>
       </header>
 
