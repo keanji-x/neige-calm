@@ -336,7 +336,7 @@ async fn snapshot_tree_at_tx(
     let cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
     let mut runtime_projected_cards = cards.clone();
     project_runtime_into_cards_tx(tx, &mut runtime_projected_cards).await?;
-    let runs = project_runs_tx(tx, wave_id, &runtime_projected_cards).await?;
+    let runs = project_runs_tx(tx, wave_id, &cards).await?;
     let mut entries = BTreeMap::new();
 
     put_rendered_entry(
@@ -1326,14 +1326,12 @@ async fn render_path_tx(
             render_card_path_tx(tx, wave_id, path, card_visibility).await
         }
         "runs/index.json" => {
-            let mut cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
-            project_runtime_into_cards_tx(tx, &mut cards).await?;
+            let cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
             let runs = project_runs_tx(tx, wave_id, &cards).await?;
             Ok(Some(runs_index_json(&runs)?))
         }
         path if path.starts_with("runs/") => {
-            let mut cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
-            project_runtime_into_cards_tx(tx, &mut cards).await?;
+            let cards = cards_for_wave_tx(tx, wave_id, card_visibility).await?;
             let runs = project_runs_tx(tx, wave_id, &cards).await?;
             render_run_path(path, &runs)
         }
@@ -2250,11 +2248,7 @@ async fn project_run_by_key_tx(
     if !run_key_is_visible(key) {
         return Ok(None);
     }
-    let mut worker_projection =
-        worker_card_for_run_key_tx(tx, wave_id, key, card_visibility).await?;
-    if let Some(card) = worker_projection.as_mut() {
-        project_runtime_into_cards_tx(tx, std::slice::from_mut(card)).await?;
-    }
+    let worker_projection = worker_card_for_run_key_tx(tx, wave_id, key, card_visibility).await?;
     let worker_card = worker_projection.map(|projection| projection.card);
     let events = run_events_for_key_tx(tx, wave_id, key).await?;
     if worker_card.is_none() && events.is_empty() {

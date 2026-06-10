@@ -1057,6 +1057,7 @@ async fn completed_run_json_returns_structured_projection() {
     let boot = boot().await;
     request_codex(&boot, "done-json").await;
     let worker_id = materialize_worker(&boot, "done-json").await;
+    seed_codex_runtime(&boot, &worker_id).await;
     complete_run(&boot, "done-json", "json complete").await;
 
     let out = call_tool(
@@ -1076,6 +1077,16 @@ async fn completed_run_json_returns_structured_projection() {
     assert_eq!(
         run["worker_card_payload"]["prompt"],
         json!("prompt for done-json")
+    );
+    assert!(
+        run["worker_card_payload"].get("codex_thread_id").is_none(),
+        "worker_card_payload must stay raw: {run:?}"
+    );
+    assert!(
+        run["worker_card_payload"]
+            .get("codex_thread_status")
+            .is_none(),
+        "worker_card_payload must stay raw: {run:?}"
     );
     assert_eq!(
         run["events"]["requested"]["payload"]["idempotency_key"],

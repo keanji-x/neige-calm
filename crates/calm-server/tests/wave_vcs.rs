@@ -2315,6 +2315,113 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
 }
 
 #[tokio::test]
+async fn runtime_status_flip_does_not_change_run_json_bytes() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({
+            "schemaVersion": 1,
+            "idempotency_key": "runtime-flip",
+            "prompt": "raw prompt"
+        }),
+    )
+    .await;
+
+    repo.log_pure_event(
+        ActorId::Kernel,
+        EventScope::Wave {
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
+        None,
+        &bus,
+        &roles,
+        &coves,
+        Event::CodexWorkerRequested {
+            idempotency_key: "runtime-flip".into(),
+            goal: "runtime must not project into run payload".into(),
+            context: json!({}),
+            acceptance_criteria: None,
+            agent_message: None,
+        },
+    )
+    .await
+    .expect("request event");
+    let runtime_id =
+        start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &cove.id, &worker.id).await;
+
+    let run_path = "runs/runtime-flip.json";
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before runtime status flip");
+    let before_manifest = head_manifest(&repo, &wave.id).await;
+    let before_run_entry = before_manifest
+        .entries
+        .get(run_path)
+        .expect("run json before runtime status flip");
+    let before_run_json = blob_text(&repo, &before_run_entry.blob_hash).await;
+
+    set_runtime_status_with_event(
+        &repo,
+        &bus,
+        &write,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        &runtime_id,
+        RunStatus::Running,
+        RunStatus::Failed,
+    )
+    .await;
+
+    let after = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after runtime status flip");
+    let paths = wave_vcs::diff(repo.pool(), &before, &after, None)
+        .await
+        .expect("diff")
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect::<Vec<_>>();
+    assert!(
+        !paths.iter().any(|path| path == run_path),
+        "runtime-only status flip must not diff {run_path}: {paths:?}"
+    );
+
+    let after_manifest = head_manifest(&repo, &wave.id).await;
+    let after_run_entry = after_manifest
+        .entries
+        .get(run_path)
+        .expect("run json after runtime status flip");
+    let after_run_json = blob_text(&repo, &after_run_entry.blob_hash).await;
+    assert_eq!(after_run_json, before_run_json);
+
+    let run: serde_json::Value = serde_json::from_str(&after_run_json).unwrap();
+    assert_eq!(run["status"], "running");
+    assert_eq!(run["worker_card_payload"]["prompt"], "raw prompt");
+    assert!(
+        run["worker_card_payload"]
+            .get("codex_thread_status")
+            .is_none(),
+        "worker_card_payload must stay raw: {run:?}"
+    );
+}
+
+#[tokio::test]
 async fn task_completion_updates_only_the_affected_run_paths() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
@@ -2394,6 +2501,15 @@ async fn task_completion_updates_only_the_affected_run_paths() {
         paths,
         vec!["runs/index.json", "runs/one.json", "runs/one.md"]
     );
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    let run_entry = manifest
+        .entries
+        .get("runs/one.json")
+        .expect("completed run json");
+    let run_json: serde_json::Value =
+        serde_json::from_str(&blob_text(&repo, &run_entry.blob_hash).await).unwrap();
+    assert_eq!(run_json["status"], "completed");
 }
 
 #[tokio::test]

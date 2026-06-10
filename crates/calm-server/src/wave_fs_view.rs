@@ -11,7 +11,7 @@ use crate::error::CalmError;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{Card, CardRole, CardRuntimeView, Wave};
-use crate::runtime_lookup::{project_runtime_into_cards_payload, runtime_view_from_runtime};
+use crate::runtime_lookup::runtime_view_from_runtime;
 use crate::state::WriteContext;
 use crate::wave_report::WaveReportPayload;
 use serde::{Deserialize, Serialize};
@@ -246,10 +246,7 @@ impl<'a> WaveFsView<'a> {
     }
 
     async fn runs_for_wave(&self, wave: &Wave) -> Result<Vec<RunProjection>, WaveFsError> {
-        let mut cards = self.cards_for_wave(wave).await?;
-        project_runtime_into_cards_payload(self.repo, &mut cards)
-            .await
-            .map_err(|e| WaveFsError::Internal(format!("wave_file: runtime projection: {e}")))?;
+        let cards = self.cards_for_wave(wave).await?;
         let events = self
             .repo
             .events_for_wave(
