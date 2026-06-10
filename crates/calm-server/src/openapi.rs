@@ -85,6 +85,7 @@ use utoipa::OpenApi;
         crate::routes::threads::resolve_card_for_thread,
         // ---- claude ----
         crate::routes::claude_cards::create_claude_card,
+        crate::routes::claude_cards::restart_claude_card,
         // ---- fs ----
         crate::routes::fs::listdir,
         crate::routes::fs::readfile,

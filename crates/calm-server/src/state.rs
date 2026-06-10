@@ -15,6 +15,7 @@ use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
 use crate::model::CardRole;
 use crate::operation::claude_adapter::ClaudeAdapter;
+use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
@@ -458,6 +459,12 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
             repo.clone(),
             shared_codex_appserver.clone(),
@@ -481,6 +488,7 @@ impl AppState {
                 codex_adapter,
                 codex_worker_adapter,
                 claude_adapter,
+                claude_restart_adapter,
                 spec_harness_start_adapter,
                 spec_harness_interrupt_adapter,
                 spec_harness_shutdown_adapter,
@@ -611,6 +619,12 @@ impl AppState {
             self.card_role_cache.clone(),
             self.wave_cove_cache.clone(),
         ));
+        let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
+            route_repo.clone(),
+            self.codex.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
         let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
             self.raw.clone(),
             self.shared_codex_appserver.clone(),
@@ -636,6 +650,7 @@ impl AppState {
                 codex_adapter,
                 codex_worker_adapter,
                 claude_adapter,
+                claude_restart_adapter,
                 spec_harness_start_adapter,
                 spec_harness_interrupt_adapter,
                 spec_harness_shutdown_adapter,
@@ -840,6 +855,12 @@ impl AppState {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         ));
+        let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
+            route_repo.clone(),
+            codex.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ));
         let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
             repo.clone(),
             shared_codex_appserver.clone(),
@@ -864,6 +885,7 @@ impl AppState {
                     codex_adapter,
                     codex_worker_adapter,
                     claude_adapter,
+                    claude_restart_adapter,
                     spec_harness_start_adapter,
                     spec_harness_interrupt_adapter,
                     spec_harness_shutdown_adapter,

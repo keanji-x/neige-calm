@@ -164,6 +164,77 @@
         }
       }
     },
+    "/api/cards/{id}/claude/restart": {
+      "post": {
+        "tags": [
+          "claude"
+        ],
+        "operationId": "restart_claude_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Claude card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Claude card restarted through the existing session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Card"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a Claude card or lacks resumable Claude metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Claude child is still active; kill or wait for child exit before restart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Daemon spawn failed; rows persist and sweeper handles cleanup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/harness/items": {
       "get": {
         "tags": [

@@ -11,14 +11,16 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms};
 use calm_server::operation::claude_adapter::ClaudeAdapter;
+use calm_server::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use calm_server::operation::codex_adapter::CodexAdapter;
 use calm_server::operation::terminal_adapter::TerminalAdapter;
 use calm_server::operation::{OperationRuntime, SpawnCtx, SpawnHandle, SqlxOperationRepo};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::RendererConfig;
@@ -41,6 +43,14 @@ type TestSpawnHook = Arc<
         + Send
         + Sync,
 >;
+
+#[derive(Clone, Debug)]
+struct SpawnCall {
+    terminal_id: String,
+    program: String,
+    cwd: String,
+    env: Value,
+}
 
 struct Boot {
     app: axum::Router,
@@ -147,6 +157,13 @@ where
     ));
     let claude_adapter = Arc::new(ClaudeAdapter::new_with_spawn_hook(
         route_repo.clone(),
+        codex.clone(),
+        state.card_role_cache.clone(),
+        state.wave_cove_cache.clone(),
+        hook.clone(),
+    ));
+    let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new_with_spawn_hook(
+        route_repo.clone(),
         codex,
         state.card_role_cache.clone(),
         state.wave_cove_cache.clone(),
@@ -154,7 +171,12 @@ where
     ));
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
-        vec![terminal_adapter, codex_adapter, claude_adapter],
+        vec![
+            terminal_adapter,
+            codex_adapter,
+            claude_adapter,
+            claude_restart_adapter,
+        ],
         events.clone(),
         SpawnCtx::new(
             route_repo,
@@ -193,6 +215,37 @@ fn success_spawn_hook() -> (Arc<AtomicUsize>, TestSpawnHook) {
             let count = count_for_hook.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
+                Ok(SpawnHandle::Terminal {
+                    renderer_id: terminal_id.clone(),
+                    terminal_id,
+                })
+            })
+        },
+    );
+    (count, hook)
+}
+
+fn recording_spawn_hook(
+    calls: Arc<tokio::sync::Mutex<Vec<SpawnCall>>>,
+) -> (Arc<AtomicUsize>, TestSpawnHook) {
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_for_hook = count.clone();
+    let hook = Arc::new(
+        move |terminal_id: String,
+              program: String,
+              cwd: String,
+              env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let count = count_for_hook.clone();
+            let calls = calls.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                calls.lock().await.push(SpawnCall {
+                    terminal_id: terminal_id.clone(),
+                    program,
+                    cwd,
+                    env,
+                });
                 Ok(SpawnHandle::Terminal {
                     renderer_id: terminal_id.clone(),
                     terminal_id,
@@ -279,6 +332,20 @@ async fn post(
     }
     let resp = app
         .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    response_json(resp).await
+}
+
+async fn post_restart(app: axum::Router, card_id: &str) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{card_id}/claude/restart"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     response_json(resp).await
@@ -394,6 +461,196 @@ async fn post_claude_card_with_prompt_succeeds_through_saga() {
         Value::String("claude".into())
     );
     assert!(Path::new(card["payload"]["settings_path"].as_str().unwrap()).exists());
+}
+
+#[tokio::test]
+async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
+    let _guard = ENV_LOCK.lock().await;
+    let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let calls_for_factory = calls.clone();
+    let boot =
+        boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
+
+    let (create_status, created) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        body(Some("first prompt")),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap();
+    let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
+    let session_id = created["payload"]["claude_session_id"].as_str().unwrap();
+    boot.repo
+        .runtime_complete_for_card(card_id, RunStatus::Exited)
+        .await
+        .unwrap();
+
+    let (restart_status, restarted) = post_restart(boot.app.clone(), card_id).await;
+    assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
+    assert_eq!(restarted["id"], created["id"]);
+    assert_eq!(restarted["payload"]["terminal_id"], terminal_id);
+    assert_eq!(restarted["payload"]["claude_session_id"], session_id);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
+
+    let calls = calls.lock().await.clone();
+    let restart_call = calls.last().expect("restart spawn call recorded");
+    assert_eq!(restart_call.terminal_id, terminal_id);
+    assert_eq!(restart_call.cwd, "/workspace");
+    assert_eq!(
+        restart_call.env["NEIGE_CARD_ID"],
+        Value::String(card_id.to_string())
+    );
+    assert!(
+        restart_call
+            .program
+            .contains(&format!("--resume '{}'", session_id)),
+        "restart program must resume existing session: {}",
+        restart_call.program
+    );
+    assert!(
+        restart_call.program.contains("--settings '"),
+        "restart program must include settings path: {}",
+        restart_call.program
+    );
+    assert!(!restart_call.program.contains("--session-id"));
+    assert!(!restart_call.program.contains("--fork-session"));
+    assert!(!restart_call.program.contains("first prompt"));
+
+    let rows = sqlx::query(
+        "SELECT status, terminal_run_id, session_id FROM runtimes WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
+    )
+    .bind(card_id)
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let first_status: String = rows[0].try_get("status").unwrap();
+    let second_status: String = rows[1].try_get("status").unwrap();
+    let first_terminal: String = rows[0].try_get("terminal_run_id").unwrap();
+    let second_terminal: String = rows[1].try_get("terminal_run_id").unwrap();
+    let first_session: String = rows[0].try_get("session_id").unwrap();
+    let second_session: String = rows[1].try_get("session_id").unwrap();
+    assert_eq!(first_status, "exited");
+    assert_eq!(second_status, "running");
+    assert_eq!(first_terminal, terminal_id);
+    assert_eq!(second_terminal, terminal_id);
+    assert_eq!(first_session, session_id);
+    assert_eq!(second_session, session_id);
+}
+
+#[tokio::test]
+async fn post_claude_restart_returns_409_when_runtime_is_active() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_success().await;
+
+    let (create_status, created) =
+        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap();
+
+    let (status, response) = post_restart(boot.app.clone(), card_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={response:?}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("kill or wait for child exit before restart"),
+        "body={response:?}"
+    );
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn post_claude_restart_returns_403_for_non_claude_card() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_success().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone().into(),
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+
+    let (status, response) = post_restart(boot.app.clone(), card.id.as_str()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={response:?}");
+}
+
+#[tokio::test]
+async fn post_claude_restart_returns_403_without_resumable_session() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_success().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone().into(),
+            kind: "claude".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "settings_path": "/tmp/missing-session-settings.json"
+            }),
+        })
+        .await
+        .unwrap();
+    let term = boot
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: card.id.clone(),
+            program: "'/bin/true' --settings '/tmp/missing-session-settings.json'".into(),
+            cwd: "/workspace".into(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    calm_server::db::sqlite::runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::ClaudeCard,
+            agent_provider: Some(AgentProvider::Claude),
+            status: RunStatus::Exited,
+            terminal_run_id: Some(term.id),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let (status, response) = post_restart(boot.app.clone(), card.id.as_str()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={response:?}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("no resumable session id"),
+        "body={response:?}"
+    );
+}
+
+#[tokio::test]
+async fn post_claude_restart_returns_404_for_unknown_card() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_success().await;
+
+    let (status, response) = post_restart(boot.app.clone(), "missing-card").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={response:?}");
 }
 
 #[tokio::test]

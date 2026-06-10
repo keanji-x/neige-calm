@@ -261,6 +261,21 @@ pub(crate) async fn event_append_for_operation_tx(
     SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await
 }
 
+pub(crate) async fn terminal_get_by_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<Option<Terminal>> {
+    let row = sqlx::query_as::<_, Terminal>(
+        r#"SELECT id, card_id, program, cwd, env, pid,
+                  theme_fg, theme_bg, exit_code, signal_killed, created_at
+           FROM terminals WHERE card_id = ?1"#,
+    )
+    .bind(card_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row)
+}
+
 // ---- helpers -----------------------------------------------------------------
 
 /// Tier-A upgrade stability guard: refuse to boot when `_sqlx_migrations`

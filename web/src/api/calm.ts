@@ -242,6 +242,11 @@ export const resetSpecCard = (id: string) =>
     'POST',
     `/api/cards/${encodeURIComponent(id)}/spec/reset`,
   );
+export const restartClaudeCard = (id: string) =>
+  request<KernelCard>(
+    'POST',
+    `/api/cards/${encodeURIComponent(id)}/claude/restart`,
+  );
 
 // ---------------- overlays ----------------
 
