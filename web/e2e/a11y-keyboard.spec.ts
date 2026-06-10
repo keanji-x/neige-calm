@@ -790,7 +790,9 @@ test.describe('a11y · keyboard-only navigation', () => {
     });
     await expect(viewFlip).toBeVisible();
     await expect(viewFlip).toHaveAttribute('aria-checked', 'false');
-    await expect(viewFlip).toHaveText('Grid');
+    // The visible content is an `<Icon n="grid" />` SVG (#594 r6 swapped
+    // the text label to an icon); current-state assertion lives on
+    // aria-checked above, no separate text-content check needed.
   });
 
   test('Settings page: all controls reachable and labeled', async ({ page }) => {
