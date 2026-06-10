@@ -616,6 +616,56 @@ async fn send_spec_input_happy() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
+#[cfg(feature = "fixtures")]
+#[tokio::test]
+async fn spec_harness_user_message_folds_at_saturation() {
+    let boot = boot().await;
+    let (_card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    for i in 0..256 {
+        harness
+            .observe_for_test(
+                Observation::UserMessage {
+                    text: format!("msg-{i}"),
+                },
+                None,
+            )
+            .await;
+    }
+
+    assert_eq!(harness.pending_len_for_test().await, 256);
+
+    harness
+        .observe_for_test(
+            Observation::UserMessage {
+                text: "tail-append".into(),
+            },
+            None,
+        )
+        .await;
+
+    assert_eq!(
+        harness.pending_len_for_test().await,
+        256,
+        "fold must keep queue at cap"
+    );
+    let pending = harness.pending_queue_for_test().await;
+    let Some(Observation::UserMessage { text }) = pending.last() else {
+        panic!("expected UserMessage tail; got {:?}", pending.last());
+    };
+    assert!(
+        text.contains("msg-255"),
+        "tail should retain msg-255: {text}"
+    );
+    assert!(
+        text.contains("tail-append"),
+        "tail should retain new msg: {text}"
+    );
+    assert!(text.contains("\n\n"), "fold separator missing: {text}");
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
 #[tokio::test]
 async fn send_spec_input_accepts_max_chars() {
     let boot = boot().await;
