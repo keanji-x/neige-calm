@@ -29,6 +29,9 @@ pub enum Observation {
         #[serde(default)]
         idempotency_key: String,
     },
+    UserMessage {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +61,7 @@ impl Observation {
     pub fn to_turn_text(&self) -> String {
         match self {
             Observation::WaveGoal { text } => text.clone(),
+            Observation::UserMessage { text } => text.clone(),
             Observation::ReportEdited { .. } => {
                 "The user edited the wave report. Re-read the wave state.".to_string()
             }

@@ -334,6 +334,87 @@
         }
       }
     },
+    "/api/cards/{id}/spec/input": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "send_spec_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Spec card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendSpecInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "User text queued for next harness turn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendSpecInputResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a spec codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card or active runtime not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/spec/reset": {
       "post": {
         "tags": [
@@ -4376,6 +4457,32 @@
           "claude",
           "shared-spec"
         ]
+      },
+      "SendSpecInputRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "SendSpecInputResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "runtime_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "runtime_id": {
+            "type": "string"
+          }
+        }
       },
       "SettingsBag": {
         "type": "object",

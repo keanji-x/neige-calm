@@ -16,7 +16,10 @@ use crate::model::{
     FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay,
     NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
 };
-use crate::routes::cards::{CreateCardBody, HarnessItemsQuery, ResetSpecCardResponse, ViaToolCall};
+use crate::routes::cards::{
+    CreateCardBody, HarnessItemsQuery, ResetSpecCardResponse, SendSpecInputRequest,
+    SendSpecInputResponse, ViaToolCall,
+};
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::cove_folders::ResolveQuery;
@@ -71,6 +74,7 @@ use utoipa::OpenApi;
         crate::routes::cards::create_card,
         crate::routes::cards::update_card,
         crate::routes::cards::get_harness_items,
+        crate::routes::cards::send_spec_input,
         crate::routes::cards::reset_spec_card,
         crate::routes::cards::delete_card,
         // ---- overlays ----
@@ -141,6 +145,8 @@ use utoipa::OpenApi;
         CardPatch,
         HarnessItem,
         HarnessItemsQuery,
+        SendSpecInputRequest,
+        SendSpecInputResponse,
         ResetSpecCardResponse,
         // Issue #229 PR B — wave-report card payload shape (kernel-owned;
         // surfaced in the OpenAPI doc so frontend codegen + external

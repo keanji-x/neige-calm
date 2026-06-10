@@ -242,6 +242,12 @@ export const resetSpecCard = (id: string) =>
     'POST',
     `/api/cards/${encodeURIComponent(id)}/spec/reset`,
   );
+export const sendSpecInput = (id: string, text: string) =>
+  request<{ card_id: string; runtime_id: string }>(
+    'POST',
+    `/api/cards/${encodeURIComponent(id)}/spec/input`,
+    { text },
+  );
 export const restartClaudeCard = (id: string) =>
   request<KernelCard>(
     'POST',
