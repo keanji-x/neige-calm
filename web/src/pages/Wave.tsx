@@ -299,8 +299,8 @@ export function WavePage({
           )}
           {/* Surface flip (issue #594 demo) — ONE binary Grid↔Report
               switch, sitting at the breadcrumb tail. Slice-9 label
-              convention: visible label = current surface, action verb in
-              aria-label/title. The grid/list overlay is read-only here
+              convention: visible icon = current surface, action verb in
+              aria-label / noun in title. The grid/list overlay is read-only here
               (no UI entry for List in the demo); PR2 of #594 swaps this
               for the persisted three-state ViewMode control. */}
           <button
@@ -315,12 +315,10 @@ export function WavePage({
                 : 'Switch wave to report view'
             }
             title={
-              reportPreview
-                ? 'Switch to cards view'
-                : 'Unified report view (design demo, #594)'
+              reportPreview ? 'Cards' : 'Report'
             }
           >
-            {reportPreview ? 'Report' : 'Grid'}
+            <Icon n={reportPreview ? 'report' : 'grid'} s={14} sw={1.6} />
           </button>
         </span>
         <span className="wave-meta">

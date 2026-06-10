@@ -1775,28 +1775,27 @@ select:-webkit-autofill {
   outline-offset: 2px;
 }
 /* Wave surface flip (issue #594 demo) — ONE binary Grid↔Report switch
-   at the breadcrumb tail. It reads as ghost text by default; checked
-   (= report) fills softly, and
+   at the breadcrumb tail. It reads as a ghost icon button by default;
+   checked (= report) fills softly, and
    aria-checked carries the bound state to AT. PR2 of #594 replaces this
    with the persisted three-state ViewMode control. */
 .view-flip {
-  display: inline-flex;
-  align-items: center;
-  align-self: baseline;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  align-self: center; /* override wave-crumb's align-items: baseline */
   flex-shrink: 0;
-  padding: var(--space-0) var(--space-3);
+  padding: var(--space-0);
   border-radius: var(--radius-md);
   color: var(--text-3);
-  font-size: var(--text-xs);
-  font-weight: 500;
   background: transparent;
   transition: color var(--motion-quick), background var(--motion-quick);
 }
-.view-flip:hover { background: var(--overlay-hover-faint); color: var(--text); }
+.view-flip:hover { background: var(--overlay-hover-strong); color: var(--text); }
 .view-flip[aria-checked="true"] {
   background: var(--surface-card);
   color: var(--text);
-  font-weight: 600;
 }
 .view-flip:focus-visible {
   outline: 2px solid var(--accent);
