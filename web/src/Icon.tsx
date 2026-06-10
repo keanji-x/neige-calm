@@ -103,8 +103,8 @@ export function Icon({ n, s = 16, sw = 1.6 }: IconProps) {
     case 'report':
       return (
         <svg {...common}>
-          <path d="M5 3h14v18H5z" />
-          <path d="M8 8h8 M8 12h8 M8 16h5" />
+          <path d="M4 4h16v16H4z" />
+          <path d="M8 9h8 M8 13h8 M8 17h5" />
         </svg>
       );
     case 'reset':
