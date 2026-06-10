@@ -35,6 +35,17 @@ use calm_server::wave_lifecycle::validate_transition;
 use clap::Parser;
 use serde::Deserialize;
 
+macro_rules! safe_println {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+
+        // SIGPIPE SIG_IGN stops the kernel signal, but `println!` still
+        // panics on BrokenPipe; drop stdout write errors here for #628.
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(&mut stdout, $($arg)*);
+    }};
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "calm-server-replay",
@@ -157,7 +168,7 @@ async fn run_assert(
     let outcome = replay::assert_expected(repo, fixture).await?;
     let total = outcome.total();
     if outcome.ok() {
-        println!(
+        safe_println!(
             "OK: {}/{} assertions matched ({} events seeded, last id={}, file={})",
             outcome.matched.len(),
             total,
@@ -166,11 +177,11 @@ async fn run_assert(
             args.file.display()
         );
         for m in &outcome.matched {
-            println!("  ok: {m}");
+            safe_println!("  ok: {m}");
         }
         Ok(())
     } else {
-        println!(
+        safe_println!(
             "FAIL: {}/{} assertions matched ({} events seeded, file={})",
             outcome.matched.len(),
             total,
@@ -178,10 +189,10 @@ async fn run_assert(
             args.file.display()
         );
         for m in &outcome.matched {
-            println!("  ok: {m}");
+            safe_println!("  ok: {m}");
         }
         for f in &outcome.failed {
-            println!("  fail: {f}");
+            safe_println!("  fail: {f}");
         }
         std::process::exit(1);
     }
@@ -278,8 +289,8 @@ async fn run_serve(
     } else {
         "<empty>"
     };
-    println!("calm-server (replay mode) listening on http://{addr}");
-    println!(
+    safe_println!("calm-server (replay mode) listening on http://{addr}");
+    safe_println!(
         "  loaded {} events from {}",
         seeded_count,
         args.file
@@ -287,7 +298,7 @@ async fn run_serve(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| args.file.display().to_string())
     );
-    println!("  last event: {last_kind} at id={last_id}");
+    safe_println!("  last event: {last_kind} at id={last_id}");
 
     axum::serve(
         listener,
