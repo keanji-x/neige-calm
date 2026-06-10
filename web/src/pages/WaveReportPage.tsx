@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Wave, WaveCardSlot } from '../types';
@@ -96,6 +97,10 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const reportSlots = selectReportCards(cards);
   const reportCard = reportSlots[0]?.card;
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedFilePath(null);
+  }, [wave.id]);
 
   return (
     <div className="report-page">

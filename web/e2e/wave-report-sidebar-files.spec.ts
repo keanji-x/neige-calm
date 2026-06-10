@@ -1,5 +1,4 @@
 import { test, expect, type APIResponse, type Page } from '@playwright/test';
-import { seedWaveViewMode } from './helpers/reset';
 
 const createdCoveIds: string[] = [];
 
@@ -7,9 +6,9 @@ test.beforeEach(() => {
   createdCoveIds.length = 0;
 });
 
-test.afterEach(async ({ request }) => {
+test.afterEach(async ({ page }) => {
   for (const id of createdCoveIds) {
-    const res = await request.delete(`/api/coves/${id}`);
+    const res = await page.request.delete(`/api/coves/${id}`);
     if (!res.ok() && res.status() !== 404) {
       throw new Error(
         `cleanup: DELETE /api/coves/${id} -> ${res.status()} ${res.statusText()}`,
@@ -85,13 +84,17 @@ test('WaveReportPage Files rail renders a selectable wave-fs tree', async ({
   const cove = await createCove(page, ts);
   const wave = await createWave(page, cove.id, ts);
   await writeReport(page, wave.id, 'Report file tree body.');
-  await seedWaveViewMode(page.request, wave.id, 'report');
 
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
   await expect(
     page.getByRole('heading', { level: 1, name: wave.title }),
   ).toBeVisible();
+  const reportToggle = page.getByRole('switch', {
+    name: /switch wave to report view/i,
+  });
+  await expect(reportToggle).toBeVisible();
+  await reportToggle.click();
 
   const filesSection = page.getByRole('region', { name: 'Files' });
   await expect(filesSection).toBeVisible();

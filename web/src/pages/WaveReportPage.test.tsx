@@ -1,4 +1,10 @@
-import { render, screen, within } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
 import { useWaveFileContent, useWaveFileList } from '../api/queries';
@@ -165,5 +171,31 @@ describe('WaveReportPage', () => {
     expect(
       screen.queryByText('Wave files appear here. (Wired in PR-B.)'),
     ).not.toBeInTheDocument();
+  });
+
+  it('resets the selected file when the wave id changes', async () => {
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_A' })}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
+    fireEvent.click(reportFile);
+    expect(reportFile).toHaveAttribute('aria-selected', 'true');
+
+    rerender(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_B' })}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('treeitem', { name: /report\.md/ }),
+      ).toHaveAttribute('aria-selected', 'false');
+    });
   });
 });
