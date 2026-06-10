@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
@@ -18,8 +18,9 @@ use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::wave_state::TOOL_UPDATE_TASK_META;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
 
@@ -413,6 +414,33 @@ async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
     card.id
 }
 
+async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> String {
+    let runtime_id = calm_server::model::new_id();
+    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card_id.as_str().to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: Some("thread-runtime-json".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("seed runtime row");
+    tx.commit().await.unwrap();
+    runtime_id
+}
+
 #[tokio::test]
 async fn ls_root_returns_top_level_entries() {
     let boot = boot().await;
@@ -700,8 +728,16 @@ async fn ls_card_directory_includes_hook_event_views() {
         .collect();
     assert!(names.contains(&"meta.json"), "entries = {entries:?}");
     assert!(names.contains(&"payload.json"), "entries = {entries:?}");
+    assert!(names.contains(&"runtime.json"), "entries = {entries:?}");
     assert!(names.contains(&"events.json"), "entries = {entries:?}");
     assert!(names.contains(&"conversation.md"), "entries = {entries:?}");
+    for leaf in ["meta.json", "payload.json", "runtime.json"] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry["name"] == leaf)
+            .unwrap_or_else(|| panic!("missing {leaf}: {entries:?}"));
+        assert_eq!(entry["updated_at"], json!(100));
+    }
     for leaf in ["events.json", "conversation.md"] {
         let entry = entries
             .iter()
@@ -709,6 +745,43 @@ async fn ls_card_directory_includes_hook_event_views() {
             .unwrap_or_else(|| panic!("missing {leaf}: {entries:?}"));
         assert_eq!(entry["updated_at"], json!(900));
     }
+}
+
+#[tokio::test]
+async fn card_runtime_json_returns_typed_runtime_or_null() {
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/runtime.json", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read runtime projection");
+    assert_eq!(out["content_type"], json!("application/json"));
+    let runtime: Option<CardRuntimeView> =
+        serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
+    assert!(runtime.is_none(), "cards without runtime rows return null");
+
+    let runtime_id = seed_codex_runtime(&boot, &card_id).await;
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/runtime.json", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read typed runtime projection");
+    let runtime: Option<CardRuntimeView> =
+        serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
+    let runtime = runtime.expect("runtime row is projected");
+    assert_eq!(runtime.runtime_id, runtime_id);
+    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.provider, Some(AgentProvider::Codex));
+    assert_eq!(runtime.thread_id.as_deref(), Some("thread-runtime-json"));
 }
 
 #[tokio::test]

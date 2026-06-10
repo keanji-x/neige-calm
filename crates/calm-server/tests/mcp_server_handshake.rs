@@ -45,8 +45,6 @@ struct Boot {
     server: Arc<McpServer>,
     repo: Arc<dyn Repo>,
     events: EventBus,
-    /// Spec card id minted at boot.
-    card_id: String,
     thread_id: String,
     /// Raw per-card MCP token (kept in memory only — never persisted).
     raw_token: String,
@@ -145,7 +143,6 @@ async fn boot() -> Boot {
         server,
         repo,
         events,
-        card_id,
         thread_id,
         raw_token,
         socket_path,
@@ -386,16 +383,16 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         "init failed: {init_resp:#?}"
     );
 
-    // Two task_completed calls back-to-back. Both should return
-    // `status: emitted` — the second proves the identity stayed pinned
-    // and the kernel didn't drop the connection after the first response.
+    // Two wave.cat calls back-to-back. Both should succeed — the
+    // second proves the identity stayed pinned and the kernel didn't
+    // drop the connection after the first response.
     send_frame(
         &mut wr,
         tools_call_frame(
             10,
-            "calm.task_completed",
+            "calm.wave.cat",
             &b.thread_id,
-            json!({"idempotency_key": "tc-1", "result": "ok"}),
+            json!({"path": "wave.json"}),
         ),
     )
     .await;
@@ -404,16 +401,14 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         r1.get("error").is_none(),
         "first tools/call errored: {r1:#?}"
     );
-    let structured1 = &r1["result"]["structuredContent"];
-    assert_eq!(structured1["status"], json!("emitted"));
 
     send_frame(
         &mut wr,
         tools_call_frame(
             11,
-            "calm.task_completed",
+            "calm.wave.cat",
             &b.thread_id,
-            json!({"idempotency_key": "tc-2", "result": "ok"}),
+            json!({"path": "wave.json"}),
         ),
     )
     .await;
@@ -423,34 +418,56 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         "second tools/call errored: {r2:#?}"
     );
 
-    // Verify both events landed on the broadcast bus with the same
-    // scope_card = b.card_id (identity pinned from handshake).
-    use calm_server::event::EventScope;
-    let mut seen = 0;
-    let deadline = tokio::time::Instant::now() + TEST_BUDGET;
-    while seen < 2 {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            panic!("expected 2 task.completed broadcast frames; got {seen}");
-        }
-        let env = match timeout(remaining, rx.recv()).await {
-            Ok(Ok(env)) => env,
-            Ok(Err(_)) => panic!("bus closed unexpectedly"),
-            Err(_) => panic!("timeout waiting for broadcast frame; got {seen}"),
-        };
-        if env.event.kind_tag() != "task.completed" {
-            continue;
-        }
-        match &env.scope {
-            EventScope::Card { card, .. } => assert_eq!(
-                card.as_str(),
-                b.card_id.as_str(),
-                "both emissions should bind to the thread-mapped card"
-            ),
-            other => panic!("expected Card scope; got {other:?}"),
-        }
-        seen += 1;
+    match timeout(Duration::from_millis(50), rx.recv()).await {
+        Err(_) => {}
+        Ok(Ok(env)) => panic!("read-only wave.cat must not emit events; got {env:?}"),
+        Ok(Err(_)) => panic!("bus closed unexpectedly"),
     }
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn spec_role_cannot_call_task_completed_or_failed() {
+    let b = boot().await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
+    let init_resp = recv_frame(&mut rd).await;
+    assert!(
+        init_resp.get("error").is_none(),
+        "init failed: {init_resp:#?}"
+    );
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            12,
+            "calm.task_completed",
+            &b.thread_id,
+            json!({"idempotency_key": "tc-spec-refused", "result": "ok"}),
+        ),
+    )
+    .await;
+    let completed = recv_frame(&mut rd).await;
+    let err = completed
+        .get("error")
+        .expect("spec task_completed must be rejected");
+    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            13,
+            "calm.task_failed",
+            &b.thread_id,
+            json!({"idempotency_key": "tf-spec-refused", "reason": "nope"}),
+        ),
+    )
+    .await;
+    let failed = recv_frame(&mut rd).await;
+    let err = failed
+        .get("error")
+        .expect("spec task_failed must be rejected");
+    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
     let _ = (&b.server, &b.repo);
 }
 

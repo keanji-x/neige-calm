@@ -38,7 +38,7 @@ use calm_server::mcp_server::tools::wave_state::{
     TOOL_GET_WAVE_STATE, TOOL_UPDATE_TASK_META, TOOL_UPDATE_WAVE_STATE,
 };
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use serde_json::{Value, json};
 
@@ -207,12 +207,20 @@ async fn get_wave_state_returns_wave_and_cards_for_spec() {
         .find(|c| c.get("id").and_then(Value::as_str) == Some(boot.spec_card_id.as_str()))
         .expect("spec card present");
     assert_eq!(spec.get("role").and_then(Value::as_str), Some("spec"));
+    assert!(spec.get("runtime").is_some(), "spec card = {spec:?}");
+    let spec_runtime: Option<CardRuntimeView> =
+        serde_json::from_value(spec["runtime"].clone()).expect("runtime field is typed");
+    assert!(spec_runtime.is_none(), "spec card has no runtime row");
 
     let worker = cards
         .iter()
         .find(|c| c.get("id").and_then(Value::as_str) == Some(boot.worker_card_id.as_str()))
         .expect("worker card present");
     assert_eq!(worker.get("role").and_then(Value::as_str), Some("worker"));
+    assert!(worker.get("runtime").is_some(), "worker card = {worker:?}");
+    let worker_runtime: Option<CardRuntimeView> =
+        serde_json::from_value(worker["runtime"].clone()).expect("runtime field is typed");
+    assert!(worker_runtime.is_none(), "worker card has no runtime row");
 }
 
 #[tokio::test]

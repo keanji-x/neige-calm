@@ -80,7 +80,9 @@ async fn http_ls_and_cat_match_mcp_outputs() {
     }
 
     let initial_payload_path = format!("cards/{}/payload.json", boot.worker_card_id.as_str());
+    let initial_runtime_path = format!("cards/{}/runtime.json", boot.worker_card_id.as_str());
     let payload_path = format!("cards/{}/payload.json", run_card_id.as_str());
+    let runtime_path = format!("cards/{}/runtime.json", run_card_id.as_str());
     let conversation_path = format!("cards/{}/conversation.md", run_card_id.as_str());
     let cat_paths = vec![
         "index.md".to_string(),
@@ -92,7 +94,9 @@ async fn http_ls_and_cat_match_mcp_outputs() {
         "report.md".to_string(),
         conversation_path,
         initial_payload_path,
+        initial_runtime_path,
         payload_path,
+        runtime_path,
     ];
     for path in cat_paths {
         let mcp = call_tool(
