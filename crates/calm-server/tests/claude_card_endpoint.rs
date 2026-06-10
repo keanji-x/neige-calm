@@ -357,6 +357,34 @@ fn failing_spawn_hook(
     (count, hook)
 }
 
+fn restart_failing_spawn_hook() -> (Arc<AtomicUsize>, TestSpawnHook) {
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_for_hook = count.clone();
+    let hook = Arc::new(
+        move |terminal_id: String,
+              _program: String,
+              _cwd: String,
+              _env: Value|
+              -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
+            let count = count_for_hook.clone();
+            Box::pin(async move {
+                let call_index = count.fetch_add(1, Ordering::SeqCst);
+                if call_index == 0 {
+                    Ok(SpawnHandle::Terminal {
+                        renderer_id: terminal_id.clone(),
+                        terminal_id,
+                    })
+                } else {
+                    Err(calm_server::error::CalmError::Internal(
+                        "forced claude restart spawn failure".into(),
+                    ))
+                }
+            })
+        },
+    );
+    (count, hook)
+}
+
 async fn post(
     app: axum::Router,
     wave_id: &str,
@@ -628,6 +656,55 @@ async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
         !Arc::ptr_eq(&stale_entry, &current_entry),
         "restart must replace the stale renderer entry"
     );
+}
+
+#[tokio::test]
+async fn post_claude_restart_spawn_failure_restores_terminal_exit_and_marks_runtime_failed() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_with_spawn_hook_factory(|_, _| restart_failing_spawn_hook()).await;
+
+    let (create_status, created) =
+        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap();
+    let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
+    boot.repo
+        .runtime_complete_for_card(card_id, RunStatus::Exited)
+        .await
+        .unwrap();
+    boot.repo
+        .terminal_set_exit(terminal_id, Some(0), false)
+        .await
+        .unwrap();
+
+    let (restart_status, response) = post_restart(boot.app.clone(), card_id).await;
+    assert_eq!(
+        restart_status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "body={response:?}"
+    );
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
+
+    let term = boot.repo.terminal_get(terminal_id).await.unwrap().unwrap();
+    assert_eq!(term.exit_code, Some(0));
+    assert!(!term.signal_killed);
+
+    let rows = sqlx::query(
+        "SELECT status, terminal_run_id FROM runtimes WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
+    )
+    .bind(card_id)
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let first_status: String = rows[0].try_get("status").unwrap();
+    let second_status: String = rows[1].try_get("status").unwrap();
+    let first_terminal: String = rows[0].try_get("terminal_run_id").unwrap();
+    let second_terminal: String = rows[1].try_get("terminal_run_id").unwrap();
+    assert_eq!(first_status, "exited");
+    assert_eq!(second_status, "failed");
+    assert_eq!(first_terminal, terminal_id);
+    assert_eq!(second_terminal, terminal_id);
 }
 
 #[tokio::test]

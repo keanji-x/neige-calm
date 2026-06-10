@@ -208,6 +208,10 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let runtime_event_id =
             event_append_for_operation_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
 
+        // Preserve the previous exit row so compensation can restore the
+        // Restart affordance if the replacement spawn fails.
+        let prev_exit_code = term.exit_code;
+        let prev_signal_killed = term.signal_killed;
         let mut output = TxOutput::new(
             "runtime",
             Some(runtime_id.clone()),
@@ -223,6 +227,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "command_line": command_line,
             "cwd": term.cwd,
             "env": env,
+            "prev_exit_code": prev_exit_code,
+            "prev_signal_killed": prev_signal_killed,
         });
         output.post_commit_events.push(BroadcastEnvelope {
             id: runtime_event_id,
@@ -380,17 +386,33 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
         let card_id = output_string(output, "card_id")?;
+        let terminal_id = output_string(output, "terminal_id")?;
+        let prev_exit_code = output_optional_i32(output, "prev_exit_code");
+        let prev_signal_killed = output_bool(output, "prev_signal_killed");
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase,
             reason: reason.to_string(),
-            steps: vec![CompensationStep {
-                op: "runtime_set_status_failed_for_card".into(),
-                args: json!({ "card_id": card_id }),
-                completed: false,
-                attempts: 0,
-                last_error: None,
-            }],
+            steps: vec![
+                CompensationStep {
+                    op: "runtime_set_status_failed_for_card".into(),
+                    args: json!({ "card_id": card_id }),
+                    completed: false,
+                    attempts: 0,
+                    last_error: None,
+                },
+                CompensationStep {
+                    op: "restore_terminal_exit".into(),
+                    args: json!({
+                        "terminal_id": terminal_id,
+                        "prev_exit_code": prev_exit_code,
+                        "prev_signal_killed": prev_signal_killed,
+                    }),
+                    completed: false,
+                    attempts: 0,
+                    last_error: None,
+                },
+            ],
         })
     }
 
@@ -409,6 +431,23 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
                     .runtime_complete_for_card(&card_id, RunStatus::Failed)
+                    .await?;
+                Ok(())
+            }
+            "restore_terminal_exit" => {
+                let terminal_id = step_arg_string(step, "terminal_id")?;
+                let prev_exit_code = step
+                    .args
+                    .get("prev_exit_code")
+                    .and_then(|v| if v.is_null() { None } else { v.as_i64() })
+                    .map(|n| n as i32);
+                let prev_signal_killed = step
+                    .args
+                    .get("prev_signal_killed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                ctx.repo
+                    .terminal_set_exit(&terminal_id, prev_exit_code, prev_signal_killed)
                     .await?;
                 Ok(())
             }
@@ -432,6 +471,24 @@ fn output_string(output: &TxOutput, key: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| CalmError::Internal(format!("claude restart tx_output missing {key}")))
+}
+
+fn output_optional_i32(output: &TxOutput, key: &str) -> Option<i32> {
+    output.data.get(key).and_then(|v| {
+        if v.is_null() {
+            None
+        } else {
+            v.as_i64().map(|n| n as i32)
+        }
+    })
+}
+
+fn output_bool(output: &TxOutput, key: &str) -> bool {
+    output
+        .data
+        .get(key)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {

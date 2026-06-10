@@ -177,6 +177,7 @@ describe('Codex card controller behavior', () => {
 
     renderAgentCard(card, { deletable: false });
 
+    await screen.findByTestId('xterm-view-stub');
     const restart = await screen.findByRole('button', { name: 'Restart' });
     fireEvent.click(restart);
 
@@ -200,6 +201,7 @@ describe('Codex card controller behavior', () => {
 
     renderAgentCard(card, { deletable: false });
 
+    await screen.findByTestId('xterm-view-stub');
     const restart = await screen.findByRole('button', { name: 'Restart' });
     fireEvent.click(restart);
 
