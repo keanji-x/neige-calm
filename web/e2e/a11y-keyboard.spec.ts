@@ -33,7 +33,12 @@
 // the test proves both halves of the role/name + event contract from #56.
 
 import { test, expect, type Page } from '@playwright/test';
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import {
+  createUserCove,
+  createWaveInCove,
+  resetReplayServer,
+  seedWaveViewMode,
+} from './helpers/reset';
 import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
 interface FocusInfo {
@@ -324,10 +329,11 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
 
-    // Tab to the "+ Add" trigger. It's a real <button> with
-    // aria-haspopup="menu" + aria-expanded — its accessible name comes
-    // from the visible text ("+ Add") and the title attribute ("Add card").
-    await tabUntil(page, (info) => /add card/i.test(info.name ?? '') || /\+\s*add/i.test(info.name ?? ''));
+    // Tab to the AddPanel trigger. It's a real <button> with
+    // aria-haspopup="menu" + aria-expanded — glyph-only (+/×) since the
+    // #594 demo, so its accessible name comes from aria-label
+    // ("Add card" closed, "Close add menu" open).
+    await tabUntil(page, (info) => /add card/i.test(info.name ?? ''));
     // Enter toggles the menu open. The popover renders a <ul role="menu">
     // immediately on open.
     await page.keyboard.press('Enter');
@@ -372,10 +378,13 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
 
-    // Tab to the "+ Add" trigger and capture it for the focus-restore
-    // assertion at the end of the spec.
-    await tabUntil(page, (info) => /add card/i.test(info.name ?? '') || /\+\s*add/i.test(info.name ?? ''));
-    const trigger = page.getByRole('button', { name: /\+\s*add/i });
+    // Tab to the AddPanel trigger (glyph-only since #594; accessible
+    // name "Add card" while closed) and capture it for the focus-restore
+    // assertion at the end of the spec. The name-based locator resolves
+    // at every point we assert on it — the menu is closed there, so the
+    // aria-label has flipped back from "Close add menu" to "Add card".
+    await tabUntil(page, (info) => /add card/i.test(info.name ?? ''));
+    const trigger = page.getByRole('button', { name: /add card/i });
     await expect(trigger).toBeFocused();
     await page.keyboard.press('Enter');
     const menu = page.getByRole('menu');
@@ -480,9 +489,12 @@ test.describe('a11y · keyboard-only navigation', () => {
     // so it creates immediately. If no codex entry is registered (e.g.
     // plugins not loaded in this fixture) we gracefully skip the modal-
     // focus assertions instead of red-flagging the suite.
-    await tabUntil(page, (info) => /add card/i.test(info.name ?? '') || /\+\s*add/i.test(info.name ?? ''));
+    await tabUntil(page, (info) => /add card/i.test(info.name ?? ''));
     // Capture the trigger button so we can verify focus restore later.
-    const trigger = page.getByRole('button', { name: /\+\s*add/i });
+    // Name-based locator: "Add card" is the trigger's aria-label while
+    // the menu is closed (it flips to "Close add menu" while open, but
+    // no assertion below resolves it in that state).
+    const trigger = page.getByRole('button', { name: /add card/i });
     await page.keyboard.press('Enter');
     const menu = page.getByRole('menu');
     await expect(menu).toBeVisible();
@@ -609,12 +621,17 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(display).toBeFocused();
   });
 
-  // Slice 9 — list-view alternative to the WaveGrid. The wave-header
-  // carries a `role="switch"` toggle that flips the per-wave view-mode
-  // overlay between `grid` (default) and `list`. List view replaces the
-  // RGL grid with a semantic `<ul>` whose `<li>` items use roving
-  // tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the focused card by
-  // swapping `card.sort` via the existing optimistic mutation.
+  // Slice 9 — list-view alternative to the WaveGrid. The #594 demo
+  // dropped the Grid↔List UI entry (the header now carries ONE binary
+  // Grid↔Report switch), but the per-wave view-mode overlay still
+  // drives which cards surface renders while Report is off — so this
+  // spec enters list mode by seeding the overlay row via REST
+  // (`seedWaveViewMode`) and reloading. PR2 of #594 restores a real
+  // three-state ViewMode control; the click path can return then.
+  // List view replaces the RGL grid with a semantic `<ul>` whose `<li>`
+  // items use roving tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the
+  // focused card by swapping `card.sort` via the existing optimistic
+  // mutation.
   test('Wave: toggle to list view, reorder with Alt+Arrow, persist across reload', async ({
     page,
   }) => {
@@ -658,7 +675,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // still reachable from the keyboard and the rest of this test depends
     // on the menu activating, so we exercise it via key events.
     for (let i = 0; i < 2; i++) {
-      const addBtn = page.getByRole('button', { name: /\+\s*add/i });
+      const addBtn = page.getByRole('button', { name: /add card/i });
       await addBtn.focus();
       await page.keyboard.press('Enter');
       const menu = page.getByRole('menu');
@@ -678,22 +695,18 @@ test.describe('a11y · keyboard-only navigation', () => {
       await page.waitForTimeout(500);
     }
 
-    // The toggle is a role="switch" with an accessible name like
-    // "Switch wave to list view" (default state = grid).
-    const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
-    await expect(toggle).toBeVisible();
-    await expect(toggle).toHaveAttribute('aria-checked', 'false');
-
-    // Flip via keyboard: focus + Space (the native button activation).
-    await toggle.focus();
-    await page.keyboard.press(' ');
-
-    // Same DOM node now exposes the opposite accessible name + a flipped
-    // aria-checked. We re-query rather than caching the locator because
-    // the accessible name changed.
-    const toggleNow = page.getByRole('switch', { name: /switch wave to grid view/i });
-    await expect(toggleNow).toBeVisible();
-    await expect(toggleNow).toHaveAttribute('aria-checked', 'true');
+    // Enter list mode. The #594 demo removed the Grid↔List UI entry
+    // (the header's only view control is now the binary Grid↔Report
+    // switch), so we seed the per-wave `view-mode` overlay via REST —
+    // the same row the removed control wrote — and reload. `?trace=1`
+    // re-arms the event ring buffer for the reorder assertions below
+    // (the flag is read once per page load, and the client-side route
+    // URL we captured may not carry it).
+    const waveId = waveUrl.match(/\/calm\/wave\/([^/?#]+)/)?.[1];
+    expect(waveId, `wave id parsed from ${waveUrl}`).toBeTruthy();
+    await seedWaveViewMode(page.request, waveId!, 'list');
+    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await page.waitForFunction(() => Array.isArray(window.__neigeEvents__));
 
     // List view: cards now render as semantic <li>. Wait for the list
     // to mount (it's lazy-loaded — same chunk pattern as WaveGrid).
@@ -764,14 +777,22 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(items.last()).toHaveClass(/is-active/);
 
     // Reload — the view-mode overlay must persist, so the page comes
-    // back in list view.
+    // back in list view. The binary Grid↔Report switch reads "Grid"
+    // (aria-checked=false): list is a cards-surface mode, not the
+    // report surface, and the switch only tracks cards↔report. Its
+    // accessible name carries the action verb per the Slice-9
+    // convention ("Switch wave to report view" while showing cards).
     await page.goto(waveUrl);
     const listAfter = page.getByRole('list', { name: /wave cards/i });
     await expect(listAfter).toBeVisible({ timeout: 5_000 });
-    const toggleAfter = page.getByRole('switch', {
-      name: /switch wave to grid view/i,
+    const viewFlip = page.getByRole('switch', {
+      name: /switch wave to report view/i,
     });
-    await expect(toggleAfter).toHaveAttribute('aria-checked', 'true');
+    await expect(viewFlip).toBeVisible();
+    await expect(viewFlip).toHaveAttribute('aria-checked', 'false');
+    // The visible content is an `<Icon n="grid" />` SVG (#594 r6 swapped
+    // the text label to an icon); current-state assertion lives on
+    // aria-checked above, no separate text-content check needed.
   });
 
   test('Settings page: all controls reachable and labeled', async ({ page }) => {

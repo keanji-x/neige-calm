@@ -186,9 +186,9 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
   // card (the codex spec card uses a different component), so its count
   // tracks our new card.
   const termCardsBefore = await page.locator('.term').count();
-  const addBtn = page
-    .getByRole('button', { name: /^\s*\+?\s*add(\s|$)/i })
-    .first();
+  // Glyph-only AddPanel trigger since #594; accessible name is the
+  // aria-label "Add card" while closed.
+  const addBtn = page.getByRole('button', { name: /add card/i }).first();
   await expect(addBtn).toBeVisible();
   await addBtn.click();
   const termOption = page.getByRole('menuitem', { name: /^terminal$/i });

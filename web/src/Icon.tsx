@@ -10,6 +10,8 @@ export type IconName =
   | 'gear'
   | 'refresh'
   | 'edit'
+  | 'grid'
+  | 'report'
   | 'reset';
 
 interface IconProps {
@@ -90,6 +92,19 @@ export function Icon({ n, s = 16, sw = 1.6 }: IconProps) {
         <svg {...common}>
           <path d="M4 20 L4.5 16 L16.5 4 L20 7.5 L8 19.5 L4 20 Z" />
           <path d="M14 6 L18 10" />
+        </svg>
+      );
+    case 'grid':
+      return (
+        <svg {...common}>
+          <path d="M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z" />
+        </svg>
+      );
+    case 'report':
+      return (
+        <svg {...common}>
+          <path d="M4 4h16v16H4z" />
+          <path d="M8 9h8 M8 13h8 M8 17h5" />
         </svg>
       );
     case 'reset':

@@ -12,7 +12,6 @@ import { WaveContext } from '../shared/components/WaveContext';
 import { CalmApiError } from '../api/calm';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
-import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 import { waveDisplayTitle } from '../shared/waveTitle';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
@@ -194,12 +193,12 @@ export function WavePage({
 
   const showPct = wave.progress > 0 && wave.progress < 1.0;
 
-  // Per-wave view-mode preference. Defaults to grid (no breaking change
-  // for mouse users); the toggle in the wave-header flips it and the
-  // overlay persists across reloads. The hook handles optimistic update,
-  // WS replay, and IndexedDB rehydration the same way the layout
-  // overlay does.
-  const [viewModeOverlay, setViewModeOverlay] = useOverlayState<ViewModeOverlay>({
+  // Per-wave view-mode preference (Slice 9 of #56). Read-only in this
+  // demo: the #594 binary toggle dropped the Grid↔List UI entry, but
+  // waves whose overlay already holds `list` keep rendering as a list
+  // when Report is off. PR2 of #594 restores a writable three-state
+  // ViewMode ('grid' | 'list' | 'report') and with it the setter.
+  const [viewModeOverlay] = useOverlayState<ViewModeOverlay>({
     entity_kind: 'view',
     entity_id: wave.id,
     kind: 'view-mode',
@@ -208,12 +207,14 @@ export function WavePage({
   const viewMode: ViewMode = isViewMode(viewModeOverlay.mode)
     ? viewModeOverlay.mode
     : 'grid';
-  const toggleViewMode = () => {
-    setViewModeOverlay({
-      schemaVersion: OVERLAY_VIEW_MODE_SCHEMA_VERSION,
-      mode: viewMode === 'grid' ? 'list' : 'grid',
-    });
-  };
+
+  // Demo toggle for the unified Report view (issue #594). Deliberately
+  // plain useState, NOT overlay-persisted: the report content is the
+  // static design sandbox (`web/public/_design/Report.html`), and
+  // persisting "this wave shows the report" across reloads while the
+  // data is fake would mislead. PR2 of #594 replaces this with a real
+  // three-state ViewMode ('grid' | 'list' | 'report') on the overlay.
+  const [reportPreview, setReportPreview] = useState(false);
 
   return (
     // Issue #229 PR B — wrap with WaveContext so the WaveReport card
@@ -223,7 +224,7 @@ export function WavePage({
     <WaveContext.Provider
       value={{ id: wave.id, lifecycle: wave.lifecycle }}
     >
-    <div className="workbench">
+    <div className={'workbench' + (reportPreview ? ' workbench--report' : '')}>
       <header className="wave-header">
         <button
           className="wave-back"
@@ -231,6 +232,29 @@ export function WavePage({
           title={'Back to ' + cove.name}
         >
           <Icon n="back" s={14} sw={1.7} />
+        </button>
+        {/* Surface flip (issue #594 demo) — leftmost control cluster:
+            与 back 钮并列, 表达模式切换 (icon-only). Slice-9 label
+            convention: visible icon = current surface, action verb in
+            aria-label / noun in title. The grid/list overlay is read-only here
+            (no UI entry for List in the demo); PR2 of #594 swaps this
+            for the persisted three-state ViewMode control. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={reportPreview}
+          className="view-flip"
+          onClick={() => setReportPreview((v) => !v)}
+          aria-label={
+            reportPreview
+              ? 'Switch wave to cards view'
+              : 'Switch wave to report view'
+          }
+          title={
+            reportPreview ? 'Cards' : 'Report'
+          }
+        >
+          <Icon n={reportPreview ? 'report' : 'grid'} s={14} sw={1.7} />
         </button>
         <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
@@ -298,41 +322,6 @@ export function WavePage({
           )}
         </span>
         <span className="wave-meta">
-          {/* View-mode toggle (Slice 9 of issue #56). Two-state button —
-              `role="switch"` + `aria-checked` so AT announces the bound
-              state ("Grid view, switch, on" vs "List view, switch, off").
-              The accessible name carries the layout vocabulary so a
-              keyboard / screen-reader user knows what the control
-              switches between; the visible label flips with the state.
-              Pressed visually matches AddPanel — dashed border swap. */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={viewMode === 'list'}
-            className={'view-toggle' + (viewMode === 'list' ? ' is-list' : '')}
-            onClick={toggleViewMode}
-            title={
-              viewMode === 'list'
-                ? 'Switch to grid view'
-                : 'Switch to list view (keyboard-friendly)'
-            }
-            aria-label={
-              viewMode === 'list'
-                ? 'Switch wave to grid view'
-                : 'Switch wave to list view'
-            }
-          >
-            {viewMode === 'list' ? 'List' : 'Grid'}
-          </button>
-          <AddPanel onSelect={beginAdd} />
-          {directAddError && (
-            <p
-              className="schema-form-error wave-add-direct-error"
-              role="alert"
-            >
-              {directAddError}
-            </p>
-          )}
           {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
               lifecycle on every wave (defaults to 'draft' on create); this
               renders the current state as a small uppercase pill. After
@@ -344,40 +333,63 @@ export function WavePage({
               rendered separately when set. */}
           <WaveLifecycleBadge lifecycle={wave.lifecycle} />
           {showPct && <span className="wave-percent num">{pct}%</span>}
-          {onDeleteWave && (
-            <DeleteButton
-              label={`Delete wave "${displayTitle}"`}
-              confirmTitle="Delete wave?"
-              confirmLabel="Delete wave"
-              confirmMessage={`Delete wave "${displayTitle}"? Its cards (including any terminals) go too. This cannot be undone.`}
-              onDelete={() => onDeleteWave(wave.id)}
-            />
+          {directAddError && (
+            <p
+              className="schema-form-error wave-add-direct-error"
+              role="alert"
+            >
+              {directAddError}
+            </p>
           )}
+          <span className="wave-action-cluster">
+            {!reportPreview && <AddPanel onSelect={beginAdd} />}
+            {onDeleteWave && (
+              <DeleteButton
+                label={`Delete wave "${displayTitle}"`}
+                confirmTitle="Delete wave?"
+                confirmLabel="Delete wave"
+                confirmMessage={`Delete wave "${displayTitle}"? Its cards (including any terminals) go too. This cannot be undone.`}
+                onDelete={() => onDeleteWave(wave.id)}
+              />
+            )}
+          </span>
         </span>
       </header>
 
       <section className="workbench-main">
-        <Suspense
-          fallback={
-            <div className="synth">
-              {viewMode === 'list' ? 'Loading list…' : 'Loading grid…'}
-            </div>
-          }
-        >
-          {viewMode === 'list' ? (
-            <WaveList
-              waveId={wave.id}
-              cards={cards}
-              onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
-            />
-          ) : (
-            <WaveGrid
-              waveId={wave.id}
-              cards={cards}
-              onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
-            />
-          )}
-        </Suspense>
+        {reportPreview ? (
+          // Static design sandbox served from `web/public/_design/`.
+          // Pure iframe — no wave data flows in yet; PR2 of #594 swaps
+          // this for a real WaveReportPage fed by the wave's
+          // spec + wave-report cards.
+          <iframe
+            className="wave-report-demo-frame"
+            src="/calm/_design/Report.html"
+            title="Report view demo (#594)"
+          />
+        ) : (
+          <Suspense
+            fallback={
+              <div className="synth">
+                {viewMode === 'list' ? 'Loading list…' : 'Loading grid…'}
+              </div>
+            }
+          >
+            {viewMode === 'list' ? (
+              <WaveList
+                waveId={wave.id}
+                cards={cards}
+                onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+              />
+            ) : (
+              <WaveGrid
+                waveId={wave.id}
+                cards={cards}
+                onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+              />
+            )}
+          </Suspense>
+        )}
       </section>
       {/* Shortcut: when a kind's createSchema is just one `directory` field,
           skip the SchemaForm wrapper entirely and let the user pick a

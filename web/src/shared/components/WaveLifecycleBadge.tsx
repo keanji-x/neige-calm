@@ -92,7 +92,6 @@ export function WaveLifecycleBadge({
       style={{
         textTransform: 'uppercase',
         letterSpacing: '0.04em',
-        fontSize: 'var(--text-xs, 11px)',
       }}
     >
       {!compact && mod && (

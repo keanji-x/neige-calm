@@ -1412,7 +1412,12 @@ select:-webkit-autofill {
 }
 .wave-crumb {
   display: flex; align-items: center; gap: var(--space-4);
-  min-width: 0; flex: 1;
+  /* Content-sized (shrinkable, min-width:0 keeps the title ellipsis
+     working) rather than greedy `flex: 1`: the #594 view-flip toggle sits
+     at the crumb tail and should not shove against the right-side meta
+     cluster. The free space lives between the crumb and `.wave-meta`
+     (margin-left: auto below). */
+  min-width: 0; flex: 0 1 auto;
   font-size: var(--text-md);
 }
 .wave-cove-dot {
@@ -1559,8 +1564,14 @@ select:-webkit-autofill {
 .cove-head:hover .cove-head-delete,
 .cove-head:focus-within .cove-head-delete { opacity: 1; }
 .wave-meta {
-  display: flex; align-items: center; gap: var(--space-7);
+  display: flex; align-items: center; gap: var(--space-4);
   flex-shrink: 0;
+  /* Soak up the header's free space on the left — `.wave-crumb` is
+     content-sized since the #594 toggle moved next to it. */
+  margin-left: auto;
+}
+.wave-action-cluster {
+  display: flex; align-items: center; gap: var(--space-2);
 }
 .status-pill {
   display: inline-flex; align-items: center; gap: var(--space-4);
@@ -1578,6 +1589,7 @@ select:-webkit-autofill {
 .status-pill-dot.warn    { box-shadow: 0 0 0 3px var(--warn-soft); }
 .wave-percent {
   font-size: var(--text-sm); color: var(--text-3);
+  font-weight: 500;
   min-width: 36px; text-align: right;
 }
 
@@ -1587,6 +1599,32 @@ select:-webkit-autofill {
 .workbench-main {
   min-width: 0;
   display: flex; flex-direction: column;
+}
+
+/* Report-view demo (issue #594). When the wave header's Report toggle is
+   ON the workbench escapes its 1280px reading column and fills the
+   scroll area so the design sandbox iframe can own the viewport below
+   the wave header. Removed when PR2 lands the real report layout. */
+.workbench.workbench--report {
+  max-width: none;
+  align-self: stretch;
+  flex: 1;
+  min-height: 0;
+  padding-bottom: var(--space-0);
+}
+.workbench--report .workbench-main {
+  flex: 1;
+  min-height: 0;
+}
+.wave-report-demo-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 480px;
+  border: none;
+  /* Match the sandbox's --canvas (mirrors app --bg) so there's no
+     white flash before the iframe paints, in either theme. */
+  background: var(--bg);
 }
 
 /* breadcrumb top */
@@ -1711,47 +1749,50 @@ select:-webkit-autofill {
 /* ===== Add panel =====
    Now lives in the wave header (wave-meta cluster) so the create entry
    point is up where the user looks first. The wrap drops its old grid-
-   below positioning hints; the meta cluster owns spacing. */
+   below positioning hints; the action cluster owns close control spacing. */
 .add-panel-wrap {
   position: relative;
 }
 .add-panel {
-  height: 28px; padding: var(--space-0) var(--space-6);
-  border: 1.5px dashed var(--hairline-strong);
-  border-radius: var(--r);
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  padding: var(--space-0);
+  border: none;
+  border-radius: var(--radius-md);
   color: var(--text-3);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  transition: color var(--motion-quick), border-color var(--motion-quick);
+  font-size: var(--text-lg);
+  line-height: var(--leading-none);
   background: transparent;
+  transition: color var(--motion-quick), background var(--motion-quick);
 }
-.add-panel:hover { color: var(--text); border-color: var(--text-3); }
-.add-panel[aria-expanded="true"] { color: var(--text); border-color: var(--text-3); }
-
-/* View-mode toggle — Slice 9 of issue #56. Visually matches the AddPanel
-   trigger (same height, same dashed border vocabulary) so the two header
-   controls read as a small cluster, not competing affordances. The
-   `is-list` modifier swaps to a solid border so the bound state is
-   distinguishable for low-vision users who can't rely on the label
-   change alone (the role="switch" + aria-checked carries the same
-   signal to AT). */
-.view-toggle {
-  height: 28px; padding: var(--space-0) var(--space-6);
-  border: 1.5px dashed var(--hairline-strong);
-  border-radius: var(--r);
-  color: var(--text-3);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  background: transparent;
-  transition: color var(--motion-quick), border-color var(--motion-quick), background var(--motion-quick);
-}
-.view-toggle:hover { color: var(--text); border-color: var(--text-3); }
-.view-toggle.is-list {
-  border-style: solid;
+.add-panel:hover {
   color: var(--text);
-  border-color: var(--text-3);
+  background: var(--overlay-hover-strong);
 }
-.view-toggle:focus-visible {
+.add-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Wave surface flip: icon-only mode toggle (Cards ↔ Report). checked =
+   icon color becomes accent without fill because report mode already swaps
+   the whole main area to the fullscreen report. */
+.view-flip {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  padding: var(--space-0);
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+  background: transparent;
+  transition: color var(--motion-quick), background var(--motion-quick);
+}
+.view-flip:hover { background: var(--overlay-hover-strong); color: var(--text); }
+.view-flip[aria-checked="true"] {
+  color: var(--accent);
+}
+.view-flip:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

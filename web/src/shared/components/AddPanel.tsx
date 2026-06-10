@@ -31,6 +31,7 @@
 import { addPanelEntries, type AddPanelMenuItem } from '../../cards/registry';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { LetterAvatar } from '../../cards/LetterAvatar';
+import { PlusIcon } from './PlusIcon';
 
 export type { AddPanelMenuItem } from '../../cards/registry';
 
@@ -76,15 +77,19 @@ export function AddPanel({
       emptyClassName="add-panel-empty"
       emptyState="No card kinds registered"
       trigger={({ ref, onClick, 'aria-haspopup': ariaHasPopup, 'aria-expanded': ariaExpanded }) => (
+        // Glyph-only trigger: a ghost SVG `+` from PlusIcon, matching
+        // CloseIcon's centered 1em/24x24/stroke geometry. The accessible
+        // name comes from aria-label and flips with the expanded state.
         <button
           ref={ref}
           className="add-panel"
           onClick={onClick}
           aria-expanded={ariaExpanded}
           aria-haspopup={ariaHasPopup}
-          title="Add card"
+          aria-label={ariaExpanded ? 'Close add menu' : 'Add card'}
+          title={ariaExpanded ? 'Close add menu' : 'Add card'}
         >
-          + Add
+          <PlusIcon />
         </button>
       )}
     />
