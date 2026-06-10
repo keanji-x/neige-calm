@@ -130,6 +130,7 @@ pub struct RouteState {
     pub write: WriteContext,
     pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
+    pub harness: HarnessRegistry,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
 }
 
@@ -197,6 +198,7 @@ impl BootState {
             write: write.clone(),
             aspects: self.aspects.clone(),
             operation_runtime: self.operation_runtime.clone(),
+            harness: self.harness.clone(),
             hook_ingest_cache,
         };
         let worker = WorkerState {

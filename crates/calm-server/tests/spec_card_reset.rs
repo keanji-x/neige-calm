@@ -446,12 +446,273 @@ async fn wait_for_harness_watermark(harness: &SpecHarness, watermark: i64) {
     }
 }
 
+async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "spec_harness": role == CardRole::Spec
+            }),
+        })
+        .await
+        .expect("seed codex card");
+    boot.state
+        .card_role_cache
+        .insert(card.id.clone(), role, WaveId::from(boot.wave_id.clone()));
+    card
+}
+
+async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
+    let card = seed_codex_card_with_role(boot, CardRole::Spec).await;
+    let runtime_id = new_id();
+    let thread_id = format!("thread-{runtime_id}");
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("seed active spec harness runtime");
+    tx.commit().await.unwrap();
+
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: runtime_id.clone(),
+        wave_id: card.wave_id.clone(),
+        card_id: card.id.clone(),
+        thread_id: Some(thread_id),
+        repo: repo_dyn,
+        events: boot.state.events.clone(),
+        card_role_cache: boot.state.card_role_cache.clone(),
+        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        daemon: boot.state.shared_codex_appserver.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+    boot.state
+        .harness
+        .insert(runtime_id.clone(), harness.clone());
+    (card, runtime_id, harness)
+}
+
+async fn seed_inactive_spec_runtime(boot: &Boot, card: &Card) -> String {
+    let runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Exited,
+            terminal_run_id: None,
+            thread_id: Some(format!("thread-{runtime_id}")),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("seed inactive spec harness runtime");
+    tx.commit().await.unwrap();
+    runtime_id
+}
+
+async fn wait_for_user_message(harness: &SpecHarness, text: &str) -> HarnessSnapshot {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = harness.snapshot().await;
+        if snapshot.pending_queue.iter().any(|obs| {
+            matches!(
+                obs,
+                Observation::UserMessage { text: queued } if queued == text
+            )
+        }) {
+            return snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for user message {text:?}; snapshot={snapshot:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn shutdown_seeded_harness(boot: &Boot, runtime_id: &String, harness: SpecHarness) {
+    if let Some(handle) = boot.state.harness.remove(runtime_id) {
+        handle.shutdown().await.unwrap();
+    } else {
+        harness.shutdown().await.unwrap();
+    }
+}
+
 fn has_interrupt(rows: &[Value], thread_id: &str, turn_id: &str) -> bool {
     rows.iter().any(|row| {
         row.get("method").and_then(Value::as_str) == Some("turn/interrupt")
             && row.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
             && row.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id)
     })
+}
+
+#[tokio::test]
+async fn send_spec_input_happy() {
+    let boot = boot().await;
+    let text = "look into Korean refiners";
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    let snapshot = wait_for_user_message(&harness, text).await;
+    assert!(
+        snapshot.pending_queue.iter().any(|obs| {
+            matches!(
+                obs,
+                Observation::UserMessage { text: queued } if queued == text
+            )
+        }),
+        "pending_queue={:?}",
+        snapshot.pending_queue
+    );
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_accepts_max_chars() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let text: String = "a".repeat(32_768);
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_rejects_over_max_chars() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let text: String = "a".repeat(32_769);
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("32768") || e.contains("at most")),
+        "body={body}"
+    );
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_empty_400() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "   " }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+#[tokio::test]
+async fn send_spec_input_non_spec_card_403() {
+    let boot = boot().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Worker).await;
+
+    let (status, body) = post_json(
+        boot.app,
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "hello spec" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not a spec codex card")),
+        "body={body}"
+    );
+}
+
+#[tokio::test]
+async fn send_spec_input_no_runtime_404() {
+    let boot = boot().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    seed_inactive_spec_runtime(&boot, &card).await;
+
+    let (status, body) = post_json(
+        boot.app,
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "wake up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("no active spec harness")),
+        "body={body}"
+    );
 }
 
 #[tokio::test]

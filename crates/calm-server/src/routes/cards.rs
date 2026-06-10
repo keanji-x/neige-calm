@@ -17,6 +17,7 @@ use crate::db::write_with_event_typed;
 use crate::db::{RepoRead, RouteRepo};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
+use crate::harness::Observation;
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id};
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
@@ -109,6 +110,7 @@ pub fn router() -> Router<AppState> {
             axum::routing::patch(update_card).delete(delete_card),
         )
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
+        .route("/api/cards/{id}/spec/input", post(send_spec_input))
         .route("/api/cards/{id}/spec/reset", post(reset_spec_card))
 }
 
@@ -562,6 +564,83 @@ pub struct ResetSpecCardResponse {
     pub new_thread_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wave: Option<Wave>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SendSpecInputRequest {
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SendSpecInputResponse {
+    #[schema(value_type = String)]
+    pub card_id: CardId,
+    pub runtime_id: String,
+}
+
+const MAX_SPEC_INPUT_CHARS: usize = 32_768;
+
+#[utoipa::path(
+    post,
+    path = "/api/cards/{id}/spec/input",
+    tag = "cards",
+    params(("id" = String, Path, description = "Spec card id")),
+    request_body = SendSpecInputRequest,
+    responses(
+        (status = 200, description = "User text queued for next harness turn", body = SendSpecInputResponse),
+        (status = 400, description = "Empty text", body = ErrorBody),
+        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 404, description = "Card or active runtime not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn send_spec_input(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(id): Path<String>,
+    Json(body): Json<SendSpecInputRequest>,
+) -> Result<Json<SendSpecInputResponse>> {
+    let _ = actor;
+    if body.text.trim().is_empty() {
+        return Err(CalmError::BadRequest("text must not be empty".into()));
+    }
+    if body.text.chars().count() > MAX_SPEC_INPUT_CHARS {
+        return Err(CalmError::BadRequest(format!(
+            "text must be at most {MAX_SPEC_INPUT_CHARS} characters",
+        )));
+    }
+
+    let card = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let role = s
+        .write
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    if card.kind != "codex" || role != CardRole::Spec {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is not a spec codex card",
+        )));
+    }
+
+    let runtime = s
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("no active spec harness for card {id}")))?;
+    let Some(harness) = s.harness.get(&runtime.id) else {
+        return Err(CalmError::NotFound(format!(
+            "no active spec harness for card {id}",
+        )));
+    };
+    harness.observe(Observation::UserMessage { text: body.text })?;
+
+    Ok(Json(SendSpecInputResponse {
+        card_id: card.id,
+        runtime_id: runtime.id.clone(),
+    }))
 }
 
 #[utoipa::path(

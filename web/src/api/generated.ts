@@ -73,6 +73,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cards/{id}/spec/input": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["send_spec_input"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/spec/reset": {
         parameters: {
             query?: never;
@@ -1425,6 +1441,13 @@ export interface components {
         RunStatus: "starting" | "running" | "idle" | "turn_pending" | "failed" | "exited" | "superseded";
         /** @enum {string} */
         RuntimeKind: "terminal" | "codex" | "claude" | "shared-spec";
+        SendSpecInputRequest: {
+            text: string;
+        };
+        SendSpecInputResponse: {
+            card_id: string;
+            runtime_id: string;
+        };
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
          *     deterministic ordering in the response so the OpenAPI spec consumers
@@ -2071,6 +2094,69 @@ export interface operations {
                 };
             };
             /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    send_spec_input: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Spec card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendSpecInputRequest"];
+            };
+        };
+        responses: {
+            /** @description User text queued for next harness turn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SendSpecInputResponse"];
+                };
+            };
+            /** @description Empty text */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card is not a spec codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card or active runtime not found */
             404: {
                 headers: {
                     [name: string]: unknown;
