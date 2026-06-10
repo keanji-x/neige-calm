@@ -299,9 +299,8 @@ async fn wait_for_state(
 async fn wait_for_any_last_seen_head(boot: &Boot) -> String {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let card = spec_card(boot).await;
-        if let Some(actual) = last_seen_head(&card) {
-            return actual.to_string();
+        if let Some(actual) = runtime_snapshot(boot).await.last_seen_head {
+            return actual;
         }
         assert!(
             Instant::now() < deadline,
@@ -312,20 +311,88 @@ async fn wait_for_any_last_seen_head(boot: &Boot) -> String {
 }
 
 async fn set_last_seen_head_raw(boot: &Boot, head: &str) {
-    let mut card = spec_card(boot).await;
-    card.payload["last_seen_head"] = Value::String(head.to_string());
+    boot.harness
+        .set_last_seen_head_for_test(Some(head.to_string()))
+        .await;
+    let mut snapshot = runtime_snapshot(boot).await;
+    snapshot.last_seen_head = Some(head.to_string());
+    persist_runtime_snapshot(boot, &snapshot).await;
+}
+
+async fn runtime_snapshot(boot: &Boot) -> HarnessSnapshot {
+    let state_text: Option<String> = sqlx::query_scalar(
+        r#"SELECT handle_state_json
+             FROM runtimes
+             WHERE card_id = ?1
+               AND status IN ('starting', 'running', 'idle', 'turn_pending')
+             ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+             LIMIT 1"#,
+    )
+    .bind(boot.spec_card_id.as_str())
+    .fetch_one(boot.repo.pool())
+    .await
+    .expect("active spec runtime handle state");
+    let state_text = state_text.expect("spec runtime has handle state");
+    let value = serde_json::from_str(&state_text).expect("handle state json");
+    HarnessSnapshot::from_value_strict(value)
+}
+
+async fn persist_runtime_snapshot(boot: &Boot, snapshot: &HarnessSnapshot) {
+    let state_text = serde_json::to_string(snapshot).expect("snapshot json");
+    sqlx::query(
+        r#"UPDATE runtimes
+              SET handle_state_json = ?1
+            WHERE card_id = ?2
+              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(state_text)
+    .bind(boot.spec_card_id.as_str())
+    .execute(boot.repo.pool())
+    .await
+    .expect("persist runtime snapshot");
+}
+
+async fn update_card_payload_with_event(boot: &Boot, card: &Card, payload: Value) -> Card {
+    let card_id = card.id.clone();
+    let lookup_card_id = card_id.clone();
+    let scope = EventScope::Card {
+        card: card_id.clone(),
+        wave: card.wave_id.clone(),
+        cove: boot.cove_id.clone(),
+    };
     boot.repo
-        .card_update(
-            boot.spec_card_id.as_str(),
-            CardPatch {
-                kind: None,
-                sort: None,
-                payload: Some(card.payload),
-                deletable: None,
-            },
+        .write_with_event(
+            ActorId::Kernel,
+            scope,
+            None,
+            &boot.events,
+            &boot.write,
+            Box::new(move |tx| {
+                let card_id = card_id.clone();
+                let payload = payload.clone();
+                Box::pin(async move {
+                    let card = calm_server::db::sqlite::card_update_tx(
+                        tx,
+                        card_id.as_str(),
+                        CardPatch {
+                            kind: None,
+                            sort: None,
+                            payload: Some(payload),
+                            deletable: None,
+                        },
+                    )
+                    .await?;
+                    Ok(Event::CardUpdated(card))
+                })
+            }),
         )
         .await
-        .unwrap();
+        .expect("card payload updated event");
+    boot.repo
+        .card_get(lookup_card_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 async fn spec_card(boot: &Boot) -> Card {
@@ -334,10 +401,6 @@ async fn spec_card(boot: &Boot) -> Card {
         .await
         .unwrap()
         .unwrap()
-}
-
-fn last_seen_head(card: &Card) -> Option<&str> {
-    card.payload.get("last_seen_head").and_then(Value::as_str)
 }
 
 fn turn_text(daemon: &SharedCodexAppServer, idx: usize) -> String {
@@ -366,12 +429,10 @@ async fn first_turn_with_last_seen_head_none_has_no_diff_block() {
     .await;
 
     assert_eq!(text, "read the goal");
+    assert!(runtime_snapshot(&boot).await.last_seen_head.is_none());
     assert!(
-        boot.repo
-            .card_get(boot.spec_card_id.as_str())
+        spec_card(&boot)
             .await
-            .unwrap()
-            .unwrap()
             .payload
             .get("last_seen_head")
             .is_none()
@@ -408,6 +469,35 @@ async fn unchanged_head_after_completed_turn_has_no_diff_block() {
 }
 
 #[tokio::test]
+async fn diff_failure_from_bogus_stored_head_does_not_wedge_harness() {
+    let boot = boot().await;
+    let current = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    set_last_seen_head_raw(&boot, "missing-wave-vcs-commit").await;
+
+    let text = issue_observation(
+        &boot,
+        Observation::TaskFailed {
+            idempotency_key: "bogus-head".into(),
+            error: "keep going".into(),
+        },
+        1,
+    )
+    .await;
+
+    assert!(
+        !text.contains("Wave state changes since your last turn"),
+        "bad baseline must degrade to no diff block: {text}"
+    );
+    assert!(text.contains("idempotency_key=bogus-head"));
+    complete_latest_turn(&boot).await;
+    assert_eq!(wait_for_any_last_seen_head(&boot).await, current);
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn next_turn_prepends_diff_since_completed_turn_head() {
     let boot = boot().await;
     let before = complete_first_turn_and_stamp(&boot).await;
@@ -432,6 +522,102 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
     assert!(text.contains("report.md new"));
     assert!(text.contains("\n\n---\n\n"));
     assert!(text.contains("idempotency_key=report-write"));
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn mid_turn_changes_remain_visible_on_next_turn() {
+    let boot = boot().await;
+    complete_first_turn_and_stamp(&boot).await;
+    let before = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    set_last_seen_head_raw(&boot, &before).await;
+
+    let second_text = issue_observation(
+        &boot,
+        Observation::TaskCompleted {
+            idempotency_key: "turn-two".into(),
+            result: json!({"ok": true}),
+        },
+        2,
+    )
+    .await;
+    assert!(
+        !second_text.contains("Wave state changes since your last turn"),
+        "unchanged baseline should not produce a diff block: {second_text}"
+    );
+
+    add_report_card_event(&boot).await;
+    let mid_turn_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    complete_latest_turn(&boot).await;
+    assert_eq!(wait_for_any_last_seen_head(&boot).await, before);
+    let after_completion_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(mid_turn_head, before);
+
+    let third_text = issue_observation(
+        &boot,
+        Observation::TaskCompleted {
+            idempotency_key: "turn-three".into(),
+            result: json!({"ok": true}),
+        },
+        3,
+    )
+    .await;
+
+    assert!(third_text.starts_with("## Wave state changes since your last turn"));
+    assert!(third_text.contains(&format!(
+        "HEAD {} -> {}",
+        short(&before),
+        short(&after_completion_head)
+    )));
+    assert!(third_text.contains("report.md new"));
+    assert!(third_text.contains("idempotency_key=turn-three"));
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn spec_card_own_payload_path_is_suppressed_from_turn_observation() {
+    let boot = boot().await;
+    complete_first_turn_and_stamp(&boot).await;
+    let before = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    set_last_seen_head_raw(&boot, &before).await;
+
+    let spec = spec_card(&boot).await;
+    update_card_payload_with_event(
+        &boot,
+        &spec,
+        json!({"schemaVersion": 1, "spec_harness": true, "private": "noise"}),
+    )
+    .await;
+
+    let text = issue_observation(
+        &boot,
+        Observation::TaskCompleted {
+            idempotency_key: "spec-payload-only".into(),
+            result: json!({}),
+        },
+        2,
+    )
+    .await;
+
+    assert!(text.starts_with("## Wave state changes since your last turn"));
+    assert!(
+        !text.contains(&format!("cards/{}/payload.json", boot.spec_card_id)),
+        "spec card payload path should be internal observation noise: {text}"
+    );
+    assert!(text.contains(&format!("cards/{}/meta.json edited", boot.spec_card_id)));
+    assert!(text.contains("idempotency_key=spec-payload-only"));
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -476,6 +662,7 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
     );
     assert!(text.contains(&format!("HEAD {} -> {}", short(&before), short(&after))));
     assert!(text.contains(first.id.as_str()));
+    assert!(text.contains(&format!("cards/{}/payload.json new", first.id)));
     assert!(text.contains(second.id.as_str()));
     assert!(text.contains(third.id.as_str()));
     assert_eq!(text.matches("A dispatched task completed").count(), 3);
