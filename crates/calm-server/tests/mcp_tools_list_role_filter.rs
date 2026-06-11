@@ -49,6 +49,9 @@ async fn tools_list_for_spec_role_returns_only_writes() {
     assert_eq!(
         names,
         vec![
+            "calm.plan.cancel",
+            "calm.plan.list",
+            "calm.plan.upsert",
             "calm.report.edit",
             "calm.report.write",
             "calm.task.dispatch",
@@ -117,10 +120,14 @@ async fn tools_list_for_shared_daemon_resolves_thread_role() {
         names.contains(&"calm.task.dispatch"),
         "spec thread on shared daemon must see task.dispatch, got: {names:?}"
     );
+    assert!(
+        names.contains(&"calm.plan.upsert"),
+        "spec thread on shared daemon must see plan.upsert (#644), got: {names:?}"
+    );
     assert_eq!(
         names.len(),
-        4,
-        "spec thread sees the 4 retained write tools, got: {names:?}"
+        7,
+        "spec thread sees the 4 retained write tools + 3 plan tools (#644), got: {names:?}"
     );
     let _ = (&boot.server, &boot.repo);
 }
