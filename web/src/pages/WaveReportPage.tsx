@@ -68,12 +68,6 @@ function formatUpdatedAt(updatedAt?: number): string {
   }).format(new Date(updatedAt))}`;
 }
 
-function readTime(body: string | undefined): string {
-  const words = (body ?? '').trim().split(/\s+/).filter(Boolean).length;
-  if (words === 0) return 'Read time -';
-  return `${Math.max(1, Math.ceil(words / 220))} min read`;
-}
-
 function ReportByline({ report }: { report?: WaveReportCardData }) {
   return (
     <div className="report-byline" aria-label="Report metadata">
@@ -85,10 +79,6 @@ function ReportByline({ report }: { report?: WaveReportCardData }) {
       </span>
       <span className="report-byline-sep" aria-hidden="true" />
       <span>{formatUpdatedAt(report?.updatedAt)}</span>
-      <span className="report-byline-sep" aria-hidden="true" />
-      <span>Sources -</span>
-      <span className="report-byline-sep" aria-hidden="true" />
-      <span>{readTime(report?.body)}</span>
     </div>
   );
 }
