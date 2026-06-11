@@ -1,4 +1,4 @@
-//! MCP `initialize` handshake — daemon-level trust.
+//! MCP `initialize` handshake — explicit per-connection identity.
 //!
 //! PR7a (#136). The codex daemon's MCP client opens a UDS connection to
 //! the kernel via [`crate::mcp_server::transport`] and immediately sends
@@ -12,9 +12,13 @@
 //!   3. Verifies via constant-time compare (defense-in-depth over the
 //!      `WHERE hashed_token = ?` lookup) — see
 //!      [`crate::mcp_server::auth::verify_token`].
-//!   4. Returns a daemon-trust marker plus the token-bound card identity
-//!      as a temporary fallback for legacy callers. Modern tools/call
-//!      identity is still resolved first from `_meta.threadId`.
+//!   4. Returns a [`ConnectionIdentity`] that fixes the connection into
+//!      one of two modes:
+//!      * daemon token match → [`ConnectionIdentity::DaemonTrust`], which
+//!        has no bound card and requires `_meta.threadId` per call;
+//!      * per-card token match → [`ConnectionIdentity::CardBound`], which
+//!        may omit `_meta.threadId` and otherwise must resolve it back to
+//!        the bound card.
 //!
 //! Any failure short-circuits to an MCP-spec `initialize` error response
 //! (`InvalidParams` for malformed `_meta`, `InternalError` for repo
@@ -26,12 +30,12 @@
 //! daemon, then `neige-mcp-stdio-shim` see it, and they pass the token
 //! through the wire in `params._meta`. The kernel side is otherwise
 //! oblivious to *which* card is on the other end of the socket. The
-//! token + `card_mcp_tokens` lookup is only daemon trust in PR3b.
+//! token + `card_mcp_tokens` lookup is only connection identity in PR3b.
 
 use crate::db::RouteRepo;
 use crate::mcp_server::auth;
 use crate::mcp_server::framing::RpcError;
-use crate::mcp_server::registry::CardIdentity;
+use crate::mcp_server::registry::{CardIdentity, ConnectionIdentity};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -43,12 +47,10 @@ use std::sync::Arc;
 /// implementation-defined server errors.
 pub const TOKEN_NOT_RECOGNIZED_CODE: i64 = -32401;
 
-/// Result of a successful handshake. Carries daemon-level trust, a
-/// temporary legacy card identity fallback, and the JSON `result` value
-/// to wire back to the client.
+/// Result of a successful handshake. Carries the explicit connection
+/// identity and the JSON `result` value to wire back to the client.
 pub struct HandshakeOk {
-    pub daemon_trust: bool,
-    pub legacy_identity: Option<CardIdentity>,
+    pub connection_identity: ConnectionIdentity,
     pub result_payload: Value,
 }
 
@@ -88,8 +90,7 @@ pub async fn handle_initialize(
         && auth::verify_token(token, stored_hash)
     {
         return Ok(HandshakeOk {
-            daemon_trust: true,
-            legacy_identity: None,
+            connection_identity: ConnectionIdentity::DaemonTrust,
             result_payload,
         });
     }
@@ -127,25 +128,26 @@ pub async fn handle_initialize(
         ));
     }
 
-    let legacy_identity = match repo
+    let card = repo
         .card_get(&card_id_str)
         .await
-        .map_err(|e| RpcError::internal(format!("legacy card lookup: {e}")))?
-    {
-        Some(card) => {
-            let role = repo
-                .card_role_get(&card_id_str)
-                .await
-                .map_err(|e| RpcError::internal(format!("legacy card role lookup: {e}")))?
-                .ok_or_else(|| RpcError::internal("legacy card role lookup: missing role"))?;
-            Some(CardIdentity {
-                card_id: card.id,
-                role,
-                wave_id: Some(card.wave_id.as_str().to_string()),
-            })
-        }
-        None => None,
-    };
+        .map_err(|e| RpcError::internal(format!("card-bound card lookup: {e}")))?
+        .ok_or_else(|| {
+            RpcError::custom(
+                TOKEN_NOT_RECOGNIZED_CODE,
+                "initialize: presented MCP token did not resolve to a known card",
+            )
+        })?;
+    let role = repo
+        .card_role_get(&card_id_str)
+        .await
+        .map_err(|e| RpcError::internal(format!("card-bound card role lookup: {e}")))?
+        .ok_or_else(|| RpcError::internal("card-bound card role lookup: missing role"))?;
+    let connection_identity = ConnectionIdentity::CardBound(CardIdentity {
+        card_id: card.id,
+        role,
+        wave_id: Some(card.wave_id.as_str().to_string()),
+    });
 
     // 4. Build the success payload. The shape mirrors what the kernel's
     //    own MCP *client* sends in its `initialize` request — same
@@ -153,8 +155,7 @@ pub async fn handle_initialize(
     //    advertising `tools`. The exact contents of `serverInfo` are
     //    informational; codex doesn't gate on them today.
     Ok(HandshakeOk {
-        daemon_trust: true,
-        legacy_identity,
+        connection_identity,
         result_payload,
     })
 }

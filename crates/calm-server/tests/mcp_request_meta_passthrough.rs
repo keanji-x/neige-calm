@@ -17,6 +17,7 @@ use calm_server::db::sqlite::{
     runtime_get_active_for_card_tx, runtime_start_tx,
 };
 use calm_server::event::EventBus;
+use calm_server::mcp_server::auth;
 use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture,
 };
@@ -28,7 +29,6 @@ use calm_server::runtime_repo::{
     AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution,
 };
 use serde_json::{Value, json};
-use sqlx::Executor;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -48,14 +48,20 @@ struct Boot {
 }
 
 async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
-    boot_with_registry_options(registry, true).await
+    boot_with_registry_options(registry, AuthMode::CardBound).await
 }
 
-async fn boot_with_registry_without_legacy_identity(registry: Arc<ToolRegistry>) -> Boot {
-    boot_with_registry_options(registry, false).await
+async fn boot_with_registry_as_daemontrust(registry: Arc<ToolRegistry>) -> Boot {
+    boot_with_registry_options(registry, AuthMode::DaemonTrust).await
 }
 
-async fn boot_with_registry_options(registry: Arc<ToolRegistry>, seed_legacy_card: bool) -> Boot {
+#[derive(Clone, Copy)]
+enum AuthMode {
+    CardBound,
+    DaemonTrust,
+}
+
+async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: AuthMode) -> Boot {
     let tmp = TempDir::new().expect("tempdir for MCP socket");
     let socket_path = tmp.path().join("kernel.sock");
 
@@ -107,21 +113,17 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, seed_legacy_car
     .await
     .expect("mint spec card");
     tx.commit().await.unwrap();
-    let raw_token = mcp_token.expect("Spec card must mint a token");
-    if !seed_legacy_card {
-        let mut conn = sqlx_repo.pool().acquire().await.unwrap();
-        conn.execute("PRAGMA foreign_keys = OFF").await.unwrap();
-        sqlx::query("DELETE FROM cards WHERE id = ?1")
-            .bind(card_id.as_str())
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        conn.execute("PRAGMA foreign_keys = ON").await.unwrap();
-    }
+    let card_token = mcp_token.expect("Spec card must mint a token");
     let thread_id = format!("thread-{card_id}");
-    if seed_legacy_card {
-        seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
-    }
+    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+    let daemon_token = "request-meta-daemon-token";
+    let (raw_token, daemon_token_hash) = match auth_mode {
+        AuthMode::CardBound => (card_token, None),
+        AuthMode::DaemonTrust => (
+            daemon_token.to_string(),
+            Some(auth::hash_token(daemon_token)),
+        ),
+    };
 
     let events = EventBus::new();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -133,7 +135,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, seed_legacy_car
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
-        None,
+        daemon_token_hash,
     )
     .await
     .expect("spawn McpServer");
@@ -320,9 +322,9 @@ async fn thread_id_flows_from_meta_to_identity() {
 }
 
 #[tokio::test]
-async fn request_without_meta_and_without_legacy_rejects() {
+async fn daemontrust_request_without_meta_rejects() {
     let (registry, mut rx) = identity_capture_registry();
-    let boot = boot_with_registry_without_legacy_identity(registry).await;
+    let boot = boot_with_registry_as_daemontrust(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
@@ -369,7 +371,7 @@ async fn existing_handlers_unchanged_when_meta_present() {
     let without_resp = recv_frame(&mut rd).await;
     assert!(
         without_resp.get("error").is_none(),
-        "get_wave_state without meta should use legacy fallback: {without_resp:#?}"
+        "get_wave_state without meta should use CardBound identity: {without_resp:#?}"
     );
     assert_eq!(
         without_resp["result"]["structuredContent"]["wave"]["id"],

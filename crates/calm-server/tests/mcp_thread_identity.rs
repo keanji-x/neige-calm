@@ -142,9 +142,9 @@ async fn boot_with_registry_and_daemon_hash(
     }
 }
 
-struct LegacyCard {
+struct TokenCard {
     card_id: String,
-    legacy_token: String,
+    mcp_token: String,
 }
 
 fn capture_identity_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<ToolCallIdentity>) {
@@ -300,7 +300,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
     );
 }
 
-async fn seed_card_with_legacy_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> LegacyCard {
+async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> TokenCard {
     let token = auth::CardMcpToken::generate();
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
     let card = calm_server::model::NewCard {
@@ -323,9 +323,9 @@ async fn seed_card_with_legacy_mcp_token(boot: &Boot, card_id: &str, role: CardR
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    LegacyCard {
+    TokenCard {
         card_id: card_id.to_string(),
-        legacy_token: token.into_inner(),
+        mcp_token: token.into_inner(),
     }
 }
 
@@ -430,7 +430,7 @@ async fn raw_call_with_token(boot: &Boot, token: &str, frame: Value) -> Value {
 }
 
 #[tokio::test]
-async fn tools_call_with_known_thread_id_uses_mapped_card_identity() {
+async fn cardbound_with_matching_thread_id_uses_resolved_thread() {
     let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
     seed_thread(&boot, &boot.spec_card_id, "T1", CardRole::Spec).await;
@@ -452,7 +452,43 @@ async fn tools_call_with_known_thread_id_uses_mapped_card_identity() {
 }
 
 #[tokio::test]
-async fn daemon_token_with_known_thread_id_uses_mapped_card_identity() {
+async fn cardbound_with_cross_card_thread_id_rejects() {
+    let (registry, mut rx) = capture_identity_registry();
+    let boot = boot_with_registry(registry).await;
+    seed_thread(
+        &boot,
+        &boot.worker_card_id,
+        "worker-thread",
+        CardRole::Worker,
+    )
+    .await;
+    let (mut rd, mut wr) = initialized_client(&boot).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "test.capture_identity", Some("worker-thread"), json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
+    let err_msg = resp["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err_msg.contains("bound card") && err_msg.contains(&boot.spec_card_id),
+        "cross-card rejection should explain the bound card mismatch: {resp:#?}"
+    );
+    assert!(
+        !err_msg.contains(&boot.worker_card_id),
+        "cross-card rejection must not leak the resolved foreign card: {resp:#?}"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "handler must not run for a cross-card CardBound threadId"
+    );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn daemontrust_with_known_thread_id_uses_mapped_card_identity() {
     let daemon_token = "daemon-token-for-thread-map";
     let (registry, mut rx) = capture_identity_registry();
     let boot =
@@ -509,7 +545,7 @@ async fn tools_call_meta_threadid_in_params_meta_resolves_when_top_level_meta_ha
 }
 
 #[tokio::test]
-async fn tools_call_without_thread_id_falls_back_to_legacy_token_identity() {
+async fn cardbound_without_thread_id_uses_bound_card() {
     let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
@@ -522,18 +558,18 @@ async fn tools_call_without_thread_id_falls_back_to_legacy_token_identity() {
     let resp = recv_frame(&mut rd).await;
     assert!(
         resp.get("error").is_none(),
-        "legacy token fallback must succeed: {resp:#?}"
+        "CardBound no-thread call must use bound card: {resp:#?}"
     );
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.spec_card_id);
     assert_eq!(identity.role, CardRole::Spec);
     assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
-    assert_eq!(identity.thread_id, "legacy-token-fallback");
+    assert_eq!(identity.thread_id, "card-bound");
     let _ = &boot.server;
 }
 
 #[tokio::test]
-async fn tools_call_malformed_meta_rejects_even_when_legacy_token_present() {
+async fn tools_call_malformed_meta_rejects_even_when_cardbound_token_present() {
     let boot = boot_with_registry(build_default_registry()).await;
 
     let resp = raw_call_with_token(
@@ -558,7 +594,7 @@ async fn tools_call_malformed_meta_rejects_even_when_legacy_token_present() {
     assert_eq!(
         err["code"],
         json!(RpcError::INVALID_PARAMS),
-        "must be INVALID_PARAMS, not legacy fallback"
+        "must be INVALID_PARAMS before identity resolution"
     );
     let _ = &boot.server;
 }
@@ -591,7 +627,7 @@ async fn tools_call_malformed_params_meta_also_rejects() {
 }
 
 #[tokio::test]
-async fn tools_call_with_unknown_thread_id_falls_back_to_legacy_token_identity() {
+async fn cardbound_with_unresolvable_thread_id_rejects() {
     let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
@@ -607,13 +643,11 @@ async fn tools_call_with_unknown_thread_id_falls_back_to_legacy_token_identity()
     )
     .await;
     let resp = recv_frame(&mut rd).await;
+    assert_eq!(resp["error"]["code"], json!(RpcError::METHOD_NOT_FOUND));
     assert!(
-        resp.get("error").is_none(),
-        "unknown threadId must fall back to legacy: {resp:#?}"
+        rx.try_recv().is_err(),
+        "handler must not run for an unresolvable CardBound threadId"
     );
-    let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, boot.spec_card_id);
-    assert_eq!(identity.thread_id, "legacy-token-fallback");
     assert!(
         observed.load(Ordering::SeqCst),
         "mcp_identity_miss tracing event should fire"
@@ -622,8 +656,14 @@ async fn tools_call_with_unknown_thread_id_falls_back_to_legacy_token_identity()
 }
 
 #[tokio::test]
+// Uses DaemonTrust to exercise the role gate; under CardBound, cross-card rejection short-circuits first.
 async fn tools_call_thread_id_drives_role_gate() {
-    let boot = boot_with_registry(role_gate_registry()).await;
+    let daemon_token = "daemon-token-for-role-gate";
+    let boot = boot_with_registry_and_daemon_hash(
+        role_gate_registry(),
+        Some(auth::hash_token(daemon_token)),
+    )
+    .await;
     seed_thread(
         &boot,
         &boot.worker_card_id,
@@ -632,7 +672,7 @@ async fn tools_call_thread_id_drives_role_gate() {
     )
     .await;
     seed_thread(&boot, &boot.spec_card_id, "spec-thread", CardRole::Spec).await;
-    let (mut rd, mut wr) = initialized_client(&boot).await;
+    let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
 
     send_frame(
         &mut wr,
@@ -663,42 +703,62 @@ async fn tools_call_thread_id_drives_role_gate() {
 }
 
 #[tokio::test]
-async fn worker_tools_call_with_unknown_thread_id_falls_back_to_worker_legacy_identity() {
+async fn daemontrust_without_thread_id_rejects() {
+    let daemon_token = "daemon-token-without-thread";
     let (registry, mut rx) = capture_identity_registry();
-    let boot = boot_with_registry(registry).await;
-    let worker = seed_card_with_legacy_mcp_token(&boot, "c-worker-legacy", CardRole::Worker).await;
-    let resp = call_with_token(
-        &boot,
-        &worker.legacy_token,
-        "test.capture_identity",
-        Some("fake-thread-not-in-table"),
-        json!({}),
+    let boot =
+        boot_with_registry_and_daemon_hash(registry, Some(auth::hash_token(daemon_token))).await;
+    let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "test.capture_identity", None, json!({})),
     )
     .await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
     assert!(
-        resp.get("error").is_none(),
-        "worker unknown threadId must fall back to legacy: {resp:#?}"
+        rx.try_recv().is_err(),
+        "handler must not run for DaemonTrust without threadId"
     );
-    let identity = rx.recv().await.unwrap();
-    assert_eq!(identity.card_id, worker.card_id);
-    assert_eq!(identity.role, CardRole::Worker);
-    assert_eq!(identity.thread_id, "legacy-token-fallback");
     let _ = &boot.server;
 }
 
 #[tokio::test]
-async fn default_wave_state_tool_without_thread_id_uses_legacy_spec_identity() {
+async fn daemontrust_with_unresolvable_thread_id_rejects() {
+    let daemon_token = "daemon-token-missing-thread";
+    let (registry, mut rx) = capture_identity_registry();
+    let boot =
+        boot_with_registry_and_daemon_hash(registry, Some(auth::hash_token(daemon_token))).await;
+    let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "test.capture_identity", Some("missing"), json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(resp["error"]["code"], json!(RpcError::METHOD_NOT_FOUND));
+    assert!(
+        rx.try_recv().is_err(),
+        "handler must not run for DaemonTrust with an unresolvable threadId"
+    );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn default_wave_state_tool_without_thread_id_uses_cardbound_spec_identity() {
     let boot = boot_with_registry(build_default_registry()).await;
     let resp = call_with_token(&boot, &boot.raw_token, "calm.wave.state", None, json!({})).await;
     assert!(
         resp.get("error").is_none(),
-        "shell-neige style legacy token fallback must succeed: {resp:#?}"
+        "shell-neige style CardBound no-thread call must succeed: {resp:#?}"
     );
     let _ = &boot.server;
 }
 
 #[tokio::test]
-async fn tools_call_without_thread_id_and_without_legacy_token_rejects() {
+async fn pre_initialize_tools_call_rejects() {
     let boot = boot_with_registry(build_default_registry()).await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
 
@@ -716,21 +776,13 @@ async fn tools_call_without_thread_id_and_without_legacy_token_rejects() {
 }
 
 #[tokio::test]
-async fn legacy_identity_does_not_bypass_role_gate() {
+async fn cardbound_role_gate_still_applies() {
     let boot = boot_with_registry(build_default_registry()).await;
-    let report =
-        seed_card_with_legacy_mcp_token(&boot, "c-report-legacy", CardRole::ReportCard).await;
-    let resp = call_with_token(
-        &boot,
-        &report.legacy_token,
-        "calm.wave.state",
-        None,
-        json!({}),
-    )
-    .await;
+    let report = seed_card_with_mcp_token(&boot, "c-report-cardbound", CardRole::ReportCard).await;
+    let resp = call_with_token(&boot, &report.mcp_token, "calm.wave.state", None, json!({})).await;
     assert!(
         resp.get("error").is_some(),
-        "ReportCard must still be rejected via legacy: {resp:#?}"
+        "ReportCard CardBound identity must still be rejected: {resp:#?}"
     );
     assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
     let _ = &boot.server;
@@ -739,8 +791,7 @@ async fn legacy_identity_does_not_bypass_role_gate() {
 #[tokio::test]
 async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
     let boot = boot_with_registry(build_default_registry()).await;
-    let report =
-        seed_card_with_legacy_mcp_token(&boot, "c-report-thread", CardRole::ReportCard).await;
+    let report = seed_card_with_mcp_token(&boot, "c-report-thread", CardRole::ReportCard).await;
     seed_thread(
         &boot,
         &report.card_id,
@@ -798,9 +849,11 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
 }
 
 #[tokio::test]
-async fn initialize_does_not_bind_card_identity() {
+async fn daemontrust_with_worker_thread_uses_resolved_card_identity() {
+    let daemon_token = "daemon-token-worker-thread";
     let (registry, mut rx) = capture_identity_registry();
-    let boot = boot_with_registry(registry).await;
+    let boot =
+        boot_with_registry_and_daemon_hash(registry, Some(auth::hash_token(daemon_token))).await;
     seed_thread(
         &boot,
         &boot.worker_card_id,
@@ -808,7 +861,7 @@ async fn initialize_does_not_bind_card_identity() {
         CardRole::Worker,
     )
     .await;
-    let (mut rd, mut wr) = initialized_client(&boot).await;
+    let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
 
     send_frame(
         &mut wr,
@@ -824,13 +877,30 @@ async fn initialize_does_not_bind_card_identity() {
 }
 
 #[tokio::test]
-async fn tools_list_works_without_thread_id() {
+async fn tools_list_cardbound_without_thread_id_uses_bound_role() {
     let mut registry = ToolRegistry::new();
     let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
         Box::pin(async move { Ok(json!({ "ok": true })) })
     });
-    registry.register(test_descriptor("test.no_annotations"), handler);
+    registry.register(test_descriptor("test.spec_no_annotations"), handler.clone());
+    registry.register(
+        ToolDescriptor {
+            name: "test.worker_only".into(),
+            description: "worker test tool".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+            annotations: None,
+            visible_to_roles: &[CardRole::Worker],
+        },
+        handler,
+    );
     let boot = boot_with_registry(Arc::new(registry)).await;
+    seed_thread(
+        &boot,
+        &boot.worker_card_id,
+        "worker-thread",
+        CardRole::Worker,
+    )
+    .await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
@@ -848,15 +918,68 @@ async fn tools_list_works_without_thread_id() {
     let result = &resp["result"];
     assert_eq!(result["tools"].as_array().unwrap().len(), 1);
     let entry = &result["tools"][0];
+    assert_eq!(entry["name"], json!("test.spec_no_annotations"));
     assert!(
         entry.get("annotations").is_none(),
         "descriptor with annotations: None must omit the key from tools/list (got {entry:#?})"
+    );
+
+    send_frame(
+        &mut wr,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/list",
+            "params": { "_meta": { "threadId": "worker-thread" } }
+        }),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
+    let tools = resp["result"]["tools"].as_array().unwrap();
+    assert!(
+        tools.is_empty(),
+        "CardBound tools/list must not expose foreign-card thread tools: {tools:#?}"
     );
     let _ = &boot.server;
 }
 
 #[tokio::test]
-async fn legacy_per_card_mcp_token_still_accepted_during_handshake() {
+async fn tools_list_daemontrust_without_thread_id_returns_empty() {
+    let daemon_token = "daemon-token-tools-list";
+    let mut registry = ToolRegistry::new();
+    let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
+        Box::pin(async move { Ok(json!({ "ok": true })) })
+    });
+    registry.register(test_descriptor("test.spec_tool"), handler);
+    let boot = boot_with_registry_and_daemon_hash(
+        Arc::new(registry),
+        Some(auth::hash_token(daemon_token)),
+    )
+    .await;
+    let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
+
+    send_frame(
+        &mut wr,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
+    assert!(
+        resp["result"]["tools"].as_array().unwrap().is_empty(),
+        "DaemonTrust tools/list without threadId must return no tools"
+    );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn per_card_mcp_token_still_accepted_during_handshake() {
     let boot = boot_with_registry(build_default_registry()).await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
 

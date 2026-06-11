@@ -13,9 +13,10 @@
 //!     home parent (already on `AppState`, factored down to the minimum
 //!     surface the MCP server needs so the registry doesn't take a
 //!     full `AppState` clone);
-//!   * a [`ToolCallIdentity`] — resolved for each `tools/call` from
-//!     `_meta.threadId` via runtime thread attribution, with a token
-//!     fallback for calls that have no thread metadata.
+//!   * a [`ToolCallIdentity`] — resolved for each `tools/call` either
+//!     from `_meta.threadId` via runtime thread attribution or, for an
+//!     explicitly [`ConnectionIdentity::CardBound`] connection with no
+//!     thread metadata, from the bound card identity.
 
 use crate::db::RouteRepo;
 use crate::event::EventBus;
@@ -62,10 +63,23 @@ impl CardIdentity {
     }
 }
 
+/// Identity mode established once by the MCP `initialize` handshake.
+///
+/// Daemon-trust connections are not bound to any card and must provide a
+/// resolvable `_meta.threadId` on each `tools/call`. Card-bound connections
+/// are authenticated by a per-card MCP token; they may omit `threadId`, but
+/// any supplied `threadId` must resolve back to the same card.
+#[derive(Clone, Debug)]
+pub enum ConnectionIdentity {
+    DaemonTrust,
+    CardBound(CardIdentity),
+}
+
 /// Identity resolved for one MCP `tools/call` from the request's
-/// `_meta.threadId`. All fields except `wave_id` are required because
-/// every authorized tool call must map to a concrete persisted thread
-/// row.
+/// `_meta.threadId`, or from a card-bound connection when `_meta.threadId`
+/// is absent. In that card-bound no-thread case `thread_id` is the literal
+/// `"card-bound"` sentinel because no persisted runtime thread row was
+/// involved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCallIdentity {
     pub card_id: String,

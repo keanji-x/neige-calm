@@ -8,10 +8,11 @@
 //!      [`crate::mcp_server::framing::parse_frame`].
 //!   2. Waits for the first `initialize` request, drives
 //!      [`crate::mcp_server::handshake::handle_initialize`] to verify
-//!      daemon-level trust, and sends the response.
+//!      the token and establish a per-connection identity mode, then
+//!      sends the response.
 //!   3. After handshake, treats every subsequent `tools/call` as an
 //!      invocation of a [`ToolRegistry`] handler, resolving identity
-//!      from per-call `_meta.threadId`.
+//!      according to the established connection identity.
 //!   4. Responds to `tools/list` from the registry's descriptors.
 //!   5. Echoes a `MethodNotFound` for any other request method.
 //!
@@ -37,7 +38,7 @@ use crate::mcp_server::framing::{
 };
 use crate::mcp_server::handshake::handle_initialize;
 use crate::mcp_server::registry::{
-    AppContext, CardIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
+    AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
 };
 use crate::runtime_lookup::resolve_card_for_thread as resolve_card_for_thread_runtime;
 use crate::runtime_repo::AgentProvider;
@@ -233,7 +234,7 @@ async fn handle_connection(
     // gets a `MethodNotFound`-shaped error. We don't bind an identity
     // until `initialize` succeeds — every other request before then is
     // unauthenticated and rejected.
-    let (daemon_trust, legacy_identity) = loop {
+    let connection_identity = loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
@@ -267,7 +268,7 @@ async fn handle_connection(
                         let frame = build_ok_response_frame(&id, &ok.result_payload);
                         wr.write_all(&frame).await?;
                         wr.flush().await?;
-                        break (ok.daemon_trust, ok.legacy_identity);
+                        break ok.connection_identity;
                     }
                     Err(rpc_err) => {
                         let frame = build_error_response_frame(&id, &rpc_err);
@@ -300,15 +301,16 @@ async fn handle_connection(
         }
     };
 
-    tracing::info!(
-        daemon_trust,
-        "mcp_server: connection initialized with daemon trust"
-    );
+    let identity_mode = match &connection_identity {
+        ConnectionIdentity::DaemonTrust => "daemon_trust",
+        ConnectionIdentity::CardBound(_) => "card_bound",
+    };
+    tracing::info!(identity_mode, "mcp_server: connection initialized");
 
     // Phase 2: post-initialize message pump. Any request after this
-    // sees daemon trust; tools/call resolves identity from
-    // `_meta.threadId` first, then temporarily falls back to the
-    // initialize-time legacy token identity for older clients.
+    // resolves identity according to the explicit connection mode fixed
+    // by initialize: daemon trust requires `_meta.threadId`, while a
+    // card-bound connection may omit it and use the bound card.
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
@@ -339,8 +341,7 @@ async fn handle_connection(
                     params,
                     request_meta,
                     &ctx,
-                    daemon_trust,
-                    legacy_identity.as_ref(),
+                    &connection_identity,
                     &registry,
                 )
                 .await;
@@ -372,24 +373,40 @@ async fn dispatch_request(
     params: Value,
     request_meta: Option<Value>,
     ctx: &Arc<AppContext>,
-    _daemon_trust: bool,
-    legacy_identity: Option<&CardIdentity>,
+    connection_identity: &ConnectionIdentity,
     registry: &Arc<ToolRegistry>,
 ) -> Result<Value, RpcError> {
     match method {
         "tools/list" => {
             // Resolve role per-call so shared-daemon connections (one socket,
-            // many thread identities) get the right per-thread tools/list. The
-            // per-card legacy-token path keeps working via `legacy_identity`.
+            // many thread identities) get the right per-thread tools/list.
+            // Card-bound sockets use their bound role when no threadId is
+            // supplied; an explicit per-call threadId resolves independently.
             let top_meta = request_meta_outcome(request_meta.as_ref());
             let params_meta = extract_request_meta_outcome(&params);
             let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
-            let role = match thread_id {
-                Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list").await {
-                    Ok(identity) => Some(identity.role),
-                    Err(_) => legacy_identity.map(|identity| identity.role),
+            let role = match connection_identity {
+                ConnectionIdentity::DaemonTrust => match thread_id {
+                    Some(tid) => resolve_thread_identity(ctx, Some(tid), "tools/list")
+                        .await
+                        .ok()
+                        .map(|identity| identity.role),
+                    None => None,
                 },
-                None => legacy_identity.map(|identity| identity.role),
+                ConnectionIdentity::CardBound(bound) => match thread_id {
+                    Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
+                        .await
+                        .ok()
+                    {
+                        Some(identity) if same_bound_card(&identity, bound) => Some(identity.role),
+                        Some(identity) => {
+                            warn_cross_card_reject(tid, &identity, bound);
+                            None
+                        }
+                        _ => None,
+                    },
+                    None => Some(bound.role),
+                },
             };
             // Codex's `tools/list` expects `{ "tools": [...] }`. Each
             // entry is `{ name, description, inputSchema }`, optionally
@@ -413,7 +430,7 @@ async fn dispatch_request(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => {
-            dispatch_tools_call(ctx, request_meta, params, legacy_identity, registry).await
+            dispatch_tools_call(ctx, request_meta, params, connection_identity, registry).await
         }
         "resources/list" => Ok(json!({ "resources": [] })),
         "prompts/list" => Ok(json!({ "prompts": [] })),
@@ -425,7 +442,7 @@ async fn dispatch_tools_call(
     ctx: &Arc<AppContext>,
     request_meta: Option<Value>,
     params: Value,
-    legacy_identity: Option<&CardIdentity>,
+    connection_identity: &ConnectionIdentity,
     registry: &Arc<ToolRegistry>,
 ) -> Result<Value, RpcError> {
     let top_meta = request_meta_outcome(request_meta.as_ref());
@@ -448,17 +465,18 @@ async fn dispatch_tools_call(
         .lookup(name)
         .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
 
-    let thread_identity = resolve_thread_identity(ctx, thread_id, name).await;
-    let identity = match thread_identity {
-        Ok(identity) => identity,
-        Err(thread_err) => match legacy_identity {
-            Some(legacy) => ToolCallIdentity {
-                card_id: legacy.card_id.as_str().to_string(),
-                role: legacy.role,
-                wave_id: legacy.wave_id.clone(),
-                thread_id: "legacy-token-fallback".to_string(),
-            },
-            None => return Err(thread_err),
+    let identity = match connection_identity {
+        ConnectionIdentity::DaemonTrust => resolve_thread_identity(ctx, thread_id, name).await?,
+        ConnectionIdentity::CardBound(bound) => match thread_id {
+            Some(tid) => {
+                let identity = resolve_thread_identity(ctx, Some(tid), name).await?;
+                if !same_bound_card(&identity, bound) {
+                    warn_cross_card_reject(tid, &identity, bound);
+                    return Err(cross_card_thread_error(tid, bound));
+                }
+                identity
+            }
+            None => card_bound_tool_identity(bound),
         },
     };
 
@@ -476,6 +494,38 @@ async fn dispatch_tools_call(
         "structuredContent": raw,
         "isError": false,
     }))
+}
+
+fn card_bound_tool_identity(bound: &CardIdentity) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: bound.card_id.as_str().to_string(),
+        role: bound.role,
+        wave_id: bound.wave_id.clone(),
+        thread_id: "card-bound".to_string(),
+    }
+}
+
+fn same_bound_card(identity: &ToolCallIdentity, bound: &CardIdentity) -> bool {
+    identity.card_id == bound.card_id.as_str()
+}
+
+fn warn_cross_card_reject(thread_id: &str, identity: &ToolCallIdentity, bound: &CardIdentity) {
+    let resolved_card_id = identity.card_id.as_str();
+    let bound_card_id = bound.card_id.as_str();
+    tracing::warn!(
+        target: "mcp_server::cross_card_reject",
+        thread_id = %thread_id,
+        resolved_card_id = %resolved_card_id,
+        bound_card_id = %bound_card_id,
+        "mcp_server: cross-card _meta.threadId rejected"
+    );
+}
+
+fn cross_card_thread_error(thread_id: &str, bound: &CardIdentity) -> RpcError {
+    RpcError::invalid_params(format!(
+        "tools/call: _meta.threadId `{thread_id}` resolves to a card other than this connection's bound card `{}`",
+        bound.card_id.as_str()
+    ))
 }
 
 async fn resolve_thread_identity(
