@@ -32,6 +32,7 @@ function CardsIndexViewerComponent({
 }: {
   data: CardsIndexItem[];
   path: string;
+  raw: string;
 }) {
   return (
     <section className="wave-fs-viewer-cards-index">

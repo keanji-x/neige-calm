@@ -10,7 +10,7 @@ export type WaveFsViewer<T> = {
   id: string;
   match: (path: string) => boolean;
   parse: (raw: string) => T;
-  Component: FC<{ data: T; path: string }>;
+  Component: FC<{ data: T; path: string; raw: string }>;
 };
 
 const VIEWERS: Array<WaveFsViewer<unknown>> = [];

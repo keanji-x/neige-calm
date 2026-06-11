@@ -634,6 +634,21 @@ describe('WaveReportPage', () => {
     vi.spyOn(Date, 'now').mockReturnValue(
       new Date('2026-06-10T12:00:00Z').getTime(),
     );
+    const rawRunDetail = JSON.stringify({
+      idempotency_key: 'run_terminal_1',
+      status: 'failed',
+      kind: 'terminal',
+      verdict: {
+        status: 'rejected',
+        reason: 'Worker returned non-zero exit status',
+        at: new Date('2026-06-10T11:00:00Z').getTime(),
+      },
+      requested_at: new Date('2026-06-10T10:00:00Z').getTime(),
+      finished_at: new Date('2026-06-10T11:00:00Z').getTime(),
+      worker_card_id: 'card_worker_2',
+      events: { requested: { event_id: 1 } },
+      worker_card_payload: { idempotency_key: 'run_terminal_1' },
+    });
     mockWaveFileLists({
       '': [
         { name: 'report.md', kind: 'file' },
@@ -648,20 +663,7 @@ describe('WaveReportPage', () => {
       },
       'runs/run_terminal_1.json': {
         content_type: 'application/json',
-        content: JSON.stringify({
-          idempotency_key: 'run_terminal_1',
-          status: 'failed',
-          kind: 'terminal',
-          verdict: {
-            status: 'rejected',
-            at: new Date('2026-06-10T11:00:00Z').getTime(),
-          },
-          requested_at: new Date('2026-06-10T10:00:00Z').getTime(),
-          finished_at: new Date('2026-06-10T11:00:00Z').getTime(),
-          worker_card_id: 'card_worker_2',
-          events: { requested: { event_id: 1 } },
-          worker_card_payload: { idempotency_key: 'run_terminal_1' },
-        }),
+        content: rawRunDetail,
       },
     });
 
@@ -684,9 +686,56 @@ describe('WaveReportPage', () => {
       'wave-fs-viewer-mono',
     );
     expect(
-      screen.getByText('events / payload: see raw JSON'),
-    ).toBeInTheDocument();
+      screen.getByText('Worker returned non-zero exit status'),
+    ).toHaveClass('wave-fs-viewer-verdict-reason');
+    const summary = screen.getByText('Full payload (events, worker card)');
+    const details = summary.closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(details?.querySelector('code')).toHaveTextContent(rawRunDetail);
+    expect(
+      screen.queryByText('events / payload: see raw JSON'),
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('falls back to raw JSON when runs/index.json is malformed', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockWaveFileLists({
+      '': [
+        { name: 'report.md', kind: 'file' },
+        { name: 'runs/', kind: 'dir', size: 1 },
+      ],
+      runs: [{ name: 'index.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'runs/index.json': {
+        content_type: 'application/json',
+        content: '{"not":"an array"}',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /runs\// }));
+    fireEvent.click(await screen.findByRole('treeitem', { name: /index\.json/ }));
+
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      '{"not":"an array"}',
+    );
+    expect(
+      screen.queryByRole('heading', { name: /Runs in this wave/ }),
+    ).not.toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it('falls back to raw JSON when cards/index.json is malformed', async () => {

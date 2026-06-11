@@ -165,10 +165,10 @@ function ReportContent({
   }
 
   if (isJsonContent(contentQ.data.content_type) && jsonViewer) {
-    const { Viewer, data } = jsonViewer;
+    const { Viewer, data, raw } = jsonViewer;
     return (
       <div className="report-json-card">
-        <Viewer data={data} path={path} />
+        <Viewer data={data} path={path} raw={raw} />
       </div>
     );
   }

@@ -39,6 +39,7 @@ function CardMetaViewerComponent({
 }: {
   data: CardMeta;
   path: string;
+  raw: string;
 }) {
   return (
     <section className="wave-fs-viewer-info-card">

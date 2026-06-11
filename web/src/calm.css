@@ -2088,6 +2088,19 @@ select:-webkit-autofill {
 .wave-fs-viewer-chip[data-tone="danger"] {
   color: var(--error-text);
 }
+.wave-fs-viewer-verdict {
+  min-width: 0;
+  display: inline-grid;
+  gap: var(--space-1);
+}
+.wave-fs-viewer-verdict-reason {
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-style: italic;
+  line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
+}
 .wave-fs-viewer-field {
   min-width: 0;
   display: grid;
@@ -2112,6 +2125,30 @@ select:-webkit-autofill {
   margin: var(--space-0);
   color: var(--text-3);
   font-size: var(--text-sm);
+  line-height: var(--leading-base);
+}
+.wave-fs-viewer-payload {
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-base);
+}
+.wave-fs-viewer-payload summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+.wave-fs-viewer-payload-pre {
+  max-height: 360px;
+  margin: var(--space-4) var(--space-0) var(--space-0);
+  overflow: auto;
+  padding: var(--space-5);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text-2);
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
   line-height: var(--leading-base);
 }
 .report-error {

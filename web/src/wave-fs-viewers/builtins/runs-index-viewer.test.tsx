@@ -17,6 +17,7 @@ describe('RunsIndexViewer', () => {
     render(
       <Component
         path="runs/index.json"
+        raw="[]"
         data={[
           {
             idempotencyKey: 'run_1',
@@ -52,7 +53,9 @@ describe('RunsIndexViewer', () => {
   });
 
   it('renders an empty state and optional placeholders', () => {
-    const { rerender } = render(<Component data={[]} path="runs/index.json" />);
+    const { rerender } = render(
+      <Component data={[]} path="runs/index.json" raw="[]" />,
+    );
 
     expect(
       screen.getByRole('heading', { name: 'Runs in this wave (0)' }),
@@ -64,6 +67,7 @@ describe('RunsIndexViewer', () => {
     rerender(
       <Component
         path="runs/index.json"
+        raw="[]"
         data={[
           {
             idempotencyKey: 'run_min',
@@ -86,5 +90,19 @@ describe('RunsIndexViewer', () => {
     expect(() => RunsIndexViewer.parse('[{"status":"running"}]')).toThrow(
       /idempotency_key string/,
     );
+    expect(() =>
+      RunsIndexViewer.parse(
+        JSON.stringify([
+          {
+            idempotency_key: 'run_1',
+            status: 'completed',
+            kind: 'codex',
+            verdict: {
+              status: 'accepted',
+            },
+          },
+        ]),
+      ),
+    ).toThrow(/at number/);
   });
 });

@@ -3,7 +3,7 @@ import type { WaveFsViewer } from '../registry';
 
 type RunVerdict = {
   status: string;
-  at?: number;
+  at: number;
 };
 
 type RunIndexEntry = {
@@ -53,6 +53,7 @@ function RunsIndexViewerComponent({
 }: {
   data: RunIndexEntry[];
   path: string;
+  raw: string;
 }) {
   return (
     <section className="wave-fs-viewer-info-card">
@@ -169,6 +170,18 @@ function optionalNumber(
     : undefined;
 }
 
+function requiredNumber(
+  item: Record<string, unknown>,
+  key: string,
+  context: string,
+): number {
+  const value = item[key];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${context} must include a ${key} number`);
+  }
+  return value;
+}
+
 function optionalVerdict(
   item: Record<string, unknown>,
   key: string,
@@ -181,7 +194,7 @@ function optionalVerdict(
   }
   return {
     status: requiredString(value, 'status', `${context} verdict`),
-    at: optionalNumber(value, 'at'),
+    at: requiredNumber(value, 'at', `${context} verdict`),
   };
 }
 

@@ -41,6 +41,7 @@ function WaveInfoViewerComponent({
 }: {
   data: WaveInfo;
   path: string;
+  raw: string;
 }) {
   return (
     <section className="wave-fs-viewer-info-card">

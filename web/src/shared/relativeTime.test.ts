@@ -26,4 +26,34 @@ describe('relative time helpers', () => {
     ).toBe('Created 5m ago');
     expect(formatRelativeTime('Finished', null)).toBe('Finished -');
   });
+
+  it('formats timestamps less than a minute old as just now', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+
+    expect(
+      formatRelativeTime('Created', new Date('2026-06-10T11:59:30Z').getTime()),
+    ).toBe('Created just now');
+  });
+
+  it('formats timestamps between one day and thirty days old as days ago', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+
+    expect(
+      formatRelativeTime('Requested', new Date('2026-06-05T12:00:00Z').getTime()),
+    ).toBe('Requested 5d ago');
+  });
+
+  it('formats long-range timestamps as absolute dates', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+
+    expect(
+      formatRelativeTime('Archived', new Date('2026-05-01T12:00:00Z').getTime()),
+    ).toBe('Archived May 1, 2026');
+  });
 });

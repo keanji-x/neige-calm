@@ -17,6 +17,7 @@ describe('CardMetaViewer', () => {
     render(
       <Component
         path="cards/card_1/meta.json"
+        raw="{}"
         data={{
           id: 'card_1',
           kind: 'codex',
@@ -44,6 +45,7 @@ describe('CardMetaViewer', () => {
     const { container } = render(
       <Component
         path="cards/card_1/meta.json"
+        raw="{}"
         data={{ id: 'card_1', kind: 'terminal' }}
       />,
     );

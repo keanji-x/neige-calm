@@ -3,7 +3,8 @@ import type { WaveFsViewer } from '../registry';
 
 type RunVerdict = {
   status: string;
-  at?: number;
+  reason?: string;
+  at: number;
 };
 
 type RunDetail = {
@@ -46,9 +47,11 @@ function parseRunDetail(raw: string): RunDetail {
 
 function RunDetailViewerComponent({
   data,
+  raw,
 }: {
   data: RunDetail;
   path: string;
+  raw: string;
 }) {
   return (
     <section className="wave-fs-viewer-info-card">
@@ -59,10 +62,17 @@ function RunDetailViewerComponent({
       <div className="wave-fs-viewer-row">
         <ViewerChip label={data.status} tone={runStatusTone(data.status)} />
         {data.verdict ? (
-          <ViewerChip
-            label={data.verdict.status}
-            tone={verdictTone(data.verdict.status)}
-          />
+          <span className="wave-fs-viewer-verdict">
+            <ViewerChip
+              label={data.verdict.status}
+              tone={verdictTone(data.verdict.status)}
+            />
+            {data.verdict.reason ? (
+              <span className="wave-fs-viewer-verdict-reason">
+                {data.verdict.reason}
+              </span>
+            ) : null}
+          </span>
         ) : null}
       </div>
       <div className="wave-fs-viewer-footer">
@@ -75,7 +85,12 @@ function RunDetailViewerComponent({
           <span className="wave-fs-viewer-mono">{data.workerCardId}</span>
         </div>
       ) : null}
-      <p className="wave-fs-viewer-note">events / payload: see raw JSON</p>
+      <details className="wave-fs-viewer-payload">
+        <summary>Full payload (events, worker card)</summary>
+        <pre className="wave-fs-viewer-payload-pre">
+          <code>{raw}</code>
+        </pre>
+      </details>
     </section>
   );
 }
@@ -157,6 +172,18 @@ function optionalNumber(
     : undefined;
 }
 
+function requiredNumber(
+  item: Record<string, unknown>,
+  key: string,
+  context: string,
+): number {
+  const value = item[key];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${context} must include a ${key} number`);
+  }
+  return value;
+}
+
 function optionalVerdict(
   item: Record<string, unknown>,
   key: string,
@@ -169,7 +196,8 @@ function optionalVerdict(
   }
   return {
     status: requiredString(value, 'status', `${context} verdict`),
-    at: optionalNumber(value, 'at'),
+    reason: optionalNonEmptyString(value, 'reason'),
+    at: requiredNumber(value, 'at', `${context} verdict`),
   };
 }
 

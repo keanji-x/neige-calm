@@ -17,6 +17,7 @@ describe('WaveInfoViewer', () => {
     render(
       <Component
         path="wave.json"
+        raw="{}"
         data={{
           title: 'Spec wave',
           id: 'wave_1',
@@ -48,6 +49,7 @@ describe('WaveInfoViewer', () => {
     render(
       <Component
         path="wave.json"
+        raw="{}"
         data={{
           title: 'Bare wave',
           id: 'wave_min',

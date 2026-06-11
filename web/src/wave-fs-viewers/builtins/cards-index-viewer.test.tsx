@@ -10,7 +10,7 @@ afterEach(() => {
 
 describe('CardsIndexViewer', () => {
   it('renders an empty cards header', () => {
-    render(<Component data={[]} path="cards/index.json" />);
+    render(<Component data={[]} path="cards/index.json" raw="[]" />);
 
     expect(
       screen.getByRole('heading', { name: 'Cards in this wave (0)' }),
@@ -22,6 +22,7 @@ describe('CardsIndexViewer', () => {
     render(
       <Component
         path="cards/index.json"
+        raw="[]"
         data={[
           {
             id: 'card_codex_1',
@@ -62,6 +63,7 @@ describe('CardsIndexViewer', () => {
     const { container } = render(
       <Component
         path="cards/index.json"
+        raw="[]"
         data={[
           { kind: 'spec' },
           {
