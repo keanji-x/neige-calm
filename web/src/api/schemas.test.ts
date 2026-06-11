@@ -222,6 +222,26 @@ describe('spec harness transcript lifecycle events', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('parses harness.user_message.enqueued without body text', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'harness.user_message.enqueued',
+      data: {
+        runtime_id: 'runtime_2',
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+        char_count: 9,
+      },
+    });
+    expect(parsed.ev).toBe('harness.user_message.enqueued');
+    if (parsed.ev === 'harness.user_message.enqueued') {
+      expect(parsed.data.runtime_id).toBe('runtime_2');
+      expect(parsed.data.card_id).toBe('card_spec_1');
+      expect(parsed.data.wave_id).toBe('wave_1');
+      expect(parsed.data.char_count).toBe(9);
+      expect('text' in parsed.data).toBe(false);
+    }
+  });
 });
 
 // ---- PR4 of #136: dispatcher + task-lifecycle variants ----------------

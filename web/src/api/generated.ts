@@ -2157,7 +2157,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Card or active runtime not found */
+            /** @description Card, active runtime, or wave not found */
             404: {
                 headers: {
                     [name: string]: unknown;

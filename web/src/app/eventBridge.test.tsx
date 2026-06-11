@@ -694,6 +694,30 @@ describe('EventBridge', () => {
     cleanup();
   });
 
+  it('harness.user_message.enqueued dispatches as an explicit noop policy', () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    expect(() =>
+      fakeStream.emit({
+        ev: 'harness.user_message.enqueued',
+        data: {
+          runtime_id: 'runtime_2',
+          card_id: 'card_spec',
+          wave_id: 'wave_1',
+          char_count: 9,
+        },
+      }),
+    ).not.toThrow();
+    expect(invalidate).not.toHaveBeenCalled();
+    cleanup();
+  });
+
   it('claude.hook without cached ownership invalidates all wave-file queries', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');

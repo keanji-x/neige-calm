@@ -448,6 +448,24 @@ pub enum Event {
         card_id: CardId,
         wave_id: WaveId,
     },
+    /// #615 F1 — emitted when `POST /api/cards/{id}/spec/input` queues
+    /// a user-authored text observation onto the spec harness. Card-scoped
+    /// (the spec card), `wave_id` carried so wave-timeline subscribers can
+    /// filter without a card→wave lookup. Actor is on the envelope
+    /// (`X-Calm-Actor` → `events.actor`), `char_count` lets audit/replay
+    /// surface size without keeping the body text on the event row.
+    ///
+    /// **Body text is intentionally not on the payload** — large free-form
+    /// user input would balloon the events log and the body is already
+    /// observable via the queued `Observation::UserMessage` snapshot +
+    /// the subsequent turn input. We log size only.
+    #[serde(rename = "harness.user_message.enqueued")]
+    HarnessUserMessageEnqueued {
+        runtime_id: String,
+        card_id: CardId,
+        wave_id: WaveId,
+        char_count: u32,
+    },
 
     /// Issue #247 PR2 — structured wave-report edit-log entry. Emitted
     /// alongside `Event::CardUpdated` from every
@@ -761,7 +779,8 @@ impl Event {
             },
             Event::HarnessItemAdded { card_id, .. }
             | Event::HarnessPhaseChanged { card_id, .. }
-            | Event::HarnessTranscriptCleared { card_id, .. } => EventMetadata {
+            | Event::HarnessTranscriptCleared { card_id, .. }
+            | Event::HarnessUserMessageEnqueued { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
@@ -861,6 +880,7 @@ impl Event {
             Event::HarnessItemAdded { .. } => "harness.item.added",
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
+            Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
             Event::WaveReportEdited { .. } => "wave.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
@@ -966,6 +986,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
             wave_id, card_id, ..
         }
         | Event::HarnessTranscriptCleared {
+            wave_id, card_id, ..
+        }
+        | Event::HarnessUserMessageEnqueued {
             wave_id, card_id, ..
         } => vec![
             format!("card:{}", card_id),
@@ -1557,6 +1580,17 @@ mod scope_tests {
             wave_id: WaveId::from("wave-1"),
         };
         assert_eq!(transcript_cleared.kind_tag(), "harness.transcript.cleared");
+
+        let user_message_enqueued = Event::HarnessUserMessageEnqueued {
+            runtime_id: "runtime-1".into(),
+            card_id: CardId::from("card-1"),
+            wave_id: WaveId::from("wave-1"),
+            char_count: 5,
+        };
+        assert_eq!(
+            user_message_enqueued.kind_tag(),
+            "harness.user_message.enqueued"
+        );
     }
 
     #[test]
@@ -2119,6 +2153,12 @@ mod scope_tests {
                 runtime_id: "runtime-transcript".into(),
                 card_id: CardId::from("card-runtime"),
                 wave_id: WaveId::from("wave-1"),
+            },
+            Event::HarnessUserMessageEnqueued {
+                runtime_id: "runtime-user-message".into(),
+                card_id: CardId::from("card-runtime"),
+                wave_id: WaveId::from("wave-1"),
+                char_count: 5,
             },
             wave_report_edited_sample(),
             Event::OverlaySet(overlay_sample("plugin-1", "card", "card-1", "status")),

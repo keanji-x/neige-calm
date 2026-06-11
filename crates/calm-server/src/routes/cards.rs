@@ -580,6 +580,17 @@ pub struct SendSpecInputResponse {
 
 const MAX_SPEC_INPUT_CHARS: usize = 32_768;
 
+fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
+    match actor.to_actor_id() {
+        ActorId::AiCodex(c) if c.as_str().is_empty() => ActorId::AiCodex(card_id.clone()),
+        // Middleware currently only admits `ai:codex`, but keep these
+        // branches ready if REST actor validation later gains more AI kinds.
+        ActorId::AiClaude(c) if c.as_str().is_empty() => ActorId::AiClaude(card_id.clone()),
+        ActorId::AiSpec(c) if c.as_str().is_empty() => ActorId::AiSpec(card_id.clone()),
+        other => other,
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/spec/input",
@@ -590,23 +601,24 @@ const MAX_SPEC_INPUT_CHARS: usize = 32_768;
         (status = 200, description = "User text queued for next harness turn", body = SendSpecInputResponse),
         (status = 400, description = "Empty text", body = ErrorBody),
         (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
-        (status = 404, description = "Card or active runtime not found", body = ErrorBody),
+        (status = 404, description = "Card, active runtime, or wave not found", body = ErrorBody),
         (status = 409, description = "Runtime is shutting down (lifecycle race with shutdown)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Observation queue saturated, retry shortly", body = ErrorBody),
     ),
 )]
+#[allow(deprecated)]
 pub(crate) async fn send_spec_input(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
     Json(body): Json<SendSpecInputRequest>,
 ) -> Result<Json<SendSpecInputResponse>> {
-    let _ = actor;
     if body.text.trim().is_empty() {
         return Err(CalmError::BadRequest("text must not be empty".into()));
     }
-    if body.text.chars().count() > MAX_SPEC_INPUT_CHARS {
+    let char_count = body.text.chars().count();
+    if char_count > MAX_SPEC_INPUT_CHARS {
         return Err(CalmError::BadRequest(format!(
             "text must be at most {MAX_SPEC_INPUT_CHARS} characters",
         )));
@@ -637,7 +649,45 @@ pub(crate) async fn send_spec_input(
             "no active spec harness for card {id}",
         )));
     };
-    harness.observe(Observation::UserMessage { text: body.text })?;
+    let wave = s
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {id}", card.wave_id)))?;
+    let scope = EventScope::Card {
+        card: card.id.clone(),
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let audit_actor = spec_input_audit_actor(&actor, &card.id);
+
+    let text = body.text;
+    harness.observe(Observation::UserMessage { text })?;
+
+    tracing::info!(
+        actor = %actor.as_str(),
+        card_id = %card.id,
+        runtime_id = %runtime.id,
+        char_count,
+        "spec harness user message enqueued"
+    );
+
+    s.repo
+        .log_pure_event(
+            audit_actor,
+            scope,
+            None,
+            &s.events,
+            s.write.role_cache(),
+            s.write.cove_cache(),
+            Event::HarnessUserMessageEnqueued {
+                runtime_id: runtime.id.clone(),
+                card_id: card.id.clone(),
+                wave_id: card.wave_id.clone(),
+                char_count: char_count as u32,
+            },
+        )
+        .await?;
 
     Ok(Json(SendSpecInputResponse {
         card_id: card.id,
