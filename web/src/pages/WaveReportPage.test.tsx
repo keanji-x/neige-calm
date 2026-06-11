@@ -8,13 +8,23 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
 import { useWaveFileContent, useWaveFileList } from '../api/queries';
-import type { WaveFsEntry } from '../api/calm';
+import type { WaveFsContent, WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 
 vi.mock('../api/queries', () => ({
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
+}));
+
+vi.mock('../app/theme', () => ({
+  useTheme: () => ({ resolved: 'light' }),
+}));
+
+vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
+  CodePane: ({ text }: { text: string }) => (
+    <pre data-testid="code-pane">{text}</pre>
+  ),
 }));
 
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
@@ -68,6 +78,14 @@ function specSlot(id = 'card_spec_1'): WaveCardSlot {
     sort: 0,
     deletable: false,
   };
+}
+
+function mockWaveFileContent(data: WaveFsContent) {
+  mockUseWaveFileContent.mockReturnValue({
+    data,
+    error: null,
+    isLoading: false,
+  } as unknown as ReturnType<typeof useWaveFileContent>);
 }
 
 afterEach(() => {
@@ -187,6 +205,11 @@ describe('WaveReportPage', () => {
   });
 
   it('resets the selected file when the wave id changes', async () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Wave file',
+    });
+
     const { rerender } = render(
       <WaveReportPage
         wave={makeWave({ id: 'wave_A' })}
@@ -197,6 +220,9 @@ describe('WaveReportPage', () => {
     const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
     fireEvent.click(reportFile);
     expect(reportFile).toHaveAttribute('aria-selected', 'true');
+    expect(
+      screen.getByRole('dialog', { name: /file viewer: report\.md/i }),
+    ).toBeInTheDocument();
 
     rerender(
       <WaveReportPage
@@ -209,7 +235,127 @@ describe('WaveReportPage', () => {
       expect(
         screen.getByRole('treeitem', { name: /report\.md/ }),
       ).toHaveAttribute('aria-selected', 'false');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
+  });
+
+  it('opens a drawer with markdown content when a file is selected', () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+
+    const dialog = screen.getByRole('dialog', {
+      name: /file viewer: report\.md/i,
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('heading', { level: 1, name: 'Hi' }),
+    ).toBeInTheDocument();
+  });
+
+  it('closes the drawer with Escape and clears the selected file', async () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
+    fireEvent.click(reportFile);
+    expect(reportFile).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(reportFile).toHaveAttribute('aria-selected', 'false');
+    });
+  });
+
+  it('closes the drawer with the close button', async () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+    fireEvent.click(
+      screen.getByRole('button', { name: /close file viewer/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('closes the drawer from the backdrop', async () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+    const dialog = screen.getByRole('dialog', {
+      name: /file viewer: report\.md/i,
+    });
+    const backdrop = dialog.parentElement;
+    expect(backdrop).toHaveClass('wave-file-drawer-backdrop');
+
+    fireEvent.mouseDown(backdrop!);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('renders non-markdown text content with CodePane', () => {
+    mockWaveFileContent({
+      content_type: 'text/plain',
+      content: 'plain text file',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    expect(screen.getByTestId('code-pane')).toHaveTextContent(
+      'plain text file',
+    );
   });
 
   it('renders the SpecCurrentRun collapsed pill when a spec card exists', () => {

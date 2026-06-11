@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Wave, WaveCardSlot } from '../types';
@@ -7,6 +7,7 @@ import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
 import { SpecCurrentRun } from './SpecCurrentRun';
+import { WaveFileDrawer } from './WaveFileDrawer';
 
 export interface WaveReportPageProps {
   wave: Wave;
@@ -106,13 +107,44 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const focusPathAfterCloseRef = useRef<string | null>(null);
+
+  const closeFileDrawer = useCallback(() => {
+    if (selectedFilePath) {
+      focusPathAfterCloseRef.current = selectedFilePath;
+    }
+    setSelectedFilePath(null);
+  }, [selectedFilePath]);
 
   useEffect(() => {
     setSelectedFilePath(null);
   }, [wave.id]);
 
+  useEffect(() => {
+    if (selectedFilePath !== null) return;
+    const focusPath = focusPathAfterCloseRef.current;
+    if (focusPath === null) return;
+    focusPathAfterCloseRef.current = null;
+    const schedule =
+      window.requestAnimationFrame ?? ((callback: FrameRequestCallback) => {
+        window.setTimeout(callback, 0);
+        return 0;
+      });
+    schedule(() => {
+      const root = pageRef.current;
+      if (!root) return;
+      const items = Array.from(
+        root.querySelectorAll<HTMLElement>('.wave-report-files-item'),
+      );
+      const selectedItem = items.find((item) => item.dataset.path === focusPath);
+      const fallbackItem = items.find((item) => item.tabIndex === 0);
+      (selectedItem ?? fallbackItem)?.focus();
+    });
+  }, [selectedFilePath]);
+
   return (
-    <div className="report-page">
+    <div ref={pageRef} className="report-page">
       <section className="report-center" aria-label="Report">
         <article className="report-doc">
           {reportSlots.length > 1 && (
@@ -155,6 +187,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           </div>
         </section>
       </aside>
+      <WaveFileDrawer
+        waveId={wave.id}
+        path={selectedFilePath}
+        onClose={closeFileDrawer}
+      />
       <SpecCurrentRun specCardId={specCardId} />
     </div>
   );
