@@ -1,8 +1,32 @@
-import { describe, expect, it } from 'vitest';
+import { renderHook } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KernelOverlay, WireEvent } from '../api/wire';
 import type { CodexCardData } from '../cards/builtins/codex';
 import type { SpecCardData } from '../cards/builtins/spec';
 import type { WaveCardSlot } from '../types';
+
+const streamMock = vi.hoisted(() => {
+  const listeners = new Set<(ev: unknown) => void>();
+  return {
+    addTopic: vi.fn(),
+    on: vi.fn((listener: (ev: unknown) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }),
+    reset() {
+      listeners.clear();
+      this.addTopic.mockClear();
+      this.on.mockClear();
+    },
+  };
+});
+
+vi.mock('../api/events', () => ({
+  sharedEventStream: vi.fn(() => streamMock),
+}));
+
 import {
   createEventLineState,
   eventToLineEntry,
@@ -10,10 +34,15 @@ import {
   reduceEventLineEntries,
   reduceEventLineState,
   selectAnyRuntimeLive,
+  useEventLineEntries,
   type EventLineEntry,
 } from './useEventLineEntries';
 
 type EventOf<K extends WireEvent['ev']> = Extract<WireEvent, { ev: K }>;
+
+beforeEach(() => {
+  streamMock.reset();
+});
 
 function reportEdited(
   author: EventOf<'wave.report_edited'>['data']['author'],
@@ -166,6 +195,20 @@ function harnessItem(): EventOf<'harness.item.added'> {
     },
   };
 }
+
+describe('useEventLineEntries', () => {
+  it('listens to the shared firehose without changing subscriptions', () => {
+    const cards = [workerSlot()];
+    const { unmount } = renderHook(() =>
+      useEventLineEntries('wave_1', cards),
+    );
+
+    expect(streamMock.on).toHaveBeenCalledTimes(1);
+    expect(streamMock.addTopic).not.toHaveBeenCalled();
+
+    unmount();
+  });
+});
 
 describe('eventToLineEntry', () => {
   it('keeps an empty event flow empty', () => {

@@ -1,5 +1,5 @@
 import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventLinePanel } from './EventLinePanel';
 import {
   isRuntimeLiveState,
@@ -21,6 +21,10 @@ function entry(overrides: Partial<EventLineEntry> = {}): EventLineEntry {
 }
 
 describe('EventLinePanel', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('renders entries with titles and tag chips', () => {
     render(
       <EventLinePanel
@@ -97,5 +101,20 @@ describe('EventLinePanel', () => {
     expect(container.querySelector('.report-event-desc code')).toHaveTextContent(
       'task_1',
     );
+  });
+
+  it('keeps sub-minute timestamps as just now', () => {
+    const now = new Date('2026-06-10T12:00:50Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+
+    render(
+      <EventLinePanel
+        live={false}
+        entries={[entry({ time: now.getTime() - 50_000 })]}
+      />,
+    );
+
+    expect(screen.getByText('just now')).toBeInTheDocument();
   });
 });

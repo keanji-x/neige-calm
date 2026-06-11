@@ -564,7 +564,6 @@ export function useEventLineEntries(
     if (!waveId) return;
 
     const stream = sharedEventStream();
-    stream.addTopic(`wave:${waveId}`);
     const off = stream.on((ev) => {
       dispatch({ type: 'event', ev });
     });
