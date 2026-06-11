@@ -285,6 +285,14 @@ export function SpecConversation({
       if (cardIdAtSubmit !== latestSpecCardIdRef.current) return;
       chatHistory.addEcho(text);
       setDraft('');
+      // Follow your own send (#654): even if the reader had scrolled up,
+      // a successful send should land them on their new message (and the
+      // reply that follows). Re-stick and scroll via the resolved target so
+      // the ≤980px window-scroll fallback works too.
+      stickToBottomRef.current = true;
+      window.setTimeout(() => {
+        scrollToBottom(scrollRef.current);
+      }, 0);
     } catch {
       // submitError is captured by useSpecCurrentRun and rendered below.
     }

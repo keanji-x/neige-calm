@@ -711,6 +711,79 @@ describe('SpecConversation', () => {
     });
   });
 
+  it('scrolls to the bottom after a successful send even when scrolled up', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+
+    render(<Harness />);
+
+    // Make the column its own scroll container (wide layout).
+    const column = screen.getByLabelText('Conversation');
+    column.style.overflowY = 'auto';
+    let columnScrollTop = 0;
+    Object.defineProperty(column, 'scrollTop', {
+      configurable: true,
+      get: () => columnScrollTop,
+      set: (value: number) => {
+        columnScrollTop = value;
+      },
+    });
+    Object.defineProperty(column, 'scrollHeight', {
+      configurable: true,
+      value: 3000,
+    });
+    Object.defineProperty(column, 'clientHeight', {
+      configurable: true,
+      value: 600,
+    });
+
+    // Let the 30ms enter-conversation scroll timer fully elapse, then
+    // scroll up so stick-to-bottom disengages.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    columnScrollTop = 100;
+    fireEvent.scroll(column);
+
+    await user.type(draftBox(), 'Follow me down');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(mocks.submit).toHaveBeenCalledWith('Follow me down');
+    });
+    await waitFor(() => {
+      expect(column.scrollTop).toBe(3000);
+    });
+  });
+
+  it('survives a tail-fetch failure and retries on the next event', async () => {
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems
+      .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce([harnessAgentRow(2, 'Recovered')]);
+
+    render(<Harness />);
+    expect(await screen.findByText('Initial')).toBeInTheDocument();
+
+    // First event: the tail fetch fails. The rejection must be swallowed —
+    // vitest fails the file on any unhandled rejection escaping here.
+    await emitHarnessItemAdded({
+      item_db_id: 2,
+      item_uuid: 'msg_2',
+      item_type: 'agentMessage',
+    });
+    expect(screen.queryByText('Recovered')).not.toBeInTheDocument();
+
+    // A later event retries cleanly.
+    await emitHarnessItemAdded({
+      item_db_id: 2,
+      item_uuid: 'msg_2',
+      item_type: 'agentMessage',
+    });
+    expect(await screen.findByText('Recovered')).toBeInTheDocument();
+  });
+
   it('restores the report reading position after a round-trip through the conversation', async () => {
     const user = userEvent.setup();
     render(<Harness initialView="report" />);

@@ -276,6 +276,13 @@ export function useSpecChatHistory(
           dropEchoesFor(parsed);
         } while (rows.length === PAGE_LIMIT);
       } while (tailRefetchQueuedRef.current);
+    } catch {
+      // Network/5xx mid tail-fetch: keep the visible window and stay
+      // retriable, mirroring the initial-load / loadEarlier paths. The
+      // listener fires this as `void fetchTail()`, so rethrowing would be
+      // an unhandled rejection. Drop any queued refetch; the next
+      // harness.item.added event retries cleanly.
+      tailRefetchQueuedRef.current = false;
     } finally {
       tailInFlightRef.current = false;
     }
