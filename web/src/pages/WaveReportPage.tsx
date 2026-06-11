@@ -130,7 +130,7 @@ function ReportContent({
   const shouldFallbackToReportCard =
     path === 'report.md' &&
     !!reportCardBody &&
-    (isReportUnavailable ||
+    (!!contentQ.error ||
       (!contentQ.data && !contentQ.error) ||
       (contentQ.isLoading && isFetching));
 

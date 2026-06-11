@@ -422,8 +422,8 @@ describe('WaveReportPage', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Loading…');
   });
 
-  it('renders the inline error state when file content fails to load', () => {
-    mockWaveFileContentForPath('report.md', {
+  it('renders an inline error when a non-report file fails (no fallback)', () => {
+    mockWaveFileContentForPath('wave.json', {
       error: new CalmApiError(500, 'file_read_failed', 'File read failed'),
     });
 
@@ -433,6 +433,8 @@ describe('WaveReportPage', () => {
         cards={[reportSlot('Fallback report body')]}
       />,
     );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('File read failed');
   });
@@ -472,6 +474,21 @@ describe('WaveReportPage', () => {
     expect(
       screen.getByRole('heading', { level: 1, name: 'Card fallback' }),
     ).toBeInTheDocument();
+  });
+
+  it('falls back to the report card body when report.md returns 500 (legacy)', () => {
+    mockWaveFileContentForPath('report.md', {
+      error: new CalmApiError(500, 'file_read_failed', 'File read failed'),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Card body **fallback**')]}
+      />,
+    );
+
+    expect(screen.getByText('fallback').tagName).toBe('STRONG');
   });
 
   it('renders the SpecCurrentRun collapsed pill when a spec card exists', () => {
