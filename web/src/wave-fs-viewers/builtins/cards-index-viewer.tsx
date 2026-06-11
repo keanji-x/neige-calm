@@ -1,6 +1,9 @@
 import type { WaveFsViewer } from '../registry';
 
-type CardsIndexItem = unknown;
+type CardsIndexItem = {
+  kind: string;
+  [key: string]: unknown;
+};
 
 export const CardsIndexViewer: WaveFsViewer<CardsIndexItem[]> = {
   id: 'cards-index',
@@ -14,7 +17,14 @@ function parseCardsIndex(raw: string): CardsIndexItem[] {
   if (!Array.isArray(parsed)) {
     throw new Error('cards/index.json must be an array');
   }
-  return parsed as CardsIndexItem[];
+  parsed.forEach((item, index) => {
+    if (!isCardsIndexItem(item)) {
+      throw new Error(
+        `cards/index.json item ${index} must include a kind string`,
+      );
+    }
+  });
+  return parsed;
 }
 
 function CardsIndexViewerComponent({
@@ -34,19 +44,23 @@ function CardsIndexViewerComponent({
         <ul className="wave-fs-viewer-card-list">
           {data.map((item, index) => (
             <li className="wave-fs-viewer-card-row" key={cardKey(item, index)}>
-              <span className="wave-fs-viewer-kind">
-                {stringField(item, 'kind', 'unknown')}
-              </span>
               <span className="wave-fs-viewer-card-main">
                 <span className="wave-fs-viewer-card-title">
-                  {stringField(item, 'title', 'Untitled card')}
+                  {item.kind}
                 </span>
-                <span className="wave-fs-viewer-card-id">
-                  {stringField(item, 'id', 'missing-id')}
+                <span className="wave-fs-viewer-card-meta">
+                  <span className="wave-fs-viewer-card-id">
+                    {stringField(item, 'id', 'missing-id')}
+                  </span>
+                  {stringField(item, 'role') ? (
+                    <span className="wave-fs-viewer-card-role">
+                      {stringField(item, 'role')}
+                    </span>
+                  ) : null}
+                  <span className="wave-fs-viewer-card-sort">
+                    sort {sortableField(item, 'sort')}
+                  </span>
                 </span>
-              </span>
-              <span className="wave-fs-viewer-card-sort">
-                sort {sortableField(item, 'sort')}
               </span>
             </li>
           ))}
@@ -59,7 +73,7 @@ function CardsIndexViewerComponent({
 function stringField(
   item: CardsIndexItem,
   key: string,
-  fallback: string,
+  fallback = '',
 ): string {
   const value = field(item, key);
   return typeof value === 'string' && value.trim() ? value : fallback;
@@ -78,6 +92,11 @@ function cardKey(item: CardsIndexItem, index: number): string {
 }
 
 function field(item: CardsIndexItem, key: string): unknown {
-  if (typeof item !== 'object' || item === null) return undefined;
-  return (item as Record<string, unknown>)[key];
+  return item[key];
+}
+
+function isCardsIndexItem(item: unknown): item is CardsIndexItem {
+  if (typeof item !== 'object' || item === null) return false;
+  const kind = (item as Record<string, unknown>).kind;
+  return typeof kind === 'string' && kind.trim().length > 0;
 }

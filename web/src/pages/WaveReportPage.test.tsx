@@ -445,13 +445,12 @@ describe('WaveReportPage', () => {
           {
             id: 'card_codex_1',
             kind: 'codex',
-            title: 'Draft findings',
+            role: 'worker',
             sort: 10,
           },
           {
             id: 'card_report_1',
             kind: 'wave-report',
-            title: 'Final report',
             sort: 20,
           },
         ]),
@@ -471,12 +470,18 @@ describe('WaveReportPage', () => {
     expect(
       await screen.findByRole('heading', { name: 'Cards in this wave (2)' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('codex')).toHaveClass('wave-fs-viewer-kind');
-    expect(screen.getByText('Draft findings')).toBeInTheDocument();
+    expect(screen.getByText('codex')).toHaveClass(
+      'wave-fs-viewer-card-title',
+    );
+    expect(screen.getByText('worker')).toHaveClass(
+      'wave-fs-viewer-card-role',
+    );
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
   it('falls back to raw JSON when cards/index.json is malformed', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
     mockWaveFileLists({
       '': [
         { name: 'cards/', kind: 'dir', size: 1 },
@@ -511,6 +516,47 @@ describe('WaveReportPage', () => {
     expect(
       screen.queryByRole('heading', { name: /Cards in this wave/ }),
     ).not.toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('falls back to raw JSON when cards/index.json is invalid JSON', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'index.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: 'not valid json {{',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(await screen.findByRole('treeitem', { name: /index\.json/ }));
+
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      'not valid json {{',
+    );
+    expect(
+      screen.queryByRole('heading', { name: /Cards in this wave/ }),
+    ).not.toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it('falls back to raw JSON for unknown JSON paths', async () => {

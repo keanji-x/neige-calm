@@ -1927,28 +1927,14 @@ select:-webkit-autofill {
 }
 .wave-fs-viewer-card-row {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) max-content;
-  align-items: center;
-  gap: var(--space-5);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
   min-width: 0;
   padding: var(--space-5) var(--space-6);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
   background: var(--surface-card);
-}
-.wave-fs-viewer-kind {
-  min-width: 0;
-  max-width: 120px;
-  overflow: hidden;
-  padding: var(--space-1) var(--space-4);
-  border-radius: var(--radius-pill);
-  background: var(--surface-chip);
-  color: var(--text);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  line-height: var(--leading-snug);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .wave-fs-viewer-card-main {
   min-width: 0;
@@ -1959,9 +1945,16 @@ select:-webkit-autofill {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--text);
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
   line-height: var(--leading-snug);
-  font-weight: var(--weight-medium);
+  font-weight: var(--weight-semibold);
+}
+.wave-fs-viewer-card-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
 }
 .wave-fs-viewer-card-id {
   min-width: 0;
@@ -1969,6 +1962,19 @@ select:-webkit-autofill {
   color: var(--text-3);
   font-family: var(--font-code);
   font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wave-fs-viewer-card-role {
+  max-width: 160px;
+  overflow: hidden;
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--surface-chip);
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   line-height: var(--leading-snug);
   text-overflow: ellipsis;
   white-space: nowrap;
