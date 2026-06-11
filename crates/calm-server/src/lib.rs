@@ -461,6 +461,7 @@ pub mod openapi;
 pub mod operation;
 pub mod pending_codex_threads;
 pub mod plugin_host;
+pub mod proc_identity;
 pub(crate) mod proc_supervisor;
 pub mod replay;
 pub mod role_gate;

@@ -30,9 +30,9 @@
 //!   * Liveness failure: `/proc/<pid>` ENOENT → reject.
 //!
 //! This test exercises the production helpers
-//! [`spec_appserver::read_proc_start_time`],
-//! [`spec_appserver::read_boot_id`], and
-//! [`spec_appserver::verify_owned_pid`] introduced in this PR.
+//! [`proc_identity::read_proc_start_time`],
+//! [`proc_identity::read_boot_id`], and
+//! [`proc_identity::verify_owned_pid`] introduced in this PR.
 
 // `/proc` is Linux-only. The production helpers compile on every Unix
 // (with a non-Linux stub that returns `None` / `false`), but a
@@ -45,7 +45,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use calm_server::spec_appserver::{read_boot_id, read_proc_start_time, verify_owned_pid};
+use calm_server::proc_identity::{read_boot_id, read_proc_start_time, verify_owned_pid};
 use tokio::process::Command;
 
 /// `verify_owned_pid` accepts a live child whose persisted
