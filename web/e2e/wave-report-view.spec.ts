@@ -98,13 +98,15 @@ test('wave report view renders real report data and staged rail controls', async
     page.getByText('Activity timeline appears here. (Wired in PR-E.)'),
   ).toHaveCount(0);
 
-  const chat = page.getByRole('button', { name: /Ask the Spec Agent/ });
-  await expect(chat).toBeVisible();
-  await chat.click();
+  const conversationTab = page.getByRole('button', { name: 'Conversation' });
+  await expect(conversationTab).toBeEnabled();
 
-  const chatBox = page.getByRole('region', { name: /Ask the Spec Agent/ });
-  await expect(chatBox).toBeVisible();
-  const followUp = chatBox.getByRole('textbox', { name: /Follow-up/ });
+  const followUp = page.getByRole('textbox', { name: /Ask the Spec Agent/ });
   await followUp.fill('Can you summarize the key risk?');
+  await expect(followUp).toHaveValue('Can you summarize the key risk?');
+
+  // Switching to the conversation document preserves the draft.
+  await conversationTab.click();
+  await expect(page.getByLabel('Conversation', { exact: true })).toBeVisible();
   await expect(followUp).toHaveValue('Can you summarize the key risk?');
 });

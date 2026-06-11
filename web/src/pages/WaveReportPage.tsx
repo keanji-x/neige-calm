@@ -10,7 +10,7 @@ import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
 import { EventLinePanel } from './EventLinePanel';
-import { SpecCurrentRun } from './SpecCurrentRun';
+import { SpecConversation, type ReportView } from './SpecConversation';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { useAnyRuntimeLive, useEventLineEntries } from './useEventLineEntries';
 
@@ -270,7 +270,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
+  const [view, setView] = useState<ReportView>('report');
   const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
+  const [lastSpecCardId, setLastSpecCardId] = useState<string | null>(
+    specCardId,
+  );
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
@@ -281,6 +285,15 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   if (lastWaveId !== wave.id) {
     setLastWaveId(wave.id);
     setSelectedFilePath('report.md');
+    setView('report');
+  }
+
+  // When the spec card disappears, drop the stale conversation view so a
+  // later card reappearance does not snap back to conversation (and steal
+  // focus into its input).
+  if (lastSpecCardId !== specCardId) {
+    setLastSpecCardId(specCardId);
+    if (specCardId == null) setView('report');
   }
 
   const toggleReportRailCollapsed = () => {
@@ -298,22 +311,28 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
       }
     >
       <section className="report-center" aria-label="Report">
-        <article className="report-doc">
-          {reportSlots.length > 1 && (
-            <DuplicateReportBanner count={reportSlots.length} />
-          )}
-          <h1 className="report-title">{title}</h1>
-          <ReportByline report={reportCard} />
-          {hasReportCard || selectedFilePath !== 'report.md' ? (
-            <ReportContent
-              waveId={wave.id}
-              path={selectedFilePath}
-              reportCardBody={reportCard?.body}
-            />
-          ) : (
-            <ReportEmptyState />
-          )}
-        </article>
+        <SpecConversation
+          specCardId={specCardId}
+          view={specCardId == null ? 'report' : view}
+          onViewChange={setView}
+        >
+          <article className="report-doc">
+            {reportSlots.length > 1 && (
+              <DuplicateReportBanner count={reportSlots.length} />
+            )}
+            <h1 className="report-title">{title}</h1>
+            <ReportByline report={reportCard} />
+            {hasReportCard || selectedFilePath !== 'report.md' ? (
+              <ReportContent
+                waveId={wave.id}
+                path={selectedFilePath}
+                reportCardBody={reportCard?.body}
+              />
+            ) : (
+              <ReportEmptyState />
+            )}
+          </article>
+        </SpecConversation>
       </section>
       <aside
         className={
@@ -345,9 +364,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
                 <WaveFileTree
                   waveId={wave.id}
                   selectedPath={selectedFilePath}
-                  onSelectedPathChange={(path) =>
-                    setSelectedFilePath(path ?? 'report.md')
-                  }
+                  onSelectedPathChange={(path) => {
+                    setSelectedFilePath(path ?? 'report.md');
+                    // Selecting a file always shows the document view.
+                    setView('report');
+                  }}
                   ariaLabel="Wave files"
                   fallback={
                     <div className="report-rail-placeholder">No files yet.</div>
@@ -361,7 +382,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           </>
         )}
       </aside>
-      <SpecCurrentRun specCardId={specCardId} />
     </div>
   );
 }
