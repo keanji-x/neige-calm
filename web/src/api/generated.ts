@@ -1756,7 +1756,7 @@ export interface components {
             event_id: number;
             hook_kind: string;
             kind: string;
-            payload: Record<string, never>;
+            payload: unknown;
         };
         WaveFsLsQuery: {
             /** @description Logical path to list. Omitted or `/` lists the wave root. */
@@ -1773,7 +1773,7 @@ export interface components {
             status: components["schemas"]["WaveFsRunStatus"];
             verdict: null | components["schemas"]["WaveFsRunVerdict"];
             worker_card_id: string | null;
-            worker_card_payload: Record<string, never> | null;
+            worker_card_payload: unknown;
         };
         WaveFsRunEventRef: {
             /** Format: int64 */
@@ -1781,7 +1781,7 @@ export interface components {
             /** Format: int64 */
             event_id: number;
             kind: string;
-            payload: Record<string, never>;
+            payload: unknown;
         };
         WaveFsRunEvents: {
             completed: null | components["schemas"]["WaveFsRunEventRef"];

@@ -1255,6 +1255,14 @@ mod tests {
             &card_meta_value(&card, CardRole::default()),
             &old_card_meta_value(&card, json!("worker")),
         );
+        assert_same_json_bytes(
+            &card_meta_value(&card, CardRole::Spec),
+            &old_card_meta_value(&card, json!("spec")),
+        );
+        assert_same_json_bytes(
+            &card_meta_value(&card, CardRole::ReportCard),
+            &old_card_meta_value(&card, json!("reportcard")),
+        );
     }
 
     #[test]

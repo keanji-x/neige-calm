@@ -5029,9 +5029,7 @@
           "kind": {
             "type": "string"
           },
-          "payload": {
-            "type": "object"
-          }
+          "payload": {}
         }
       },
       "WaveFsLsQuery": {
@@ -5102,12 +5100,7 @@
               "null"
             ]
           },
-          "worker_card_payload": {
-            "type": [
-              "object",
-              "null"
-            ]
-          }
+          "worker_card_payload": {}
         }
       },
       "WaveFsRunEventRef": {
@@ -5130,9 +5123,7 @@
           "kind": {
             "type": "string"
           },
-          "payload": {
-            "type": "object"
-          }
+          "payload": {}
         }
       },
       "WaveFsRunEvents": {

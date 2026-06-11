@@ -88,7 +88,7 @@ pub struct WaveFsRunEventRef {
     pub created_at: i64,
     pub event_id: i64,
     pub kind: String,
-    #[schema(value_type = Object)]
+    #[schema(value_type = Value)]
     #[ts(type = "unknown")]
     pub payload: Value,
 }
@@ -121,7 +121,7 @@ pub struct WaveFsRunDetail {
     pub verdict: Option<WaveFsRunVerdict>,
     #[schema(value_type = Option<String>, nullable = true, required = true)]
     pub worker_card_id: Option<CardId>,
-    #[schema(value_type = Option<Object>, nullable = true, required = true)]
+    #[schema(value_type = Option<Value>, nullable = true, required = true)]
     #[ts(type = "unknown | null")]
     pub worker_card_payload: Option<Value>,
 }
@@ -133,7 +133,7 @@ pub struct WaveFsHookEvent {
     pub event_id: i64,
     pub hook_kind: String,
     pub kind: String,
-    #[schema(value_type = Object)]
+    #[schema(value_type = Value)]
     #[ts(type = "unknown")]
     pub payload: Value,
 }
