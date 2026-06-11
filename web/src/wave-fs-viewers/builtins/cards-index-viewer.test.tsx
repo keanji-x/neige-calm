@@ -15,6 +15,7 @@ describe('CardsIndexViewer', () => {
     expect(
       screen.getByRole('heading', { name: 'Cards in this wave (0)' }),
     ).toBeInTheDocument();
+    expect(screen.getByText('No cards in this wave.')).toBeInTheDocument();
     expect(screen.queryAllByRole('listitem')).toHaveLength(0);
   });
 

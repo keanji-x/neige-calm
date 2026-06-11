@@ -1,5 +1,16 @@
 import { z } from 'zod';
-import { waveSchema } from '../api/schemas';
+
+export const waveFsWaveLifecycleSchema = z.enum([
+  'draft',
+  'planning',
+  'dispatching',
+  'working',
+  'blocked',
+  'reviewing',
+  'done',
+  'canceled',
+  'failed',
+]);
 
 export const waveFsRunStatusSchema = z.enum([
   'completed',
@@ -78,4 +89,16 @@ export const waveFsHookEventSchema = z.object({
 
 export const waveFsCardsIndexSchema = z.array(waveFsCardMetaSchema);
 export const waveFsRunsIndexSchema = z.array(waveFsRunIndexEntrySchema);
-export const waveFsWaveSchema = waveSchema;
+export const waveFsWaveSchema = z.object({
+  id: z.string(),
+  cove_id: z.string(),
+  title: z.string(),
+  sort: z.number(),
+  archived_at: z.number().nullable(),
+  pinned_at: z.number().nullable(),
+  lifecycle: waveFsWaveLifecycleSchema,
+  cwd: z.string(),
+  terminal_at: z.number().nullable(),
+  created_at: z.number(),
+  updated_at: z.number(),
+}).strict();
