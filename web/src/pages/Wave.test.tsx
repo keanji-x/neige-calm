@@ -42,8 +42,8 @@ vi.mock('../WaveList', () => ({
 }));
 
 // AddPanel pulls in the full card registry and a heavy menu DOM tree. The
-// mock keeps rename tests lightweight and exposes one codex trigger for
-// the create-error modal coverage below.
+// mock keeps rename tests lightweight and exposes codex / terminal triggers
+// for the create-error and report auto-switch coverage below.
 vi.mock('../shared/components/AddPanel', () => ({
   AddPanel: ({
     onSelect,
@@ -56,21 +56,28 @@ vi.mock('../shared/components/AddPanel', () => ({
       };
     }) => void;
   }) => (
-    <button
-      type="button"
-      data-testid="add-panel-stub"
-      onClick={() =>
-        onSelect({
-          type: 'codex',
-          label: 'codex',
-          createSchema: {
-            fields: [{ key: 'cwd', label: 'Working directory', type: 'directory' }],
-          },
-        })
-      }
-    >
-      Add codex
-    </button>
+    <div data-testid="add-panel-stub">
+      <button
+        type="button"
+        onClick={() =>
+          onSelect({
+            type: 'codex',
+            label: 'codex',
+            createSchema: {
+              fields: [{ key: 'cwd', label: 'Working directory', type: 'directory' }],
+            },
+          })
+        }
+      >
+        Add codex
+      </button>
+      <button
+        type="button"
+        onClick={() => onSelect({ type: 'terminal', label: 'terminal' })}
+      >
+        Add terminal
+      </button>
+    </div>
   ),
 }));
 
@@ -86,6 +93,7 @@ vi.mock('../api/calm', async () => {
     ...actual,
     listOverlays: vi.fn().mockResolvedValue([]),
     upsertOverlay: vi.fn().mockResolvedValue({}),
+    listWaveFiles: vi.fn().mockResolvedValue([]),
     listDir: vi.fn().mockResolvedValue({
       path: '/tmp/project',
       parent: '/tmp',
@@ -580,6 +588,41 @@ describe('WavePage report view mode', () => {
       }),
     );
     expect(await screen.findByTestId('wave-grid-stub')).toBeInTheDocument();
+  });
+
+  it('auto-switches to grid after adding a terminal card from report view', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
+      echoOverlay(body),
+    );
+    const onAddCard = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={onAddCard}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add terminal' }));
+
+    await waitFor(() =>
+      expect(api.upsertOverlay).toHaveBeenCalledWith({
+        plugin_id: 'kernel',
+        entity_kind: 'view',
+        entity_id: 'w1',
+        kind: 'view-mode',
+        payload: { schemaVersion: 1, mode: 'grid' },
+      }),
+    );
+    expect(onAddCard).toHaveBeenCalledWith('w1', 'terminal');
   });
 
   it('stays in report view when add fails', async () => {

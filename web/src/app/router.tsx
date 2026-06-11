@@ -449,7 +449,7 @@ export async function addCardWithValues(
       `[Calm] ${createWarnKind(entry)} create rejected invalid input:`,
       err,
     );
-    return;
+    throw err;
   }
   await createFromEntry(qc, waveId, entry, input, theme);
 }

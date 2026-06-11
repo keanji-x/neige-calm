@@ -214,9 +214,10 @@ export function WavePage({
   const overlayMode = viewModeOverlay.mode;
   // Default to report. Backend mints a wave-report card for every wave at
   // create time (`crates/calm-server/src/wave_report.rs`
-  // `WaveReportPayload::initial()` + the partial unique index in migration
-  // 0014), so this default is safe. Adding a worker card auto-switches to
-  // grid (see `goGridAfterAdd`) so the new card is visible immediately.
+  // `WaveReportPayload::initial()` + the `idx_cards_one_report_per_wave`
+  // partial unique index from migration 0013 / backfill in 0014), so this
+  // default is safe. Adding a worker card auto-switches to grid (see
+  // `goGridAfterAdd`) so the new card is visible immediately.
   // PR-E's 3-state radiogroup revisits this.
   const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'report';
 

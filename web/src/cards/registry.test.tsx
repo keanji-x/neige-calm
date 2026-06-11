@@ -22,7 +22,6 @@ import {
   CatalogCreateNotImplemented,
   KernelMintedOnlyCreateNotAllowed,
 } from '../app/router';
-import { IframeEntry } from './builtins/iframe';
 import { TerminalEntry } from './builtins/terminal';
 import { ClaudeEntry, CodexEntry } from './builtins/codex';
 import type { WaveCardData } from '../types';
@@ -50,6 +49,7 @@ declare module '../types' {
     'test-prefix-long': TestPrefixLongCardData;
     'test-legacy': TestLegacyCardData;
     'test-atomic': TestAtomicCardData;
+    'test-schema-parse': TestSchemaParseCardData;
     'test-catalog': TestCatalogCardData;
     'test-kernel-only': TestKernelOnlyCardData;
     'test-missing': TestMissingCardData;
@@ -80,6 +80,10 @@ interface TestLegacyCardData {
 }
 interface TestAtomicCardData {
   type: 'test-atomic';
+  id: string;
+}
+interface TestSchemaParseCardData {
+  type: 'test-schema-parse';
   id: string;
 }
 interface TestCatalogCardData {
@@ -700,8 +704,27 @@ describe('card controller lifecycle contract', () => {
 });
 
 describe('router AddPanel create runtime failures', () => {
-  it('swallows iframe create schema parse failures at the router edge', async () => {
-    registerCard(IframeEntry);
+  it('rethrows create schema parse failures at the router edge', async () => {
+    const err = new Error('schema rejected');
+    const parse = vi.fn((_values: Record<string, string>) => {
+      throw err;
+    });
+    registerCard(
+      entry<TestSchemaParseCardData>({
+        type: 'test-schema-parse',
+        claim: { mode: 'exact', kind: 'test-schema-parse' },
+        create: {
+          mode: 'generic',
+          buildPayload(input) {
+            return { url: input.url };
+          },
+        },
+        addPanel: {
+          label: 'schema parse',
+          createSchema: { fields: [], parse },
+        },
+      }),
+    );
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const qc = queryClientStub();
 
@@ -709,17 +732,18 @@ describe('router AddPanel create runtime failures', () => {
       addCardWithValues(
         qc,
         'wave_1',
-        'iframe',
-        { url: 'javascript:alert(1)' },
+        'test-schema-parse',
+        { url: 'https://example.test' },
         'dark',
       ),
-    ).resolves.toBeUndefined();
+    ).rejects.toBe(err);
 
+    expect(parse).toHaveBeenCalledWith({ url: 'https://example.test' });
     expect(api.createCard).not.toHaveBeenCalled();
     expect(qc.invalidateQueries).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      '[Calm] iframe create rejected invalid input:',
-      expect.any(Error),
+      '[Calm] test-schema-parse create rejected invalid input:',
+      err,
     );
   });
 
