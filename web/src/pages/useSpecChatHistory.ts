@@ -67,7 +67,8 @@ function userTextMatchesEcho(userText: string, echoText: string): boolean {
   return (
     normalizedUserText.length > 0 &&
     normalizedEchoText.length > 0 &&
-    normalizedUserText.startsWith(normalizedEchoText)
+    (normalizedUserText === normalizedEchoText ||
+      normalizedUserText.startsWith(`${normalizedEchoText}\n`))
   );
 }
 

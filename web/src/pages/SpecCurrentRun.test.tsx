@@ -519,7 +519,7 @@ describe('SpecCurrentRun', () => {
     expect(screen.getByText('Queued')).toBeInTheDocument();
   });
 
-  it('drops only one queued echo when a real user row starts with the echo', async () => {
+  it('drops only one queued echo when a real user row adds newline observations', async () => {
     const user = userEvent.setup();
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValueOnce([]);
@@ -560,6 +560,61 @@ describe('SpecCurrentRun', () => {
     });
   });
 
+  it('keeps a queued echo when a real user row only shares its prefix', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems.mockResolvedValueOnce([]);
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    expect(
+      await screen.findByText('No messages yet — ask a follow-up about this report.'),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Follow-up'), 'ok');
+    await user.keyboard('{Enter}');
+    await waitFor(() => {
+      expect(screen.getByText('Queued')).toBeInTheDocument();
+    });
+
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessUserRow(10, 'ok, sounds good'),
+    ]);
+    await emitHarnessItemAdded({
+      item_db_id: 10,
+      item_uuid: 'msg_10',
+    });
+
+    expect(await screen.findByText('ok, sounds good')).toBeInTheDocument();
+    expect(screen.getByText('Queued')).toBeInTheDocument();
+  });
+
+  it('adds an echo when a landed real user entry only shares its prefix', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessUserRow(1, 'ok, sounds good'),
+    ]);
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    expect(await screen.findByText('ok, sounds good')).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Follow-up'), 'ok');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(mocks.submit).toHaveBeenCalledWith('ok');
+      expect(screen.getByText('Queued')).toBeInTheDocument();
+    });
+  });
+
   it('does not add an echo when the real user entry already landed', async () => {
     const user = userEvent.setup();
     const submitA = deferredVoid();
@@ -571,9 +626,7 @@ describe('SpecCurrentRun', () => {
     });
     mocks.listHarnessItems
       .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
-      .mockResolvedValueOnce([
-        harnessUserRow(2, 'Race\nObservation after the user message'),
-      ]);
+      .mockResolvedValueOnce([harnessUserRow(2, 'Race')]);
 
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
@@ -590,9 +643,8 @@ describe('SpecCurrentRun', () => {
       item_db_id: 2,
       item_uuid: 'msg_2',
     });
-    expect(
-      await screen.findByText(/Observation after the user message/),
-    ).toBeInTheDocument();
+    const history = screen.getByRole('region', { name: 'Spec chat history' });
+    expect(await within(history).findByText('Race')).toBeInTheDocument();
 
     await act(async () => {
       submitA.resolve();
