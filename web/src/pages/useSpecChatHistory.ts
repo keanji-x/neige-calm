@@ -6,6 +6,7 @@ import { useState } from '../shared/state';
 import { parseHarnessItem, type ChatEntry } from './specChatItems';
 
 const PAGE_LIMIT = 300;
+const ECHO_RECONCILE_LOOKBACK = 5;
 
 export type VisibleChatEntry = ChatEntry & {
   queued?: boolean;
@@ -60,6 +61,16 @@ function normalizedText(text: string): string {
   return text.trim();
 }
 
+function userTextMatchesEcho(userText: string, echoText: string): boolean {
+  const normalizedUserText = normalizedText(userText);
+  const normalizedEchoText = normalizedText(echoText);
+  return (
+    normalizedUserText.length > 0 &&
+    normalizedEchoText.length > 0 &&
+    normalizedUserText.startsWith(normalizedEchoText)
+  );
+}
+
 export function useSpecChatHistory(
   cardId: string | undefined,
 ): SpecChatHistorySnapshot {
@@ -78,18 +89,28 @@ export function useSpecChatHistory(
   const [echoes, setEchoes] = useState<VisibleChatEntry[]>([]);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadEarlierPending, setLoadEarlierPending] = useState(false);
+  const entriesRef = useRef<ChatEntry[]>([]);
 
   const dropEchoesFor = useCallback((parsedEntries: ChatEntry[]) => {
-    const userTexts = new Set(
-      parsedEntries
-        .filter((entry) => entry.kind === 'user')
-        .map((entry) => normalizedText(entry.text))
-        .filter(Boolean),
-    );
-    if (userTexts.size === 0) return;
-    setEchoes((current) =>
-      current.filter((echo) => !userTexts.has(normalizedText(echo.text))),
-    );
+    const userTexts = parsedEntries
+      .filter((entry) => entry.kind === 'user')
+      .map((entry) => normalizedText(entry.text))
+      .filter(Boolean);
+    if (userTexts.length === 0) return;
+    setEchoes((current) => {
+      const matchedUserIndexes = new Set<number>();
+      const next = current.filter((echo) => {
+        const matchedIndex = userTexts.findIndex(
+          (userText, index) =>
+            !matchedUserIndexes.has(index) &&
+            userTextMatchesEcho(userText, echo.text),
+        );
+        if (matchedIndex < 0) return true;
+        matchedUserIndexes.add(matchedIndex);
+        return false;
+      });
+      return next.length === current.length ? current : next;
+    });
   }, []);
 
   const replaceWithRows = useCallback((rows: HarnessItem[]) => {
@@ -99,6 +120,7 @@ export function useSpecChatHistory(
     setHasEarlier(rows.length === PAGE_LIMIT);
 
     const parsed = parseRows(rows);
+    entriesRef.current = parsed;
     setEntries(parsed);
     dropEchoesFor(parsed);
   }, [dropEchoesFor]);
@@ -109,6 +131,7 @@ export function useSpecChatHistory(
     tailInFlightRef.current = false;
     tailRefetchQueuedRef.current = false;
     loadingEarlierRef.current = false;
+    entriesRef.current = [];
     setEntries([]);
     setEchoes([]);
     setHasEarlier(false);
@@ -186,8 +209,14 @@ export function useSpecChatHistory(
       setHasEarlier(rows.length === PAGE_LIMIT);
 
       const parsed = parseRows(rows);
-      setEntries((current) => prependUnique(current, parsed));
+      setEntries((current) => {
+        const next = prependUnique(current, parsed);
+        entriesRef.current = next;
+        return next;
+      });
       dropEchoesFor(parsed);
+    } catch {
+      // Keep the visible window; older-page failures are retriable.
     } finally {
       loadingEarlierRef.current = false;
       setLoadEarlierPending(false);
@@ -210,32 +239,41 @@ export function useSpecChatHistory(
         const newestRawId = newestRawIdRef.current;
         if (newestRawId == null) {
           await refetchLatest(currentCardId);
-          return;
+          continue;
         }
 
         const seq = requestSeqRef.current;
-        const rows = await listHarnessItems(currentCardId, {
-          afterId: newestRawId,
-          limit: PAGE_LIMIT,
-          direction: 'asc',
-        });
-        if (
-          cardIdRef.current !== currentCardId ||
-          requestSeqRef.current !== seq
-        ) {
-          return;
-        }
+        let rows: HarnessItem[] = [];
+        do {
+          const afterId = newestRawIdRef.current;
+          if (afterId == null) break;
 
-        if (rows.length > 0) {
+          rows = await listHarnessItems(currentCardId, {
+            afterId,
+            limit: PAGE_LIMIT,
+            direction: 'asc',
+          });
+          if (
+            cardIdRef.current !== currentCardId ||
+            requestSeqRef.current !== seq
+          ) {
+            return;
+          }
+          if (rows.length === 0) break;
+
           if (oldestRawIdRef.current == null) {
             oldestRawIdRef.current = rows[0].id;
           }
           newestRawIdRef.current = rows[rows.length - 1].id;
 
           const parsed = parseRows(rows);
-          setEntries((current) => appendUnique(current, parsed));
+          setEntries((current) => {
+            const next = appendUnique(current, parsed);
+            entriesRef.current = next;
+            return next;
+          });
           dropEchoesFor(parsed);
-        }
+        } while (rows.length === PAGE_LIMIT);
       } while (tailRefetchQueuedRef.current);
     } finally {
       tailInFlightRef.current = false;
@@ -275,6 +313,15 @@ export function useSpecChatHistory(
   const addEcho = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    const recentEntries = entriesRef.current.slice(-ECHO_RECONCILE_LOOKBACK);
+    if (
+      recentEntries.some(
+        (entry) =>
+          entry.kind === 'user' && userTextMatchesEcho(entry.text, trimmed),
+      )
+    ) {
+      return;
+    }
 
     echoIdRef.current -= 1;
     setEchoes((current) => [

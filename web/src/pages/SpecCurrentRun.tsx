@@ -217,7 +217,8 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
   };
 
   const isWorking = run.fsm === 'Working';
-  const historyIsEmpty = chatHistory.entries.length === 0 && !isWorking;
+  const historyIsEmpty =
+    chatHistory.entries.length === 0 && !isWorking && !chatHistory.hasEarlier;
 
   return (
     <div
@@ -287,6 +288,10 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
 
           <div
             ref={historyRef}
+            role="region"
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable transcript must be keyboard-focusable.
+            tabIndex={0}
+            aria-label="Spec chat history"
             className={
               'report-chat-history' +
               (historyIsEmpty ? ' report-chat-history--empty' : '')
@@ -299,6 +304,7 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
                 className="report-chat-load-earlier"
                 disabled={chatHistory.loadEarlierPending}
                 onClick={() => {
+                  stickToBottomRef.current = false;
                   void chatHistory.loadEarlier();
                 }}
               >

@@ -11,6 +11,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecCurrentRun } from './SpecCurrentRun';
 import type { SpecRunSnapshot } from './useSpecCurrentRun';
 
+const PAGE_LIMIT = 300;
+
 const mocks = vi.hoisted(() => {
   const state: { currentRun: unknown } = { currentRun: null };
   const streamListeners = new Set<(ev: unknown) => void>();
@@ -125,6 +127,64 @@ function harnessAgentRow(id: number, text: string) {
     }),
     created_at_ms: 1780977420000 + id,
   };
+}
+
+function harnessCommandRow(id: number) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `cmd_${id}`,
+    item_type: 'commandExecution',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `cmd_${id}`,
+        type: 'commandExecution',
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
+function fullCommandPage(startId: number) {
+  return Array.from({ length: PAGE_LIMIT }, (_, index) =>
+    harnessCommandRow(startId + index),
+  );
+}
+
+async function emitHarnessItemAdded(
+  overrides: Partial<{
+    item_db_id: number;
+    item_uuid: string | null;
+    item_type: string | null;
+    method: string;
+  }> = {},
+) {
+  await act(async () => {
+    for (const listener of mocks.streamListeners) {
+      listener({
+        ev: 'harness.item.added',
+        data: {
+          runtime_id: 'runtime',
+          card_id: 'card_spec_1',
+          wave_id: 'wave',
+          item_db_id: 999,
+          item_uuid: 'msg_999',
+          item_type: 'userMessage',
+          turn_id: 'turn',
+          method: 'item/completed',
+          ...overrides,
+        },
+      });
+    }
+  });
 }
 
 describe('SpecCurrentRun', () => {
@@ -378,6 +438,34 @@ describe('SpecCurrentRun', () => {
     expect(agentText.closest('.report-chat-agent')).not.toBeNull();
   });
 
+  it('continues fetching the tail after a full asc page with no messages', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems
+      .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
+      .mockResolvedValueOnce(fullCommandPage(2))
+      .mockResolvedValueOnce([harnessUserRow(302, 'Triggering message')]);
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    expect(await screen.findByText('Initial')).toBeInTheDocument();
+
+    await emitHarnessItemAdded({
+      item_db_id: 302,
+      item_uuid: 'msg_302',
+    });
+
+    expect(await screen.findByText('Triggering message')).toBeInTheDocument();
+    expect(mocks.listHarnessItems).toHaveBeenCalledWith('card_spec_1', {
+      afterId: 301,
+      limit: PAGE_LIMIT,
+      direction: 'asc',
+    });
+  });
+
   it('shows an empty history state', async () => {
     const user = userEvent.setup();
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
@@ -391,6 +479,25 @@ describe('SpecCurrentRun', () => {
     expect(
       screen.getByText('No messages yet — ask a follow-up about this report.'),
     ).toBeInTheDocument();
+  });
+
+  it('does not show the empty state while earlier history is available', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems.mockResolvedValue(fullCommandPage(1));
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+
+    expect(
+      await screen.findByRole('button', { name: 'Load earlier' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('No messages yet — ask a follow-up about this report.'),
+    ).not.toBeInTheDocument();
   });
 
   it('renders a queued local echo after submit resolves', async () => {
@@ -410,5 +517,90 @@ describe('SpecCurrentRun', () => {
     });
     expect(await screen.findByText('Queue this')).toBeInTheDocument();
     expect(screen.getByText('Queued')).toBeInTheDocument();
+  });
+
+  it('drops only one queued echo when a real user row starts with the echo', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems.mockResolvedValueOnce([]);
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    expect(
+      await screen.findByText('No messages yet — ask a follow-up about this report.'),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Follow-up'), 'Repeat');
+    await user.keyboard('{Enter}');
+    await user.type(screen.getByLabelText('Follow-up'), 'Repeat');
+    await user.keyboard('{Enter}');
+    await waitFor(() => {
+      expect(screen.getAllByText('Queued')).toHaveLength(2);
+    });
+
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessUserRow(
+        10,
+        'Repeat\nA worker card finished a turn after the user message',
+      ),
+    ]);
+    await emitHarnessItemAdded({
+      item_db_id: 10,
+      item_uuid: 'msg_10',
+    });
+
+    expect(
+      await screen.findByText(/A worker card finished a turn/),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByText('Queued')).toHaveLength(1);
+    });
+  });
+
+  it('does not add an echo when the real user entry already landed', async () => {
+    const user = userEvent.setup();
+    const submitA = deferredVoid();
+    const submit = vi.fn(() => submitA.promise);
+    mocks.state.currentRun = makeRun({
+      fsm: 'Idle',
+      rawState: 'idle',
+      submit,
+    });
+    mocks.listHarnessItems
+      .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
+      .mockResolvedValueOnce([
+        harnessUserRow(2, 'Race\nObservation after the user message'),
+      ]);
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    expect(await screen.findByText('Initial')).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Follow-up'), 'Race');
+    await user.keyboard('{Enter}');
+    expect(submit).toHaveBeenCalledWith('Race');
+
+    await emitHarnessItemAdded({
+      item_db_id: 2,
+      item_uuid: 'msg_2',
+    });
+    expect(
+      await screen.findByText(/Observation after the user message/),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      submitA.resolve();
+      await submitA.promise;
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Queued')).not.toBeInTheDocument();
+    });
   });
 });
