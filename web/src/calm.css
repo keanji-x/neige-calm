@@ -2214,8 +2214,8 @@ select:-webkit-autofill {
 .report-convo-tab:hover:not(:disabled) {
   color: var(--text-2);
 }
-.report-convo-tab[aria-selected="true"],
-.report-convo-tab[aria-selected="true"]:hover {
+.report-convo-tab[aria-pressed="true"],
+.report-convo-tab[aria-pressed="true"]:hover {
   color: var(--text);
   border-bottom-color: var(--text);
 }

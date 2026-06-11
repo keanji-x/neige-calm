@@ -45,9 +45,45 @@ function entryClock(atMs: number): string {
   return `${hh}:${mm}`;
 }
 
-function scrollToBottom(node: HTMLDivElement | null): void {
-  if (!node) return;
-  node.scrollTop = node.scrollHeight;
+function isScrollContainer(node: HTMLElement): boolean {
+  const overflowY = node.ownerDocument.defaultView?.getComputedStyle(node)
+    .overflowY;
+  if (overflowY !== 'auto' && overflowY !== 'scroll') return false;
+  return node.scrollHeight > node.clientHeight;
+}
+
+/**
+ * Resolve the element whose `scrollTop` actually moves the document column.
+ *
+ * In the wide layout `.report-convo-scroll` is its own scroll container. In
+ * the narrow (≤980px) layout the CSS sets `overflow: visible` on the column
+ * so an ancestor — ultimately the page — scrolls instead; writing `scrollTop`
+ * on the column there is a no-op and its `scroll` events never fire. Fall
+ * back to the nearest scrollable ancestor, then to the document scrolling
+ * element (window scroll).
+ */
+export function resolveScrollTarget(
+  column: HTMLElement | null,
+): HTMLElement | null {
+  if (!column) return null;
+  if (isScrollContainer(column)) return column;
+  for (
+    let ancestor = column.parentElement;
+    ancestor;
+    ancestor = ancestor.parentElement
+  ) {
+    if (isScrollContainer(ancestor)) return ancestor;
+  }
+  return (
+    (column.ownerDocument.scrollingElement as HTMLElement | null) ??
+    column.ownerDocument.documentElement
+  );
+}
+
+function scrollToBottom(column: HTMLDivElement | null): void {
+  const target = resolveScrollTarget(column);
+  if (!target) return;
+  target.scrollTop = target.scrollHeight;
 }
 
 function ConvoTypingIndicator() {
@@ -163,14 +199,49 @@ export function SpecConversation({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+  // Per-view reading position (#654 finding 4): the report and conversation
+  // documents share one scroll container, and the conversation forces the
+  // scroll to the bottom. Remember each view's offset on every scroll so a
+  // mode toggle can put the report back where the reader left it.
+  const savedScrollTopRef = useRef({ report: 0, conversation: 0 });
   const latestSpecCardIdRef = useRef<string | null>(specCardId);
   latestSpecCardIdRef.current = specCardId;
 
   // Guard: the conversation document needs a spec card.
   const inConversation = view === 'conversation' && specCardId != null;
 
-  useEffect(() => {
+  const onAnyScroll = () => {
+    const target = resolveScrollTarget(scrollRef.current);
+    if (!target) return;
+    savedScrollTopRef.current[inConversation ? 'conversation' : 'report'] =
+      target.scrollTop;
     if (!inConversation) return;
+    const distanceFromBottom =
+      target.scrollHeight - target.scrollTop - target.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= 40;
+  };
+  const onAnyScrollRef = useRef(onAnyScroll);
+  onAnyScrollRef.current = onAnyScroll;
+
+  // Narrow layout (#654 finding 1): when an ancestor / the window is the
+  // scroll container, the column's own `onScroll` never fires. A capture
+  // listener on window observes every scroll, whichever element it lands on.
+  useEffect(() => {
+    const handler = () => {
+      onAnyScrollRef.current();
+    };
+    window.addEventListener('scroll', handler, true);
+    return () => window.removeEventListener('scroll', handler, true);
+  }, []);
+
+  useEffect(() => {
+    if (!inConversation) {
+      // Back to the report: restore the saved reading position (#654
+      // finding 4). The conversation re-sticks to the bottom instead.
+      const target = resolveScrollTarget(scrollRef.current);
+      if (target) target.scrollTop = savedScrollTopRef.current.report;
+      return;
+    }
     stickToBottomRef.current = true;
     const id = window.setTimeout(() => {
       scrollToBottom(scrollRef.current);
@@ -232,14 +303,6 @@ export function SpecConversation({
     }
   };
 
-  const onScroll = () => {
-    const node = scrollRef.current;
-    if (!node) return;
-    const distanceFromBottom =
-      node.scrollHeight - node.scrollTop - node.clientHeight;
-    stickToBottomRef.current = distanceFromBottom <= 40;
-  };
-
   const toggleExpandedEntry = (id: number) => {
     setExpandedEntries((current) => {
       const next = new Set(current);
@@ -260,15 +323,13 @@ export function SpecConversation({
     <>
       <header className="report-convo-head">
         <div className="report-convo-head-inner">
-          <div
-            role="tablist"
-            aria-label="Document view"
-            className="report-convo-tabs"
-          >
+          {/* Honest toggle buttons, not an ARIA tabs widget: the full tabs
+              contract (roving tabindex, arrow keys, aria-controls) is not
+              implemented, so plain buttons with aria-pressed are truthful. */}
+          <div className="report-convo-tabs">
             <button
               type="button"
-              role="tab"
-              aria-selected={!inConversation}
+              aria-pressed={!inConversation}
               className="report-convo-tab"
               onClick={() => onViewChange('report')}
             >
@@ -276,8 +337,7 @@ export function SpecConversation({
             </button>
             <button
               type="button"
-              role="tab"
-              aria-selected={inConversation}
+              aria-pressed={inConversation}
               className="report-convo-tab"
               disabled={specCardId == null}
               title={specCardId == null ? 'Spec agent unavailable' : undefined}
@@ -321,10 +381,9 @@ export function SpecConversation({
         ref={scrollRef}
         // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable document column must be keyboard-focusable.
         tabIndex={0}
-        role="region"
         aria-label={inConversation ? 'Conversation' : 'Report document'}
         className="report-convo-scroll"
-        onScroll={onScroll}
+        onScroll={onAnyScroll}
       >
         {!inConversation && children}
         {inConversation && (

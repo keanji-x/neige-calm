@@ -272,6 +272,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
   const [view, setView] = useState<ReportView>('report');
   const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
+  const [lastSpecCardId, setLastSpecCardId] = useState<string | null>(
+    specCardId,
+  );
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
@@ -283,6 +286,14 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     setLastWaveId(wave.id);
     setSelectedFilePath('report.md');
     setView('report');
+  }
+
+  // When the spec card disappears, drop the stale conversation view so a
+  // later card reappearance does not snap back to conversation (and steal
+  // focus into its input).
+  if (lastSpecCardId !== specCardId) {
+    setLastSpecCardId(specCardId);
+    if (specCardId == null) setView('report');
   }
 
   const toggleReportRailCollapsed = () => {

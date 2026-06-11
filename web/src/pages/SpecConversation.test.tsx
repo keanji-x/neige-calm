@@ -9,7 +9,11 @@ import {
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from '../shared/state';
-import { SpecConversation, type ReportView } from './SpecConversation';
+import {
+  SpecConversation,
+  resolveScrollTarget,
+  type ReportView,
+} from './SpecConversation';
 import type { SpecRunSnapshot } from './useSpecCurrentRun';
 
 const PAGE_LIMIT = 300;
@@ -233,25 +237,25 @@ describe('SpecConversation', () => {
 
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
     expect(
-      screen.queryByRole('region', { name: 'Conversation' }),
+      screen.queryByLabelText('Conversation'),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Report' })).toHaveAttribute(
-      'aria-selected',
+    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
+      'aria-pressed',
       'true',
     );
 
-    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+    await user.click(screen.getByRole('button', { name: 'Conversation' }));
 
     expect(
-      screen.getByRole('region', { name: 'Conversation' }),
+      screen.getByLabelText('Conversation'),
     ).toBeInTheDocument();
     expect(screen.queryByTestId('report-body')).not.toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Conversation' })).toHaveAttribute(
-      'aria-selected',
+    expect(screen.getByRole('button', { name: 'Conversation' })).toHaveAttribute(
+      'aria-pressed',
       'true',
     );
 
-    await user.click(screen.getByRole('tab', { name: 'Report' }));
+    await user.click(screen.getByRole('button', { name: 'Report' }));
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
   });
 
@@ -264,7 +268,7 @@ describe('SpecConversation', () => {
       screen.queryByRole('button', { name: 'Reset spec session' }),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+    await user.click(screen.getByRole('button', { name: 'Conversation' }));
 
     expect(screen.getByText('Running')).toBeInTheDocument();
     expect(screen.getByText('Turn Running')).toBeInTheDocument();
@@ -276,7 +280,7 @@ describe('SpecConversation', () => {
     const user = userEvent.setup();
     render(<Harness initialView="report" />);
 
-    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+    await user.click(screen.getByRole('button', { name: 'Conversation' }));
 
     await waitFor(() => {
       expect(draftBox()).toHaveFocus();
@@ -295,10 +299,10 @@ describe('SpecConversation', () => {
     render(<Harness initialView="report" />);
 
     await user.type(draftBox(), 'Persistent draft');
-    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+    await user.click(screen.getByRole('button', { name: 'Conversation' }));
     expect(draftBox()).toHaveValue('Persistent draft');
 
-    await user.click(screen.getByRole('tab', { name: 'Report' }));
+    await user.click(screen.getByRole('button', { name: 'Report' }));
     expect(draftBox()).toHaveValue('Persistent draft');
   });
 
@@ -313,7 +317,7 @@ describe('SpecConversation', () => {
       expect(mocks.submit).toHaveBeenCalledWith('From the report');
     });
     expect(
-      screen.getByRole('region', { name: 'Conversation' }),
+      screen.getByLabelText('Conversation'),
     ).toBeInTheDocument();
     expect(draftBox()).toHaveValue('');
   });
@@ -416,7 +420,7 @@ describe('SpecConversation', () => {
   it('disables the Conversation tab and hides the input when no spec card exists', () => {
     render(<Harness specCardId={null} initialView="report" />);
 
-    expect(screen.getByRole('tab', { name: 'Conversation' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Conversation' })).toBeDisabled();
     expect(
       screen.queryByLabelText('Ask the Spec Agent'),
     ).not.toBeInTheDocument();
@@ -428,7 +432,7 @@ describe('SpecConversation', () => {
 
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
     expect(
-      screen.queryByRole('region', { name: 'Conversation' }),
+      screen.queryByLabelText('Conversation'),
     ).not.toBeInTheDocument();
   });
 
@@ -694,7 +698,7 @@ describe('SpecConversation', () => {
       item_db_id: 2,
       item_uuid: 'msg_2',
     });
-    const history = screen.getByRole('region', { name: 'Conversation' });
+    const history = screen.getByLabelText('Conversation');
     expect(await within(history).findByText('Race')).toBeInTheDocument();
 
     await act(async () => {
@@ -705,5 +709,182 @@ describe('SpecConversation', () => {
     await waitFor(() => {
       expect(screen.queryByText('You · queued')).not.toBeInTheDocument();
     });
+  });
+
+  it('restores the report reading position after a round-trip through the conversation', async () => {
+    const user = userEvent.setup();
+    render(<Harness initialView="report" />);
+
+    // Make the column its own scroll container (wide layout).
+    const column = screen.getByLabelText('Report document');
+    column.style.overflowY = 'auto';
+    let columnScrollTop = 0;
+    Object.defineProperty(column, 'scrollTop', {
+      configurable: true,
+      get: () => columnScrollTop,
+      set: (value: number) => {
+        columnScrollTop = value;
+      },
+    });
+    Object.defineProperty(column, 'scrollHeight', {
+      configurable: true,
+      value: 3000,
+    });
+    Object.defineProperty(column, 'clientHeight', {
+      configurable: true,
+      value: 600,
+    });
+
+    // Read partway down the report.
+    columnScrollTop = 123;
+    fireEvent.scroll(column);
+
+    await user.click(screen.getByRole('button', { name: 'Conversation' }));
+    await waitFor(() => {
+      expect(column.scrollTop).toBe(3000);
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Report' }));
+    await waitFor(() => {
+      expect(column.scrollTop).toBe(123);
+    });
+  });
+
+  it('follows new messages via the window scroll fallback when the column cannot scroll', async () => {
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessAgentRow(1, 'Initial'),
+    ]);
+
+    // jsdom computes `overflow: visible` on the column (like the ≤980px
+    // layout), so the document scrolling element is the fallback target.
+    const scrollingElement = (document.scrollingElement ??
+      document.documentElement) as HTMLElement;
+    let pageScrollTop = 0;
+    Object.defineProperty(scrollingElement, 'scrollTop', {
+      configurable: true,
+      get: () => pageScrollTop,
+      set: (value: number) => {
+        pageScrollTop = value;
+      },
+    });
+    Object.defineProperty(scrollingElement, 'scrollHeight', {
+      configurable: true,
+      value: 2400,
+    });
+    Object.defineProperty(scrollingElement, 'clientHeight', {
+      configurable: true,
+      value: 800,
+    });
+
+    try {
+      render(<Harness />);
+
+      expect(await screen.findByText('Initial')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(scrollingElement.scrollTop).toBe(2400);
+      });
+      // Let the 30ms enter-conversation scroll timer fully elapse so it
+      // cannot re-snap to the bottom after the simulated user scroll.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+
+      // The reader scrolls the window away from the bottom; the column never
+      // fires its own scroll events, so stick-state must come from here.
+      pageScrollTop = 100;
+      fireEvent.scroll(window);
+
+      mocks.listHarnessItems.mockResolvedValueOnce([
+        harnessAgentRow(2, 'Later'),
+      ]);
+      await emitHarnessItemAdded({
+        item_db_id: 2,
+        item_uuid: 'msg_2',
+        item_type: 'agentMessage',
+      });
+      expect(await screen.findByText('Later')).toBeInTheDocument();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(scrollingElement.scrollTop).toBe(100);
+
+      // Back at the bottom, the next message re-sticks via window scroll.
+      pageScrollTop = 1600;
+      fireEvent.scroll(window);
+
+      mocks.listHarnessItems.mockResolvedValueOnce([
+        harnessAgentRow(3, 'Newest'),
+      ]);
+      await emitHarnessItemAdded({
+        item_db_id: 3,
+        item_uuid: 'msg_3',
+        item_type: 'agentMessage',
+      });
+      expect(await screen.findByText('Newest')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(scrollingElement.scrollTop).toBe(2400);
+      });
+    } finally {
+      Reflect.deleteProperty(scrollingElement, 'scrollTop');
+      Reflect.deleteProperty(scrollingElement, 'scrollHeight');
+      Reflect.deleteProperty(scrollingElement, 'clientHeight');
+    }
+  });
+});
+
+describe('resolveScrollTarget', () => {
+  function stubMetrics(
+    node: HTMLElement,
+    { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
+  ) {
+    Object.defineProperty(node, 'scrollHeight', {
+      configurable: true,
+      value: scrollHeight,
+    });
+    Object.defineProperty(node, 'clientHeight', {
+      configurable: true,
+      value: clientHeight,
+    });
+  }
+
+  it('returns the column itself when it is its own scroll container', () => {
+    const column = document.createElement('div');
+    column.style.overflowY = 'auto';
+    stubMetrics(column, { scrollHeight: 1000, clientHeight: 400 });
+    document.body.appendChild(column);
+
+    expect(resolveScrollTarget(column)).toBe(column);
+
+    column.remove();
+  });
+
+  it('falls back to the nearest scrollable ancestor when the column overflow is visible', () => {
+    const page = document.createElement('div');
+    page.style.overflowY = 'auto';
+    stubMetrics(page, { scrollHeight: 2000, clientHeight: 600 });
+    const column = document.createElement('div');
+    stubMetrics(column, { scrollHeight: 600, clientHeight: 600 });
+    page.appendChild(column);
+    document.body.appendChild(page);
+
+    expect(resolveScrollTarget(column)).toBe(page);
+
+    page.remove();
+  });
+
+  it('falls back to the document scrolling element when nothing else scrolls', () => {
+    const column = document.createElement('div');
+    document.body.appendChild(column);
+
+    expect(resolveScrollTarget(column)).toBe(
+      document.scrollingElement ?? document.documentElement,
+    );
+
+    column.remove();
+  });
+
+  it('returns null for a missing column', () => {
+    expect(resolveScrollTarget(null)).toBeNull();
   });
 });

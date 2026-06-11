@@ -614,9 +614,9 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(screen.getByRole('tab', { name: 'Conversation' })).toBeEnabled();
-    expect(screen.getByRole('tab', { name: 'Report' })).toHaveAttribute(
-      'aria-selected',
+    expect(screen.getByRole('button', { name: 'Conversation' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
+      'aria-pressed',
       'true',
     );
     expect(screen.getByLabelText('Ask the Spec Agent')).toBeInTheDocument();
@@ -632,14 +632,14 @@ describe('WaveReportPage', () => {
 
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation' }));
 
     expect(
-      screen.getByRole('region', { name: 'Conversation' }),
+      screen.getByLabelText('Conversation'),
     ).toBeInTheDocument();
     expect(screen.queryByText('Report with chat')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Report' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Report' }));
 
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
   });
@@ -652,9 +652,43 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(screen.getByRole('tab', { name: 'Conversation' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Conversation' })).toBeDisabled();
     expect(
       screen.queryByLabelText('Ask the Spec Agent'),
     ).not.toBeInTheDocument();
+  });
+
+  it('stays on the report view when the spec card disappears and reappears', () => {
+    const wave = makeWave();
+    const { rerender } = render(
+      <WaveReportPage
+        wave={wave}
+        cards={[specSlot(), reportSlot('Report with chat')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation' }));
+    expect(screen.getByLabelText('Conversation')).toBeInTheDocument();
+
+    // Spec card disappears: the column falls back to the report document.
+    rerender(
+      <WaveReportPage wave={wave} cards={[reportSlot('Report with chat')]} />,
+    );
+    expect(screen.getByText('Report with chat')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
+
+    // Reappearance must not snap back to the stale conversation view.
+    rerender(
+      <WaveReportPage
+        wave={wave}
+        cards={[specSlot(), reportSlot('Report with chat')]}
+      />,
+    );
+    expect(screen.getByText('Report with chat')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   });
 });
