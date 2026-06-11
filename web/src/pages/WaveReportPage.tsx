@@ -7,8 +7,10 @@ import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
+import { formatUpdatedAt } from '../shared/relativeTime';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
+import { useWaveFsViewer } from '../wave-fs-viewers';
 import { EventLinePanel } from './EventLinePanel';
 import { SpecCurrentRun } from './SpecCurrentRun';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
@@ -67,33 +69,6 @@ function writeReportRailCollapsed(collapsed: boolean): void {
   }
 }
 
-function formatUpdatedAt(updatedAt?: number): string {
-  if (
-    typeof updatedAt !== 'number' ||
-    !Number.isFinite(updatedAt) ||
-    updatedAt <= 0
-  ) {
-    return 'Updated -';
-  }
-
-  const diffMs = Math.max(0, Date.now() - updatedAt);
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return 'Updated just now';
-  if (minutes < 60) return `Updated ${minutes}m ago`;
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Updated ${hours}h ago`;
-
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `Updated ${days}d ago`;
-
-  return `Updated ${new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(new Date(updatedAt))}`;
-}
-
 function ReportByline({ report }: { report?: WaveReportCardData }) {
   return (
     <div className="report-byline" aria-label="Report metadata">
@@ -149,6 +124,12 @@ function ReportContent({
     (!!contentQ.error ||
       (!contentQ.data && !contentQ.error) ||
       (contentQ.isLoading && isFetching));
+  const jsonViewer = useWaveFsViewer(
+    contentQ.data && isJsonContent(contentQ.data.content_type) ? path : '',
+    contentQ.data && isJsonContent(contentQ.data.content_type)
+      ? contentQ.data.content
+      : '',
+  );
 
   if (contentQ.isLoading) {
     if (path === 'report.md' && isFetching) {
@@ -183,6 +164,15 @@ function ReportContent({
 
   if (contentQ.data.content_type === 'text/markdown') {
     return <ReportMarkdown body={contentQ.data.content} />;
+  }
+
+  if (isJsonContent(contentQ.data.content_type) && jsonViewer) {
+    const { Viewer, data, raw } = jsonViewer;
+    return (
+      <div className="report-json-card">
+        <Viewer data={data} path={path} raw={raw} />
+      </div>
+    );
   }
 
   if (isTextContent(contentQ.data.content_type)) {
@@ -242,11 +232,14 @@ function formatApiError(error: Error): string {
 function isTextContent(contentType: string): boolean {
   return (
     contentType.startsWith('text/') ||
-    contentType === 'application/json' ||
-    contentType.endsWith('+json') ||
+    isJsonContent(contentType) ||
     contentType === 'application/xml' ||
     contentType.endsWith('+xml')
   );
+}
+
+function isJsonContent(contentType: string): boolean {
+  return contentType === 'application/json' || contentType.endsWith('+json');
 }
 
 function isRelativeFetchUrlError(error: Error | null): boolean {

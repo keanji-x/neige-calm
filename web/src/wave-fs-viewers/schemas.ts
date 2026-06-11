@@ -1,0 +1,81 @@
+import { z } from 'zod';
+import { waveSchema } from '../api/schemas';
+
+export const waveFsRunStatusSchema = z.enum([
+  'completed',
+  'failed',
+  'running',
+  'requested',
+  'unknown',
+]);
+
+export const waveFsCardRoleSchema = z.enum(['worker', 'spec', 'reportcard']);
+
+export const waveFsCardMetaSchema = z.object({
+  created_at: z.number(),
+  deletable: z.boolean(),
+  id: z.string(),
+  kind: z.string(),
+  role: waveFsCardRoleSchema,
+  sort: z.number(),
+  updated_at: z.number(),
+});
+
+export const waveFsRunVerdictSummarySchema = z.object({
+  at: z.number(),
+  status: z.string(),
+});
+
+export const waveFsRunVerdictSchema = z.object({
+  at: z.number(),
+  reason: z.string().nullable(),
+  status: z.string(),
+});
+
+export const waveFsRunEventRefSchema = z.object({
+  created_at: z.number(),
+  event_id: z.number(),
+  kind: z.string(),
+  payload: z.unknown(),
+});
+
+export const waveFsRunEventsSchema = z.object({
+  completed: waveFsRunEventRefSchema.nullable(),
+  failed: waveFsRunEventRefSchema.nullable(),
+  requested: waveFsRunEventRefSchema.nullable(),
+  verdict: waveFsRunEventRefSchema.nullable(),
+});
+
+export const waveFsRunIndexEntrySchema = z.object({
+  finished_at: z.number().nullable(),
+  idempotency_key: z.string(),
+  kind: z.string(),
+  requested_at: z.number().nullable(),
+  status: waveFsRunStatusSchema,
+  verdict: waveFsRunVerdictSummarySchema.nullable(),
+  worker_card_id: z.string().nullable(),
+});
+
+export const waveFsRunDetailSchema = z.object({
+  events: waveFsRunEventsSchema,
+  finished_at: z.number().nullable(),
+  idempotency_key: z.string(),
+  kind: z.string(),
+  requested_at: z.number().nullable(),
+  status: waveFsRunStatusSchema,
+  verdict: waveFsRunVerdictSchema.nullable(),
+  worker_card_id: z.string().nullable(),
+  worker_card_payload: z.unknown().nullable(),
+});
+
+export const waveFsHookEventSchema = z.object({
+  created_at: z.number(),
+  event_id: z.number(),
+  hook_kind: z.string(),
+  kind: z.string(),
+  payload: z.unknown(),
+});
+
+export const waveFsCardsIndexSchema = z.array(waveFsCardMetaSchema);
+export const waveFsRunsIndexSchema = z.array(waveFsRunIndexEntrySchema);
+export const waveFsWaveSchema = waveSchema;
