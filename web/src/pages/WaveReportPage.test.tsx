@@ -606,7 +606,7 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('fallback').tagName).toBe('STRONG');
   });
 
-  it('renders the SpecCurrentRun collapsed pill when a spec card exists', () => {
+  it('renders the conversation tab and input line when a spec card exists', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -614,12 +614,37 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Conversation' })).toBeEnabled();
+    expect(screen.getByRole('tab', { name: 'Report' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByLabelText('Ask the Spec Agent')).toBeInTheDocument();
   });
 
-  it('renders the unavailable chat placeholder when no spec card exists', () => {
+  it('switches the column to the conversation document from the tab', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[specSlot(), reportSlot('Report with chat')]}
+      />,
+    );
+
+    expect(screen.getByText('Report with chat')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Conversation' }));
+
+    expect(
+      screen.getByRole('region', { name: 'Conversation' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Report with chat')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Report' }));
+
+    expect(screen.getByText('Report with chat')).toBeInTheDocument();
+  });
+
+  it('disables the conversation tab and hides the input when no spec card exists', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -627,9 +652,9 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(screen.getByText('Spec agent unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Conversation' })).toBeDisabled();
     expect(
-      screen.queryByRole('button', { name: 'Ask the Spec Agent' }),
+      screen.queryByLabelText('Ask the Spec Agent'),
     ).not.toBeInTheDocument();
   });
 });

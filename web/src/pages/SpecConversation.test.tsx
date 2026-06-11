@@ -8,7 +8,8 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SpecCurrentRun } from './SpecCurrentRun';
+import { useState } from '../shared/state';
+import { SpecConversation, type ReportView } from './SpecConversation';
 import type { SpecRunSnapshot } from './useSpecCurrentRun';
 
 const PAGE_LIMIT = 300;
@@ -187,7 +188,30 @@ async function emitHarnessItemAdded(
   });
 }
 
-describe('SpecCurrentRun', () => {
+function Harness({
+  specCardId = 'card_spec_1',
+  initialView = 'conversation',
+}: {
+  specCardId?: string | null;
+  initialView?: ReportView;
+}) {
+  const [view, setView] = useState<ReportView>(initialView);
+  return (
+    <SpecConversation
+      specCardId={specCardId}
+      view={view}
+      onViewChange={setView}
+    >
+      <article data-testid="report-body">Report body</article>
+    </SpecConversation>
+  );
+}
+
+function draftBox() {
+  return screen.getByLabelText('Ask the Spec Agent');
+}
+
+describe('SpecConversation', () => {
   beforeEach(() => {
     mocks.submit.mockReset();
     mocks.submit.mockResolvedValue(undefined);
@@ -203,75 +227,129 @@ describe('SpecCurrentRun', () => {
     mocks.state.currentRun = makeRun();
   });
 
-  it('renders a collapsed pill and expands into a labelled region', async () => {
+  it('switches between report and conversation documents via tabs', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness initialView="report" />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    expect(screen.getByTestId('report-body')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Conversation' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Report' })).toHaveAttribute(
+      'aria-selected',
+      'true',
     );
 
+    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+
     expect(
-      screen.getByRole('region', { name: 'Ask the Spec Agent' }),
+      screen.getByRole('region', { name: 'Conversation' }),
     ).toBeInTheDocument();
-    expect(screen.queryByLabelText('Latest tool')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('report-body')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Conversation' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    await user.click(screen.getByRole('tab', { name: 'Report' }));
+    expect(screen.getByTestId('report-body')).toBeInTheDocument();
+  });
+
+  it('shows the status chips only in conversation mode', async () => {
+    const user = userEvent.setup();
+    render(<Harness initialView="report" />);
+
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+
+    expect(screen.getByText('Running')).toBeInTheDocument();
+    expect(screen.getByText('Turn Running')).toBeInTheDocument();
+  });
+
+  it('focuses the input when entering conversation mode', async () => {
+    const user = userEvent.setup();
+    render(<Harness initialView="report" />);
+
+    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+
     await waitFor(() => {
-      expect(screen.getByLabelText('Follow-up')).toHaveFocus();
+      expect(draftBox()).toHaveFocus();
     });
     expect(
       screen.getByText('Press Enter to send; Shift+Enter inserts a newline.'),
     ).toHaveClass('sr-only');
-    expect(screen.getByLabelText('Follow-up')).toHaveAttribute(
+    expect(draftBox()).toHaveAttribute(
       'aria-describedby',
-      'report-chat-hint',
+      'report-convo-hint',
     );
-    expect(screen.getByText('Turn Running')).toBeInTheDocument();
   });
 
-  it('closes the expanded box from the close button', async () => {
+  it('keeps the draft when toggling between report and conversation', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness initialView="report" />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await user.type(draftBox(), 'Persistent draft');
+    await user.click(screen.getByRole('tab', { name: 'Conversation' }));
+    expect(draftBox()).toHaveValue('Persistent draft');
 
+    await user.click(screen.getByRole('tab', { name: 'Report' }));
+    expect(draftBox()).toHaveValue('Persistent draft');
+  });
+
+  it('sends from report mode and auto-switches to conversation', async () => {
+    const user = userEvent.setup();
+    render(<Harness initialView="report" />);
+
+    await user.type(draftBox(), 'From the report');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(mocks.submit).toHaveBeenCalledWith('From the report');
+    });
     expect(
-      screen.queryByRole('region', { name: 'Ask the Spec Agent' }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+      screen.getByRole('region', { name: 'Conversation' }),
     ).toBeInTheDocument();
+    expect(draftBox()).toHaveValue('');
   });
 
   it('submits textarea input with Enter and clears the draft', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    await user.type(screen.getByLabelText('Follow-up'), 'What changed?');
+    await user.type(draftBox(), 'What changed?');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
       expect(mocks.submit).toHaveBeenCalledWith('What changed?');
     });
+    expect(draftBox()).toHaveValue('');
+  });
+
+  it('shows a send button only when the draft is non-empty and sends on click', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+
     expect(
-      screen.getByRole('region', { name: 'Ask the Spec Agent' }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText('Follow-up')).toHaveValue('');
+      screen.queryByRole('button', { name: 'Send' }),
+    ).not.toBeInTheDocument();
+
+    await user.type(draftBox(), 'Click to send');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(mocks.submit).toHaveBeenCalledWith('Click to send');
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Send' }),
+    ).not.toBeInTheDocument();
   });
 
   it('does not submit empty textarea with plain Enter', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    await user.click(screen.getByLabelText('Follow-up'));
+    await user.click(draftBox());
     await user.keyboard('{Enter}');
 
     expect(mocks.submit).not.toHaveBeenCalled();
@@ -281,35 +359,28 @@ describe('SpecCurrentRun', () => {
     const user = userEvent.setup();
     const submit = vi.fn();
     mocks.state.currentRun = makeRun({ resetPending: false, submit });
-    const { rerender } = render(<SpecCurrentRun specCardId="card_spec_1" />);
+    const { rerender } = render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    await user.type(screen.getByLabelText('Follow-up'), 'Race window');
+    await user.type(draftBox(), 'Race window');
 
     mocks.state.currentRun = makeRun({ resetPending: true, submit });
-    rerender(<SpecCurrentRun specCardId="card_spec_1" />);
+    rerender(<Harness />);
 
-    const textarea = screen.getByLabelText('Follow-up');
+    const textarea = draftBox();
     expect(textarea).toBeDisabled();
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it('marks and disables the input while submit is pending', async () => {
-    const user = userEvent.setup();
+  it('marks and disables the input while submit is pending', () => {
     mocks.state.currentRun = makeRun({ submitPending: true });
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    const textarea = screen.getByLabelText('Follow-up');
-    const input = textarea.closest('.report-chat-input');
-    if (input == null) throw new Error('Missing chat input wrapper');
+    const textarea = draftBox();
+    const inputline = textarea.closest('.report-convo-inputline');
+    if (inputline == null) throw new Error('Missing input line wrapper');
 
-    expect(input).toHaveClass('report-chat-input--pending');
+    expect(inputline).toHaveClass('report-convo-inputline--pending');
     expect(textarea).toBeDisabled();
   });
 
@@ -318,48 +389,49 @@ describe('SpecCurrentRun', () => {
     const submitA = deferredVoid();
     const submit = vi.fn(() => submitA.promise);
     mocks.state.currentRun = makeRun({ cardId: 'A', submit });
-    const { rerender } = render(<SpecCurrentRun specCardId="A" />);
+    const { rerender } = render(<Harness specCardId="A" />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    await user.type(screen.getByLabelText('Follow-up'), 'hello A');
+    await user.type(draftBox(), 'hello A');
     await user.keyboard('{Enter}');
     expect(submit).toHaveBeenCalledWith('hello A');
 
     mocks.state.currentRun = makeRun({ cardId: 'B' });
-    rerender(<SpecCurrentRun specCardId="B" />);
-    await user.clear(screen.getByLabelText('Follow-up'));
-    await user.type(screen.getByLabelText('Follow-up'), 'hello B');
+    rerender(<Harness specCardId="B" />);
+    await user.clear(draftBox());
+    await user.type(draftBox(), 'hello B');
 
     await act(async () => {
       submitA.resolve();
       await submitA.promise;
     });
 
-    expect(
-      screen.getByRole('region', { name: 'Ask the Spec Agent' }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText('Follow-up')).toHaveValue('hello B');
+    expect(draftBox()).toHaveValue('hello B');
   });
 
-  it('renders a disabled placeholder when no spec card is available', () => {
-    render(<SpecCurrentRun specCardId={null} />);
+  it('disables the Conversation tab and hides the input when no spec card exists', () => {
+    render(<Harness specCardId={null} initialView="report" />);
 
-    expect(screen.getByText('Spec agent unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Conversation' })).toBeDisabled();
     expect(
-      screen.queryByRole('button', { name: 'Ask the Spec Agent' }),
+      screen.queryByLabelText('Ask the Spec Agent'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('report-body')).toBeInTheDocument();
+  });
+
+  it('falls back to the report document when view is conversation without a spec card', () => {
+    render(<Harness specCardId={null} initialView="conversation" />);
+
+    expect(screen.getByTestId('report-body')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Conversation' }),
     ).not.toBeInTheDocument();
   });
 
   it('submits trimmed textarea input with plain Enter', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    await user.type(screen.getByLabelText('Follow-up'), '  Ship it  ');
+    await user.type(draftBox(), '  Ship it  ');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
@@ -369,12 +441,9 @@ describe('SpecCurrentRun', () => {
 
   it('keeps Shift+Enter as a textarea newline without submitting', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    const textarea = screen.getByLabelText('Follow-up');
+    const textarea = draftBox();
     await user.type(textarea, 'abc');
     await user.keyboard('{Shift>}{Enter}{/Shift}');
 
@@ -384,12 +453,9 @@ describe('SpecCurrentRun', () => {
 
   it('does not submit Enter during IME composition', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    const textarea = screen.getByLabelText('Follow-up');
+    const textarea = draftBox();
     await user.type(textarea, 'zhong');
 
     fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
@@ -400,11 +466,8 @@ describe('SpecCurrentRun', () => {
 
   it('confirms reset session through ConfirmDialog', async () => {
     const user = userEvent.setup();
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
     await user.click(screen.getByRole('button', { name: 'Reset spec session' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Reset spec session?' });
@@ -418,39 +481,47 @@ describe('SpecCurrentRun', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('renders fetched chat history in the expanded box', async () => {
-    const user = userEvent.setup();
+  it('renders fetched history as labelled document blocks', async () => {
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValue([
       harnessUserRow(1, 'What changed?'),
       harnessAgentRow(2, '**Done**'),
     ]);
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
-
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
+    render(<Harness />);
 
     const userText = await screen.findByText('What changed?');
-    expect(userText.closest('.report-chat-bubble--user')).not.toBeNull();
+    const userEntry = userText.closest('.report-convo-entry--user');
+    expect(userEntry).not.toBeNull();
+    expect(within(userEntry as HTMLElement).getByText('You')).toBeInTheDocument();
+
     const agentText = await screen.findByText('Done');
-    expect(agentText.closest('.report-chat-agent')).not.toBeNull();
+    const agentEntry = agentText.closest('.report-convo-entry--agent');
+    expect(agentEntry).not.toBeNull();
+    expect(agentText.closest('.report-prose')).not.toBeNull();
+    expect(
+      within(agentEntry as HTMLElement).getByText('Spec Agent'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a typing indicator while the agent is working', () => {
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(<Harness />);
+
+    expect(
+      screen.getByRole('status', { name: 'Spec Agent is working' }),
+    ).toBeInTheDocument();
   });
 
   it('continues fetching the tail after a full asc page with no messages', async () => {
-    const user = userEvent.setup();
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems
       .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
       .mockResolvedValueOnce(fullCommandPage(2))
       .mockResolvedValueOnce([harnessUserRow(302, 'Triggering message')]);
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
     expect(await screen.findByText('Initial')).toBeInTheDocument();
 
     await emitHarnessItemAdded({
@@ -467,36 +538,26 @@ describe('SpecCurrentRun', () => {
   });
 
   it('shows an empty history state', async () => {
-    const user = userEvent.setup();
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
-
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
+    render(<Harness />);
 
     expect(
-      screen.getByText('No messages yet — ask a follow-up about this report.'),
+      await screen.findByText('No messages yet — ask the Spec Agent below.'),
     ).toBeInTheDocument();
   });
 
   it('does not show the empty state while earlier history is available', async () => {
-    const user = userEvent.setup();
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValue(fullCommandPage(1));
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
-
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
+    render(<Harness />);
 
     expect(
       await screen.findByRole('button', { name: 'Load earlier' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText('No messages yet — ask a follow-up about this report.'),
+      screen.queryByText('No messages yet — ask the Spec Agent below.'),
     ).not.toBeInTheDocument();
   });
 
@@ -504,19 +565,16 @@ describe('SpecCurrentRun', () => {
     const user = userEvent.setup();
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
-    await user.type(screen.getByLabelText('Follow-up'), 'Queue this');
+    await user.type(draftBox(), 'Queue this');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
       expect(mocks.submit).toHaveBeenCalledWith('Queue this');
     });
     expect(await screen.findByText('Queue this')).toBeInTheDocument();
-    expect(screen.getByText('Queued')).toBeInTheDocument();
+    expect(screen.getByText('You · queued')).toBeInTheDocument();
   });
 
   it('drops only one queued echo when a real user row adds newline observations', async () => {
@@ -524,21 +582,18 @@ describe('SpecCurrentRun', () => {
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValueOnce([]);
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
     expect(
-      await screen.findByText('No messages yet — ask a follow-up about this report.'),
+      await screen.findByText('No messages yet — ask the Spec Agent below.'),
     ).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText('Follow-up'), 'Repeat');
+    await user.type(draftBox(), 'Repeat');
     await user.keyboard('{Enter}');
-    await user.type(screen.getByLabelText('Follow-up'), 'Repeat');
+    await user.type(draftBox(), 'Repeat');
     await user.keyboard('{Enter}');
     await waitFor(() => {
-      expect(screen.getAllByText('Queued')).toHaveLength(2);
+      expect(screen.getAllByText('You · queued')).toHaveLength(2);
     });
 
     mocks.listHarnessItems.mockResolvedValueOnce([
@@ -556,7 +611,7 @@ describe('SpecCurrentRun', () => {
       await screen.findByText(/A worker card finished a turn/),
     ).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getAllByText('Queued')).toHaveLength(1);
+      expect(screen.getAllByText('You · queued')).toHaveLength(1);
     });
   });
 
@@ -565,19 +620,16 @@ describe('SpecCurrentRun', () => {
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValueOnce([]);
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
     expect(
-      await screen.findByText('No messages yet — ask a follow-up about this report.'),
+      await screen.findByText('No messages yet — ask the Spec Agent below.'),
     ).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText('Follow-up'), 'ok');
+    await user.type(draftBox(), 'ok');
     await user.keyboard('{Enter}');
     await waitFor(() => {
-      expect(screen.getByText('Queued')).toBeInTheDocument();
+      expect(screen.getByText('You · queued')).toBeInTheDocument();
     });
 
     mocks.listHarnessItems.mockResolvedValueOnce([
@@ -589,7 +641,7 @@ describe('SpecCurrentRun', () => {
     });
 
     expect(await screen.findByText('ok, sounds good')).toBeInTheDocument();
-    expect(screen.getByText('Queued')).toBeInTheDocument();
+    expect(screen.getByText('You · queued')).toBeInTheDocument();
   });
 
   it('adds an echo when a landed real user entry only shares its prefix', async () => {
@@ -599,19 +651,16 @@ describe('SpecCurrentRun', () => {
       harnessUserRow(1, 'ok, sounds good'),
     ]);
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
     expect(await screen.findByText('ok, sounds good')).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText('Follow-up'), 'ok');
+    await user.type(draftBox(), 'ok');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
       expect(mocks.submit).toHaveBeenCalledWith('ok');
-      expect(screen.getByText('Queued')).toBeInTheDocument();
+      expect(screen.getByText('You · queued')).toBeInTheDocument();
     });
   });
 
@@ -628,14 +677,11 @@ describe('SpecCurrentRun', () => {
       .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
       .mockResolvedValueOnce([harnessUserRow(2, 'Race')]);
 
-    render(<SpecCurrentRun specCardId="card_spec_1" />);
+    render(<Harness />);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
     expect(await screen.findByText('Initial')).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText('Follow-up'), 'Race');
+    await user.type(draftBox(), 'Race');
     await user.keyboard('{Enter}');
     expect(submit).toHaveBeenCalledWith('Race');
 
@@ -643,7 +689,7 @@ describe('SpecCurrentRun', () => {
       item_db_id: 2,
       item_uuid: 'msg_2',
     });
-    const history = screen.getByRole('region', { name: 'Spec chat history' });
+    const history = screen.getByRole('region', { name: 'Conversation' });
     expect(await within(history).findByText('Race')).toBeInTheDocument();
 
     await act(async () => {
@@ -652,7 +698,7 @@ describe('SpecCurrentRun', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByText('Queued')).not.toBeInTheDocument();
+      expect(screen.queryByText('You · queued')).not.toBeInTheDocument();
     });
   });
 });
