@@ -443,6 +443,17 @@ pub struct WavePatch {
     /// alone"; `Some(<state>)` triggers the validator against the
     /// (actor, from → to) triple before any DB write or event emit.
     pub lifecycle: Option<WaveLifecycle>,
+    /// Issue #644 — per-wave scheduler budget (`waves.task_budget`,
+    /// migration 0041). Pass `Some(Some(n))` to set, `Some(None)` to
+    /// clear back to the kernel default, or omit (`None`) to leave
+    /// alone. Inert until the PR-B scheduler reads it.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[schema(value_type = Option<i64>, nullable = true)]
+    pub task_budget: Option<Option<i64>>,
+    /// Issue #644 — wave-level gate policy (`waves.require_task_gates`,
+    /// migration 0041). `Some(v)` sets the flag, omit to leave alone.
+    /// Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
+    pub require_task_gates: Option<bool>,
 }
 
 // ---------------- Card ----------------
@@ -716,6 +727,96 @@ pub struct NewPlugin {
     /// migration test).
     pub enabled: bool,
     pub user_config: serde_json::Value,
+}
+
+// ---------------- Tasks (issue #644) ----------------
+
+/// Worker kind a planned task lowers to at dispatch time.
+///
+/// Persisted as a lowercase string in `tasks.kind` (migration 0041).
+/// `claude` is deliberately absent: no claude-worker dispatch adapter
+/// exists, the column CHECK omits it, and `calm.plan.upsert` rejects it
+/// with an explicit "not yet supported" error so a later migration can
+/// add the variant together with the adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum TaskKind {
+    Codex,
+    Terminal,
+}
+
+/// Task plan status machine (design §3, issue #644). PR-A only ever
+/// writes `pending` / `canceled` (the plan is inert); the scheduler
+/// (PR-B) and gate runner (PR-C) drive the remaining transitions.
+///
+/// Persisted as a lowercase string in `tasks.status` (migration 0041).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum TaskStatus {
+    Pending,
+    Dispatched,
+    Running,
+    Verifying,
+    Done,
+    Failed,
+    Canceled,
+}
+
+impl TaskStatus {
+    /// Terminal statuses never transition again (a `canceled`/`failed`
+    /// task is replaced by a new key, never revived — design §3.1).
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Canceled
+        )
+    }
+}
+
+/// One row of the wave-scoped task plan (`tasks`, migration 0041).
+///
+/// `id = "{wave_id}:{key}"` — kernel-composed (wave ids are `new_id()`
+/// hex, so `:` cannot collide). The JSON columns stay `String`s here:
+/// the repo layer is mechanical and the tool layer owns
+/// parse/normalize (`mcp_server::tools::plan`). Not exposed over REST
+/// or the WS event stream in PR-A, hence no `ToSchema`/`TS` derives.
+#[derive(Clone, Debug, PartialEq, Serialize, sqlx::FromRow)]
+pub struct Task {
+    pub id: String,
+    pub wave_id: String,
+    pub key: String,
+    pub kind: TaskKind,
+    pub goal: String,
+    pub context_json: String,
+    pub acceptance_criteria: Option<String>,
+    pub cwd: Option<String>,
+    pub depends_on_json: String,
+    pub priority: i64,
+    pub gate_json: Option<String>,
+    pub status: TaskStatus,
+    pub status_detail: Option<String>,
+    pub worker_card_id: Option<String>,
+    pub gate_result_json: Option<String>,
+    pub gate_attempt: i64,
+    pub gate_pid: Option<i64>,
+    pub gate_pid_starttime: Option<i64>,
+    pub gate_pid_boot_id: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+}
+
+impl Task {
+    /// Parse `depends_on_json` back into sibling keys. The writer
+    /// (`calm.plan.upsert`) always stores a sorted, deduped JSON array
+    /// of strings, so a parse failure means out-of-band tampering —
+    /// surface as empty rather than panicking (the column CHECK
+    /// guarantees valid JSON, not shape).
+    pub fn depends_on(&self) -> Vec<String> {
+        serde_json::from_str(&self.depends_on_json).unwrap_or_default()
+    }
 }
 
 // ---------------- Composites ----------------

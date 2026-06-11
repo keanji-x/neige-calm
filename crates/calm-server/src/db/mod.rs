@@ -317,6 +317,15 @@ pub trait RepoRead: Send + Sync + 'static {
         until: Option<i64>,
     ) -> Result<Vec<Wave>>;
 
+    // ---- tasks (issue #644 — wave-scoped task plan)
+    /// Every task in the wave's plan, ordered for stable listing:
+    /// `priority DESC, created_at_ms ASC, key ASC` (the same order the
+    /// PR-B scheduler's ready-set query uses, design §5.2). Backed by
+    /// the `tasks_wave_status_idx` index from migration 0041.
+    async fn tasks_by_wave(&self, wave_id: &str) -> Result<Vec<Task>>;
+    /// Single-row fetch by the composed `"{wave_id}:{key}"` id.
+    async fn task_get(&self, id: &str) -> Result<Option<Task>>;
+
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;

@@ -724,12 +724,28 @@ pub(crate) async fn update_wave(
         None
     };
 
+    // Issue #644 — scheduler budget sanity. `Some(None)` clears back to
+    // the kernel default; a present value must be non-negative (0 is a
+    // legal "hold new dispatches" budget per design §5.2's
+    // `max(0, budget - running_cost)`).
+    if let Some(Some(budget)) = p.task_budget
+        && budget < 0
+    {
+        return Err(CalmError::BadRequest(format!(
+            "task_budget must be >= 0 (got {budget}); pass null to reset to the kernel default"
+        )));
+    }
+
     // If the patch is now entirely empty (lifecycle was a no-op and
     // no other field was supplied) there's nothing to write and
     // nothing to emit — return the wave as-is. This is the
     // idempotent retry path for "spec re-sends the current state."
-    let patch_has_other_changes =
-        p.title.is_some() || p.sort.is_some() || p.archived_at.is_some() || p.pinned_at.is_some();
+    let patch_has_other_changes = p.title.is_some()
+        || p.sort.is_some()
+        || p.archived_at.is_some()
+        || p.pinned_at.is_some()
+        || p.task_budget.is_some()
+        || p.require_task_gates.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
         return Ok(Json(existing));
     }
