@@ -294,6 +294,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Issue #634 — `npm run gen:api` builds three test-profile binaries
+      # (`cargo test export_bindings_` for calm-server / calm-session /
+      # calm-editor) plus `cargo run --bin emit-openapi`, all on the shared
+      # `workspace` rust-cache. Peak target/ + cache exceeds the ~14GB free
+      # that `ubuntu-latest` ships with, and the link stage was repeatedly
+      # dying with SIGBUS (tmpfs object-file truncation) or ENOSPC at the
+      # temp dir. Pruning Android SDK / .NET / Haskell / pre-pulled docker
+      # images frees ~20GB+ and gives a stable link stage. Keep
+      # `tool-cache` so the `actions/setup-node` step below still finds a
+      # pre-cached Node 20; skip `large-packages` (slow, unneeded) and
+      # `swap-storage` (don't shrink runner swap on a tight job).
+      - name: free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -311,6 +333,12 @@ jobs:
       - name: npm ci
         working-directory: web
         run: npm ci --legacy-peer-deps
+
+      # Acceptance criterion for #634: ≥5GB free at the link stage.
+      # Printed immediately before the cargo build so the run log shows the
+      # headroom the linker actually sees.
+      - name: df -h (pre-gen:api headroom check)
+        run: df -h /
 
       - name: regenerate OpenAPI spec + TS types
         working-directory: web
