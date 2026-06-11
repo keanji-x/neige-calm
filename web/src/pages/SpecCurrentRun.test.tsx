@@ -1,4 +1,11 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecCurrentRun } from './SpecCurrentRun';
@@ -68,9 +75,17 @@ describe('SpecCurrentRun', () => {
     expect(
       screen.getByRole('region', { name: 'Ask the Spec Agent' }),
     ).toBeInTheDocument();
+    expect(screen.queryByLabelText('Latest tool')).not.toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByLabelText('Follow-up')).toHaveFocus();
     });
+    expect(
+      screen.getByText('Press Enter to send; Shift+Enter inserts a newline.'),
+    ).toHaveClass('sr-only');
+    expect(screen.getByLabelText('Follow-up')).toHaveAttribute(
+      'aria-describedby',
+      'report-chat-hint',
+    );
     expect(screen.getByText('Turn Running')).toBeInTheDocument();
   });
 
@@ -91,7 +106,7 @@ describe('SpecCurrentRun', () => {
     ).toBeInTheDocument();
   });
 
-  it('submits textarea input, clears the draft, and collapses', async () => {
+  it('submits textarea input with Enter, clears the draft, and collapses', async () => {
     const user = userEvent.setup();
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
@@ -99,7 +114,7 @@ describe('SpecCurrentRun', () => {
       screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.type(screen.getByLabelText('Follow-up'), 'What changed?');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.keyboard('{Enter}');
 
     await waitFor(() => {
       expect(mocks.submit).toHaveBeenCalledWith('What changed?');
@@ -114,15 +129,16 @@ describe('SpecCurrentRun', () => {
     expect(screen.getByLabelText('Follow-up')).toHaveValue('');
   });
 
-  it('keeps Send disabled for an empty textarea', async () => {
+  it('does not submit empty textarea with plain Enter', async () => {
     const user = userEvent.setup();
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
       screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
+    await user.click(screen.getByLabelText('Follow-up'));
+    await user.keyboard('{Enter}');
 
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     expect(mocks.submit).not.toHaveBeenCalled();
   });
 
@@ -140,10 +156,26 @@ describe('SpecCurrentRun', () => {
     mocks.state.currentRun = makeRun({ resetPending: true, submit });
     rerender(<SpecCurrentRun specCardId="card_spec_1" />);
 
-    expect(screen.getByLabelText('Follow-up')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const textarea = screen.getByLabelText('Follow-up');
+    expect(textarea).toBeDisabled();
+    fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('marks and disables the input while submit is pending', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ submitPending: true });
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    const textarea = screen.getByLabelText('Follow-up');
+    const input = textarea.closest('.report-chat-input');
+    if (input == null) throw new Error('Missing chat input wrapper');
+
+    expect(input).toHaveClass('report-chat-input--pending');
+    expect(textarea).toBeDisabled();
   });
 
   it('does not clear a new card draft when a previous card submit completes', async () => {
@@ -157,7 +189,7 @@ describe('SpecCurrentRun', () => {
       screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.type(screen.getByLabelText('Follow-up'), 'hello A');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.keyboard('{Enter}');
     expect(submit).toHaveBeenCalledWith('hello A');
 
     mocks.state.currentRun = makeRun({ cardId: 'B' });
@@ -185,19 +217,50 @@ describe('SpecCurrentRun', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('submits with Cmd/Ctrl+Enter', async () => {
+  it('submits trimmed textarea input with plain Enter', async () => {
     const user = userEvent.setup();
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
       screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
-    await user.type(screen.getByLabelText('Follow-up'), 'Ship it');
-    await user.keyboard('{Control>}{Enter}{/Control}');
+    await user.type(screen.getByLabelText('Follow-up'), '  Ship it  ');
+    await user.keyboard('{Enter}');
 
     await waitFor(() => {
       expect(mocks.submit).toHaveBeenCalledWith('Ship it');
     });
+  });
+
+  it('keeps Shift+Enter as a textarea newline without submitting', async () => {
+    const user = userEvent.setup();
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    const textarea = screen.getByLabelText('Follow-up');
+    await user.type(textarea, 'abc');
+    await user.keyboard('{Shift>}{Enter}{/Shift}');
+
+    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('abc\n');
+  });
+
+  it('does not submit Enter during IME composition', async () => {
+    const user = userEvent.setup();
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    const textarea = screen.getByLabelText('Follow-up');
+    await user.type(textarea, 'zhong');
+
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 });
+
+    expect(mocks.submit).not.toHaveBeenCalled();
   });
 
   it('confirms reset session through ConfirmDialog', async () => {
@@ -207,7 +270,7 @@ describe('SpecCurrentRun', () => {
     await user.click(
       screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
-    await user.click(screen.getByRole('button', { name: 'Reset session...' }));
+    await user.click(screen.getByRole('button', { name: 'Reset spec session' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Reset spec session?' });
     await user.click(within(dialog).getByRole('button', { name: 'Reset session' }));

@@ -114,6 +114,18 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
                     {humanizeToken(run.phase)}
                   </span>
                 )}
+                <button
+                  type="button"
+                  className="report-chat-reset-pill"
+                  aria-label="Reset spec session"
+                  disabled={run.resetPending}
+                  onClick={() => {
+                    setResetAttempted(false);
+                    setResetOpen(true);
+                  }}
+                >
+                  Reset
+                </button>
               </span>
             </div>
             <button
@@ -126,42 +138,49 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
             </button>
           </header>
 
-          <div className="report-chat-tool" aria-label="Latest tool">
-            <span className="report-chat-tool-label">
-              {run.latestTool.toolLabel ?? 'No active tool'}
-            </span>
-            {run.latestTool.toolStatus && (
-              <span className="report-chat-tool-status">
-                {humanizeToken(run.latestTool.toolStatus)}
+          {run.latestTool.toolLabel != null && (
+            <div className="report-chat-tool" aria-label="Latest tool">
+              <span className="report-chat-tool-label">
+                {run.latestTool.toolLabel}
               </span>
-            )}
-          </div>
+              {run.latestTool.toolStatus && (
+                <span className="report-chat-tool-status">
+                  {humanizeToken(run.latestTool.toolStatus)}
+                </span>
+              )}
+            </div>
+          )}
 
-          <div className="report-chat-input">
+          <div
+            className={
+              'report-chat-input' +
+              (run.submitPending ? ' report-chat-input--pending' : '')
+            }
+          >
             <textarea
               ref={textareaRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                const isComposing =
+                  e.nativeEvent.isComposing === true || e.keyCode === 229;
+                if (isComposing) return;
+
+                if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   void onSubmit();
                 }
               }}
               placeholder="Ask a follow-up about this report..."
+              enterKeyHint="send"
               rows={1}
               disabled={run.submitPending || run.resetPending}
               aria-label="Follow-up"
+              aria-describedby="report-chat-hint"
             />
-            <button
-              type="button"
-              className="report-chat-send"
-              aria-label="Send"
-              disabled={!draft.trim() || run.submitPending || run.resetPending}
-              onClick={() => void onSubmit()}
-            >
-              Send
-            </button>
+            <span id="report-chat-hint" className="sr-only">
+              Press Enter to send; Shift+Enter inserts a newline.
+            </span>
           </div>
 
           {run.submitError && (
@@ -169,19 +188,6 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
               {run.submitError}
             </p>
           )}
-
-          <footer className="report-chat-footer">
-            <button
-              type="button"
-              className="report-chat-reset"
-              onClick={() => {
-                setResetAttempted(false);
-                setResetOpen(true);
-              }}
-            >
-              Reset session...
-            </button>
-          </footer>
         </section>
       )}
 
