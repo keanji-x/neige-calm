@@ -862,44 +862,133 @@ fn should_persist_item_method(method: &str) -> bool {
     matches!(method, "item/started" | "item/completed")
 }
 
+/// 5s defensive cap on the wave-vcs diff-block fetch inside `maybe_issue_turn`.
+/// The diff block is a context augmentation prepended to spec turn
+/// observations (#595 PR2); it is never a correctness requirement. If the
+/// underlying sqlite SELECT chain stalls (issue #639 — silent stuck-turn
+/// hypothesis), this ceiling converts an unobservable hang into a logged
+/// warn + a degraded-but-functional turn issuance.
+const SINCE_LAST_TURN_DIFF_TIMEOUT: Duration = Duration::from_secs(5);
+const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
+
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
-    {
-        let queue = inner.pending_queue.lock().await;
-        if queue.is_empty() {
-            return Ok(());
-        }
+    // Most ticks find the queue empty; bail before any logging so the 50ms
+    // tick cadence does not flood the log with one entry line per tick.
+    let queue_len = inner.pending_queue.lock().await.len();
+    if queue_len == 0 {
+        return Ok(());
     }
-    let now = Instant::now();
-    let should_issue = {
+    let (hard_fire, first_pending_at, last_pending_at) = {
         let debounce = inner.debounce.lock().await;
-        if debounce.hard_fire {
-            true
-        } else {
-            let Some(first) = debounce.first_pending_at else {
-                return Ok(());
-            };
-            let Some(last) = debounce.last_pending_at else {
-                return Ok(());
-            };
-            now.duration_since(last) >= inner.config.debounce_min_idle
-                || now.duration_since(first) >= inner.config.debounce_max_wait
-        }
+        (
+            debounce.hard_fire,
+            debounce.first_pending_at,
+            debounce.last_pending_at,
+        )
+    };
+    // No state snapshot here: the gating-reason logs below already cover the
+    // state-blocked case, and the happy path logs the state implicitly through
+    // the "calling daemon.turn_start" → "daemon.turn_start ok" pair.
+    tracing::debug!(
+        target: "calm_server::spec_harness_issue",
+        runtime_id = %inner.runtime_id,
+        card_id = %inner.card_id,
+        wave_id = %inner.wave_id,
+        queue_len,
+        hard_fire,
+        "maybe_issue_turn entry (queue non-empty)"
+    );
+
+    let now = Instant::now();
+    let should_issue = if hard_fire {
+        true
+    } else {
+        let Some(first) = first_pending_at else {
+            tracing::debug!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %inner.runtime_id,
+                card_id = %inner.card_id,
+                wave_id = %inner.wave_id,
+                hard_fire,
+                "debounce gating turn issuance (no first_pending_at)"
+            );
+            return Ok(());
+        };
+        let Some(last) = last_pending_at else {
+            tracing::debug!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %inner.runtime_id,
+                card_id = %inner.card_id,
+                wave_id = %inner.wave_id,
+                hard_fire,
+                "debounce gating turn issuance (no last_pending_at)"
+            );
+            return Ok(());
+        };
+        now.duration_since(last) >= inner.config.debounce_min_idle
+            || now.duration_since(first) >= inner.config.debounce_max_wait
     };
     if !should_issue {
+        tracing::debug!(
+            target: "calm_server::spec_harness_issue",
+            runtime_id = %inner.runtime_id,
+            card_id = %inner.card_id,
+            wave_id = %inner.wave_id,
+            hard_fire,
+            first_pending_ms = first_pending_at
+                .map(|t| now.duration_since(t).as_millis() as u64),
+            last_pending_ms = last_pending_at
+                .map(|t| now.duration_since(t).as_millis() as u64),
+            "debounce gating turn issuance"
+        );
         return Ok(());
     }
 
     {
         let state = inner.state.lock().await;
         if !state.can_issue_turn() {
+            tracing::debug!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %inner.runtime_id,
+                card_id = %inner.card_id,
+                wave_id = %inner.wave_id,
+                state = ?*state,
+                "state gating turn issuance"
+            );
             return Ok(());
         }
     }
-    let diff = since_last_turn_diff_block(inner).await;
+    let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
+    tracing::debug!(
+        target: "calm_server::spec_harness_issue",
+        runtime_id = %inner.runtime_id,
+        card_id = %inner.card_id,
+        wave_id = %inner.wave_id,
+        last_seen_head = ?last_seen_head_snapshot,
+        "fetching since-last-turn diff"
+    );
+    let diff = diff_with_timeout(inner).await;
+    tracing::debug!(
+        target: "calm_server::spec_harness_issue",
+        runtime_id = %inner.runtime_id,
+        card_id = %inner.card_id,
+        wave_id = %inner.wave_id,
+        block_some = diff.block.is_some(),
+        current_head = ?diff.current_head.as_deref(),
+        "since-last-turn diff resolved"
+    );
 
     let prior_turn = {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
+            tracing::debug!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %inner.runtime_id,
+                card_id = %inner.card_id,
+                wave_id = %inner.wave_id,
+                state = ?*state,
+                "state gating turn issuance post-diff"
+            );
             return Ok(());
         }
         let prior = match &*state {
@@ -945,13 +1034,32 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         persist_snapshot(inner).await?;
         return Ok(());
     };
+    let drained_count = drained.len();
     let text = prepend_diff_block(diff.block, joined_observation_text);
+    tracing::debug!(
+        target: "calm_server::spec_harness_issue",
+        runtime_id = %inner.runtime_id,
+        card_id = %inner.card_id,
+        wave_id = %inner.wave_id,
+        thread_id = %thread_id,
+        drained_count,
+        "calling daemon.turn_start"
+    );
 
     match IssueTurnHandle::from_reconciliation(inner)
         .issue(&thread_id, vec![InputItem::text(text)])
         .await
     {
         Ok(turn_id) => {
+            tracing::debug!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %inner.runtime_id,
+                card_id = %inner.card_id,
+                wave_id = %inner.wave_id,
+                thread_id = %thread_id,
+                turn_id = %turn_id,
+                "daemon.turn_start ok"
+            );
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_id.lock().await = Some(turn_id);
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
@@ -971,6 +1079,86 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Wrap `since_last_turn_diff_block` in a 5s timeout. On timeout, log a warn
+/// and fall through without a diff block so the turn still issues — the diff
+/// block is contextual augmentation, never a correctness requirement (#639).
+async fn diff_with_timeout(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
+    diff_or_fallback_on_timeout(
+        since_last_turn_diff_block(inner),
+        SINCE_LAST_TURN_DIFF_TIMEOUT,
+        &inner.runtime_id,
+        inner.card_id.as_str(),
+        inner.wave_id.as_str(),
+        || async {
+            wave_vcs::SinceLastTurnBlock {
+                current_head: current_head_after_diff_timeout(inner).await,
+                block: None,
+            }
+        },
+    )
+    .await
+}
+
+async fn diff_or_fallback_on_timeout<F, G, H>(
+    fut: F,
+    timeout: Duration,
+    runtime_id: &RuntimeId,
+    card_id: &str,
+    wave_id: &str,
+    fallback: H,
+) -> wave_vcs::SinceLastTurnBlock
+where
+    F: std::future::Future<Output = wave_vcs::SinceLastTurnBlock>,
+    G: std::future::Future<Output = wave_vcs::SinceLastTurnBlock>,
+    H: FnOnce() -> G,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(diff) => diff,
+        Err(_) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %runtime_id,
+                card_id,
+                wave_id,
+                timeout_secs = timeout.as_secs(),
+                "since-last-turn diff timed out; issuing turn without diff block"
+            );
+            fallback().await
+        }
+    }
+}
+
+async fn current_head_after_diff_timeout(inner: &Arc<Inner>) -> Option<wave_vcs::CommitHash> {
+    let pool = inner.repo.sqlite_pool()?;
+
+    match tokio::time::timeout(
+        SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT,
+        wave_vcs::head(&pool, &inner.wave_id),
+    )
+    .await
+    {
+        Ok(Ok(head)) => head,
+        Ok(Err(head_err)) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                wave_id = %inner.wave_id,
+                error = %head_err,
+                "spec harness could not read wave-vcs head after diff timeout"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                wave_id = %inner.wave_id,
+                timeout_secs = SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT.as_secs(),
+                "spec harness wave-vcs head read timed out after diff timeout"
+            );
+            None
+        }
+    }
 }
 
 async fn since_last_turn_diff_block(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
@@ -1487,6 +1675,41 @@ mod tests {
             queue.len(),
             1,
             "non-folding path should not mutate the queue"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn diff_or_fallback_on_timeout_returns_fallback_when_underlying_future_hangs() {
+        use super::diff_or_fallback_on_timeout;
+        use crate::wave_vcs::SinceLastTurnBlock;
+        use std::future::pending;
+        use std::time::Duration;
+
+        let runtime_id: String = "c501ea4e-test".into();
+
+        let result = diff_or_fallback_on_timeout(
+            pending::<SinceLastTurnBlock>(),
+            Duration::from_secs(5),
+            &runtime_id,
+            "47e6ce46-test",
+            "w-test",
+            || async {
+                SinceLastTurnBlock {
+                    current_head: Some("head-after-timeout".into()),
+                    block: None,
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            result.block.is_none(),
+            "timeout fallback must return an empty diff block"
+        );
+        assert_eq!(
+            result.current_head.as_deref(),
+            Some("head-after-timeout"),
+            "timeout fallback must preserve the fallback current head"
         );
     }
 
