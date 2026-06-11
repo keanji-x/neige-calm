@@ -7,24 +7,21 @@
    block. */
 /* stylelint-disable color-no-hex, declaration-property-value-disallowed-list */
 :root {
-  --font-sans: "IBM Plex Sans", "IBM Plex Sans SC", "IBM Plex Sans JP", "IBM Plex Sans KR", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
-  --font-mono: "IBM Plex Mono", "PingFang SC", "SF Mono", ui-monospace, "Menlo", monospace;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   /* Semantic font-family aliases over positional --font-sans/serif/mono
-     (slice 4 of #150). After unification onto a single editorial typeface,
-     --font-display and --font-numeric both alias --font-sans (IBM Plex Sans)
-     rather than the serif stack — the surface is no longer mixed sans+serif.
+     (slice 4 of #150). The app uses local system UI fonts for the primary
+     surface; --font-display and --font-numeric both alias --font-sans rather
+     than the serif stack, so the surface stays unified across UI chrome.
      --font-serif stays defined as positional vocabulary for future opt-in
      (marketing/editorial pages) but has zero consumers in this file.
 
-     CJK fallback: the IBM Plex Sans SC/JP/KR + PingFang SC + Hiragino Sans
-     GB entries are declared in the chain so the browser's per-character
-     fallback picks them up for CJK text. Plex CJK is NOT preloaded as a
-     webfont (hundreds of KB before the first Han char is unacceptable for
-     a primarily-Latin UI); when Plex CJK isn't installed locally, the
-     system CJK face takes over. Aliases resolve through the cascade — no
-     dark override; fonts don't theme-vary. */
+     CJK fallback: PingFang SC, Hiragino Sans GB, and Microsoft YaHei are
+     declared in the chain so the browser's per-character fallback picks up
+     local system CJK faces without downloading webfonts. Aliases resolve
+     through the cascade — no dark override; fonts don't theme-vary. */
   --font-display: var(--font-sans);   /* large titles, modal attn heads */
   --font-numeric: var(--font-sans);   /* clocks, dates, large stats — could diverge from --font-display later */
   --font-code:    var(--font-mono);   /* terminal, diff, inline code, settings hint code */
@@ -495,8 +492,75 @@ select:-webkit-autofill {
   gap: var(--space-1);
   border-right: 1px solid var(--hairline);
   background: var(--surface-rail);
+  overflow-x: hidden;
+  transition:
+    width var(--motion-medium) ease,
+    padding var(--motion-medium) ease,
+    background var(--motion-quick),
+    border-color var(--motion-quick);
 }
 [data-theme="dark"] .side { background: var(--surface-rail); }
+.side.side--collapsed {
+  width: 44px;
+  padding: var(--space-3) var(--space-3) var(--space-7);
+  align-items: center;
+}
+.side .side-today-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+}
+.side.side--collapsed .side-today-row {
+  justify-content: center;
+  width: auto;
+}
+.side .side-today-row .side-nav {
+  flex: 1 1 auto;
+}
+.side .side-collapse-toggle {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  align-self: center;
+  padding: var(--space-0);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition:
+    background var(--motion-quick),
+    border-color var(--motion-quick),
+    color var(--motion-quick);
+}
+.side.side--collapsed .side-collapse-toggle {
+  align-self: center;
+  background: var(--overlay-hover-faint);
+  border-color: var(--hairline);
+}
+[data-theme="dark"] .side.side--collapsed .side-collapse-toggle {
+  background: var(--overlay-hover);
+}
+.side .side-collapse-toggle svg {
+  transform: rotate(180deg);
+  transition: transform var(--motion-medium) ease;
+}
+.side.side--collapsed .side-collapse-toggle svg {
+  transform: rotate(0deg);
+}
+.side .side-collapse-toggle:hover {
+  background: var(--overlay-hover);
+  border-color: var(--hairline-strong);
+  color: var(--text);
+}
+.side .side-collapse-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 /* Sub-landmark wrappers (<nav>, <section>) inside the sidebar. They
    exist for a11y scoping (see Sidebar.tsx + a11y-contract.md §2.2);
    visually they're invisible — children should sit in the same flex
@@ -1624,6 +1688,10 @@ select:-webkit-autofill {
   grid-template-columns: minmax(0, 1fr) 280px;
   background: var(--bg);
   overflow: hidden;
+  transition: grid-template-columns var(--motion-medium) ease;
+}
+.report-page--rail-collapsed {
+  grid-template-columns: minmax(0, 1fr) 44px;
 }
 .report-center {
   min-width: 0;
@@ -1835,6 +1903,14 @@ select:-webkit-autofill {
   flex-direction: column;
   border-left: 1px solid var(--hairline);
   background: var(--paper);
+  overflow: hidden;
+  transition:
+    background var(--motion-quick),
+    border-color var(--motion-quick);
+}
+.report-rail--collapsed {
+  align-items: center;
+  background: var(--surface-rail);
 }
 .report-rail-section {
   min-height: 0;
@@ -1852,6 +1928,57 @@ select:-webkit-autofill {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-normal);
+}
+.report-rail-head--top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+.report-rail--collapsed .report-rail-head--top {
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-3) var(--space-0);
+}
+.report-rail-toggle {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  flex: 0 0 auto;
+  padding: var(--space-0);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  transition:
+    background var(--motion-quick),
+    border-color var(--motion-quick),
+    color var(--motion-quick);
+}
+.report-rail--collapsed .report-rail-toggle {
+  background: var(--overlay-hover-faint);
+  border-color: var(--hairline);
+}
+[data-theme="dark"] .report-rail--collapsed .report-rail-toggle {
+  background: var(--overlay-hover);
+}
+.report-rail-toggle svg {
+  transform: rotate(0deg);
+  transition: transform var(--motion-medium) ease;
+}
+.report-rail--collapsed .report-rail-toggle svg {
+  transform: rotate(180deg);
+}
+.report-rail-toggle:hover {
+  background: var(--overlay-hover);
+  border-color: var(--hairline-strong);
+  color: var(--text);
+}
+.report-rail-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .report-rail-placeholder {
   flex: 1 1 auto;
@@ -1872,6 +1999,9 @@ select:-webkit-autofill {
   right: calc(280px + var(--space-11));
   bottom: var(--space-10);
   z-index: var(--z-raised);
+}
+.report-page--rail-collapsed .report-chat {
+  right: calc(44px + var(--space-11));
 }
 .report-chat--open {
   width: min(360px, calc(100vw - var(--space-8)));
@@ -2103,6 +2233,9 @@ select:-webkit-autofill {
     grid-template-columns: minmax(0, 1fr);
     overflow: auto;
   }
+  .report-page--rail-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .report-center {
     overflow: visible;
   }
@@ -2126,6 +2259,9 @@ select:-webkit-autofill {
     justify-self: center;
     margin-bottom: var(--space-6);
     width: min(360px, calc(100% - var(--space-8)));
+  }
+  .report-page--rail-collapsed .report-chat {
+    right: auto;
   }
 }
 

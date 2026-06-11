@@ -188,13 +188,6 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Without this hook, accumulating cove/wave/card mutations across
     // tests cause flakes — see issue #56 followup.
     await resetReplayServer(request);
-    // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
-    // href="https://fonts.googleapis.com/...">` that, in restricted-
-    // network test environments, hangs subsequent `page.goto` calls
-    // because Chrome never fires `load` while the stylesheet request
-    // is pending.
-    await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-    await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
     // Issue #175 — the kernel hides the system cove that hosts the
     // default Today terminal from the sidebar. Mint a user-visible
     // `Atlas` cove + `Today` wave via the REST API so the keyboard

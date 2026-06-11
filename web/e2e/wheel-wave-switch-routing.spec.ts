@@ -19,11 +19,6 @@ test.afterEach(async ({ page }) => {
   createdCoveIds.length = 0;
 });
 
-async function blockFonts(page: Page): Promise<void> {
-  await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-  await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
-}
-
 async function login(page: Page): Promise<void> {
   const res = await page.request.post('/api/auth/login', {
     data: {
@@ -97,7 +92,6 @@ test('terminal wheel routes to restored xterm scrollback after wave switch', asy
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 1600 });
-  await blockFonts(page);
   await page.goto('/calm/', { waitUntil: 'domcontentloaded' });
   await login(page);
   console.log('ok routing booted');

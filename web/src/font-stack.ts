@@ -12,10 +12,9 @@
 
 /**
  * Mono font stack used by xterm.js and any other JS consumer that needs a
- * font-family string. IBM Plex Mono is the primary face (loaded via Google
- * Fonts in index.html); PingFang SC handles CJK fallback, with SF Mono /
- * ui-monospace / Menlo backing up on systems where Plex Mono isn't loaded.
+ * font-family string. The stack uses local system monospace faces so terminal
+ * rendering does not depend on downloadable webfonts.
  * Must match `--font-mono` in calm.css byte-for-byte. A drift assertion in
  * `calm-tokens.test.ts` enforces this — change both together.
  */
-export const MONO_STACK = '"IBM Plex Mono", "PingFang SC", "SF Mono", ui-monospace, "Menlo", monospace';
+export const MONO_STACK = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';

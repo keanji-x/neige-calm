@@ -7,12 +7,14 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { SessionContext } from '../../app/SessionProvider';
 import type { Cove, Route, Wave } from '../../types';
 import { Sidebar } from './Sidebar';
 
 const EXPANDED_COVES_STORAGE_KEY = 'calm:sidebar:expandedCoves';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'calm:sidebar:collapsed';
 
 afterEach(() => {
   cleanup();
@@ -97,6 +99,50 @@ function renderSidebar({
 }
 
 describe('Sidebar cove expansion', () => {
+  it('collapses to a rail and expands from the keyboard-reachable toggle', async () => {
+    const user = userEvent.setup();
+    renderSidebar({ waves: [makeWave()] });
+
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Today' })).toHaveFocus();
+
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toHaveFocus();
+
+    await user.keyboard('{Enter}');
+
+    expect(screen.getByRole('button', { name: 'Expand sidebar' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    expect(
+      screen.queryByRole('navigation', { name: 'Sidebar navigation' }),
+    ).toBeNull();
+
+    await user.keyboard('{Enter}');
+
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' }))
+      .toHaveAttribute('aria-expanded', 'true');
+    expect(
+      screen.getByRole('navigation', { name: 'Sidebar navigation' }),
+    ).toBeTruthy();
+  });
+
+  it('persists the collapsed rail across remounts', () => {
+    const props = { waves: [makeWave()] };
+    const { unmount } = renderSidebar(props);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+
+    expect(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY)).toBe('true');
+    unmount();
+    renderSidebar(props);
+
+    expect(screen.getByRole('button', { name: 'Expand sidebar' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    expect(
+      screen.queryByRole('navigation', { name: 'Sidebar navigation' }),
+    ).toBeNull();
+  });
+
   it('defaults coves to collapsed', () => {
     renderSidebar({
       waves: [

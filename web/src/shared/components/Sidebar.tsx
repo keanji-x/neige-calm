@@ -14,8 +14,30 @@ import { PlusIcon } from './PlusIcon';
 // ---------------- Sidebar ----------------
 
 const EXPANDED_COVES_STORAGE_KEY = 'calm:sidebar:expandedCoves';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'calm:sidebar:collapsed';
 
 type ExpandedCoves = Record<string, true>;
+
+function readSidebarCollapsed(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(collapsed: boolean) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      SIDEBAR_COLLAPSED_STORAGE_KEY,
+      collapsed ? 'true' : 'false',
+    );
+  } catch {
+    // localStorage may throw in private browsing or under quota pressure.
+  }
+}
 
 function readExpandedCoves(): ExpandedCoves {
   if (typeof window === 'undefined') return {};
@@ -132,6 +154,9 @@ export function Sidebar({
   const [activeWaveRowEl, setActiveWaveRowEl] = useState<HTMLDivElement | null>(
     null,
   );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => readSidebarCollapsed(),
+  );
   const [expandedCoves, toggleCoveExpanded, expandCove] = useExpandedCoves();
   const activeWaveId = route.name === 'wave' ? route.id : null;
   const activeCoveId = useMemo(
@@ -176,6 +201,13 @@ export function Sidebar({
     if (!w || !onDeleteWave) return;
     void onDeleteWave(w.id);
   };
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      writeSidebarCollapsed(next);
+      return next;
+    });
+  };
   // Pinned waves sorted by the timestamp they were pinned, oldest first
   // so the order is stable and user-determined (first pin = top).
   const pinnedWaves = waves
@@ -205,203 +237,228 @@ export function Sidebar({
   // share an accessible name across sections — e.g. a wave titled
   // "Today" in the section vs. the Today nav button in the nav. See
   // docs/a11y-contract.md §2.2.
+  const collapseToggle = (
+    <button
+      type="button"
+      className="side-collapse-toggle"
+      onClick={toggleSidebarCollapsed}
+      aria-expanded={!sidebarCollapsed}
+      aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+    >
+      <ChevronIcon />
+    </button>
+  );
+
   return (
-    <aside className="side" aria-label="Navigation">
-      <nav className="side-nav" aria-label="Sidebar navigation">
-        <button
-          className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
-          onClick={() => onGo({ name: 'today' })}
-        >
-          <span className="lbl">Today</span>
-        </button>
-      </nav>
-
-      {waitingWaves.length > 0 && (
-        <section className="side-section attn-zone" aria-label="Waiting on you">
-          <div className="nav-label warn-text">Waiting on you</div>
-          {waitingWaves.map((w) => {
-            const cove = coves.find((c) => c.id === w.coveId);
-            const active = route.name === 'wave' && route.id === w.id;
-            const displayTitle = waveDisplayTitle(w.title);
-            return (
-              <WaveRow
-                key={w.id}
-                wave={w}
-                active={active}
-                cove={cove ?? null}
-                title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
-                onGo={() => onGo({ name: 'wave', id: w.id })}
-                onPinWave={onPinWave}
-                onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
-                rowRef={active ? setActiveWaveRowRef : undefined}
-              />
-            );
-          })}
-        </section>
-      )}
-
-      {pinnedWaves.length > 0 && (
-        <section className="side-section" aria-label="Pinned">
-          <div className="nav-label">Pinned</div>
-          {pinnedWaves.map((w) => {
-            const cove = coves.find((c) => c.id === w.coveId);
-            const active = route.name === 'wave' && route.id === w.id;
-            const displayTitle = waveDisplayTitle(w.title);
-            return (
-              <WaveRow
-                key={w.id}
-                wave={w}
-                active={active}
-                cove={cove ?? null}
-                title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
-                onGo={() => onGo({ name: 'wave', id: w.id })}
-                onPinWave={onPinWave}
-                onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
-                rowRef={active ? setActiveWaveRowRef : undefined}
-              />
-            );
-          })}
-        </section>
-      )}
-
-      <nav className="side-nav side-coves" aria-label="Coves">
-        <CovesHeader onCreate={onCreateCove} />
-        {coves.map((cove) => {
-          const cw = waves.filter((w) => w.coveId === cove.id);
-          // Pinned waves intentionally appear in both the quick-access
-          // Pinned section and their cove's inline list; pinning is not
-          // relocation, and the wave still belongs to this cove.
-          const inlineWaves = sortByLifecycleRank(cw);
-          const running = cw.filter((w) => isRunning(w.lifecycle)).length;
-          // Match the top-of-sidebar "Waiting on you" predicate, including
-          // pinned attention waves, so cove warn badges surface pinned work.
-          const waiting = cw.filter(waveNeedsUserAttention).length;
-          const active = route.name === 'cove' && route.coveId === cove.id;
-          const expanded = !!expandedCoves[cove.id];
-          const listId = coveWavesListId(cove.id);
-          const showInlineWaves = expanded && inlineWaves.length > 0;
-          // Single right-edge badge slot: warn-red waiting count beats
-          // muted total count; empty when there are no waves at all.
-          const badge =
-            waiting > 0
-              ? { kind: 'warn' as const, n: waiting }
-              : cw.length > 0
-                ? { kind: 'muted' as const, n: cw.length }
-                : null;
-          return (
-            <div
-              key={cove.id}
-              className="cove-block"
-              style={{ '--cove-color': cove.color } as React.CSSProperties}
+    <aside
+      className={'side' + (sidebarCollapsed ? ' side--collapsed' : '')}
+      aria-label="Navigation"
+    >
+      <div className="side-today-row">
+        {!sidebarCollapsed && (
+          <nav className="side-nav" aria-label="Sidebar navigation">
+            <button
+              className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
+              onClick={() => onGo({ name: 'today' })}
             >
-              <div className="cove-row" role="group">
-                <button
-                  type="button"
-                  className={'cove-row-chevron' + (expanded ? ' expanded' : '')}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleCoveExpanded(cove.id);
-                  }}
-                  aria-expanded={expanded}
-                  aria-controls={showInlineWaves ? listId : undefined}
-                  aria-label={`${expanded ? 'Collapse' : 'Expand'} cove ${cove.name}`}
-                >
-                  <ChevronIcon />
-                </button>
-                <button
-                  className={'cove-nav' + (active ? ' active' : '')}
-                  onClick={() => onGo({ name: 'cove', coveId: cove.id })}
-                >
-                  <span className="swatch-wrap">
-                    <span
-                      className={'swatch' + (running > 0 ? ' pulse' : '')}
-                      style={{ background: cove.color }}
-                    />
-                  </span>
-                  <span className="lbl">{cove.name}</span>
-                  {badge && (
-                    <span
-                      className={'cove-nav-badge ' + badge.kind}
-                      aria-hidden="true"
-                    >
-                      {badge.n}
-                    </span>
-                  )}
-                </button>
-                {onDeleteCove && (
-                  <button
-                    type="button"
-                    className="cove-row-delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setPendingDelete(cove);
-                    }}
-                    title={`Delete cove "${cove.name}"`}
-                    aria-label={`Delete cove "${cove.name}"`}
-                  >
-                    <CloseIcon />
-                  </button>
-                )}
-              </div>
-              {showInlineWaves && (
+              <span className="lbl">Today</span>
+            </button>
+          </nav>
+        )}
+        {collapseToggle}
+      </div>
+
+      {!sidebarCollapsed && (
+        <>
+          {waitingWaves.length > 0 && (
+            <section className="side-section attn-zone" aria-label="Waiting on you">
+              <div className="nav-label warn-text">Waiting on you</div>
+              {waitingWaves.map((w) => {
+                const cove = coves.find((c) => c.id === w.coveId);
+                const active = route.name === 'wave' && route.id === w.id;
+                const displayTitle = waveDisplayTitle(w.title);
+                return (
+                  <WaveRow
+                    key={w.id}
+                    wave={w}
+                    active={active}
+                    cove={cove ?? null}
+                    title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
+                    onGo={() => onGo({ name: 'wave', id: w.id })}
+                    onPinWave={onPinWave}
+                    onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
+                    rowRef={active ? setActiveWaveRowRef : undefined}
+                  />
+                );
+              })}
+            </section>
+          )}
+
+          {pinnedWaves.length > 0 && (
+            <section className="side-section" aria-label="Pinned">
+              <div className="nav-label">Pinned</div>
+              {pinnedWaves.map((w) => {
+                const cove = coves.find((c) => c.id === w.coveId);
+                const active = route.name === 'wave' && route.id === w.id;
+                const displayTitle = waveDisplayTitle(w.title);
+                return (
+                  <WaveRow
+                    key={w.id}
+                    wave={w}
+                    active={active}
+                    cove={cove ?? null}
+                    title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
+                    onGo={() => onGo({ name: 'wave', id: w.id })}
+                    onPinWave={onPinWave}
+                    onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
+                    rowRef={active ? setActiveWaveRowRef : undefined}
+                  />
+                );
+              })}
+            </section>
+          )}
+
+          <nav className="side-nav side-coves" aria-label="Coves">
+            <CovesHeader onCreate={onCreateCove} />
+            {coves.map((cove) => {
+              const cw = waves.filter((w) => w.coveId === cove.id);
+              // Pinned waves intentionally appear in both the quick-access
+              // Pinned section and their cove's inline list; pinning is not
+              // relocation, and the wave still belongs to this cove.
+              const inlineWaves = sortByLifecycleRank(cw);
+              const running = cw.filter((w) => isRunning(w.lifecycle)).length;
+              // Match the top-of-sidebar "Waiting on you" predicate, including
+              // pinned attention waves, so cove warn badges surface pinned work.
+              const waiting = cw.filter(waveNeedsUserAttention).length;
+              const active = route.name === 'cove' && route.coveId === cove.id;
+              const expanded = !!expandedCoves[cove.id];
+              const listId = coveWavesListId(cove.id);
+              const showInlineWaves = expanded && inlineWaves.length > 0;
+              // Single right-edge badge slot: warn-red waiting count beats
+              // muted total count; empty when there are no waves at all.
+              const badge =
+                waiting > 0
+                  ? { kind: 'warn' as const, n: waiting }
+                  : cw.length > 0
+                    ? { kind: 'muted' as const, n: cw.length }
+                    : null;
+              return (
                 <div
-                  id={listId}
-                  className="side-coves-waves"
-                  role="group"
-                  aria-label={`Waves in ${cove.name}`}
+                  key={cove.id}
+                  className="cove-block"
+                  style={{ '--cove-color': cove.color } as React.CSSProperties}
                 >
-                  {inlineWaves.map((w) => {
-                    const waveActive = route.name === 'wave' && route.id === w.id;
-                    const displayTitle = waveDisplayTitle(w.title);
-                    return (
-                      <WaveRow
-                        key={w.id}
-                        wave={w}
-                        active={waveActive}
-                        cove={null}
-                        title={displayTitle}
-                        onGo={() => onGo({ name: 'wave', id: w.id })}
-                        onPinWave={onPinWave}
-                        onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
-                        rowRef={waveActive ? setActiveWaveRowRef : undefined}
-                      />
-                    );
-                  })}
+                  <div className="cove-row" role="group">
+                    <button
+                      type="button"
+                      className={'cove-row-chevron' + (expanded ? ' expanded' : '')}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCoveExpanded(cove.id);
+                      }}
+                      aria-expanded={expanded}
+                      aria-controls={showInlineWaves ? listId : undefined}
+                      aria-label={`${expanded ? 'Collapse' : 'Expand'} cove ${cove.name}`}
+                    >
+                      <ChevronIcon />
+                    </button>
+                    <button
+                      className={'cove-nav' + (active ? ' active' : '')}
+                      onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+                    >
+                      <span className="swatch-wrap">
+                        <span
+                          className={'swatch' + (running > 0 ? ' pulse' : '')}
+                          style={{ background: cove.color }}
+                        />
+                      </span>
+                      <span className="lbl">{cove.name}</span>
+                      {badge && (
+                        <span
+                          className={'cove-nav-badge ' + badge.kind}
+                          aria-hidden="true"
+                        >
+                          {badge.n}
+                        </span>
+                      )}
+                    </button>
+                    {onDeleteCove && (
+                      <button
+                        type="button"
+                        className="cove-row-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPendingDelete(cove);
+                        }}
+                        title={`Delete cove "${cove.name}"`}
+                        aria-label={`Delete cove "${cove.name}"`}
+                      >
+                        <CloseIcon />
+                      </button>
+                    )}
+                  </div>
+                  {showInlineWaves && (
+                    <div
+                      id={listId}
+                      className="side-coves-waves"
+                      role="group"
+                      aria-label={`Waves in ${cove.name}`}
+                    >
+                      {inlineWaves.map((w) => {
+                        const waveActive = route.name === 'wave' && route.id === w.id;
+                        const displayTitle = waveDisplayTitle(w.title);
+                        return (
+                          <WaveRow
+                            key={w.id}
+                            wave={w}
+                            active={waveActive}
+                            cove={null}
+                            title={displayTitle}
+                            onGo={() => onGo({ name: 'wave', id: w.id })}
+                            onPinWave={onPinWave}
+                            onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
+                            rowRef={waveActive ? setActiveWaveRowRef : undefined}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </nav>
+              );
+            })}
+          </nav>
 
-      <UserMenu onOpenSettings={onOpenSettings} onSignOut={onSignOut} />
+          <UserMenu onOpenSettings={onOpenSettings} onSignOut={onSignOut} />
 
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        title="Delete cove?"
-        description={
-          pendingDelete
-            ? `Delete cove "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
-            : null
-        }
-        confirmLabel="Delete cove"
-        cancelLabel="Cancel"
-        onConfirm={confirmDelete}
-        onCancel={cancelDelete}
-      />
-      <ConfirmDialog
-        open={pendingDeleteWave !== null}
-        title="Delete wave?"
-        description={
-          pendingDeleteWave
-            ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
-            : null
-        }
-        confirmLabel="Delete wave"
-        cancelLabel="Cancel"
-        onConfirm={confirmDeleteWave}
-        onCancel={cancelDeleteWave}
-      />
+          <ConfirmDialog
+            open={pendingDelete !== null}
+            title="Delete cove?"
+            description={
+              pendingDelete
+                ? `Delete cove "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
+                : null
+            }
+            confirmLabel="Delete cove"
+            cancelLabel="Cancel"
+            onConfirm={confirmDelete}
+            onCancel={cancelDelete}
+          />
+          <ConfirmDialog
+            open={pendingDeleteWave !== null}
+            title="Delete wave?"
+            description={
+              pendingDeleteWave
+                ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
+                : null
+            }
+            confirmLabel="Delete wave"
+            cancelLabel="Cancel"
+            onConfirm={confirmDeleteWave}
+            onCancel={cancelDeleteWave}
+          />
+        </>
+      )}
     </aside>
   );
 }

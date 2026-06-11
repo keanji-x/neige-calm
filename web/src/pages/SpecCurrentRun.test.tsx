@@ -62,11 +62,11 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
 
     expect(
-      screen.getByRole('region', { name: 'Ask the Research Agent' }),
+      screen.getByRole('region', { name: 'Ask the Spec Agent' }),
     ).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByLabelText('Follow-up')).toHaveFocus();
@@ -79,15 +79,15 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.click(screen.getByRole('button', { name: 'Close' }));
 
     expect(
-      screen.queryByRole('region', { name: 'Ask the Research Agent' }),
+      screen.queryByRole('region', { name: 'Ask the Spec Agent' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     ).toBeInTheDocument();
   });
 
@@ -96,7 +96,7 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.type(screen.getByLabelText('Follow-up'), 'What changed?');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -105,11 +105,11 @@ describe('SpecCurrentRun', () => {
       expect(mocks.submit).toHaveBeenCalledWith('What changed?');
     });
     expect(
-      screen.queryByRole('region', { name: 'Ask the Research Agent' }),
+      screen.queryByRole('region', { name: 'Ask the Spec Agent' }),
     ).not.toBeInTheDocument();
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     expect(screen.getByLabelText('Follow-up')).toHaveValue('');
   });
@@ -119,7 +119,7 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
 
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
@@ -133,7 +133,7 @@ describe('SpecCurrentRun', () => {
     const { rerender } = render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.type(screen.getByLabelText('Follow-up'), 'Race window');
 
@@ -154,7 +154,7 @@ describe('SpecCurrentRun', () => {
     const { rerender } = render(<SpecCurrentRun specCardId="A" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.type(screen.getByLabelText('Follow-up'), 'hello A');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -171,7 +171,7 @@ describe('SpecCurrentRun', () => {
     });
 
     expect(
-      screen.getByRole('region', { name: 'Ask the Research Agent' }),
+      screen.getByRole('region', { name: 'Ask the Spec Agent' }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Follow-up')).toHaveValue('hello B');
   });
@@ -181,7 +181,7 @@ describe('SpecCurrentRun', () => {
 
     expect(screen.getByText('Spec agent unavailable')).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Ask the Research Agent' }),
+      screen.queryByRole('button', { name: 'Ask the Spec Agent' }),
     ).not.toBeInTheDocument();
   });
 
@@ -190,7 +190,7 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.type(screen.getByLabelText('Follow-up'), 'Ship it');
     await user.keyboard('{Control>}{Enter}{/Control}');
@@ -205,7 +205,7 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     await user.click(screen.getByRole('button', { name: 'Reset session...' }));
 

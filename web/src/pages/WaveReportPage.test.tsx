@@ -34,11 +34,13 @@ vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
 
+const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
+
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'wave_1',
     coveId: 'cove_1',
-    title: 'Research wave',
+    title: 'Spec wave',
     lifecycle: 'draft',
     anyCardNeedsInput: false,
     progress: 0,
@@ -116,6 +118,7 @@ function mockWaveFileContents(contents: Record<string, WaveFsContent>) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.clear();
 });
 
 describe('WaveReportPage', () => {
@@ -188,7 +191,7 @@ describe('WaveReportPage', () => {
     );
 
     expect(
-      screen.getByRole('heading', { level: 1, name: 'Research wave' }),
+      screen.getByRole('heading', { level: 1, name: 'Spec wave' }),
     ).toBeInTheDocument();
     expect(screen.getByText('answer').tagName).toBe('STRONG');
   });
@@ -263,6 +266,62 @@ describe('WaveReportPage', () => {
     expect(
       screen.queryByText('Wave files appear here. (Wired in PR-B.)'),
     ).not.toBeInTheDocument();
+  });
+
+  it('collapses and expands the Files rail from the rail toggle', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const rail = screen.getByLabelText('Report context');
+    const collapseToggle = screen.getByRole('button', {
+      name: 'Collapse report rail',
+    });
+
+    expect(collapseToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(rail).not.toHaveClass('report-rail--collapsed');
+    expect(screen.getByRole('tree', { name: 'Wave files' })).toBeInTheDocument();
+
+    fireEvent.click(collapseToggle);
+
+    const expandToggle = screen.getByRole('button', {
+      name: 'Expand report rail',
+    });
+    expect(expandToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(rail).toHaveClass('report-rail--collapsed');
+    expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
+    expect(window.localStorage.getItem(REPORT_RAIL_COLLAPSED_STORAGE_KEY))
+      .toBe('true');
+
+    fireEvent.click(expandToggle);
+
+    expect(screen.getByRole('button', { name: 'Collapse report rail' }))
+      .toHaveAttribute('aria-expanded', 'true');
+    expect(rail).not.toHaveClass('report-rail--collapsed');
+    expect(screen.getByRole('tree', { name: 'Wave files' })).toBeInTheDocument();
+    expect(window.localStorage.getItem(REPORT_RAIL_COLLAPSED_STORAGE_KEY))
+      .toBe('false');
+  });
+
+  it('persists the collapsed Files rail across remounts', () => {
+    const props = {
+      wave: makeWave(),
+      cards: [reportSlot('Files rail body')],
+    };
+    const { unmount } = render(<WaveReportPage {...props} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse report rail' }));
+    unmount();
+    render(<WaveReportPage {...props} />);
+
+    expect(screen.getByRole('button', { name: 'Expand report rail' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByLabelText('Report context'))
+      .toHaveClass('report-rail--collapsed');
+    expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
   });
 
   it('defaults the main column to report.md content', () => {
@@ -531,7 +590,7 @@ describe('WaveReportPage', () => {
     );
 
     expect(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     ).toBeInTheDocument();
   });
 
@@ -545,7 +604,7 @@ describe('WaveReportPage', () => {
 
     expect(screen.getByText('Spec agent unavailable')).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Ask the Research Agent' }),
+      screen.queryByRole('button', { name: 'Ask the Spec Agent' }),
     ).not.toBeInTheDocument();
   });
 });

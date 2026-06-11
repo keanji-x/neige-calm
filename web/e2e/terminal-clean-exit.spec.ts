@@ -20,15 +20,6 @@ import { test, expect } from '@playwright/test';
 import { seedWaveViewMode } from './helpers/reset';
 
 test('terminal worker that exits cleanly shows the exit 0 header badge, no overlay', async ({ page }) => {
-  // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
-  // href="https://fonts.googleapis.com/...">` that, in restricted-network
-  // CI / sandboxed test environments, can hang for tens of seconds
-  // before failing — blocking `domcontentloaded` and module-script
-  // execution. The fallback `system-ui` chain is good enough for the
-  // assertions below.
-  await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-  await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
-
   // Step 1 — mint a fresh user cove via the sidebar (issue #175).
   await page.goto('/calm/');
   const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });

@@ -24,11 +24,6 @@ async function expectOk(res: APIResponse, label: string): Promise<void> {
   throw new Error(`${label} -> ${res.status()} ${res.statusText()}: ${body}`);
 }
 
-async function blockFonts(page: Page): Promise<void> {
-  await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-  await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
-}
-
 async function login(page: Page): Promise<void> {
   const res = await page.request.post('/api/auth/login', {
     data: {
@@ -83,7 +78,6 @@ async function writeReport(page: Page, waveId: string, body: string): Promise<vo
 test('wave report view renders real report data and staged rail controls', async ({
   page,
 }) => {
-  await blockFonts(page);
   await login(page);
 
   const ts = Date.now();
@@ -103,11 +97,11 @@ test('wave report view renders real report data and staged rail controls', async
     page.getByText('Activity timeline appears here. (Wired in PR-E.)'),
   ).toBeVisible();
 
-  const chat = page.getByRole('button', { name: /Ask the Research Agent/ });
+  const chat = page.getByRole('button', { name: /Ask the Spec Agent/ });
   await expect(chat).toBeVisible();
   await chat.click();
 
-  const chatBox = page.getByRole('region', { name: /Ask the Research Agent/ });
+  const chatBox = page.getByRole('region', { name: /Ask the Spec Agent/ });
   await expect(chatBox).toBeVisible();
   const followUp = chatBox.getByRole('textbox', { name: /Follow-up/ });
   await followUp.fill('Can you summarize the key risk?');

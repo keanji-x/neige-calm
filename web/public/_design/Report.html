@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Report · Research Agent</title>
+<title>Report · Spec Agent</title>
 <script>
   // Demo theme bridge (#594): the sandbox is iframed inside the app
   // (`Wave.tsx` report toggle) and is same-origin, so mirror the parent's
@@ -27,10 +27,9 @@
   /* Token VALUES mirror the app palette (web/src/calm.css) so the demo
      reads as "the app's future layout", not a foreign artifact — see
      docs/_research-594-demo-visual-subagent.md. Variable NAMES stay the
-     design's own so the layout CSS below is untouched. Fonts are the
-     app stacks: Plex Sans/Mono + the dormant --font-serif stack
-     (calm.css:11) carrying the editorial-serif voice without Google
-     Fonts (e2e blocks them; codex review red line). */
+     design's own so the layout CSS below is untouched. Fonts use the app's
+     system sans/mono stacks plus the dormant --font-serif stack (calm.css:11)
+     carrying the editorial-serif voice without webfont downloads. */
   :root{
     color-scheme: light;
     --canvas: oklch(98.8% 0.003 240);      /* = app --bg */
@@ -48,9 +47,9 @@
     --amber-soft: oklch(96% 0.03 30);      /* = app --warn-soft */
     --green: oklch(54% 0.14 145);          /* = app --success */
 
-    --sans: "IBM Plex Sans", "IBM Plex Sans SC", "IBM Plex Sans JP", "IBM Plex Sans KR", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     --serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
-    --mono: "IBM Plex Mono", "PingFang SC", "SF Mono", ui-monospace, "Menlo", monospace;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
     --glass: color-mix(in oklab, var(--surface) 82%, transparent);
     --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
@@ -414,7 +413,7 @@
         <h1>Global EV Battery Supply Chain — Q2 2026 Outlook</h1>
 
         <div class="byline">
-          <span class="who"><span class="bot">R</span> Research Agent</span>
+          <span class="who"><span class="bot">S</span> Spec Agent</span>
           <span class="b-sep"></span>
           <span>Updated <span class="mono">2h ago</span></span>
           <span class="b-sep"></span>
@@ -491,12 +490,12 @@
     <!-- ───────── minimal chat: pill → small box ───────── -->
     <div class="chat" id="chat">
       <button class="ask-pill" id="askOpen">
-        <span class="bot">R</span>
-        <span class="lbl">Ask the Research Agent</span>
+        <span class="bot">S</span>
+        <span class="lbl">Ask the Spec Agent</span>
       </button>
       <div class="ask-box">
         <div class="ab-head">
-          <div class="who"><span class="bot">R</span> Research Agent</div>
+          <div class="who"><span class="bot">S</span> Spec Agent</div>
           <button class="ab-close" id="askClose" title="Close">
             <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
           </button>

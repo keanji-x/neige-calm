@@ -72,9 +72,6 @@ test.describe.serial('tui theme protocol', () => {
   test('reports boot and mid-session OSC 10/11 theme changes', async ({
     page,
   }) => {
-    await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-    await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
-
     await page.goto('/calm/?testMounts=1');
     const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
     const coveName = `E2E tui-theme cove ${Date.now()}`;
