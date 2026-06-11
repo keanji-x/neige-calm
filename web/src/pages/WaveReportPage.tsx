@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { lazy, Suspense, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { CalmApiError } from '../api/calm';
+import { useWaveFileContent } from '../api/queries';
+import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
 import { SpecCurrentRun } from './SpecCurrentRun';
-import { WaveFileDrawer } from './WaveFileDrawer';
 
 export interface WaveReportPageProps {
   wave: Wave;
@@ -16,6 +18,12 @@ export interface WaveReportPageProps {
 
 type CardSlot = Extract<WaveCardSlot, { kind: 'card' }>;
 type ReportCardSlot = CardSlot & { card: WaveReportCardData };
+
+const LazyCodePane = lazy(() =>
+  import('../cards/builtins/file-viewer-codemirror').then((m) => ({
+    default: m.CodePane,
+  })),
+);
 
 function isReportSlot(slot: WaveCardSlot): slot is ReportCardSlot {
   return slot.kind === 'card' && slot.card.type === 'wave-report';
@@ -101,49 +109,157 @@ function ReportEmptyState() {
   );
 }
 
+function ReportContent({
+  waveId,
+  path,
+  reportCardBody,
+}: {
+  waveId: string;
+  path: string;
+  reportCardBody?: string;
+}) {
+  const contentQ = useWaveFileContent(waveId, path, { enabled: true });
+  const isReportMissing =
+    path === 'report.md' &&
+    contentQ.error instanceof CalmApiError &&
+    contentQ.error.status === 404;
+  const isReportUnavailable =
+    isReportMissing ||
+    (path === 'report.md' && isRelativeFetchUrlError(contentQ.error));
+  const isFetching = queryIsFetching(contentQ);
+  const shouldFallbackToReportCard =
+    path === 'report.md' &&
+    !!reportCardBody &&
+    (isReportUnavailable ||
+      (!contentQ.data && !contentQ.error) ||
+      (contentQ.isLoading && isFetching));
+
+  if (contentQ.isLoading) {
+    if (path === 'report.md' && isFetching) {
+      return shouldFallbackToReportCard ? (
+        <ReportMarkdown body={reportCardBody ?? ''} />
+      ) : (
+        <ReportEmptyState />
+      );
+    }
+    return (
+      <div className="report-empty" role="status">
+        Loading…
+      </div>
+    );
+  }
+
+  if (shouldFallbackToReportCard) {
+    return <ReportMarkdown body={reportCardBody ?? ''} />;
+  }
+
+  if (isReportUnavailable) {
+    return <ReportEmptyState />;
+  }
+
+  if (contentQ.error) {
+    return <InlineApiError error={contentQ.error} />;
+  }
+
+  if (!contentQ.data) {
+    return <ReportEmptyState />;
+  }
+
+  if (contentQ.data.content_type === 'text/markdown') {
+    return <ReportMarkdown body={contentQ.data.content} />;
+  }
+
+  if (isTextContent(contentQ.data.content_type)) {
+    return (
+      <div className="report-code">
+        <ReportCodeContent path={path} text={contentQ.data.content} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="report-empty" role="status">
+      Preview unavailable for {contentQ.data.content_type}
+    </div>
+  );
+}
+
+function ReportMarkdown({ body }: { body: string }) {
+  return (
+    <div className="report-prose">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
+    </div>
+  );
+}
+
+function ReportCodeContent({ path, text }: { path: string; text: string }) {
+  const { resolved: theme } = useTheme();
+
+  return (
+    <Suspense
+      fallback={
+        <div className="report-empty" role="status">
+          Loading viewer…
+        </div>
+      }
+    >
+      <LazyCodePane path={path} text={text} theme={theme} />
+    </Suspense>
+  );
+}
+
+function InlineApiError({ error }: { error: Error }) {
+  return (
+    <div role="alert" className="report-empty report-error">
+      {formatApiError(error)}
+    </div>
+  );
+}
+
+function formatApiError(error: Error): string {
+  if (error instanceof CalmApiError) {
+    return error.message || error.code || `HTTP ${error.status}`;
+  }
+  return error.message || 'Request failed';
+}
+
+function isTextContent(contentType: string): boolean {
+  return (
+    contentType.startsWith('text/') ||
+    contentType === 'application/json' ||
+    contentType.endsWith('+json') ||
+    contentType === 'application/xml' ||
+    contentType.endsWith('+xml')
+  );
+}
+
+function isRelativeFetchUrlError(error: Error | null): boolean {
+  return (
+    error instanceof TypeError &&
+    error.message.startsWith('Failed to parse URL from /api/waves/')
+  );
+}
+
+function queryIsFetching(query: unknown): boolean {
+  if (typeof query !== 'object' || query === null || !('fetchStatus' in query)) {
+    return false;
+  }
+  return (query as { fetchStatus?: unknown }).fetchStatus === 'fetching';
+}
+
 export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const title = waveDisplayTitle(wave.title);
   const reportSlots = selectReportCards(cards);
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const pageRef = useRef<HTMLDivElement | null>(null);
-  const focusPathAfterCloseRef = useRef<string | null>(null);
-
-  const closeFileDrawer = useCallback(() => {
-    if (selectedFilePath) {
-      focusPathAfterCloseRef.current = selectedFilePath;
-    }
-    setSelectedFilePath(null);
-  }, [selectedFilePath]);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
 
   useEffect(() => {
-    setSelectedFilePath(null);
+    setSelectedFilePath('report.md');
   }, [wave.id]);
 
-  useEffect(() => {
-    if (selectedFilePath !== null) return;
-    const focusPath = focusPathAfterCloseRef.current;
-    if (focusPath === null) return;
-    focusPathAfterCloseRef.current = null;
-    const schedule = (callback: FrameRequestCallback) =>
-      window.requestAnimationFrame
-        ? window.requestAnimationFrame(callback)
-        : window.setTimeout(callback, 0);
-    schedule(() => {
-      const root = pageRef.current;
-      if (!root) return;
-      const items = Array.from(
-        root.querySelectorAll<HTMLElement>('.wave-report-files-item'),
-      );
-      const selectedItem = items.find((item) => item.dataset.path === focusPath);
-      const fallbackItem = items.find((item) => item.tabIndex === 0);
-      (selectedItem ?? fallbackItem)?.focus();
-    });
-  }, [selectedFilePath]);
-
   return (
-    <div ref={pageRef} className="report-page">
+    <div className="report-page">
       <section className="report-center" aria-label="Report">
         <article className="report-doc">
           {reportSlots.length > 1 && (
@@ -151,15 +267,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           )}
           <h1 className="report-title">{title}</h1>
           <ReportByline report={reportCard} />
-          {reportCard ? (
-            <div className="report-prose">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {reportCard.body}
-              </ReactMarkdown>
-            </div>
-          ) : (
-            <ReportEmptyState />
-          )}
+          <ReportContent
+            waveId={wave.id}
+            path={selectedFilePath}
+            reportCardBody={reportCard?.body}
+          />
         </article>
       </section>
       <aside className="report-rail" aria-label="Report context">
@@ -171,7 +283,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             <WaveFileTree
               waveId={wave.id}
               selectedPath={selectedFilePath}
-              onSelectedPathChange={setSelectedFilePath}
+              onSelectedPathChange={(path) =>
+                setSelectedFilePath(path ?? 'report.md')
+              }
               ariaLabel="Wave files"
               fallback={<div className="report-rail-placeholder">No files yet.</div>}
             />
@@ -186,13 +300,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           </div>
         </section>
       </aside>
-      {selectedFilePath !== null && (
-        <WaveFileDrawer
-          waveId={wave.id}
-          path={selectedFilePath}
-          onClose={closeFileDrawer}
-        />
-      )}
       <SpecCurrentRun specCardId={specCardId} />
     </div>
   );
