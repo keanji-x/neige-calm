@@ -1,11 +1,17 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  __resetWaveFsViewerRegistryForTest,
+  registerWaveFsViewer,
+} from '../registry';
+import { useWaveFsViewer } from '../useWaveFsViewer';
 import { WaveInfoViewer } from './wave-info-viewer';
 
 const Component = WaveInfoViewer.Component;
 
 afterEach(() => {
   vi.restoreAllMocks();
+  __resetWaveFsViewerRegistryForTest();
 });
 
 describe('WaveInfoViewer', () => {
@@ -66,6 +72,24 @@ describe('WaveInfoViewer', () => {
     expect(screen.queryByText(/Pinned/)).toBeNull();
   });
 
+  it('renders an untitled wave.json through the rich viewer', () => {
+    const raw = JSON.stringify({
+      title: '',
+      id: 'wave_untitled',
+      cove_id: 'cove_untitled',
+      lifecycle: 'working',
+    });
+    registerWaveFsViewer(WaveInfoViewer);
+
+    render(<ResolvedWaveFsViewer path="wave.json" raw={raw} />);
+
+    expect(
+      screen.getByRole('heading', { name: 'Untitled wave' }),
+    ).toHaveClass('wave-fs-viewer-primary');
+    expect(screen.getByText('wave_untitled')).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
   it('throws when required fields are missing', () => {
     expect(() => WaveInfoViewer.parse('{"id":"wave_1"}')).toThrow(
       /title string/,
@@ -73,3 +97,19 @@ describe('WaveInfoViewer', () => {
     expect(() => WaveInfoViewer.parse('[]')).toThrow(/must be an object/);
   });
 });
+
+function ResolvedWaveFsViewer({
+  path,
+  raw,
+}: {
+  path: string;
+  raw: string;
+}) {
+  const resolved = useWaveFsViewer(path, raw);
+  if (!resolved) {
+    return <pre data-testid="code-pane">{raw}</pre>;
+  }
+
+  const { Viewer, data } = resolved;
+  return <Viewer path={path} raw={raw} data={data} />;
+}

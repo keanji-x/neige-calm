@@ -26,7 +26,7 @@ export function formatRelativeTime(
   const days = Math.floor(hours / 24);
   if (days < 30) return `${cleanLabel} ${days}d ago`;
 
-  return `${cleanLabel} ${new Intl.DateTimeFormat(undefined, {
+  return `${cleanLabel} ${new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',

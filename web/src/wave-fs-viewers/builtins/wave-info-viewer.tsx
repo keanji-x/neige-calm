@@ -1,4 +1,5 @@
 import { formatRelativeTime } from '../../shared/relativeTime';
+import { waveDisplayTitle } from '../../shared/waveTitle';
 import type { WaveFsViewer } from '../registry';
 
 type WaveInfo = {
@@ -25,7 +26,7 @@ function parseWaveInfo(raw: string): WaveInfo {
     throw new Error('wave.json must be an object');
   }
   return {
-    title: requiredString(parsed, 'title', 'wave.json'),
+    title: requiredAnyString(parsed, 'title', 'wave.json'),
     id: requiredString(parsed, 'id', 'wave.json'),
     coveId: requiredString(parsed, 'cove_id', 'wave.json'),
     lifecycle: requiredString(parsed, 'lifecycle', 'wave.json'),
@@ -45,7 +46,9 @@ function WaveInfoViewerComponent({
 }) {
   return (
     <section className="wave-fs-viewer-info-card">
-      <h2 className="wave-fs-viewer-primary">{data.title}</h2>
+      <h2 className="wave-fs-viewer-primary">
+        {waveDisplayTitle(data.title)}
+      </h2>
       <div className="wave-fs-viewer-row">
         <span className="wave-fs-viewer-mono">{data.id}</span>
         <span className="wave-fs-viewer-mono">{data.coveId}</span>
@@ -109,6 +112,18 @@ function lifecycleTone(lifecycle: string): string {
 
 function formatNumber(value: number | undefined): string {
   return value === undefined ? '-' : String(value);
+}
+
+function requiredAnyString(
+  item: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const value = item[key];
+  if (typeof value !== 'string') {
+    throw new Error(`${context} must include a ${key} string`);
+  }
+  return value;
 }
 
 function requiredString(
