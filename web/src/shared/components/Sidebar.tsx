@@ -237,33 +237,40 @@ export function Sidebar({
   // share an accessible name across sections — e.g. a wave titled
   // "Today" in the section vs. the Today nav button in the nav. See
   // docs/a11y-contract.md §2.2.
+  const collapseToggle = (
+    <button
+      type="button"
+      className="side-collapse-toggle"
+      onClick={toggleSidebarCollapsed}
+      aria-expanded={!sidebarCollapsed}
+      aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+    >
+      <ChevronIcon />
+    </button>
+  );
+
   return (
     <aside
       className={'side' + (sidebarCollapsed ? ' side--collapsed' : '')}
       aria-label="Navigation"
     >
-      <button
-        type="button"
-        className="side-collapse-toggle"
-        onClick={toggleSidebarCollapsed}
-        aria-expanded={!sidebarCollapsed}
-        aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-      >
-        <ChevronIcon />
-      </button>
+      <div className="side-today-row">
+        {!sidebarCollapsed && (
+          <nav className="side-nav" aria-label="Sidebar navigation">
+            <button
+              className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
+              onClick={() => onGo({ name: 'today' })}
+            >
+              <span className="lbl">Today</span>
+            </button>
+          </nav>
+        )}
+        {collapseToggle}
+      </div>
 
       {!sidebarCollapsed && (
         <>
-          <nav className="side-nav" aria-label="Sidebar navigation">
-        <button
-          className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
-          onClick={() => onGo({ name: 'today' })}
-        >
-          <span className="lbl">Today</span>
-        </button>
-      </nav>
-
       {waitingWaves.length > 0 && (
         <section className="side-section attn-zone" aria-label="Waiting on you">
           <div className="nav-label warn-text">Waiting on you</div>

@@ -104,6 +104,9 @@ describe('Sidebar cove expansion', () => {
     renderSidebar({ waves: [makeWave()] });
 
     await user.tab();
+    expect(screen.getByRole('button', { name: 'Today' })).toHaveFocus();
+
+    await user.tab();
     expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toHaveFocus();
 
     await user.keyboard('{Enter}');
