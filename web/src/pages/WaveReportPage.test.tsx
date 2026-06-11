@@ -324,6 +324,22 @@ describe('WaveReportPage', () => {
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
   });
 
+  it('renders a real Event line panel instead of the PR-E placeholder', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Event rail body')]}
+      />,
+    );
+
+    const eventLine = screen.getByRole('region', { name: 'Event line' });
+    expect(within(eventLine).getByText('Event line')).toBeInTheDocument();
+    expect(within(eventLine).getByText('Nothing yet.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Activity timeline appears here. (Wired in PR-E.)'),
+    ).not.toBeInTheDocument();
+  });
+
   it('defaults the main column to report.md content', () => {
     mockWaveFileContents({
       'report.md': {
