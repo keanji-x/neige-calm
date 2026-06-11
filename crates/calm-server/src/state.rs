@@ -413,6 +413,56 @@ impl AppState {
         card_role_cache: Option<CardRoleCache>,
         wave_cove_cache: Option<WaveCoveCache>,
     ) -> Self {
+        Self::from_parts_inner(
+            repo,
+            events,
+            daemon,
+            plugin,
+            codex,
+            card_role_cache,
+            wave_cove_cache,
+            None,
+        )
+    }
+
+    /// Replay-lib hatch for constructing the first `OperationRuntime`
+    /// with a terminal spawn hook. The dispatcher is spawned from that
+    /// same runtime, so replay worker requests cannot fall back to the
+    /// real process supervisor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_with_terminal_spawn_hook(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        daemon: Arc<DaemonClient>,
+        plugin: Arc<PluginHost>,
+        codex: Arc<CodexClient>,
+        card_role_cache: Option<CardRoleCache>,
+        wave_cove_cache: Option<WaveCoveCache>,
+        terminal_spawn_hook: SpawnHook,
+    ) -> Self {
+        Self::from_parts_inner(
+            repo,
+            events,
+            daemon,
+            plugin,
+            codex,
+            card_role_cache,
+            wave_cove_cache,
+            Some(terminal_spawn_hook),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts_inner(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        daemon: Arc<DaemonClient>,
+        plugin: Arc<PluginHost>,
+        codex: Arc<CodexClient>,
+        card_role_cache: Option<CardRoleCache>,
+        wave_cove_cache: Option<WaveCoveCache>,
+        terminal_spawn_hook: Option<SpawnHook>,
+    ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
@@ -428,16 +478,34 @@ impl AppState {
             repo.sqlite_pool()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
         ));
-        let terminal_adapter = Arc::new(TerminalAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
+        let terminal_adapter = if let Some(spawn_hook) = terminal_spawn_hook.clone() {
+            Arc::new(TerminalAdapter::new_with_spawn_hook(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+                spawn_hook,
+            ))
+        } else {
+            Arc::new(TerminalAdapter::new(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+            ))
+        };
+        let terminal_worker_adapter = if let Some(spawn_hook) = terminal_spawn_hook {
+            Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+                spawn_hook,
+            ))
+        } else {
+            Arc::new(TerminalWorkerAdapter::new(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+            ))
+        };
         let codex_adapter = Arc::new(CodexAdapter::new(
             route_repo.clone(),
             codex.clone(),
@@ -581,36 +649,22 @@ impl AppState {
         self
     }
 
-    pub(crate) fn with_terminal_spawn_hook(mut self, spawn_hook: SpawnHook) -> Self {
-        self.rebuild_operation_runtime(Some(spawn_hook));
-        self
-    }
-
     #[cfg(feature = "fixtures")]
     fn rebuild_fixture_operation_runtime(&mut self) {
-        self.rebuild_operation_runtime(None);
+        self.rebuild_operation_runtime();
     }
 
-    fn rebuild_operation_runtime(&mut self, terminal_spawn_hook: Option<SpawnHook>) {
+    fn rebuild_operation_runtime(&mut self) {
         let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
         let operation_repo =
             Arc::new(SqlxOperationRepo::new(self.raw.sqlite_pool().expect(
-                "fixture OperationRuntime requires a sqlite-backed Repo",
+                "OperationRuntime rebuild requires a sqlite-backed Repo",
             )));
-        let terminal_adapter = if let Some(spawn_hook) = terminal_spawn_hook {
-            Arc::new(TerminalAdapter::new_with_spawn_hook(
-                route_repo.clone(),
-                self.card_role_cache.clone(),
-                self.wave_cove_cache.clone(),
-                spawn_hook,
-            ))
-        } else {
-            Arc::new(TerminalAdapter::new(
-                route_repo.clone(),
-                self.card_role_cache.clone(),
-                self.wave_cove_cache.clone(),
-            ))
-        };
+        let terminal_adapter = Arc::new(TerminalAdapter::new(
+            route_repo.clone(),
+            self.card_role_cache.clone(),
+            self.wave_cove_cache.clone(),
+        ));
         let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
             route_repo.clone(),
             self.card_role_cache.clone(),

@@ -236,7 +236,7 @@ async fn replay_wave_grid_layout_trace() {
 
 #[tokio::test]
 async fn replay_router_terminal_card_create_persists_without_supervisor() {
-    let (repo, _events, state) = replay::boot_in_memory()
+    let (repo, events, state) = replay::boot_in_memory()
         .await
         .expect("boot in-memory replay state");
     let cove = repo
@@ -249,7 +249,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            cove_id: cove.id,
+            cove_id: cove.id.clone(),
             title: "replay-terminal".into(),
             sort: None,
             cwd: String::new(),
@@ -259,6 +259,56 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         .await
         .expect("create wave");
     let wave_id = wave.id.to_string();
+
+    let worker_idempotency_key = "replay-terminal-worker-hook";
+    repo.log_pure_event(
+        ActorId::User,
+        EventScope::Wave {
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
+        None,
+        &events,
+        &state.card_role_cache,
+        &state.wave_cove_cache,
+        Event::TerminalWorkerRequested {
+            idempotency_key: worker_idempotency_key.into(),
+            cmd: "printf replay-worker".into(),
+            cwd: Some(String::new()),
+            agent_message: None,
+        },
+    )
+    .await
+    .expect("emit replay terminal worker request");
+
+    let worker_card = timeout(Duration::from_secs(2), async {
+        loop {
+            let cards = repo.cards_by_wave(&wave_id).await.expect("list wave cards");
+            if let Some(card) = cards.into_iter().find(|card| {
+                card.payload.get("idempotency_key").and_then(Value::as_str)
+                    == Some(worker_idempotency_key)
+            }) {
+                break card;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("dispatcher terminal worker should use replay spawn hook");
+    assert_eq!(
+        worker_card.kind, "terminal",
+        "dispatcher should persist the replay terminal worker card"
+    );
+    let worker_terminal = repo
+        .terminal_get_by_card(worker_card.id.as_ref())
+        .await
+        .expect("lookup worker terminal")
+        .expect("worker terminal row");
+    assert!(
+        worker_terminal.exit_code.is_none() && !worker_terminal.signal_killed,
+        "replay dispatcher terminal worker should not record a spawn failure: {worker_terminal:?}"
+    );
+
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,

@@ -195,7 +195,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         events.clone(),
         write,
     ));
-    let state = AppState::from_parts(
+    let state = AppState::from_parts_with_terminal_spawn_hook(
         repo.clone(),
         events.clone(),
         Arc::new(DaemonClient::new_stub()),
@@ -203,8 +203,8 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
         Some(wave_cove_cache),
-    )
-    .with_terminal_spawn_hook(replay_terminal_spawn_hook());
+        replay_terminal_spawn_hook(),
+    );
     Ok((repo, events, state))
 }
 

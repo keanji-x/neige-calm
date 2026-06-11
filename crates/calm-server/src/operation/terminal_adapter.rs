@@ -54,7 +54,6 @@ pub struct TerminalWorkerAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
-    #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
 
@@ -119,12 +118,10 @@ impl TerminalWorkerAdapter {
             repo,
             card_role_cache,
             wave_cove_cache,
-            #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
     }
 
-    #[cfg(feature = "fixtures")]
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
@@ -696,14 +693,11 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
-        #[cfg(feature = "fixtures")]
         let spawn_result = if let Some(hook) = &self.spawn_hook {
             hook(terminal_id.clone(), cmd.clone(), cwd.clone(), env.clone()).await
         } else {
             ctx.spawn_terminal(&term, &cmd, &cwd, &env).await
         };
-        #[cfg(not(feature = "fixtures"))]
-        let spawn_result = ctx.spawn_terminal(&term, &cmd, &cwd, &env).await;
 
         match spawn_result {
             Ok(handle) => {
