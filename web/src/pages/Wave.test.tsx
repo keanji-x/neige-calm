@@ -35,8 +35,8 @@ vi.mock('../WaveGrid', () => ({
 }));
 
 // WaveList (Slice 9) is lazy-loaded via React.lazy and only used when the
-// per-wave view-mode overlay says `list`. The rename tests run in the
-// default grid mode, so we stub for completeness only.
+// per-wave view-mode overlay says `list`. Most tests never enter list, so
+// we stub for completeness only.
 vi.mock('../WaveList', () => ({
   WaveList: () => <div data-testid="wave-list-stub" />,
 }));
@@ -77,7 +77,7 @@ vi.mock('../shared/components/AddPanel', () => ({
 // Mock the calm-server REST client so the view-mode overlay query that
 // `WavePage` now mounts (Slice 9) doesn't hit the network in jsdom. It
 // resolves to "no overlay rows", which puts the page in its default
-// grid mode — matching every existing test's expectation.
+// report mode.
 vi.mock('../api/calm', async () => {
   const actual = await vi.importActual<typeof import('../api/calm')>(
     '../api/calm',
@@ -224,7 +224,9 @@ describe('WavePage rename keyboard entry', () => {
       ),
     );
     // Title still renders as plain text, but it shouldn't be a button.
-    expect(screen.getByText('Migrate auth')).not.toHaveAttribute('role', 'button');
+    expect(
+      screen.queryByRole('button', { name: 'Migrate auth' }),
+    ).not.toBeInTheDocument();
   });
 
   it('Enter on the title span opens rename mode and focuses the input', async () => {
@@ -397,7 +399,7 @@ describe('WavePage schema card create errors', () => {
 });
 
 describe('WavePage report view mode', () => {
-  it('defaults to grid when the wave has a report card and no overlay', () => {
+  it('defaults to report when wave has a report card and no overlay', () => {
     render(
       withClient(
         <WavePage
@@ -411,15 +413,15 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    expect(screen.getByTestId('wave-grid-stub')).toBeInTheDocument();
+    expect(screen.queryByTestId('wave-grid-stub')).not.toBeInTheDocument();
+    expect(screen.getByText('Default report body')).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
     expect(
-      screen.getByRole('switch', { name: 'Switch wave to report view' }),
+      screen.getByRole('switch', { name: 'Switch wave to cards view' }),
     ).toBeInTheDocument();
-    expect(screen.queryByText('Default report body')).not.toBeInTheDocument();
   });
 
-  it('does not render AddPanel while in explicit report mode', async () => {
+  it('keeps AddPanel visible in report mode', async () => {
     vi.mocked(api.listOverlays).mockResolvedValueOnce([
       makeViewModeOverlay('report'),
     ]);
@@ -438,7 +440,7 @@ describe('WavePage report view mode', () => {
     );
 
     expect(await screen.findByText('Report body')).toBeInTheDocument();
-    expect(screen.queryByTestId('add-panel-stub')).not.toBeInTheDocument();
+    expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
   it('renders the report empty state when explicit report mode has no report card', async () => {
@@ -464,11 +466,11 @@ describe('WavePage report view mode', () => {
         'Report not ready. The spec agent has not produced a report yet.',
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('add-panel-stub')).not.toBeInTheDocument();
+    expect(screen.getByRole('switch')).toBeInTheDocument();
+    expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
-  it('hides the report toggle for worker-only waves', () => {
+  it('shows the report toggle and AddPanel even for worker-only waves', () => {
     render(
       withClient(
         <WavePage
@@ -482,8 +484,14 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Report not ready/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Report not ready. The spec agent has not produced a report yet.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('switch', { name: 'Switch wave to cards view' }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
@@ -507,20 +515,18 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    await user.click(
-      screen.getByRole('switch', { name: 'Switch wave to report view' }),
-    );
+    await user.click(screen.getByRole('switch', { name: 'Switch wave to cards view' }));
 
     expect(api.upsertOverlay).toHaveBeenCalledWith({
       plugin_id: 'kernel',
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'view-mode',
-      payload: { schemaVersion: 1, mode: 'report' },
+      payload: { schemaVersion: 1, mode: 'grid' },
     });
 
     await user.click(
-      await screen.findByRole('switch', { name: 'Switch wave to cards view' }),
+      await screen.findByRole('switch', { name: 'Switch wave to report view' }),
     );
 
     expect(api.upsertOverlay).toHaveBeenLastCalledWith({
@@ -528,7 +534,85 @@ describe('WavePage report view mode', () => {
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'view-mode',
-      payload: { schemaVersion: 1, mode: 'grid' },
+      payload: { schemaVersion: 1, mode: 'report' },
     });
+  });
+
+  it('auto-switches to grid after adding a codex card from report view', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
+      echoOverlay(body),
+    );
+    vi.mocked(api.createCodexCard).mockClear();
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onCreateCardWithBody={async (waveId, _type, values) => {
+            await api.createCodexCard(waveId, {
+              cwd: values.cwd,
+              theme: DARK_THEME_RGB,
+            });
+          }}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add codex' }));
+    const createHere = await screen.findByRole('button', { name: 'Create here' });
+    await waitFor(() => expect(createHere).not.toBeDisabled());
+    await user.click(createHere);
+
+    await waitFor(() =>
+      expect(api.upsertOverlay).toHaveBeenCalledWith({
+        plugin_id: 'kernel',
+        entity_kind: 'view',
+        entity_id: 'w1',
+        kind: 'view-mode',
+        payload: { schemaVersion: 1, mode: 'grid' },
+      }),
+    );
+    expect(await screen.findByTestId('wave-grid-stub')).toBeInTheDocument();
+  });
+
+  it('stays in report view when add fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.createCodexCard).mockRejectedValueOnce(new Error('boom'));
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onCreateCardWithBody={async (waveId, _type, values) => {
+            await api.createCodexCard(waveId, {
+              cwd: values.cwd,
+              theme: DARK_THEME_RGB,
+            });
+          }}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add codex' }));
+    const createHere = await screen.findByRole('button', { name: 'Create here' });
+    await waitFor(() => expect(createHere).not.toBeDisabled());
+    await user.click(createHere);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('boom');
+    expect(api.upsertOverlay).not.toHaveBeenCalled();
+    expect(screen.getByText('Report body')).toBeInTheDocument();
   });
 });

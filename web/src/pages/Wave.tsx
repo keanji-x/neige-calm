@@ -121,6 +121,7 @@ export function WavePage({
       void (async () => {
         try {
           await onAddCard(wave.id, item.type);
+          goGridAfterAdd();
         } catch (err) {
           setDirectAddError(formatCreateCardError(err));
         }
@@ -141,6 +142,7 @@ export function WavePage({
       await onCreateCardWithBody?.(wave.id, modalItem.type, values);
       setModalError(null);
       setModalItem(null);
+      goGridAfterAdd();
     } catch (err) {
       setModalError(formatCreateCardError(err));
     }
@@ -197,16 +199,6 @@ export function WavePage({
 
   const showPct = wave.progress > 0 && wave.progress < 1.0;
 
-  const hasReportCard = useMemo(
-    () =>
-      cards.some(
-        (slot) => slot.kind === 'card' && slot.card.type === 'wave-report',
-      ),
-    [cards],
-  );
-  // Forward-compat gate for kernels that may not mint a report card for every
-  // wave. Current kernels do mint one at create time; this must not drive the
-  // default view mode.
   const workerCardSlots = useMemo(() => excludeReportCards(cards), [cards]);
   const workerCards = useMemo(
     () => workerCardSlots.map((entry) => entry.slot),
@@ -220,18 +212,28 @@ export function WavePage({
     default: VIEW_MODE_DEFAULT,
   });
   const overlayMode = viewModeOverlay.mode;
-  // Default to grid. The wave-report card is kernel-minted for every wave at
-  // create time (crates/calm-server/src/wave_report.rs:3), so the previous
-  // "report when hasReportCard" rule defaulted every new wave into report mode
-  // and hid the AddPanel. Users opt into report explicitly via the toggle.
-  // PR-E's 3-state control will revisit this.
-  const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'grid';
+  // Default to report. Backend mints a wave-report card for every wave at
+  // create time (`crates/calm-server/src/wave_report.rs`
+  // `WaveReportPayload::initial()` + the partial unique index in migration
+  // 0014), so this default is safe. Adding a worker card auto-switches to
+  // grid (see `goGridAfterAdd`) so the new card is visible immediately.
+  // PR-E's 3-state radiogroup revisits this.
+  const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'report';
 
   const setViewMode = (mode: ViewMode) => {
     setViewModeOverlay({
       schemaVersion: OVERLAY_VIEW_MODE_SCHEMA_VERSION,
       mode,
     });
+  };
+
+  // After a successful AddPanel-driven card create, if the user was reading
+  // the report view, hand them to grid so the new worker card is visible
+  // (WaveReportPage filters spec/wave-report out via excludeReportCards).
+  // Error paths intentionally do NOT switch — the inline error sits in the
+  // current header / modal, switching modes would hide it.
+  const goGridAfterAdd = () => {
+    if (viewMode === 'report') setViewMode('grid');
   };
 
   return (
@@ -253,29 +255,23 @@ export function WavePage({
           >
             <Icon n="back" s={14} sw={1.7} />
           </button>
-          {hasReportCard && (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={viewMode === 'report'}
-              className="view-flip"
-              onClick={() =>
-                setViewMode(viewMode === 'report' ? 'grid' : 'report')
-              }
-              aria-label={
-                viewMode === 'report'
-                  ? 'Switch wave to cards view'
-                  : 'Switch wave to report view'
-              }
-              title={viewMode === 'report' ? 'Cards' : 'Report'}
-            >
-              <Icon
-                n={viewMode === 'report' ? 'report' : 'grid'}
-                s={14}
-                sw={1.7}
-              />
-            </button>
-          )}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={viewMode === 'report'}
+            className="view-flip"
+            onClick={() =>
+              setViewMode(viewMode === 'report' ? 'grid' : 'report')
+            }
+            aria-label={
+              viewMode === 'report'
+                ? 'Switch wave to cards view'
+                : 'Switch wave to report view'
+            }
+            title={viewMode === 'report' ? 'Cards' : 'Report'}
+          >
+            <Icon n={viewMode === 'report' ? 'report' : 'grid'} s={14} sw={1.7} />
+          </button>
         <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
           <button
@@ -362,7 +358,7 @@ export function WavePage({
             </p>
           )}
           <span className="wave-action-cluster">
-            {viewMode !== 'report' && <AddPanel onSelect={beginAdd} />}
+            <AddPanel onSelect={beginAdd} />
             {onDeleteWave && (
               <DeleteButton
                 label={`Delete wave "${displayTitle}"`}

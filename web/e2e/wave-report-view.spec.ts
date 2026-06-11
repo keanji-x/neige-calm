@@ -1,5 +1,4 @@
 import { test, expect, type APIResponse, type Page } from '@playwright/test';
-import { seedWaveViewMode } from './helpers/reset';
 
 const createdCoveIds: string[] = [];
 
@@ -92,7 +91,6 @@ test('wave report view renders real report data and staged rail controls', async
   const wave = await createWave(page, cove.id, ts);
   const body = 'Report smoke body with **markdown** content.';
   await writeReport(page, wave.id, body);
-  await seedWaveViewMode(page.request, wave.id, 'report');
 
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
