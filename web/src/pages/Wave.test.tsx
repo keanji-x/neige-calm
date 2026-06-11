@@ -109,7 +109,7 @@ vi.mock('../api/calm', async () => {
   };
 });
 
-// `WavePage` calls `useOverlayState` for the per-wave view-mode toggle
+// `WavePage` calls `useOverlayState` for the per-wave view-mode cycle button
 // (Slice 9 of issue #56). The hook reads `useQueryClient()` — without a
 // QueryClientProvider every render throws. Wrap each rendered tree.
 function makeClient(): QueryClient {
@@ -184,7 +184,7 @@ function echoOverlay(body: NewOverlayBody): KernelOverlay {
   };
 }
 
-function getViewModeButton(name: RegExp = /view — switch to/i) {
+function getViewModeButton(name: RegExp) {
   return screen.getByRole('button', { name });
 }
 

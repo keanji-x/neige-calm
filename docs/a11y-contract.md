@@ -25,7 +25,7 @@ Slices that have shipped against this contract:
 - Slice 6 (#71): Keyboard-only E2E suite + axe scans + `npm run a11y*` scripts.
 - Slice 7: AddPanel full menu keyboard semantics (arrow keys, Home/End, type-ahead, focus restore) via `useRovingTabindex`.
 - Slice 8 (#67): this document.
-- Slice 9: WaveGrid keyboard alternative — `WaveList` component, per-wave grid/list view-mode toggle persisted via overlay.
+- Slice 9: WaveGrid keyboard alternative — `WaveList` component, per-wave grid/list/report view-mode cycle button persisted via overlay.
 
 ---
 
@@ -51,10 +51,11 @@ A task thread / unit of work belonging to a cove.
 - **WaveRow** (CovePage list): a real `<button className="wave-row">` whose accessible name is computed from its inner text (wave title + optional working-count badge + optional now/eta strings). The per-row × delete is a **sibling** `<button className="wave-row-delete" aria-label="Delete \"<title>\"">` inside a positioning wrapper (`<div className="wave-row-wrapper">`); the delete stops propagation so clicking it doesn't fire the row's navigation. Hover-reveal on the delete keys off `.wave-row-wrapper:hover` / `:focus-within`. The two buttons are siblings (NOT nested) to satisfy axe's `nested-interactive` rule. Source: `web/src/shared/components/WaveRow.tsx`. **Landmark scoping**: CovePage wraps its single sorted wave list (`waiting → running → idle`, no per-status sub-sections) in `<section aria-label="Waves">` so role-scoped locators can disambiguate the row from the sidebar "Today" nav button, which would otherwise collide on `getByRole('button', { name: /today/i })`. Tests use `page.getByRole('region', { name: 'Waves' }).getByRole('button', { name: /<title>/i })` to land on the row uniquely. Source: `web/src/pages/Cove.tsx` (search for `aria-label="Waves"`).
 - **WavePage header crumb**: an `<h1>`-equivalent breadcrumb with the wave title rendered as `<span role="button" tabIndex={0} aria-label={wave.title} aria-describedby="<id>">` (sibling visually-hidden `<span className="sr-only">Rename wave</span>`) when rename is enabled, or a plain `<span>` when read-only. Same accessible-name split as CovePage's heading — name is just the title, the rename verb is the description. Source: `web/src/pages/Wave.tsx:209-273`.
 - **Wave status pill**: `<span className="status-pill">` displaying the FSM verb ("Working", "Waiting on you", "Idle", ...). The `<CardStatusDot>` inside carries its own `aria-label="status <state>"` so the dot is announced even when the verb text is identical. Source: `web/src/pages/Wave.tsx:218-243` + `web/src/shared/components/CardStatusDot.tsx:48-79`.
-- **View-mode toggle**: a `role="switch"` button in the wave-header `.wave-meta` cluster with `aria-checked={mode === 'list'}` and an accessible name of "Switch wave to list view" / "Switch wave to grid view". Source: `web/src/pages/Wave.tsx` (look for `.view-toggle`). Each wave persists its view mode independently via an overlay (`entity_kind: 'view'`, `kind: 'view-mode'`); see §2.7 for the overlay shape. Grid is the default for new waves so mouse-only users see no behavior change.
-- **Two view modes**. WavePage renders one of two body components based on the per-wave view-mode overlay:
-  - **Grid view** (default): `WaveGrid` from `web/src/WaveGrid.tsx`. RGL-powered, mouse-only for layout changes (drag via `.card-drag-handle`, resize via SE corner). Cards are individually Tab-reachable for their inner content; the layout itself has no keyboard story by design.
-  - **List view** (Slice 9): `WaveList` from `web/src/WaveList.tsx`. Semantic `<ul>` of cards in `card.sort` order, with full keyboard navigation. **This is the keyboard-canonical mode** — keyboard users, screen-reader users, and AI agents driving the UI should switch a wave to list view to manipulate layout. The toggle is reachable from the wave-header and lives one Tab stop away from the AddPanel.
+- **View-mode cycle button**: a plain native `<button className="view-cycle">` in the wave header, with no checked state. Activation cycles the persisted mode in order `grid → list → report → grid`. Its `aria-label` and `title` both use `"<Current> view — switch to <next> view"` (for example, `"Report view — switch to grid view"`). Source: `web/src/pages/Wave.tsx` (`ViewModeCycleButton`). Each wave persists its view mode independently via an overlay (`entity_kind: 'view'`, `kind: 'view-mode'`); see §2.7 for the overlay shape. Report is the default for new waves.
+- **Three view modes**. WavePage renders one of three body components based on the per-wave view-mode overlay:
+  - **Report view** (default): `WaveReportPage` from `web/src/pages/WaveReportPage.tsx`. Shows the wave report card payload when present, or the report empty state while the spec agent has not produced one. Adding a worker card from this mode switches to grid so the created card is visible immediately.
+  - **Grid view**: `WaveGrid` from `web/src/WaveGrid.tsx`. RGL-powered, mouse-only for layout changes (drag via `.card-drag-handle`, resize via SE corner). Cards are individually Tab-reachable for their inner content; the layout itself has no keyboard story by design.
+  - **List view** (Slice 9): `WaveList` from `web/src/WaveList.tsx`. Semantic `<ul>` of cards in `card.sort` order, with full keyboard navigation. **This is the keyboard-canonical mode** — keyboard users, screen-reader users, and AI agents driving the UI should switch a wave to list view to manipulate layout. From the default report view, Tab to the cycle button and press Enter twice (`report → grid → list`); from grid, press it once.
 
 ### 2.3 Card (generic)
 
@@ -95,7 +96,7 @@ Not a UI element — overlays are a **state mechanism**. The kernel publishes `o
 
 - The 6-state card FSM surfaces as `<CardStatusDot>` (see `web/src/shared/components/CardStatusDot.tsx`) with `aria-label="status <state>"`. The same dot drives both per-card status bars and the wave-level glyph (`web/src/shared/components/WaveRow.tsx`, search for `wave.fsmState`), so the same accessible-name format reaches both surfaces.
 - Codex's live-status string is surfaced via the `aria-live="polite"` region noted in §2.5. Other overlay kinds may want their own live region — match this pattern (polite, narrow scope) when adding one.
-- **View-mode overlay** (Slice 9): per-wave preference for grid vs list layout. Persisted at `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')` with payload `{ schemaVersion: 1, mode: 'grid' | 'list' }`. Kept distinct from the existing `kind: 'layout'` overlay so list-mode users (who don't drag) never have to mint a layout row just to flip the toggle. New schema constant `OVERLAY_VIEW_MODE_SCHEMA_VERSION` lives alongside the layout one in `web/src/cards/builtins/schemaVersions.ts`. Kernel-side: no validator entry needed — unknown overlay kinds fall through the catch-all `_ => Ok(())` in `validate_overlay_payload`.
+- **View-mode overlay** (Slice 9): per-wave preference for report, grid, or list layout. Persisted at `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')` with payload `{ schemaVersion: 1, mode: 'grid' | 'list' | 'report' }`. Absence defaults to report in the WavePage. Kept distinct from the existing `kind: 'layout'` overlay so list-mode users (who don't drag) never have to mint a layout row just to flip the cycle button. New schema constant `OVERLAY_VIEW_MODE_SCHEMA_VERSION` lives alongside the layout one in `web/src/cards/builtins/schemaVersions.ts`. Kernel-side: no validator entry needed — unknown overlay kinds fall through the catch-all `_ => Ok(())` in `validate_overlay_payload`.
 
 ---
 
@@ -107,9 +108,9 @@ Pages should be Tab-traversable end-to-end. Concrete shape today:
 
 - **Sidebar → main**: Tab walks Today → waiting-on-you waves → coves → New cove → main content. The `<nav>` / `<section>` sub-landmarks (§2.2) don't introduce tab stops — only the inner `<button>`s do — so the visible order is the same as the flat-sequence layout before #60-followup. No skip-link yet; the sidebar is short enough that this hasn't been raised as a pain point, but if we add another sidebar section we should reconsider.
 - **CovePage**: title (rename button if available) → section rows (each a real `<button className="wave-row">`, with its sibling `<button className="wave-row-delete">` reached on the next Tab stop) → `+ New wave` ghost button. Section headers are not tab stops.
-- **WavePage**: back button → cove crumb button → wave title rename button → view-mode toggle → Add panel → delete button → cards in the grid (grid view) or list (list view). Cards' internal focus stops depend on the kind (xterm grabs focus once activated; plugin iframes own their own internal sequence).
+- **WavePage**: back button → view-mode cycle button → cove crumb button → wave title rename button → Add panel → delete button → report content (report view) or cards in the grid (grid view) / list (list view). Cards' internal focus stops depend on the kind (xterm grabs focus once activated; plugin iframes own their own internal sequence).
 
-Layout-change semantics (Slice 9): grid view is mouse-only for drag/resize by design; the per-wave view-mode toggle (one Tab stop before AddPanel) flips the wave to list view, where reorder is keyboard-driven via `Alt+ArrowUp` / `Alt+ArrowDown` on the focused row. See §3.4 for the full list-view contract.
+Layout-change semantics (Slice 9): grid view is mouse-only for drag/resize by design; the per-wave view-mode cycle button enters list view, where reorder is keyboard-driven via `Alt+ArrowUp` / `Alt+ArrowDown` on the focused row. From the default report view, Tab to the cycle button and press Enter twice (`report → grid → list`); from grid, press it once. See §3.4 for the full list-view contract.
 
 ### 3.2 Activation
 
@@ -127,7 +128,7 @@ Layout-change semantics (Slice 9): grid view is mouse-only for drag/resize by de
 
 ### 3.4 Arrow keys
 
-- **WaveGrid**: no keyboard reorder. By design — the grid stays mouse-only; keyboard users switch the wave to list view via the wave-header toggle.
+- **WaveGrid**: no keyboard reorder. By design — the grid stays mouse-only; keyboard users switch the wave to list view via the wave-header cycle button.
 - **WaveList** (Slice 9): the keyboard-canonical alternative. Each card is rendered inside an `<li>` participating in a roving tabindex (`useRovingTabindex`). Bindings:
   - **ArrowUp / ArrowDown** — move focus between cards (wraps).
   - **Home / End** — jump to first / last card.
@@ -269,7 +270,7 @@ Tests for a11y / role-name contracts go under `web/e2e/`. Tests that touch the r
 Catalogued so a maintainer reading this doc doesn't think the gap is undiscovered.
 
 - ~~**AddPanel full menu keyboard semantics (Slice 7, pending).**~~ **Resolved** by Slice 7 — see §3.4 above and `web/src/hooks/useRovingTabindex.ts`.
-- ~~**WaveGrid keyboard reorder/resize (Slice 9, deferred).**~~ **Resolved** by Slice 9, **via Path C** (separate list-view component) — see §2.2 "Two view modes" and §3.4 "WaveList". Grid view itself remains mouse-only by design; keyboard / AT users flip the per-wave view-mode toggle to switch to list view, which is the keyboard-canonical mode. List view supports reorder (`Alt+ArrowUp` / `Alt+ArrowDown` → `card.sort` swap via the existing optimistic mutation) and remove (`Delete`); resize is out of scope (cards in list view self-size to intrinsic content).
+- ~~**WaveGrid keyboard reorder/resize (Slice 9, deferred).**~~ **Resolved** by Slice 9, **via Path C** (separate list-view component) — see §2.2 "Three view modes" and §3.4 "WaveList". Grid view itself remains mouse-only by design; keyboard / AT users use the per-wave view-mode cycle button to switch to list view, which is the keyboard-canonical mode. From the default report view that means Tab to the cycle button and press Enter twice (`report → grid → list`). List view supports reorder (`Alt+ArrowUp` / `Alt+ArrowDown` → `card.sort` swap via the existing optimistic mutation) and remove (`Delete`); resize is out of scope (cards in list view self-size to intrinsic content).
 - ~~**Heading-nav narration noise on rename buttons.**~~ **Resolved** (#56 followup): both WavePage's title span and CovePage's `EditableTitle` now carry `aria-label={value}` only; the rename verb is moved to a visually-hidden sibling span referenced via `aria-describedby`. Heading-nav (`H` in screen readers) now announces "Atlas, heading level 1" without a "Rename cove name:" prefix while AT still verbalizes the action as the button's description when focused. See §5 for the canonical pattern.
 - **`Dialog.tsx:111-117` comment about `:focus-visible` filtering.** Captured during Slice 2 review (originally written when the primitive still lived in `Modal.tsx`); carried over verbatim by [#93](https://github.com/keanji-x/neige-calm/pull/93). The comment is technically incorrect (it claims `:focus-visible` matches against display:none, which it doesn't in practice). Latent fragility if DOM order shifts but no behavior bug today. Worth a follow-up cleanup pass.
 - **Sidebar skip-link.** No skip-to-main link today. Sidebar is short enough that it hasn't been raised; reconsider if a sidebar section grows large.
@@ -316,7 +317,7 @@ Per-primitive contracts (visual, accessibility, test) live in [`web/src/ui/READM
   - #67 — this document (Slice 8).
   - #71 — Slice 6, Keyboard E2E + axe scans + `npm run a11y*` scripts.
   - #73 — Slice 7, AddPanel menu keyboard semantics + `useRovingTabindex`.
-  - Slice 9 — WaveGrid keyboard alternative (`WaveList` + per-wave view-mode toggle).
+  - Slice 9 — WaveGrid keyboard alternative (`WaveList` + per-wave view-mode cycle button).
 - `web/playwright.config.ts` — top-of-file comment documents the two-project layout.
 - `web/e2e/README.md` — running the test suites locally.
 - `web/e2e/helpers/trace.ts` — the event-trace helper API used by `a11y` specs.
