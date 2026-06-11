@@ -24,11 +24,6 @@ async function expectOk(res: APIResponse, label: string): Promise<void> {
   throw new Error(`${label} -> ${res.status()} ${res.statusText()}: ${body}`);
 }
 
-async function blockFonts(page: Page): Promise<void> {
-  await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-  await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
-}
-
 async function login(page: Page): Promise<void> {
   const res = await page.request.post('/api/auth/login', {
     data: {
@@ -83,7 +78,6 @@ async function writeReport(page: Page, waveId: string, body: string): Promise<vo
 test('wave report view renders real report data and staged rail controls', async ({
   page,
 }) => {
-  await blockFonts(page);
   await login(page);
 
   const ts = Date.now();

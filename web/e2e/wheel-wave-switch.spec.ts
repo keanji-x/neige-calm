@@ -2,11 +2,6 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 test.setTimeout(90_000);
 
-async function blockFonts(page: Page): Promise<void> {
-  await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-  await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
-}
-
 async function createCove(page: Page): Promise<string> {
   const suffix = Date.now();
   const coveRes = await page.request.post('/api/coves', {
@@ -74,40 +69,9 @@ async function dumpTerminal(page: Page, terminalId: string): Promise<string> {
   }, terminalId);
 }
 
-async function addOuterScrollSpace(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const scroll = document.querySelector<HTMLElement>('.scroll');
-    if (!scroll) throw new Error('missing .scroll root');
-    document.querySelector('[data-wheel-edge-spacer]')?.remove();
-    const spacer = document.createElement('div');
-    spacer.dataset.wheelEdgeSpacer = 'true';
-    spacer.style.flex = '0 0 1600px';
-    spacer.style.height = '1600px';
-    spacer.style.width = '1px';
-    scroll.append(spacer);
-    scroll.scrollTop = 0;
-  });
-}
-
-async function outerScrollTop(page: Page): Promise<number> {
-  return page.locator('.scroll').evaluate((el) => el.scrollTop);
-}
-
-async function xtermViewportTop(xterm: Locator): Promise<number> {
-  return xterm.locator('.xterm-viewport').evaluate((el) => el.scrollTop);
-}
-
-async function wheelOver(page: Page, target: Locator, deltaY: number): Promise<void> {
-  const box = await target.boundingBox();
-  if (!box) throw new Error('wheel target has no bounding box');
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, deltaY);
-}
-
 test('terminal scrollback persists and wheel works after wave switch', async ({
   page,
 }) => {
-  await blockFonts(page);
   await page.goto('/calm/', { waitUntil: 'domcontentloaded' });
 
   const runId = Date.now();
@@ -141,8 +105,6 @@ test('terminal scrollback persists and wheel works after wave switch', async ({
       message: 'terminal should receive echoed scrollback',
     })
     .toContain('wheel-wave-199');
-
-  const viewport = xterm.locator('.xterm-viewport');
 
   const waveButton = (title: string) =>
     page.locator('button.side-wave').filter({ hasText: title }).first();

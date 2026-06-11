@@ -2,11 +2,6 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 test.setTimeout(90_000);
 
-async function blockFonts(page: Page): Promise<void> {
-  await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-  await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
-}
-
 async function createWave(page: Page): Promise<{ id: string; title: string }> {
   const suffix = Date.now();
   const coveRes = await page.request.post('/api/coves', {
@@ -36,7 +31,6 @@ async function createWave(page: Page): Promise<{ id: string; title: string }> {
 }
 
 async function openFreshTerminal(page: Page): Promise<Locator> {
-  await blockFonts(page);
   await page.goto('/calm/', { waitUntil: 'domcontentloaded' });
   const wave = await createWave(page);
   await page.goto(`/calm/wave/${wave.id}?testMounts=1`, {

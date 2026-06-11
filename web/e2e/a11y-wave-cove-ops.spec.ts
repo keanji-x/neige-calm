@@ -80,17 +80,10 @@ async function gotoWaveFromCove(page: Page, waveTitle: string): Promise<void> {
 }
 
 test.describe('a11y · wave + cove ops', () => {
-  test.beforeEach(async ({ request, page }) => {
+  test.beforeEach(async ({ request }) => {
     // Hermetic per-test state: clear every accumulated row from the
     // shared replay kernel. See `helpers/reset.ts` for the rationale.
     await resetReplayServer(request);
-    // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
-    // href="https://fonts.googleapis.com/...">` that, in restricted-
-    // network test environments, hangs subsequent `page.goto` calls
-    // because Chrome never fires `load` while the stylesheet request
-    // is pending.
-    await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-    await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
   });
 
   test('Wave delete via confirm dialog removes row, fires wave.deleted, navigates back to cove', async ({

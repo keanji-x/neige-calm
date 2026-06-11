@@ -8,10 +8,8 @@ async function waitForCoveInSidebar(page: Page, name: string): Promise<void> {
 }
 
 test.describe('a11y · sidebar wave delete', () => {
-  test.beforeEach(async ({ request, page }) => {
+  test.beforeEach(async ({ request }) => {
     await resetReplayServer(request);
-    await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
-    await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
   });
 
   test('hovering a sidebar wave reveals ×, confirm deletes it, and the row disappears', async ({

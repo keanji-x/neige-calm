@@ -2260,6 +2260,9 @@ select:-webkit-autofill {
     margin-bottom: var(--space-6);
     width: min(360px, calc(100% - var(--space-8)));
   }
+  .report-page--rail-collapsed .report-chat {
+    right: auto;
+  }
 }
 
 /* breadcrumb top */
