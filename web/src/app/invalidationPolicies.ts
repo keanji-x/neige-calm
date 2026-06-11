@@ -224,4 +224,7 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     requiresContext: waveFilesDerivedEventKeys,
     reason: 'Dispatcher and spec-agent waiters consume task failure directly.',
   },
+  'plan.updated': noop(
+    'No task-plan query exists yet; the PR-B scheduler consumes plan revisions server-side.',
+  ),
 });

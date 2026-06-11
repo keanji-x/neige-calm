@@ -506,6 +506,23 @@ export const taskFailedSchema = z.object({
   }),
 });
 
+/**
+ * `Event::PlanUpdated` — issue #644: the spec revised the wave's task
+ * plan via `calm.plan.upsert` / `calm.plan.cancel`. Wave-scoped audit
+ * record; `changed_keys` lists the task keys whose rows were
+ * created/updated/canceled by the call (`unchanged` upserts are not
+ * listed). The PR-B scheduler subscribes to this kind as its primary
+ * trigger; no web query consumes the tasks table yet.
+ */
+export const planUpdatedSchema = z.object({
+  ev: z.literal('plan.updated'),
+  data: z.object({
+    wave_id: z.string(),
+    changed_keys: z.array(z.string()),
+    agent_message: z.string().optional(),
+  }),
+});
+
 // ---------------- EventScope (mirror event.rs) ----------------
 
 /**
@@ -568,6 +585,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalWorkerRequestedSchema,
   taskCompletedSchema,
   taskFailedSchema,
+  planUpdatedSchema,
 ]);
 
 // ---------------- Inferred types ----------------
@@ -610,5 +628,6 @@ export type CodexWorkerRequestedEvent = z.infer<typeof codexWorkerRequestedSchem
 export type TerminalWorkerRequestedEvent = z.infer<typeof terminalWorkerRequestedSchema>;
 export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
+export type PlanUpdatedEvent = z.infer<typeof planUpdatedSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;
