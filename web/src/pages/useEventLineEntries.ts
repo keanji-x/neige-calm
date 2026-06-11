@@ -613,7 +613,7 @@ function isStatusOverlayPayload(payload: unknown): payload is StatusOverlayPaylo
 
 export function isRuntimeLiveState(state: string | undefined): boolean {
   if (typeof state !== 'string') return false;
-  return ['running', 'issuing', 'working', 'turnrunning'].includes(
+  return ['running', 'issuing', 'starting', 'working', 'turnrunning'].includes(
     state.toLowerCase(),
   );
 }

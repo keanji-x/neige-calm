@@ -436,6 +436,15 @@ describe('eventToLineEntry', () => {
 });
 
 describe('selectAnyRuntimeLive', () => {
+  it('treats a starting worker as live', () => {
+    expect(
+      selectAnyRuntimeLive(
+        [workerSlot('worker_1')],
+        [statusOverlay('worker_1', 'Starting')],
+      ),
+    ).toBe(true);
+  });
+
   it('treats a running worker with an idle spec as live', () => {
     expect(
       selectAnyRuntimeLive(
