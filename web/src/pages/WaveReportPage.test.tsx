@@ -479,6 +479,216 @@ describe('WaveReportPage', () => {
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
+  it('renders the wave.json wave fs viewer', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'wave.json': {
+        content_type: 'application/json',
+        content: JSON.stringify({
+          title: 'Wave fs registry',
+          id: 'wave_json_1',
+          cove_id: 'cove_json_1',
+          lifecycle: 'working',
+          cwd: '/repo/neige-calm',
+          sort: 3,
+          archived_at: null,
+          pinned_at: new Date('2026-06-10T11:55:00Z').getTime(),
+        }),
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Wave fs registry' }),
+    ).toHaveClass('wave-fs-viewer-primary');
+    expect(screen.getByText('wave_json_1')).toHaveClass('wave-fs-viewer-mono');
+    expect(screen.getByText('Pinned 5m ago')).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('renders the cards/<id>/meta.json wave fs viewer', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'card_meta/', kind: 'dir' }],
+      'cards/card_meta': [{ name: 'meta.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: '[{"id":"card_meta","kind":"codex"}]',
+      },
+      'cards/card_meta/meta.json': {
+        content_type: 'application/json',
+        content: JSON.stringify({
+          id: 'card_meta',
+          kind: 'codex',
+          role: 'spec',
+          sort: 5,
+          deletable: false,
+          created_at: new Date('2026-06-10T10:00:00Z').getTime(),
+          updated_at: new Date('2026-06-10T11:55:00Z').getTime(),
+        }),
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /codex card_met/ }),
+    );
+    fireEvent.click(await screen.findByRole('treeitem', { name: /meta\.json/ }));
+
+    expect(await screen.findByRole('heading', { name: 'codex' })).toHaveClass(
+      'wave-fs-viewer-primary',
+    );
+    expect(screen.getByText('spec')).toHaveClass('wave-fs-viewer-chip');
+    expect(screen.getByText('deletable: no')).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('renders the runs/index.json wave fs viewer', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+    mockWaveFileLists({
+      '': [
+        { name: 'report.md', kind: 'file' },
+        { name: 'runs/', kind: 'dir', size: 1 },
+      ],
+      runs: [{ name: 'index.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'runs/index.json': {
+        content_type: 'application/json',
+        content: JSON.stringify([
+          {
+            idempotency_key: 'run_codex_1',
+            status: 'completed',
+            kind: 'codex',
+            verdict: {
+              status: 'accepted',
+              at: new Date('2026-06-10T11:00:00Z').getTime(),
+            },
+            requested_at: new Date('2026-06-10T10:00:00Z').getTime(),
+            finished_at: new Date('2026-06-10T11:00:00Z').getTime(),
+            worker_card_id: 'card_worker_1',
+          },
+        ]),
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /runs\// }));
+    fireEvent.click(await screen.findByRole('treeitem', { name: /index\.json/ }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Runs in this wave (1)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('run_codex_1')).toHaveClass(
+      'wave-fs-viewer-mono',
+    );
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('renders the runs/<key>.json wave fs viewer', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+    mockWaveFileLists({
+      '': [
+        { name: 'report.md', kind: 'file' },
+        { name: 'runs/', kind: 'dir', size: 1 },
+      ],
+      runs: [{ name: 'run_terminal_1.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'runs/run_terminal_1.json': {
+        content_type: 'application/json',
+        content: JSON.stringify({
+          idempotency_key: 'run_terminal_1',
+          status: 'failed',
+          kind: 'terminal',
+          verdict: {
+            status: 'rejected',
+            at: new Date('2026-06-10T11:00:00Z').getTime(),
+          },
+          requested_at: new Date('2026-06-10T10:00:00Z').getTime(),
+          finished_at: new Date('2026-06-10T11:00:00Z').getTime(),
+          worker_card_id: 'card_worker_2',
+          events: { requested: { event_id: 1 } },
+          worker_card_payload: { idempotency_key: 'run_terminal_1' },
+        }),
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /runs\// }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /run_terminal_1\.json/ }),
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: 'terminal' }),
+    ).toHaveClass('wave-fs-viewer-primary');
+    expect(screen.getByText('run_terminal_1')).toHaveClass(
+      'wave-fs-viewer-mono',
+    );
+    expect(
+      screen.getByText('events / payload: see raw JSON'),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
   it('falls back to raw JSON when cards/index.json is malformed', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 

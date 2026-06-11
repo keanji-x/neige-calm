@@ -7,6 +7,7 @@ import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
+import { formatUpdatedAt } from '../shared/relativeTime';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
 import { useWaveFsViewer } from '../wave-fs-viewers';
@@ -64,33 +65,6 @@ function writeReportRailCollapsed(collapsed: boolean): void {
   } catch {
     // localStorage may throw in private browsing or under quota pressure.
   }
-}
-
-function formatUpdatedAt(updatedAt?: number): string {
-  if (
-    typeof updatedAt !== 'number' ||
-    !Number.isFinite(updatedAt) ||
-    updatedAt <= 0
-  ) {
-    return 'Updated -';
-  }
-
-  const diffMs = Math.max(0, Date.now() - updatedAt);
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return 'Updated just now';
-  if (minutes < 60) return `Updated ${minutes}m ago`;
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Updated ${hours}h ago`;
-
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `Updated ${days}d ago`;
-
-  return `Updated ${new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(new Date(updatedAt))}`;
 }
 
 function ReportByline({ report }: { report?: WaveReportCardData }) {
