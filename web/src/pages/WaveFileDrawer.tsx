@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError } from '../api/calm';
 import { useWaveFileContent } from '../api/queries';
 import { useTheme } from '../app/theme';
-import { CodePane } from '../cards/builtins/file-viewer-codemirror';
 import { useState } from '../shared/state';
 
 export interface WaveFileDrawerProps {
@@ -12,6 +11,12 @@ export interface WaveFileDrawerProps {
   path: string;
   onClose: () => void;
 }
+
+const LazyCodePane = lazy(() =>
+  import('../cards/builtins/file-viewer-codemirror').then((m) => ({
+    default: m.CodePane,
+  })),
+);
 
 export function WaveFileDrawer({ waveId, path, onClose }: WaveFileDrawerProps) {
   const backdropRef = useRef<HTMLDivElement | null>(null);
@@ -112,7 +117,13 @@ function WaveFileDrawerBody({
   if (isTextContent(contentQ.data.content_type)) {
     return (
       <div className="wave-file-drawer-code">
-        <CodePane path={path} text={contentQ.data.content} theme={theme} />
+        <Suspense
+          fallback={
+            <div className="wave-file-drawer-empty">Loading viewer…</div>
+          }
+        >
+          <LazyCodePane path={path} text={contentQ.data.content} theme={theme} />
+        </Suspense>
       </div>
     );
   }

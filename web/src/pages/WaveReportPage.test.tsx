@@ -453,7 +453,7 @@ describe('WaveReportPage', () => {
     });
   });
 
-  it('renders non-markdown text content with CodePane', () => {
+  it('renders non-markdown text content with CodePane', async () => {
     mockWaveFileContent({
       content_type: 'text/plain',
       content: 'plain text file',
@@ -468,7 +468,7 @@ describe('WaveReportPage', () => {
 
     fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
 
-    expect(screen.getByTestId('code-pane')).toHaveTextContent(
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
       'plain text file',
     );
   });
