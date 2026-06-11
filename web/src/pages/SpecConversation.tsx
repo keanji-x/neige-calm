@@ -372,6 +372,7 @@ export function SpecConversation({
                 type="button"
                 className="report-convo-reset"
                 aria-label="Reset spec session"
+                data-dormant={run.submitDormant || undefined}
                 disabled={run.resetPending}
                 onClick={() => {
                   setResetAttempted(false);
@@ -434,7 +435,11 @@ export function SpecConversation({
         <footer className="report-convo-inputbar">
           <div className="report-convo-inputbar-inner">
             {run.submitError && (
-              <p className="report-convo-error" role="alert">
+              <p
+                className="report-convo-error"
+                data-dormant={run.submitDormant || undefined}
+                role="alert"
+              >
                 {run.submitError}
               </p>
             )}

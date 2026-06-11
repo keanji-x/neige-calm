@@ -2532,6 +2532,12 @@ select:-webkit-autofill {
   opacity: 0.6;
   cursor: default;
 }
+.report-convo-reset[data-dormant="true"] {
+  border-color: var(--warn-border);
+  background-color: var(--warn-soft);
+  color: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-soft);
+}
 .report-convo-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -2735,6 +2741,9 @@ select:-webkit-autofill {
   color: var(--error-text);
   font-size: var(--text-sm);
   line-height: var(--leading-snug);
+}
+.report-convo-error[data-dormant="true"] {
+  color: var(--warn);
 }
 
 @media (max-width: 980px) {
