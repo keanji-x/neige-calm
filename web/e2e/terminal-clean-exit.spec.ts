@@ -17,6 +17,7 @@
 // Chromium project only — the replay backend doesn't spawn daemons.
 
 import { test, expect } from '@playwright/test';
+import { seedWaveViewMode } from './helpers/reset';
 
 test('terminal worker that exits cleanly shows the exit 0 header badge, no overlay', async ({ page }) => {
   // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
@@ -91,6 +92,7 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   if (!terminalId) {
     throw new Error(`terminal card POST missing payload.terminal_id: ${JSON.stringify(card)}`);
   }
+  await seedWaveViewMode(page.request, wave.id, 'grid');
 
   // Step 4 — small breather so the daemon's spawn → child exit → unlink
   // cycle finishes BEFORE we open the page. `printf` is sub-50ms but

@@ -113,7 +113,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
 
   return (
     <div className="report-page">
-      <main className="report-center">
+      <section className="report-center" aria-label="Report">
         <article className="report-doc">
           {reportSlots.length > 1 && (
             <DuplicateReportBanner count={reportSlots.length} />
@@ -130,7 +130,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             <ReportEmptyState />
           )}
         </article>
-      </main>
+      </section>
       <aside className="report-rail" aria-label="Report context">
         <section className="report-rail-section" aria-label="Files">
           <header className="report-rail-head">
