@@ -43,12 +43,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
 use serde::Deserialize;
 
 use crate::db::RepoEventWrite;
 use crate::db::sqlite::SqlxRepo;
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
+use crate::operation::SpawnHandle;
+use crate::operation::terminal_adapter::SpawnHook;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::state::{AppState, CodexClient, DaemonClient};
 
@@ -200,8 +203,26 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
         Some(wave_cove_cache),
-    );
+    )
+    .with_terminal_spawn_hook(replay_terminal_spawn_hook());
     Ok((repo, events, state))
+}
+
+fn replay_terminal_spawn_hook() -> SpawnHook {
+    Arc::new(
+        |terminal_id: String,
+         _program: String,
+         _cwd: String,
+         _env: serde_json::Value|
+         -> BoxFuture<'static, crate::error::Result<SpawnHandle>> {
+            Box::pin(async move {
+                Ok(SpawnHandle::Terminal {
+                    terminal_id: terminal_id.clone(),
+                    renderer_id: terminal_id,
+                })
+            })
+        },
+    )
 }
 
 /// Raw-insert every fixture event into the repo via `Repo::log_pure_event`.

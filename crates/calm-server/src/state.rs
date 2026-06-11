@@ -20,7 +20,7 @@ use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
-use crate::operation::terminal_adapter::{TerminalAdapter, TerminalWorkerAdapter};
+use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
@@ -581,18 +581,36 @@ impl AppState {
         self
     }
 
+    pub(crate) fn with_terminal_spawn_hook(mut self, spawn_hook: SpawnHook) -> Self {
+        self.rebuild_operation_runtime(Some(spawn_hook));
+        self
+    }
+
     #[cfg(feature = "fixtures")]
     fn rebuild_fixture_operation_runtime(&mut self) {
+        self.rebuild_operation_runtime(None);
+    }
+
+    fn rebuild_operation_runtime(&mut self, terminal_spawn_hook: Option<SpawnHook>) {
         let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
         let operation_repo =
             Arc::new(SqlxOperationRepo::new(self.raw.sqlite_pool().expect(
                 "fixture OperationRuntime requires a sqlite-backed Repo",
             )));
-        let terminal_adapter = Arc::new(TerminalAdapter::new(
-            route_repo.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-        ));
+        let terminal_adapter = if let Some(spawn_hook) = terminal_spawn_hook {
+            Arc::new(TerminalAdapter::new_with_spawn_hook(
+                route_repo.clone(),
+                self.card_role_cache.clone(),
+                self.wave_cove_cache.clone(),
+                spawn_hook,
+            ))
+        } else {
+            Arc::new(TerminalAdapter::new(
+                route_repo.clone(),
+                self.card_role_cache.clone(),
+                self.wave_cove_cache.clone(),
+            ))
+        };
         let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
             route_repo.clone(),
             self.card_role_cache.clone(),
