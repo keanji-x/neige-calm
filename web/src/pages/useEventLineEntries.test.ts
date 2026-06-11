@@ -3,9 +3,11 @@ import type { WireEvent } from '../api/wire';
 import type { CodexCardData } from '../cards/builtins/codex';
 import type { WaveCardSlot } from '../types';
 import {
+  createEventLineState,
   eventToLineEntry,
   filterEventLineEntriesForWave,
   reduceEventLineEntries,
+  reduceEventLineState,
   type EventLineEntry,
 } from './useEventLineEntries';
 
@@ -29,7 +31,11 @@ function reportEdited(
   };
 }
 
-function cardAdded(kind: string, id: string): EventOf<'card.added'> {
+function cardAdded(
+  kind: string,
+  id: string,
+  idempotencyKey?: string,
+): EventOf<'card.added'> {
   return {
     ev: 'card.added',
     data: {
@@ -37,10 +43,20 @@ function cardAdded(kind: string, id: string): EventOf<'card.added'> {
       wave_id: 'wave_1',
       kind,
       sort: 0,
-      payload: {},
+      payload: idempotencyKey ? { idempotency_key: idempotencyKey } : {},
       deletable: true,
       created_at: 0,
       updated_at: 0,
+    },
+  };
+}
+
+function cardDeleted(id: string): EventOf<'card.deleted'> {
+  return {
+    ev: 'card.deleted',
+    data: {
+      id,
+      wave_id: 'wave_1',
     },
   };
 }
@@ -51,6 +67,19 @@ function taskFailed(key = 'task_1'): EventOf<'task.failed'> {
     data: {
       idempotency_key: key,
       reason: 'failed',
+    },
+  };
+}
+
+function runtimeStarted(cardId = 'card_1'): EventOf<'runtime.started'> {
+  return {
+    ev: 'runtime.started',
+    data: {
+      runtime_id: `runtime_${cardId}`,
+      card_id: cardId,
+      kind: 'codex',
+      agent_provider: 'codex',
+      status: 'running',
     },
   };
 }
@@ -90,7 +119,7 @@ function eventScope(
         slot.kind === 'card' && slot.card.id ? [slot.card.id] : [],
       ),
     ),
-    taskIdempotencyKeySet: new Set(
+    idempotencyKeySet: new Set(
       cards.flatMap((slot) => {
         if (slot.kind !== 'card') return [];
         const key = (slot.card as { idempotencyKey?: string }).idempotencyKey;
@@ -249,6 +278,79 @@ describe('eventToLineEntry', () => {
     });
 
     expect(entries).toEqual([]);
+  });
+
+  it('keeps a new card runtime event that arrives before cards prop refetch', () => {
+    let state = createEventLineState('wave_1', []);
+
+    state = reduceEventLineState(state, {
+      type: 'event',
+      ev: cardAdded('codex', 'card_new'),
+      now: 1_000,
+    });
+    state = reduceEventLineState(state, {
+      type: 'event',
+      ev: runtimeStarted('card_new'),
+      now: 2_000,
+    });
+
+    expect(state.entries.map((entry) => entry.identityKey)).toContain(
+      'runtime:runtime.started:runtime_card_new',
+    );
+  });
+
+  it('drops card-scoped runtime events after the card is deleted', () => {
+    let state = createEventLineState('wave_1', [
+      workerSlot('card_deleted', 'task_deleted'),
+    ]);
+
+    state = reduceEventLineState(state, {
+      type: 'event',
+      ev: cardDeleted('card_deleted'),
+      now: 1_000,
+    });
+    state = reduceEventLineState(state, {
+      type: 'event',
+      ev: runtimeFailed('card_deleted'),
+      now: 2_000,
+    });
+
+    expect(state.entries.map((entry) => entry.title)).toEqual(['Card removed']);
+    expect(state.entries).not.toContainEqual(
+      expect.objectContaining({ identityKey: expect.stringContaining('runtime:') }),
+    );
+  });
+
+  it('unions cards prop refetch scope without clobbering WS-added cards', () => {
+    let state = createEventLineState('wave_1', []);
+
+    state = reduceEventLineState(state, {
+      type: 'event',
+      ev: cardAdded('codex', 'card_1'),
+      now: 1_000,
+    });
+    state = reduceEventLineState(state, {
+      type: 'event',
+      ev: runtimeStarted('card_1'),
+      now: 2_000,
+    });
+    state = reduceEventLineState(state, {
+      type: 'merge-scope',
+      waveId: 'wave_1',
+      cardIds: new Set(['card_1', 'card_2']),
+      idempotencyKeys: new Set<string>(),
+    });
+    state = reduceEventLineState(state, {
+      type: 'event',
+      ev: runtimeStarted('card_2'),
+      now: 3_000,
+    });
+
+    expect(state.entries.map((entry) => entry.identityKey)).toEqual([
+      'runtime:runtime.started:runtime_card_2',
+      'runtime:runtime.started:runtime_card_1',
+      'card:card.added:card_1',
+    ]);
   });
 
   it('keeps only entries for the active wave when filtering display entries', () => {

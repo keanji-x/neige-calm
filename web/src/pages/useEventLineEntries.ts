@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { sharedEventStream } from '../api/events';
 import type { WireEvent } from '../api/wire';
 import { useCardStatusOverlay } from '../cards/overlayRegistry';
@@ -38,12 +38,30 @@ type EventLineTone = EventLineEntry['tone'];
 interface EventLineScope {
   waveId: string;
   cardIdSet: ReadonlySet<string>;
-  taskIdempotencyKeySet: ReadonlySet<string>;
+  idempotencyKeySet: ReadonlySet<string>;
 }
 
 export type EventLineReducerAction =
   | { type: 'event'; ev: WireEvent; now?: number; scope?: EventLineScope }
   | { type: 'reset' };
+
+interface EventLineState {
+  entries: EventLineEntry[];
+  waveId: string;
+  cardIdSet: Set<string>;
+  idempotencyKeySet: Set<string>;
+}
+
+type EventLineStateAction =
+  | { type: 'event'; ev: WireEvent; now?: number }
+  | { type: 'reset-entries' }
+  | { type: 'reset-scope'; waveId: string }
+  | {
+      type: 'merge-scope';
+      waveId: string;
+      cardIds: ReadonlySet<string>;
+      idempotencyKeys: ReadonlySet<string>;
+    };
 
 const DEFAULT_MAX_ENTRIES = 40;
 const DEFAULT_DEDUP_WINDOW_MS = 30_000;
@@ -356,7 +374,7 @@ function eventBelongsToWave(
       const idempotencyKey = eventTaskIdempotencyKey(ev);
       return (
         typeof idempotencyKey === 'string' &&
-        scope.taskIdempotencyKeySet.has(idempotencyKey)
+        scope.idempotencyKeySet.has(idempotencyKey)
       );
     }
     default:
@@ -364,20 +382,36 @@ function eventBelongsToWave(
   }
 }
 
-function cardTaskIdempotencyKey(slot: WaveCardSlot): string | undefined {
-  if (slot.kind !== 'card') return undefined;
-  const candidate = (slot.card as { idempotencyKey?: unknown }).idempotencyKey;
+function readIdempotencyKey(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = (value as { idempotency_key?: unknown; idempotencyKey?: unknown })
+    .idempotency_key ?? (value as { idempotencyKey?: unknown }).idempotencyKey;
   return typeof candidate === 'string' && candidate.length > 0
     ? candidate
     : undefined;
 }
 
-function buildEventLineScope(
-  waveId: string,
-  cards: WaveCardSlot[],
-): EventLineScope {
+function cardTaskIdempotencyKey(slot: WaveCardSlot): string | undefined {
+  if (slot.kind !== 'card') return undefined;
+  return readIdempotencyKey(slot.card);
+}
+
+function eventCardIdempotencyKey(ev: WireEvent): string | undefined {
+  switch (ev.ev) {
+    case 'card.added':
+    case 'card.updated':
+      return readIdempotencyKey(ev.data.payload);
+    default:
+      return undefined;
+  }
+}
+
+function deriveScopeFromCards(cards: WaveCardSlot[]): {
+  cardIdSet: Set<string>;
+  idempotencyKeySet: Set<string>;
+} {
   const cardIdSet = new Set<string>();
-  const taskIdempotencyKeySet = new Set<string>();
+  const idempotencyKeySet = new Set<string>();
 
   for (const slot of cards) {
     if (slot.kind === 'card' && slot.card.id) {
@@ -385,11 +419,105 @@ function buildEventLineScope(
     }
     const idempotencyKey = cardTaskIdempotencyKey(slot);
     if (idempotencyKey) {
-      taskIdempotencyKeySet.add(idempotencyKey);
+      idempotencyKeySet.add(idempotencyKey);
     }
   }
 
-  return { waveId, cardIdSet, taskIdempotencyKeySet };
+  return { cardIdSet, idempotencyKeySet };
+}
+
+export function createEventLineState(
+  waveId: string,
+  cards: WaveCardSlot[],
+): EventLineState {
+  return { entries: [], waveId, ...deriveScopeFromCards(cards) };
+}
+
+function updateScopeFromEvent(
+  state: EventLineState,
+  ev: WireEvent,
+): EventLineState {
+  switch (ev.ev) {
+    case 'card.added': {
+      if (ev.data.wave_id !== state.waveId) return state;
+      const cardIdSet = new Set(state.cardIdSet);
+      cardIdSet.add(ev.data.id);
+      const idempotencyKey = eventCardIdempotencyKey(ev);
+      if (!idempotencyKey) {
+        return { ...state, cardIdSet };
+      }
+      const idempotencyKeySet = new Set(state.idempotencyKeySet);
+      idempotencyKeySet.add(idempotencyKey);
+      return { ...state, cardIdSet, idempotencyKeySet };
+    }
+
+    case 'card.updated': {
+      if (ev.data.wave_id !== state.waveId) return state;
+      const idempotencyKey = eventCardIdempotencyKey(ev);
+      if (!idempotencyKey || state.idempotencyKeySet.has(idempotencyKey)) {
+        return state;
+      }
+      const idempotencyKeySet = new Set(state.idempotencyKeySet);
+      idempotencyKeySet.add(idempotencyKey);
+      return { ...state, idempotencyKeySet };
+    }
+
+    case 'card.deleted': {
+      if (ev.data.wave_id !== state.waveId || !state.cardIdSet.has(ev.data.id)) {
+        return state;
+      }
+      const cardIdSet = new Set(state.cardIdSet);
+      cardIdSet.delete(ev.data.id);
+      return { ...state, cardIdSet };
+    }
+
+    default:
+      return state;
+  }
+}
+
+export function reduceEventLineState(
+  state: EventLineState,
+  action: EventLineStateAction,
+  options?: UseEventLineOptions,
+): EventLineState {
+  switch (action.type) {
+    case 'reset-entries':
+      return { ...state, entries: [] };
+
+    case 'reset-scope':
+      return {
+        entries: [],
+        waveId: action.waveId,
+        cardIdSet: new Set<string>(),
+        idempotencyKeySet: new Set<string>(),
+      };
+
+    case 'merge-scope': {
+      if (action.waveId !== state.waveId) return state;
+      return {
+        ...state,
+        cardIdSet: new Set([...state.cardIdSet, ...action.cardIds]),
+        idempotencyKeySet: new Set([
+          ...state.idempotencyKeySet,
+          ...action.idempotencyKeys,
+        ]),
+      };
+    }
+
+    case 'event': {
+      if (!eventBelongsToWave(action.ev, state.waveId, state)) return state;
+      const scopedState = updateScopeFromEvent(state, action.ev);
+      const entries = reduceEventLineEntries(
+        scopedState.entries,
+        { type: 'event', ev: action.ev, now: action.now, scope: scopedState },
+        options,
+      );
+      return entries === scopedState.entries
+        ? scopedState
+        : { ...scopedState, entries };
+    }
+  }
 }
 
 export function useEventLineEntries(
@@ -403,19 +531,32 @@ export function useEventLineEntries(
     () => resolveOptions({ maxEntries, dedupWindowMs }),
     [dedupWindowMs, maxEntries],
   );
-  const eventLineScope = useMemo(
-    () => buildEventLineScope(waveId, cards),
-    [cards, waveId],
-  );
-  const [entries, dispatch] = useReducer(
-    (state: EventLineEntry[], action: EventLineReducerAction) =>
-      reduceEventLineEntries(state, action, resolvedOptions),
-    [],
+  const propScope = useMemo(() => deriveScopeFromCards(cards), [cards]);
+  const waveIdRef = useRef(waveId);
+  waveIdRef.current = waveId;
+  const [state, dispatch] = useReducer(
+    (state: EventLineState, action: EventLineStateAction) =>
+      reduceEventLineState(state, action, resolvedOptions),
+    { waveId, cards },
+    ({ waveId, cards }) => createEventLineState(waveId, cards),
   );
 
   useEffect(() => {
-    dispatch({ type: 'reset' });
-  }, [waveId, resolvedOptions.maxEntries, resolvedOptions.dedupWindowMs]);
+    dispatch({ type: 'reset-entries' });
+  }, [resolvedOptions.maxEntries, resolvedOptions.dedupWindowMs]);
+
+  useEffect(() => {
+    dispatch({ type: 'reset-scope', waveId });
+  }, [waveId]);
+
+  useEffect(() => {
+    dispatch({
+      type: 'merge-scope',
+      waveId: waveIdRef.current,
+      cardIds: propScope.cardIdSet,
+      idempotencyKeys: propScope.idempotencyKeySet,
+    });
+  }, [propScope]);
 
   useEffect(() => {
     if (!waveId) return;
@@ -423,19 +564,17 @@ export function useEventLineEntries(
     const stream = sharedEventStream();
     stream.addTopic(`wave:${waveId}`);
     const off = stream.on((ev) => {
-      if (eventBelongsToWave(ev, waveId, eventLineScope)) {
-        dispatch({ type: 'event', ev, scope: eventLineScope });
-      }
+      dispatch({ type: 'event', ev });
     });
 
     return () => {
       off();
     };
-  }, [eventLineScope, waveId]);
+  }, [waveId]);
 
   return useMemo(
-    () => filterEventLineEntriesForWave(entries, waveId),
-    [entries, waveId],
+    () => filterEventLineEntriesForWave(state.entries, waveId),
+    [state.entries, waveId],
   );
 }
 
