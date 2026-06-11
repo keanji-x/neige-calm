@@ -16,7 +16,13 @@
 // path that hasn't changed shape).
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  act,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -103,7 +109,7 @@ vi.mock('../api/calm', async () => {
   };
 });
 
-// `WavePage` calls `useOverlayState` for the per-wave view-mode toggle
+// `WavePage` calls `useOverlayState` for the per-wave view-mode cycle button
 // (Slice 9 of issue #56). The hook reads `useQueryClient()` — without a
 // QueryClientProvider every render throws. Wrap each rendered tree.
 function makeClient(): QueryClient {
@@ -176,6 +182,10 @@ function echoOverlay(body: NewOverlayBody): KernelOverlay {
     payload: body.payload,
     updated_at: 0,
   };
+}
+
+function getViewModeButton(name: RegExp) {
+  return screen.getByRole('button', { name });
 }
 
 describe('WavePage rename keyboard entry', () => {
@@ -407,6 +417,97 @@ describe('WavePage schema card create errors', () => {
 });
 
 describe('WavePage report view mode', () => {
+  it('renders one cycle button with report selected by default', () => {
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot('Default report body')] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    const button = getViewModeButton(
+      /^Report view — switch to grid view$/i,
+    );
+    expect(button).toBeInTheDocument();
+    expect(button).toHaveAttribute(
+      'title',
+      'Report view — switch to grid view',
+    );
+    expect(screen.getAllByRole('button', { name: /view — switch to/i }))
+      .toHaveLength(1);
+  });
+
+  it('clicks through report, grid, and list before cycling back to report', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay)
+      .mockImplementationOnce(async (body) => echoOverlay(body))
+      .mockImplementationOnce(async (body) => echoOverlay(body))
+      .mockImplementationOnce(async (body) => echoOverlay(body));
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    const button = getViewModeButton(
+      /^Report view — switch to grid view$/i,
+    );
+    await user.click(button);
+
+    expect(api.upsertOverlay).toHaveBeenCalledWith({
+      plugin_id: 'kernel',
+      entity_kind: 'view',
+      entity_id: 'w1',
+      kind: 'view-mode',
+      payload: { schemaVersion: 1, mode: 'grid' },
+    });
+    expect(button).toHaveFocus();
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Grid view — switch to list view'),
+    );
+
+    await user.click(button);
+
+    expect(api.upsertOverlay).toHaveBeenLastCalledWith({
+      plugin_id: 'kernel',
+      entity_kind: 'view',
+      entity_id: 'w1',
+      kind: 'view-mode',
+      payload: { schemaVersion: 1, mode: 'list' },
+    });
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('List view — switch to report view'),
+    );
+
+    await user.click(button);
+
+    expect(api.upsertOverlay).toHaveBeenLastCalledWith({
+      plugin_id: 'kernel',
+      entity_kind: 'view',
+      entity_id: 'w1',
+      kind: 'view-mode',
+      payload: { schemaVersion: 1, mode: 'report' },
+    });
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Report view — switch to grid view'),
+    );
+  });
+
   it('defaults to report when wave has a report card and no overlay', () => {
     render(
       withClient(
@@ -425,7 +526,7 @@ describe('WavePage report view mode', () => {
     expect(screen.getByText('Default report body')).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
     expect(
-      screen.getByRole('switch', { name: 'Switch wave to cards view' }),
+      getViewModeButton(/^Report view — switch to grid view$/i),
     ).toBeInTheDocument();
   });
 
@@ -474,7 +575,9 @@ describe('WavePage report view mode', () => {
         'Report not ready. The spec agent has not produced a report yet.',
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole('switch')).toBeInTheDocument();
+    expect(
+      getViewModeButton(/^Report view — switch to grid view$/i),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
@@ -498,13 +601,16 @@ describe('WavePage report view mode', () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('switch', { name: 'Switch wave to cards view' }),
+      getViewModeButton(/^Report view — switch to grid view$/i),
     ).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
-  it('writes report and cards mode changes to the view-mode overlay', async () => {
+  it('writes report and grid mode changes from the cycle button', async () => {
     const user = userEvent.setup();
+    vi.mocked(api.listOverlays).mockResolvedValueOnce([
+      makeViewModeOverlay('list'),
+    ]);
     vi.mocked(api.upsertOverlay).mockClear();
     vi.mocked(api.upsertOverlay)
       .mockImplementationOnce(async (body) => echoOverlay(body))
@@ -523,26 +629,30 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    await user.click(screen.getByRole('switch', { name: 'Switch wave to cards view' }));
+    const button = await screen.findByRole('button', {
+      name: /^List view — switch to report view$/i,
+    });
+    await user.click(button);
 
     expect(api.upsertOverlay).toHaveBeenCalledWith({
       plugin_id: 'kernel',
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'view-mode',
-      payload: { schemaVersion: 1, mode: 'grid' },
+      payload: { schemaVersion: 1, mode: 'report' },
     });
-
-    await user.click(
-      await screen.findByRole('switch', { name: 'Switch wave to report view' }),
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Report view — switch to grid view'),
     );
+
+    await user.click(button);
 
     expect(api.upsertOverlay).toHaveBeenLastCalledWith({
       plugin_id: 'kernel',
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'view-mode',
-      payload: { schemaVersion: 1, mode: 'report' },
+      payload: { schemaVersion: 1, mode: 'grid' },
     });
   });
 

@@ -1,4 +1,11 @@
-import { lazy, Suspense, useEffect, useId, useMemo, useRef } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+} from 'react';
 import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
@@ -49,6 +56,43 @@ const EMPTY_CARD_SLOTS: WaveCardSlot[] = [];
  *  string drifting in from a future server schema. */
 function isViewMode(s: unknown): s is ViewMode {
   return s === 'grid' || s === 'list' || s === 'report';
+}
+
+const VIEW_MODE_ORDER: readonly ViewMode[] = ['grid', 'list', 'report'];
+const VIEW_MODE_META = {
+  grid: { label: 'Grid view', icon: 'grid' },
+  list: { label: 'List view', icon: 'list' },
+  report: { label: 'Report view', icon: 'report' },
+} as const;
+
+function nextViewMode(mode: ViewMode): ViewMode {
+  const index = VIEW_MODE_ORDER.indexOf(mode);
+  return VIEW_MODE_ORDER[(index + 1) % VIEW_MODE_ORDER.length] ?? 'grid';
+}
+
+function ViewModeCycleButton({
+  value,
+  onChange,
+}: {
+  value: ViewMode;
+  onChange: (mode: ViewMode) => void;
+}) {
+  const next = nextViewMode(value);
+  const currentMeta = VIEW_MODE_META[value];
+  const nextMeta = VIEW_MODE_META[next];
+  const label = `${currentMeta.label} — switch to ${nextMeta.label.toLowerCase()}`;
+
+  return (
+    <button
+      type="button"
+      className="view-cycle"
+      aria-label={label}
+      title={label}
+      onClick={() => onChange(next)}
+    >
+      <Icon n={currentMeta.icon} s={14} sw={1.7} />
+    </button>
+  );
 }
 
 function formatCreateCardError(err: unknown): string {
@@ -218,7 +262,7 @@ export function WavePage({
   // partial unique index from migration 0013 / backfill in 0014), so this
   // default is safe. Adding a worker card auto-switches to grid (see
   // `goGridAfterAdd`) so the new card is visible immediately.
-  // PR-E's 3-state radiogroup revisits this.
+  // The header cycle button only changes this persisted overlay value.
   const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'report';
 
   const setViewMode = (mode: ViewMode) => {
@@ -256,24 +300,8 @@ export function WavePage({
           >
             <Icon n="back" s={14} sw={1.7} />
           </button>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={viewMode === 'report'}
-            className="view-flip"
-            onClick={() =>
-              setViewMode(viewMode === 'report' ? 'grid' : 'report')
-            }
-            aria-label={
-              viewMode === 'report'
-                ? 'Switch wave to cards view'
-                : 'Switch wave to report view'
-            }
-            title={viewMode === 'report' ? 'Cards' : 'Report'}
-          >
-            <Icon n={viewMode === 'report' ? 'report' : 'grid'} s={14} sw={1.7} />
-          </button>
-        <span className="wave-crumb">
+          <ViewModeCycleButton value={viewMode} onChange={setViewMode} />
+          <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
           <button
             type="button"

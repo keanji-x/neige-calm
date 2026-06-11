@@ -11,6 +11,7 @@ export type IconName =
   | 'refresh'
   | 'edit'
   | 'grid'
+  | 'list'
   | 'report'
   | 'reset';
 
@@ -30,6 +31,8 @@ export function Icon({ n, s = 16, sw = 1.6 }: IconProps) {
     strokeWidth: sw,
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+    focusable: false,
   };
   switch (n) {
     case 'home':
@@ -98,6 +101,12 @@ export function Icon({ n, s = 16, sw = 1.6 }: IconProps) {
       return (
         <svg {...common}>
           <path d="M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z" />
+        </svg>
+      );
+    case 'list':
+      return (
+        <svg {...common}>
+          <path d="M5 7h14M5 12h14M5 17h14" />
         </svg>
       );
     case 'report':

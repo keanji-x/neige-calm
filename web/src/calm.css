@@ -1413,7 +1413,7 @@ select:-webkit-autofill {
 .wave-crumb {
   display: flex; align-items: center; gap: var(--space-4);
   /* Content-sized (shrinkable, min-width:0 keeps the title ellipsis
-     working) rather than greedy `flex: 1`: the #594 view-flip toggle sits
+     working) rather than greedy `flex: 1`: the view-mode control sits
      at the crumb tail and should not shove against the right-side meta
      cluster. The free space lives between the crumb and `.wave-meta`
      (margin-left: auto below). */
@@ -2275,10 +2275,8 @@ select:-webkit-autofill {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* Wave surface flip: icon-only mode toggle (Cards ↔ Report). checked =
-   icon color becomes accent without fill because report mode already swaps
-   the whole main area to the fullscreen report. */
-.view-flip {
+/* Wave view mode cycle button. */
+.view-cycle {
   width: 26px;
   height: 26px;
   display: grid;
@@ -2290,11 +2288,11 @@ select:-webkit-autofill {
   background: transparent;
   transition: color var(--motion-quick), background var(--motion-quick);
 }
-.view-flip:hover { background: var(--overlay-hover-strong); color: var(--text); }
-.view-flip[aria-checked="true"] {
-  color: var(--accent);
+.view-cycle:hover {
+  color: var(--text);
+  background: var(--overlay-hover-strong);
 }
-.view-flip:focus-visible {
+.view-cycle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
