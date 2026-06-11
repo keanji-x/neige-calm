@@ -126,7 +126,11 @@ function WaveFileDrawerBody({
     );
   }
 
-  return <div className="wave-file-drawer-empty">Select a file</div>;
+  return (
+    <div className="wave-file-drawer-empty">
+      Preview unavailable for {contentQ.data.content_type}
+    </div>
+  );
 }
 
 function InlineApiError({ error }: { error: Error }) {

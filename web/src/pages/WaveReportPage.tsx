@@ -126,11 +126,10 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     const focusPath = focusPathAfterCloseRef.current;
     if (focusPath === null) return;
     focusPathAfterCloseRef.current = null;
-    const schedule =
-      window.requestAnimationFrame ?? ((callback: FrameRequestCallback) => {
-        window.setTimeout(callback, 0);
-        return 0;
-      });
+    const schedule = (callback: FrameRequestCallback) =>
+      window.requestAnimationFrame
+        ? window.requestAnimationFrame(callback)
+        : window.setTimeout(callback, 0);
     schedule(() => {
       const root = pageRef.current;
       if (!root) return;

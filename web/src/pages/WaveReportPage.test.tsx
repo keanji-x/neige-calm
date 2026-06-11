@@ -8,7 +8,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
 import { useWaveFileContent, useWaveFileList } from '../api/queries';
-import type { WaveFsContent, WaveFsEntry } from '../api/calm';
+import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 
@@ -18,7 +18,11 @@ vi.mock('../api/queries', () => ({
 }));
 
 vi.mock('../app/theme', () => ({
-  useTheme: () => ({ resolved: 'light' }),
+  useTheme: () => ({
+    mode: 'light',
+    resolved: 'light',
+    setMode: () => {},
+  }),
 }));
 
 vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
@@ -86,6 +90,27 @@ function mockWaveFileContent(data: WaveFsContent) {
     error: null,
     isLoading: false,
   } as unknown as ReturnType<typeof useWaveFileContent>);
+}
+
+function mockWaveFileContentForPath(
+  path: string,
+  value: Partial<ReturnType<typeof useWaveFileContent>>,
+) {
+  mockUseWaveFileContent.mockImplementation((_, requestedPath) => {
+    if (requestedPath === path) {
+      return {
+        data: undefined,
+        error: null,
+        isLoading: false,
+        ...value,
+      } as unknown as ReturnType<typeof useWaveFileContent>;
+    }
+    return {
+      data: undefined,
+      error: null,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useWaveFileContent>;
+  });
 }
 
 afterEach(() => {
@@ -263,6 +288,50 @@ describe('WaveReportPage', () => {
     ).toBeInTheDocument();
   });
 
+  it('opens the drawer with Enter and requests content for the selected path', () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
+    fireEvent.keyDown(reportFile, { key: 'Enter' });
+
+    expect(
+      screen.getByRole('dialog', { name: /file viewer: report\.md/i }),
+    ).toBeInTheDocument();
+    expect(mockUseWaveFileContent).toHaveBeenCalledWith('wave_1', 'report.md', {
+      enabled: true,
+    });
+  });
+
+  it('marks the drawer as non-modal for assistive tech', () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+
+    expect(
+      screen.getByRole('dialog', { name: /file viewer: report\.md/i }),
+    ).toHaveAttribute('aria-modal', 'false');
+  });
+
   it('closes the drawer with Escape and clears the selected file', async () => {
     mockWaveFileContent({
       content_type: 'text/markdown',
@@ -288,6 +357,28 @@ describe('WaveReportPage', () => {
     });
   });
 
+  it('returns focus to the tree row after closing with Escape', async () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
+    fireEvent.click(reportFile);
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(reportFile);
+    });
+  });
+
   it('closes the drawer with the close button', async () => {
     mockWaveFileContent({
       content_type: 'text/markdown',
@@ -308,6 +399,30 @@ describe('WaveReportPage', () => {
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('returns focus to the tree row after closing with the close button', async () => {
+    mockWaveFileContent({
+      content_type: 'text/markdown',
+      content: '# Hi',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
+    fireEvent.click(reportFile);
+    fireEvent.click(
+      screen.getByRole('button', { name: /close file viewer/i }),
+    );
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(reportFile);
     });
   });
 
@@ -356,6 +471,60 @@ describe('WaveReportPage', () => {
     expect(screen.getByTestId('code-pane')).toHaveTextContent(
       'plain text file',
     );
+  });
+
+  it('renders the drawer loading state while file content is loading', () => {
+    mockWaveFileContentForPath('report.md', { isLoading: true });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+  });
+
+  it('renders the drawer error state when file content fails to load', () => {
+    mockWaveFileContentForPath('report.md', {
+      error: new CalmApiError(500, 'file_read_failed', 'File read failed'),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('File read failed');
+  });
+
+  it('renders a distinct message for unsupported content types', () => {
+    mockWaveFileContentForPath('report.md', {
+      data: {
+        content_type: 'image/png',
+        content: '...',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+
+    expect(
+      screen.getByText(/Preview unavailable for image\/png/i),
+    ).toBeInTheDocument();
   });
 
   it('renders the SpecCurrentRun collapsed pill when a spec card exists', () => {
