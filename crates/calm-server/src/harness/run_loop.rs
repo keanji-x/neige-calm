@@ -889,7 +889,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // state-blocked case, and the happy path logs the state implicitly through
     // the "calling daemon.turn_start" → "daemon.turn_start ok" pair.
     tracing::debug!(
-        target: "spec.harness.issue",
+        target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         wave_id = %inner.wave_id,
@@ -904,7 +904,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     } else {
         let Some(first) = first_pending_at else {
             tracing::debug!(
-                target: "spec.harness.issue",
+                target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 wave_id = %inner.wave_id,
@@ -915,7 +915,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         };
         let Some(last) = last_pending_at else {
             tracing::debug!(
-                target: "spec.harness.issue",
+                target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 wave_id = %inner.wave_id,
@@ -929,7 +929,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     if !should_issue {
         tracing::debug!(
-            target: "spec.harness.issue",
+            target: "calm_server::spec_harness_issue",
             runtime_id = %inner.runtime_id,
             card_id = %inner.card_id,
             wave_id = %inner.wave_id,
@@ -947,7 +947,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let state = inner.state.lock().await;
         if !state.can_issue_turn() {
             tracing::debug!(
-                target: "spec.harness.issue",
+                target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 wave_id = %inner.wave_id,
@@ -959,7 +959,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
     tracing::debug!(
-        target: "spec.harness.issue",
+        target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         wave_id = %inner.wave_id,
@@ -968,7 +968,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     );
     let diff = diff_with_timeout(inner).await;
     tracing::debug!(
-        target: "spec.harness.issue",
+        target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         wave_id = %inner.wave_id,
@@ -981,7 +981,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
             tracing::debug!(
-                target: "spec.harness.issue",
+                target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 wave_id = %inner.wave_id,
@@ -1036,7 +1036,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     let drained_count = drained.len();
     let text = prepend_diff_block(diff.block, joined_observation_text);
     tracing::debug!(
-        target: "spec.harness.issue",
+        target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         wave_id = %inner.wave_id,
@@ -1051,7 +1051,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     {
         Ok(turn_id) => {
             tracing::debug!(
-                target: "spec.harness.issue",
+                target: "calm_server::spec_harness_issue",
                 runtime_id = %inner.runtime_id,
                 card_id = %inner.card_id,
                 wave_id = %inner.wave_id,
@@ -1108,7 +1108,7 @@ where
         Ok(diff) => diff,
         Err(_) => {
             tracing::warn!(
-                target: "spec.harness.issue",
+                target: "calm_server::spec_harness_issue",
                 runtime_id = %runtime_id,
                 card_id,
                 wave_id,
