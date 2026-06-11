@@ -4911,6 +4911,44 @@
           }
         }
       },
+      "WaveFsCardMeta": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "deletable",
+          "id",
+          "kind",
+          "role",
+          "sort",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deletable": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/CardRole"
+          },
+          "sort": {
+            "type": "number",
+            "format": "double"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "WaveFsCatQuery": {
         "type": "object",
         "properties": {
@@ -4967,6 +5005,33 @@
           }
         }
       },
+      "WaveFsHookEvent": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "event_id",
+          "hook_kind",
+          "kind",
+          "payload"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "hook_kind": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {}
+        }
+      },
       "WaveFsLsQuery": {
         "type": "object",
         "properties": {
@@ -4976,6 +5041,241 @@
               "null"
             ],
             "description": "Logical path to list. Omitted or `/` lists the wave root."
+          }
+        }
+      },
+      "WaveFsRunDetail": {
+        "type": "object",
+        "required": [
+          "events",
+          "finished_at",
+          "idempotency_key",
+          "kind",
+          "requested_at",
+          "status",
+          "verdict",
+          "worker_card_id",
+          "worker_card_payload"
+        ],
+        "properties": {
+          "events": {
+            "$ref": "#/components/schemas/WaveFsRunEvents"
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WaveFsRunStatus"
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveFsRunVerdict"
+              }
+            ]
+          },
+          "worker_card_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_card_payload": {}
+        }
+      },
+      "WaveFsRunEventRef": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "event_id",
+          "kind",
+          "payload"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {}
+        }
+      },
+      "WaveFsRunEvents": {
+        "type": "object",
+        "required": [
+          "completed",
+          "failed",
+          "requested",
+          "verdict"
+        ],
+        "properties": {
+          "completed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveFsRunEventRef"
+              }
+            ]
+          },
+          "failed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveFsRunEventRef"
+              }
+            ]
+          },
+          "requested": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveFsRunEventRef"
+              }
+            ]
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveFsRunEventRef"
+              }
+            ]
+          }
+        }
+      },
+      "WaveFsRunIndexEntry": {
+        "type": "object",
+        "required": [
+          "finished_at",
+          "idempotency_key",
+          "kind",
+          "requested_at",
+          "status",
+          "verdict",
+          "worker_card_id"
+        ],
+        "properties": {
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WaveFsRunStatus"
+          },
+          "verdict": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveFsRunVerdictSummary"
+              }
+            ]
+          },
+          "worker_card_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "WaveFsRunStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "running",
+          "requested",
+          "unknown"
+        ]
+      },
+      "WaveFsRunVerdict": {
+        "type": "object",
+        "required": [
+          "at",
+          "reason",
+          "status"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "WaveFsRunVerdictSummary": {
+        "type": "object",
+        "required": [
+          "at",
+          "status"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
           }
         }
       },

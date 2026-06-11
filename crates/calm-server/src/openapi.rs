@@ -36,6 +36,10 @@ use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::threads::ThreadCardResolution;
 use crate::routes::version::VersionInfo;
 use crate::routes::waves::{UpdateWaveReportBody, WaveFsCatQuery, WaveFsLsQuery, WavesWindowQuery};
+use crate::wave_fs_dto::{
+    WaveFsCardMeta, WaveFsHookEvent, WaveFsRunDetail, WaveFsRunEventRef, WaveFsRunEvents,
+    WaveFsRunIndexEntry, WaveFsRunStatus, WaveFsRunVerdict, WaveFsRunVerdictSummary,
+};
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry};
 use utoipa::OpenApi;
 
@@ -136,6 +140,15 @@ use utoipa::OpenApi;
         WaveFsCatQuery,
         WaveFsEntry,
         WaveFsContent,
+        WaveFsCardMeta,
+        WaveFsRunStatus,
+        WaveFsRunVerdictSummary,
+        WaveFsRunVerdict,
+        WaveFsRunIndexEntry,
+        WaveFsRunEventRef,
+        WaveFsRunEvents,
+        WaveFsRunDetail,
+        WaveFsHookEvent,
         // Issue #247 PR3 — request body for `POST /api/waves/:id/report`
         UpdateWaveReportBody,
         WaveDetail,

@@ -1722,6 +1722,18 @@ export interface components {
             overlays: components["schemas"]["Overlay"][];
             wave: components["schemas"]["Wave"];
         };
+        WaveFsCardMeta: {
+            /** Format: int64 */
+            created_at: number;
+            deletable: boolean;
+            id: string;
+            kind: string;
+            role: components["schemas"]["CardRole"];
+            /** Format: double */
+            sort: number;
+            /** Format: int64 */
+            updated_at: number;
+        };
         WaveFsCatQuery: {
             /** @description Logical path to read. Required. */
             path?: string | null;
@@ -1737,9 +1749,69 @@ export interface components {
             /** Format: int64 */
             updated_at?: number | null;
         };
+        WaveFsHookEvent: {
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            event_id: number;
+            hook_kind: string;
+            kind: string;
+            payload: unknown;
+        };
         WaveFsLsQuery: {
             /** @description Logical path to list. Omitted or `/` lists the wave root. */
             path?: string | null;
+        };
+        WaveFsRunDetail: {
+            events: components["schemas"]["WaveFsRunEvents"];
+            /** Format: int64 */
+            finished_at: number | null;
+            idempotency_key: string;
+            kind: string;
+            /** Format: int64 */
+            requested_at: number | null;
+            status: components["schemas"]["WaveFsRunStatus"];
+            verdict: null | components["schemas"]["WaveFsRunVerdict"];
+            worker_card_id: string | null;
+            worker_card_payload: unknown;
+        };
+        WaveFsRunEventRef: {
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            event_id: number;
+            kind: string;
+            payload: unknown;
+        };
+        WaveFsRunEvents: {
+            completed: null | components["schemas"]["WaveFsRunEventRef"];
+            failed: null | components["schemas"]["WaveFsRunEventRef"];
+            requested: null | components["schemas"]["WaveFsRunEventRef"];
+            verdict: null | components["schemas"]["WaveFsRunEventRef"];
+        };
+        WaveFsRunIndexEntry: {
+            /** Format: int64 */
+            finished_at: number | null;
+            idempotency_key: string;
+            kind: string;
+            /** Format: int64 */
+            requested_at: number | null;
+            status: components["schemas"]["WaveFsRunStatus"];
+            verdict: null | components["schemas"]["WaveFsRunVerdictSummary"];
+            worker_card_id: string | null;
+        };
+        /** @enum {string} */
+        WaveFsRunStatus: "completed" | "failed" | "running" | "requested" | "unknown";
+        WaveFsRunVerdict: {
+            /** Format: int64 */
+            at: number;
+            reason: string | null;
+            status: string;
+        };
+        WaveFsRunVerdictSummary: {
+            /** Format: int64 */
+            at: number;
+            status: string;
         };
         /**
          * @description Issue #145 — Wave lifecycle state machine.
