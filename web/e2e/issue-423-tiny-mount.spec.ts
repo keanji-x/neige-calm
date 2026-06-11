@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { seedWaveViewMode } from './helpers/reset';
 
 type ResizeCommitRecord = {
   terminalId: string;
@@ -17,6 +18,7 @@ test('#423 collapsed Claude xterm mount does not commit tiny geometry', async ({
   const cove = await createCove(page.request, `E2E #423 ${Date.now()}`);
   const wave = await createWave(page.request, cove.id, `E2E #423 wave ${Date.now()}`);
   await createClaudeCard(page.request, wave.id);
+  await seedWaveViewMode(page.request, wave.id, 'grid');
 
   await page.goto(`/calm/wave/${wave.id}?testMounts=1`, {
     waitUntil: 'domcontentloaded',

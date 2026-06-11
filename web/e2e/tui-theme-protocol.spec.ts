@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, expect, type Page } from '@playwright/test';
 import { LIGHT_THEME_RGB, DARK_THEME_RGB } from '../src/api/themeRgb';
+import { seedWaveViewMode } from './helpers/reset';
 
 type ThemeName = 'light' | 'dark' | 'system';
 type XtermDumps = Record<string, () => string>;
@@ -110,6 +111,7 @@ test.describe.serial('tui theme protocol', () => {
       );
     }
     const wave = (await waveRes.json()) as { id: string };
+    await seedWaveViewMode(page.request, wave.id, 'grid');
     await page.goto(`/calm/wave/${wave.id}?testMounts=1`);
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+\?testMounts=1$/);
     await expect(
@@ -217,6 +219,7 @@ test.describe.serial('tui theme protocol', () => {
       );
     }
     const waveB = (await waveBRes.json()) as { id: string };
+    await seedWaveViewMode(page.request, waveB.id, 'grid');
 
     // Confirm wave A's terminal dump is currently mounted before navigating.
     const beforeSwitchPresent = await page.evaluate((id) => {

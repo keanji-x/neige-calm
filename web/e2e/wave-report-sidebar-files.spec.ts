@@ -88,14 +88,6 @@ test('WaveReportPage Files rail renders a selectable wave-fs tree', async ({
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
 
-  // Default view is grid; click the report toggle to enter report mode
-  // where WaveReportPage (and its H1) actually renders.
-  const reportToggle = page.getByRole('switch', {
-    name: /switch wave to report view/i,
-  });
-  await expect(reportToggle).toBeVisible();
-  await reportToggle.click();
-
   // H1 only renders inside WaveReportPage.
   await expect(
     page.getByRole('heading', { level: 1, name: wave.title }),
