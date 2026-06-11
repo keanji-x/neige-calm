@@ -18,6 +18,8 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
   const [resetOpen, setResetOpen] = useState(false);
   const [resetAttempted, setResetAttempted] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const latestSpecCardIdRef = useRef<string | null>(specCardId);
+  latestSpecCardIdRef.current = specCardId;
 
   useEffect(() => {
     if (!open) return;
@@ -43,9 +45,13 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
 
   const onSubmit = async () => {
     const text = draft.trim();
-    if (!text || run.submitPending) return;
+    if (!text || run.submitPending || run.resetPending) return;
+    const cardIdAtSubmit = specCardId;
     try {
       await run.submit(text);
+      // If the component has been reused for another card, the draft/open
+      // state now belongs to that card.
+      if (cardIdAtSubmit !== latestSpecCardIdRef.current) return;
       setDraft('');
       setOpen(false);
     } catch {
@@ -54,9 +60,11 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
   };
 
   const onConfirmReset = async () => {
+    const cardIdAtReset = specCardId;
     setResetAttempted(true);
     try {
       await run.reset();
+      if (cardIdAtReset !== latestSpecCardIdRef.current) return;
       setResetOpen(false);
       setResetAttempted(false);
     } catch {
@@ -142,14 +150,14 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
               }}
               placeholder="Ask a follow-up about this report..."
               rows={1}
-              disabled={run.submitPending}
+              disabled={run.submitPending || run.resetPending}
               aria-label="Follow-up"
             />
             <button
               type="button"
               className="report-chat-send"
               aria-label="Send"
-              disabled={!draft.trim() || run.submitPending}
+              disabled={!draft.trim() || run.submitPending || run.resetPending}
               onClick={() => void onSubmit()}
             >
               Send

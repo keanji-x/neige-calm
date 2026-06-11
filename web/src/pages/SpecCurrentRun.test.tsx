@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecCurrentRun } from './SpecCurrentRun';
@@ -37,6 +37,14 @@ function makeRun(
     submit: mocks.submit,
     ...overrides,
   };
+}
+
+function deferredVoid(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 describe('SpecCurrentRun', () => {
@@ -116,6 +124,56 @@ describe('SpecCurrentRun', () => {
 
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
+  it('blocks submit while reset is pending', async () => {
+    const user = userEvent.setup();
+    const submit = vi.fn();
+    mocks.state.currentRun = makeRun({ resetPending: false, submit });
+    const { rerender } = render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+    );
+    await user.type(screen.getByLabelText('Follow-up'), 'Race window');
+
+    mocks.state.currentRun = makeRun({ resetPending: true, submit });
+    rerender(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    expect(screen.getByLabelText('Follow-up')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('does not clear a new card draft when a previous card submit completes', async () => {
+    const user = userEvent.setup();
+    const submitA = deferredVoid();
+    const submit = vi.fn(() => submitA.promise);
+    mocks.state.currentRun = makeRun({ cardId: 'A', submit });
+    const { rerender } = render(<SpecCurrentRun specCardId="A" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+    );
+    await user.type(screen.getByLabelText('Follow-up'), 'hello A');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(submit).toHaveBeenCalledWith('hello A');
+
+    mocks.state.currentRun = makeRun({ cardId: 'B' });
+    rerender(<SpecCurrentRun specCardId="B" />);
+    await user.clear(screen.getByLabelText('Follow-up'));
+    await user.type(screen.getByLabelText('Follow-up'), 'hello B');
+
+    await act(async () => {
+      submitA.resolve();
+      await submitA.promise;
+    });
+
+    expect(
+      screen.getByRole('region', { name: 'Ask the Research Agent' }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Follow-up')).toHaveValue('hello B');
   });
 
   it('renders a disabled placeholder when no spec card is available', () => {
