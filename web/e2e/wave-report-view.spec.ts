@@ -107,5 +107,11 @@ test('wave report view renders real report data and staged rail controls', async
 
   const chat = page.getByRole('button', { name: /Ask the Research Agent/ });
   await expect(chat).toBeVisible();
-  await expect(chat).toBeDisabled();
+  await chat.click();
+
+  const chatBox = page.getByRole('region', { name: /Ask the Research Agent/ });
+  await expect(chatBox).toBeVisible();
+  const followUp = chatBox.getByRole('textbox', { name: /Follow-up/ });
+  await followUp.fill('Can you summarize the key risk?');
+  await expect(followUp).toHaveValue('Can you summarize the key risk?');
 });
