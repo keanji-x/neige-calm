@@ -680,6 +680,25 @@ pub enum Event {
         #[ts(optional)]
         agent_message: Option<String>,
     },
+
+    /// Issue #644 — the spec revised the wave's task plan via
+    /// `calm.plan.upsert` / `calm.plan.cancel`. Appended in the same
+    /// eventized tx as the `tasks` row writes, wave-scoped, actor
+    /// `AiSpec`. `changed_keys` lists the task keys whose rows were
+    /// created/updated/canceled by the call (`unchanged` upserts are
+    /// not listed). The PR-B scheduler subscribes to this kind as its
+    /// primary trigger; until then it is an audit/UI record only.
+    ///
+    /// Spec-only: the in-tx role gate refuses this event from any AI
+    /// worker actor, mirroring the dispatch-request rule (#583).
+    #[serde(rename = "plan.updated")]
+    PlanUpdated {
+        wave_id: WaveId,
+        changed_keys: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
+    },
 }
 
 /// Central event-classifier result for the kernel's event surfaces.
@@ -857,6 +876,12 @@ impl Event {
                 entity_kind: None,
                 entity_id: None,
             },
+            Event::PlanUpdated { wave_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("wave".into()),
+                entity_id: Some(wave_id.to_string()),
+            },
         }
     }
 
@@ -892,6 +917,7 @@ impl Event {
             Event::TerminalWorkerRequested { .. } => "terminal.worker_requested",
             Event::TaskCompleted { .. } => "task.completed",
             Event::TaskFailed { .. } => "task.failed",
+            Event::PlanUpdated { .. } => "plan.updated",
         }
     }
 
@@ -1045,6 +1071,12 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TerminalWorkerRequested { .. }
         | Event::TaskCompleted { .. }
         | Event::TaskFailed { .. } => vec!["*".into()],
+
+        // Issue #644 — plan revisions are wave-scoped on the payload, so
+        // wave subscribers (future UI task list) can filter without the
+        // firehose. No cove id on the payload; the BroadcastEnvelope's
+        // EventScope carries the full ancestor chain.
+        Event::PlanUpdated { wave_id, .. } => vec![format!("wave:{}", wave_id), "*".into()],
     }
 }
 
@@ -1541,6 +1573,13 @@ mod scope_tests {
             agent_message: None,
         };
         assert_eq!(failed.kind_tag(), "task.failed");
+
+        let plan_updated = Event::PlanUpdated {
+            wave_id: WaveId::from("wave-1"),
+            changed_keys: vec!["impl-parser".into()],
+            agent_message: None,
+        };
+        assert_eq!(plan_updated.kind_tag(), "plan.updated");
 
         let claude_hook = Event::ClaudeHook {
             card_id: CardId::from("card-1"),
@@ -2211,6 +2250,11 @@ mod scope_tests {
             Event::TaskFailed {
                 idempotency_key: "k".into(),
                 reason: "boom".into(),
+                agent_message: None,
+            },
+            Event::PlanUpdated {
+                wave_id: WaveId::from("wave-1"),
+                changed_keys: vec!["impl-parser".into()],
                 agent_message: None,
             },
         ]
