@@ -591,7 +591,9 @@ const MAX_SPEC_INPUT_CHARS: usize = 32_768;
         (status = 400, description = "Empty text", body = ErrorBody),
         (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
         (status = 404, description = "Card or active runtime not found", body = ErrorBody),
+        (status = 409, description = "Runtime is shutting down (lifecycle race with shutdown)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
+        (status = 503, description = "Observation queue saturated, retry shortly", body = ErrorBody),
     ),
 )]
 pub(crate) async fn send_spec_input(

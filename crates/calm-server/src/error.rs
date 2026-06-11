@@ -24,8 +24,9 @@ pub struct ErrorBody {
     /// `idempotency_collision`, `bad_request`, `unauthorized`,
     /// `forbidden`, `plugin_install`, `plugin_permission`,
     /// `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
-    /// `io_error`, `serde_error`, `codex_app_server`, `internal`,
-    /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+    /// `io_error`, `serde_error`, `codex_app_server`,
+    /// `service_unavailable`, `internal`, `forbidden_tool`,
+    /// `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
 }
 
@@ -112,6 +113,15 @@ pub enum CalmError {
     #[error("codex app-server: {0}")]
     CodexAppServer(String),
 
+    /// 503 — transient backpressure. The server understood the request but
+    /// is temporarily unable to enqueue/process it (e.g., the spec harness
+    /// observation queue is saturated). Clients should retry; the body
+    /// message indicates what was full and may suggest a back-off. Distinct
+    /// from `Internal` because nothing went wrong server-side — this is the
+    /// flow-control signal RFC 7231 §6.6.4 specifies.
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -136,6 +146,7 @@ impl CalmError {
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
             CalmError::CodexAppServer(_) => "codex_app_server",
+            CalmError::ServiceUnavailable(_) => "service_unavailable",
             CalmError::Internal(_) => "internal",
         }
     }
@@ -152,6 +163,7 @@ impl CalmError {
             CalmError::PluginKernelTooOld(_) | CalmError::SpecResetUnsupportedInSharedMode(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
+            CalmError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             CalmError::Db(_)
             | CalmError::Io(_)
             | CalmError::Serde(_)

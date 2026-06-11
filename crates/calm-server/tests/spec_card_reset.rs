@@ -673,6 +673,52 @@ async fn send_spec_input_empty_400() {
 }
 
 #[tokio::test]
+async fn send_spec_input_after_shutdown_returns_409() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
+
+    harness.shutdown().await.unwrap();
+    assert!(
+        boot.state.harness.get(&runtime_id).is_some(),
+        "seeded harness registry entry should remain after direct shutdown"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match harness.observe(Observation::WaveGoal {
+            text: "closed-channel-probe".into(),
+        }) {
+            Err(CalmError::Conflict(message)) if message.contains("shutting down") => break,
+            Ok(()) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for harness observation channel to close"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            other => panic!("unexpected observe result after shutdown: {other:?}"),
+        }
+    }
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "racing" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| { e.contains("shutting down") || e.contains("runtime") }),
+        "expected shutting-down message: body={body}"
+    );
+
+    let _ = boot.state.harness.remove(&runtime_id);
+}
+
+#[tokio::test]
 async fn send_spec_input_non_spec_card_403() {
     let boot = boot().await;
     let card = seed_codex_card_with_role(&boot, CardRole::Worker).await;
