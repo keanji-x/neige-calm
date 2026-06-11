@@ -103,11 +103,11 @@ test('wave report view renders real report data and staged rail controls', async
     page.getByText('Activity timeline appears here. (Wired in PR-E.)'),
   ).toBeVisible();
 
-  const chat = page.getByRole('button', { name: /Ask the Research Agent/ });
+  const chat = page.getByRole('button', { name: /Ask the Spec Agent/ });
   await expect(chat).toBeVisible();
   await chat.click();
 
-  const chatBox = page.getByRole('region', { name: /Ask the Research Agent/ });
+  const chatBox = page.getByRole('region', { name: /Ask the Spec Agent/ });
   await expect(chatBox).toBeVisible();
   const followUp = chatBox.getByRole('textbox', { name: /Follow-up/ });
   await followUp.fill('Can you summarize the key risk?');

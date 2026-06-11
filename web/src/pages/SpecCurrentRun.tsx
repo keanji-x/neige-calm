@@ -31,11 +31,11 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
     return (
       <div
         className="report-chat report-chat--disabled"
-        aria-label="Ask the research agent"
+        aria-label="Ask the spec agent"
       >
         <span className="report-chat-pill report-chat-pill--disabled">
           <span className="report-chat-avatar" aria-hidden="true">
-            R
+            S
           </span>
           <span className="report-chat-label">Spec agent unavailable</span>
         </span>
@@ -75,7 +75,7 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
   return (
     <div
       className={'report-chat' + (open ? ' report-chat--open' : '')}
-      aria-label="Ask the research agent"
+      aria-label="Ask the spec agent"
     >
       {!open && (
         <button
@@ -84,23 +84,23 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
           onClick={() => setOpen(true)}
         >
           <span className="report-chat-avatar" aria-hidden="true">
-            R
+            S
           </span>
-          <span className="report-chat-label">Ask the Research Agent</span>
+          <span className="report-chat-label">Ask the Spec Agent</span>
         </button>
       )}
 
       {open && (
         <section
           className="report-chat-box"
-          aria-label="Ask the Research Agent"
+          aria-label="Ask the Spec Agent"
         >
           <header className="report-chat-head">
             <div className="report-chat-who">
               <span className="report-chat-avatar" aria-hidden="true">
-                R
+                S
               </span>
-              <span className="report-chat-name">Research Agent</span>
+              <span className="report-chat-name">Spec Agent</span>
               <span className="report-chat-status">
                 <span
                   className="report-chat-state"

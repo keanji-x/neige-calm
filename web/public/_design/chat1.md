@@ -19,7 +19,7 @@ _[tool: questions_v2]_
 ## User
 
 Questions answered:
-- context: AI 调研 / Research Agent 生成的报告
+- context: AI 调研 / Spec Agent 生成的报告
 - design_context: 没有，请你定一套好看的风格
 - vibe: 现代极简（大量留白）
 - files_type: 混合各种类型
@@ -38,7 +38,7 @@ _[tool: update_todos]_
 - **气质**：现代极简、编辑感（research report 像一篇被精心排版的调研稿），大量留白
 - **字体**：标题/正文用 `Newsreader`（编辑体衬线，研究报告的质感）；UI、标签用 `Schibsted Grotesk`；元数据/文件后缀/时间戳用 `JetBrains Mono`
 - **配色**：暖白纸面 + 近黑墨色，单一克制的靛蓝强调色，事件里用一个低饱和琥珀做"异常"信号
-- **布局**：顶部细 header → 左栏「报告内的文件」(混合类型，用 mono 后缀徽章替代复杂图标) → 中栏「报告正文」→ 右栏「event line（数据/系统事件）」→ 中栏底部悬浮一个「向 Research Agent 追问」的对话框
+- **布局**：顶部细 header → 左栏「报告内的文件」(混合类型，用 mono 后缀徽章替代复杂图标) → 中栏「报告正文」→ 右栏「event line（数据/系统事件）」→ 中栏底部悬浮一个「向 Spec Agent 追问」的对话框
 
 我直接构建出来给你看。
 
@@ -63,7 +63,7 @@ _[tool: fork_verifier_agent]_
 - **左栏** — 报告内的文件（混合类型：CSV / PDF / XLSX / PNG / URL / MD），分「Sources / Generated outputs」，用 mono 后缀徽章 + 文件元信息
 - **中栏** — 编辑感正文（衬线排版、章节编号、Key findings 卡片、占位图表、数据表、引用角标），AI 生成署名
 - **右栏** — event line，数据/系统事件时间线，带「异常」琥珀色信号和 LIVE 状态
-- **底部悬浮** — 向 Research Agent 追问的对话框，含上一轮问答预览 + 建议 chips
+- **底部悬浮** — 向 Spec Agent 追问的对话框，含上一轮问答预览 + 建议 chips
 
 目前是静态高保真视觉稿。需要的话我可以接着做：让它**真正能用**（切换文件高亮联动正文、对话框可输入并回复、时间线点击定位），或加 **Tweaks 面板**让你实时调主色/字体/留白。
 
@@ -298,12 +298,11 @@ _[tool: str_replace_edit]_
 
 一致性核查完成 ✅ 死代码已无残留,各交互态都正常:折叠 Files 时 Event line 撑满、聊天展开为小框。
 
-只发现一处小瑕疵:聊天框标题「Research Agent」会换行。修掉它。一致性检查完成 ✅
+只发现一处小瑕疵:聊天框标题「Spec Agent」会换行。修掉它。一致性检查完成 ✅
 
 核查结果:
 - **死代码**:已无残留 —— HTML 里没有任何指向已删除元素的孤立 class,`--glass`/`--shadow`/`askClose` 都仍在使用
 - **交互态**:折叠 Files → Event line 撑满侧栏 ✓;聊天药丸 → 展开小框 ✓;都正常
-- **修了一处**:聊天框标题「Research Agent」会折成两行,已加 `nowrap` 修正
+- **修了一处**:聊天框标题「Spec Agent」会折成两行,已加 `nowrap` 修正
 
 整体代码现在干净一致了。需要的话可以继续做选中文件联动正文,或加 Tweaks 面板调主色/留白。
-

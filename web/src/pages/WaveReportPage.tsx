@@ -73,9 +73,9 @@ function ReportByline({ report }: { report?: WaveReportCardData }) {
     <div className="report-byline" aria-label="Report metadata">
       <span className="report-byline-author">
         <span className="report-byline-avatar" aria-hidden="true">
-          R
+          S
         </span>
-        <span>Research Agent</span>
+        <span>Spec Agent</span>
       </span>
       <span className="report-byline-sep" aria-hidden="true" />
       <span>{formatUpdatedAt(report?.updatedAt)}</span>

@@ -38,7 +38,7 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'wave_1',
     coveId: 'cove_1',
-    title: 'Research wave',
+    title: 'Spec wave',
     lifecycle: 'draft',
     anyCardNeedsInput: false,
     progress: 0,
@@ -188,7 +188,7 @@ describe('WaveReportPage', () => {
     );
 
     expect(
-      screen.getByRole('heading', { level: 1, name: 'Research wave' }),
+      screen.getByRole('heading', { level: 1, name: 'Spec wave' }),
     ).toBeInTheDocument();
     expect(screen.getByText('answer').tagName).toBe('STRONG');
   });
@@ -531,7 +531,7 @@ describe('WaveReportPage', () => {
     );
 
     expect(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     ).toBeInTheDocument();
   });
 
@@ -545,7 +545,7 @@ describe('WaveReportPage', () => {
 
     expect(screen.getByText('Spec agent unavailable')).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Ask the Research Agent' }),
+      screen.queryByRole('button', { name: 'Ask the Spec Agent' }),
     ).not.toBeInTheDocument();
   });
 });
