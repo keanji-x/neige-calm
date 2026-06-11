@@ -149,6 +149,36 @@ describe('WaveReportPage', () => {
     ).toBeInTheDocument();
   });
 
+  it('skips the report.md fetch when there is no report card', () => {
+    mockUseWaveFileContent.mockClear();
+
+    render(<WaveReportPage wave={makeWave()} cards={[]} />);
+
+    const reportMdCall = mockUseWaveFileContent.mock.calls.find(
+      (args) => args[1] === 'report.md',
+    );
+    expect(reportMdCall).toBeUndefined();
+  });
+
+  it('renders a non-report file even when the wave has no report card', async () => {
+    mockUseWaveFileContent.mockImplementation((_, requestedPath) => {
+      if (requestedPath === 'wave.json') {
+        return contentResult({
+          data: { content_type: 'text/plain', content: 'plain text' },
+        });
+      }
+      return contentResult();
+    });
+
+    render(<WaveReportPage wave={makeWave()} cards={[]} />);
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      'plain text',
+    );
+  });
+
   it('renders the wave title and markdown body for one report card', () => {
     render(
       <WaveReportPage

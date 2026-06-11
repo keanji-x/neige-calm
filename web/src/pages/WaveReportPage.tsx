@@ -250,6 +250,7 @@ function queryIsFetching(query: unknown): boolean {
 export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const title = waveDisplayTitle(wave.title);
   const reportSlots = selectReportCards(cards);
+  const hasReportCard = reportSlots.length > 0;
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
@@ -267,11 +268,15 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           )}
           <h1 className="report-title">{title}</h1>
           <ReportByline report={reportCard} />
-          <ReportContent
-            waveId={wave.id}
-            path={selectedFilePath}
-            reportCardBody={reportCard?.body}
-          />
+          {hasReportCard || selectedFilePath !== 'report.md' ? (
+            <ReportContent
+              waveId={wave.id}
+              path={selectedFilePath}
+              reportCardBody={reportCard?.body}
+            />
+          ) : (
+            <ReportEmptyState />
+          )}
         </article>
       </section>
       <aside className="report-rail" aria-label="Report context">
