@@ -81,7 +81,7 @@ async function writeReport(page: Page, waveId: string, body: string): Promise<vo
   await expectOk(res, 'POST /api/waves/:id/report');
 }
 
-test('wave report view renders real report data and PR-A placeholders', async ({
+test('wave report view renders real report data and staged rail controls', async ({
   page,
 }) => {
   await blockFonts(page);
@@ -100,7 +100,7 @@ test('wave report view renders real report data and PR-A placeholders', async ({
     page.getByRole('heading', { level: 1, name: wave.title }),
   ).toBeVisible();
   await expect(page.getByText('Report smoke body with')).toBeVisible();
-  await expect(page.getByText('Wave files appear here. (Wired in PR-B.)')).toBeVisible();
+  await expect(page.getByRole('tree', { name: /Wave files/i })).toBeVisible();
   await expect(
     page.getByText('Activity timeline appears here. (Wired in PR-E.)'),
   ).toBeVisible();

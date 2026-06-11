@@ -1,8 +1,24 @@
-import { render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
+import { useWaveFileContent, useWaveFileList } from '../api/queries';
+import type { WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
+
+vi.mock('../api/queries', () => ({
+  useWaveFileList: vi.fn(),
+  useWaveFileContent: vi.fn(),
+}));
+
+const mockUseWaveFileList = vi.mocked(useWaveFileList);
+const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
@@ -46,6 +62,23 @@ afterEach(() => {
 });
 
 describe('WaveReportPage', () => {
+  beforeEach(() => {
+    const files: WaveFsEntry[] = [
+      { name: 'report.md', kind: 'file' },
+      { name: 'wave.json', kind: 'file' },
+    ];
+    mockUseWaveFileList.mockReturnValue({
+      data: files,
+      error: null,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useWaveFileList>);
+    mockUseWaveFileContent.mockReturnValue({
+      data: undefined,
+      error: null,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useWaveFileContent>);
+  });
+
   it('renders the empty state when there is no report card', () => {
     render(<WaveReportPage wave={makeWave()} cards={[]} />);
 
@@ -121,5 +154,48 @@ describe('WaveReportPage', () => {
     expect(screen.getByLabelText('Report metadata')).toHaveTextContent(
       'Updated 2h ago',
     );
+  });
+
+  it('renders a real Files tree instead of the PR-B placeholder', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    expect(
+      screen.getByRole('tree', { name: 'Wave files' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('treeitem', { name: /report\.md/ })).toBeTruthy();
+    expect(
+      screen.queryByText('Wave files appear here. (Wired in PR-B.)'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('resets the selected file when the wave id changes', async () => {
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_A' })}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
+    fireEvent.click(reportFile);
+    expect(reportFile).toHaveAttribute('aria-selected', 'true');
+
+    rerender(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_B' })}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('treeitem', { name: /report\.md/ }),
+      ).toHaveAttribute('aria-selected', 'false');
+    });
   });
 });
