@@ -587,6 +587,18 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         .expect("log extra event");
     assert_eq!(extra_id, n + 1, "extra event sits at id=N+1");
 
+    // Issue #644 review: `tasks` deliberately has no FK to `waves`, so a
+    // wave wipe alone would never cascade here. Seed one row directly and
+    // assert the reset's explicit `DELETE FROM tasks` clears it.
+    sqlx::query(
+        "INSERT INTO tasks (id, wave_id, key, kind, goal, context_json, \
+         created_at_ms, updated_at_ms) \
+         VALUES ('wv-x:t1', 'wv-x', 't1', 'codex', 'leftover goal', '{}', 1, 1)",
+    )
+    .execute(repo.pool())
+    .await
+    .expect("seed leftover tasks row");
+
     // Reset: drop everything, reseed from the fixture, assert ids
     // re-start at 1 and the log carries exactly the fixture again.
     let reseeded = replay::reset_from_fixture(&repo, &bus, &fixture)
@@ -614,6 +626,12 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         .await
         .expect("events_since after reset");
     assert_eq!(log.len() as i64, n, "log has only the reseeded events");
+
+    let task_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+        .fetch_one(repo.pool())
+        .await
+        .expect("count tasks after reset");
+    assert_eq!(task_rows, 0, "reset wipes tasks despite the missing FK");
     for ((_id, _ver, _scope, ev), fix_ev) in log.iter().zip(fixture.events.iter()) {
         assert_eq!(
             ev.kind_tag(),

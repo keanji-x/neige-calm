@@ -137,6 +137,7 @@ async fn wave_crud_round_trip() {
                 archived_at: Some(Some(42)),
                 pinned_at: None,
                 lifecycle: None,
+                ..WavePatch::default()
             },
         )
         .await
@@ -153,6 +154,7 @@ async fn wave_crud_round_trip() {
                 archived_at: Some(None),
                 pinned_at: None,
                 lifecycle: None,
+                ..WavePatch::default()
             },
         )
         .await
@@ -196,6 +198,7 @@ async fn wave_lifecycle_round_trips_through_patch() {
                 archived_at: None,
                 pinned_at: None,
                 lifecycle: Some(WaveLifecycle::Planning),
+                ..WavePatch::default()
             },
         )
         .await
@@ -215,6 +218,7 @@ async fn wave_lifecycle_round_trips_through_patch() {
                 archived_at: None,
                 pinned_at: None,
                 lifecycle: None,
+                ..WavePatch::default()
             },
         )
         .await

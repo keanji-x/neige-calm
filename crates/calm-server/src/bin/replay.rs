@@ -464,11 +464,8 @@ async fn dev_force_wave_lifecycle(
     let wave_id_for_tx = body.wave_id.clone();
 
     let patch = WavePatch {
-        title: None,
-        sort: None,
-        archived_at: None,
-        pinned_at: None,
         lifecycle: Some(to),
+        ..WavePatch::default()
     };
 
     let result = write_with_events_typed(

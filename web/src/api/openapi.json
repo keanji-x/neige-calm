@@ -5324,12 +5324,27 @@
             "format": "int64",
             "description": "Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,\nor omit (`None`) to leave alone."
           },
+          "require_task_gates": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Issue #644 — wave-level gate policy (`waves.require_task_gates`,\nmigration 0041). `Some(v)` sets the flag, omit to leave alone.\nEnforced by `calm.plan.upsert` rule 6 only from PR-C onward."
+          },
           "sort": {
             "type": [
               "number",
               "null"
             ],
             "format": "double"
+          },
+          "task_budget": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #644 — per-wave scheduler budget (`waves.task_budget`,\nmigration 0041). Pass `Some(Some(n))` to set, `Some(None)` to\nclear back to the kernel default, or omit (`None`) to leave\nalone. Inert until the PR-B scheduler reads it."
           },
           "title": {
             "type": [

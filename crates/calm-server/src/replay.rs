@@ -315,7 +315,8 @@ fn actor_from_legacy_string(s: &str) -> ActorId {
 ///
 /// Tables wiped match the schema declared by `migrations/0001..0004`:
 /// `events`, `overlays`, `cards`, `waves`, `coves`, `terminals`,
-/// `plugins`, `plugin_kv`, `plugin_tokens`, `settings`. Migration rows
+/// `plugins`, `plugin_kv`, `plugin_tokens`, `settings`, plus the
+/// #644 `tasks` table (migration 0041). Migration rows
 /// (`_sqlx_migrations`) are preserved — wiping them would force a
 /// re-migrate that we don't need for a stateful reset.
 ///
@@ -348,6 +349,10 @@ pub async fn reset_from_fixture(
         "DELETE FROM overlays",
         "DELETE FROM terminals",
         "DELETE FROM cards",
+        // `tasks` (migration 0041, issue #644) deliberately has no FK to
+        // `waves`, so deleting `waves` will NOT cascade here — the wipe
+        // must name it explicitly or task rows leak across resets.
+        "DELETE FROM tasks",
         "DELETE FROM waves",
         "DELETE FROM coves",
         "DELETE FROM plugin_kv",

@@ -600,6 +600,11 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
             .bind(&wave_id)
             .execute(&mut **tx)
             .await?;
+        // #644 — `tasks` has no FK to `waves`; mirror `wave_delete_tx`.
+        sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .execute(&mut **tx)
+            .await?;
     }
     let res = sqlx::query("DELETE FROM coves WHERE id = ?1")
         .bind(id)
@@ -820,7 +825,193 @@ pub async fn wave_update_tx(
     .bind(&w.id)
     .execute(&mut **tx)
     .await?;
+
+    // Issue #644 — scheduler budget + gate policy (migration 0041).
+    // These columns deliberately do NOT live on the `Wave` struct while
+    // the plan is inert (PR-A): keeping them off the struct leaves every
+    // `SELECT` column list, the `WaveUpdated` wire payload, and the
+    // ts-rs export untouched. Targeted single-column writes here are the
+    // whole PATCH surface; the PR-B scheduler reads the columns by SQL.
+    if let Some(budget) = p.task_budget {
+        sqlx::query("UPDATE waves SET task_budget = ?1 WHERE id = ?2")
+            .bind(budget)
+            .bind(&w.id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    if let Some(require_gates) = p.require_task_gates {
+        sqlx::query("UPDATE waves SET require_task_gates = ?1 WHERE id = ?2")
+            .bind(require_gates)
+            .bind(&w.id)
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(w)
+}
+
+// ---------------------------------------------------------------------------
+// Tasks (issue #644 — wave-scoped task plan, migration 0041)
+//
+// The `_tx` helpers run inside the caller's eventized write so the row
+// writes and the `plan.updated` event land (or roll back) together —
+// same shape as `wave_update_tx` above. Reads are mirrored on
+// `RepoRead` for the tool layer's pre-checks and `calm.plan.list`.
+// ---------------------------------------------------------------------------
+
+/// Shared SELECT column list for `tasks` rows. One spelling so the
+/// `FromRow` mapping can't drift between the pool reads and the in-tx
+/// reads.
+const TASK_COLUMNS: &str = "id, wave_id, key, kind, goal, context_json, acceptance_criteria, \
+     cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
+     gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
+     created_at_ms, updated_at_ms, finished_at_ms";
+
+/// In-tx read of a wave's full plan, in scheduler order
+/// (`priority DESC, created_at_ms ASC, key ASC` — design §5.2). Used by
+/// `calm.plan.upsert` so dep/cycle/mutability validation sees state
+/// consistent with the rows it is about to write.
+pub async fn tasks_by_wave_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &str,
+) -> Result<Vec<Task>> {
+    let sql = format!(
+        "SELECT {TASK_COLUMNS} FROM tasks WHERE wave_id = ?1 \
+         ORDER BY priority DESC, created_at_ms ASC, key ASC"
+    );
+    let rows = sqlx::query_as::<_, Task>(&sql)
+        .bind(wave_id)
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(rows)
+}
+
+/// Insert one fresh plan row (`status = 'pending'`). The caller
+/// (`calm.plan.upsert`) has already validated key shape + per-wave
+/// uniqueness inside the same tx; the `UNIQUE (wave_id, key)`
+/// constraint backs that check, so a violation here is surfaced as a
+/// conflict rather than swallowed.
+pub async fn task_insert_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Result<()> {
+    let res = sqlx::query(
+        r#"INSERT INTO tasks
+               (id, wave_id, key, kind, goal, context_json, acceptance_criteria, cwd,
+                depends_on_json, priority, gate_json, status, status_detail, worker_card_id,
+                gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id,
+                created_at_ms, updated_at_ms, finished_at_ms)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                   ?18, ?19, ?20, ?21, ?22)"#,
+    )
+    .bind(&t.id)
+    .bind(&t.wave_id)
+    .bind(&t.key)
+    .bind(t.kind)
+    .bind(&t.goal)
+    .bind(&t.context_json)
+    .bind(&t.acceptance_criteria)
+    .bind(&t.cwd)
+    .bind(&t.depends_on_json)
+    .bind(t.priority)
+    .bind(&t.gate_json)
+    .bind(t.status)
+    .bind(&t.status_detail)
+    .bind(&t.worker_card_id)
+    .bind(&t.gate_result_json)
+    .bind(t.gate_attempt)
+    .bind(t.gate_pid)
+    .bind(t.gate_pid_starttime)
+    .bind(&t.gate_pid_boot_id)
+    .bind(t.created_at_ms)
+    .bind(t.updated_at_ms)
+    .bind(t.finished_at_ms)
+    .execute(&mut **tx)
+    .await;
+    match res {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
+            CalmError::Conflict(format!("tasks ({}, {}) already exists", t.wave_id, t.key)),
+        ),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Revise a still-`pending` plan row. Only the spec-revisable payload
+/// columns move (design §4.1 rule 5: goal/context/acceptance/cwd/deps/
+/// priority/gate); identity, status, and the gate bookkeeping columns
+/// are untouched. Guarded `WHERE status = 'pending'`: a row that left
+/// `pending` between the caller's in-tx read and this write surfaces as
+/// `Conflict` so the whole batch rolls back instead of half-applying.
+pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Result<()> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET kind = ?1, goal = ?2, context_json = ?3, acceptance_criteria = ?4, cwd = ?5,
+               depends_on_json = ?6, priority = ?7, gate_json = ?8, updated_at_ms = ?9
+           WHERE id = ?10 AND status = 'pending'"#,
+    )
+    .bind(t.kind)
+    .bind(&t.goal)
+    .bind(&t.context_json)
+    .bind(&t.acceptance_criteria)
+    .bind(&t.cwd)
+    .bind(&t.depends_on_json)
+    .bind(t.priority)
+    .bind(&t.gate_json)
+    .bind(t.updated_at_ms)
+    .bind(&t.id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::Conflict(format!(
+            "task {} is no longer pending; concurrent state change",
+            t.key
+        )));
+    }
+    Ok(())
+}
+
+/// In-tx single-row read of one plan row. Used by `calm.plan.cancel`
+/// to disambiguate a 0-row guarded flip (concurrent cancel → idempotent
+/// success vs. concurrent dispatch → conflict) against state consistent
+/// with the write it just attempted.
+pub async fn task_get_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Option<Task>> {
+    let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
+    let row = sqlx::query_as::<_, Task>(&sql)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row)
+}
+
+/// In-tx wave-existence guard for the plan writers. `tasks.wave_id`
+/// deliberately has no FK to `waves` (design §2 — events-outlive-rows
+/// convention), so without this check a delete/upsert race could insert
+/// plan rows for a wave whose row was just removed. Surfaced as
+/// `Conflict` so the tool layer maps it onto the 409-style vocabulary.
+pub async fn require_wave_exists_tx(tx: &mut Transaction<'_, Sqlite>, wave_id: &str) -> Result<()> {
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_none() {
+        return Err(CalmError::Conflict(format!(
+            "wave {wave_id} was deleted concurrently"
+        )));
+    }
+    Ok(())
+}
+
+/// Guarded `pending → canceled` flip (design §3.1). Returns the number
+/// of rows moved (`0` = the task was not `pending`; the caller decides
+/// between idempotent success and the in-flight refusal).
+pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'canceled', updated_at_ms = ?1, finished_at_ms = ?1
+           WHERE id = ?2 AND status = 'pending'"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
 }
 
 pub async fn wave_delete_tx(
@@ -833,6 +1024,13 @@ pub async fn wave_delete_tx(
         .execute(&mut **tx)
         .await?;
     sqlx::query("DELETE FROM wave_vcs_commits WHERE wave_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    // #644 — `tasks.wave_id` has no FK to `waves` (events-outlive-rows
+    // convention, design §2), so plan rows must be deleted explicitly
+    // alongside the other no-FK wave-owned tables above.
+    sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
         .bind(id)
         .execute(&mut **tx)
         .await?;
@@ -2582,6 +2780,28 @@ impl RepoRead for SqlxRepo {
             cards,
             overlays,
         }))
+    }
+
+    // ---------------------------------------------------------------- tasks
+    async fn tasks_by_wave(&self, wave_id: &str) -> Result<Vec<Task>> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE wave_id = ?1 \
+             ORDER BY priority DESC, created_at_ms ASC, key ASC"
+        );
+        let rows = sqlx::query_as::<_, Task>(&sql)
+            .bind(wave_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    async fn task_get(&self, id: &str) -> Result<Option<Task>> {
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
+        let row = sqlx::query_as::<_, Task>(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row)
     }
 
     // ---------------------------------------------------------------- cards

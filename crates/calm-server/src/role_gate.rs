@@ -155,7 +155,7 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.5) Dispatch-request events are spec-only. ---
+    // --- (2.5) Dispatch-request + plan-revision events are spec-only. ---
     //
     // Issue #583. `calm.task.dispatch` is gated to Spec at the MCP
     // soft gate (`emit.rs::dispatch_request`), but the in-tx gate must
@@ -164,9 +164,16 @@ pub fn enforce_role(
     // that reaches `write_with_event_typed` with an AiCodex/AiClaude
     // worker actor + a dispatch event can still commit a recursive
     // worker-tree mint. Mirrors section (2)'s shape.
+    //
+    // Issue #644 — `Event::PlanUpdated` joins the list: the task plan is
+    // wave-level authority (the PR-B scheduler dispatches whatever the
+    // plan says), so a worker actor writing plan revisions would be the
+    // same recursive-mint hole one hop removed.
     if matches!(
         event,
-        Event::CodexWorkerRequested { .. } | Event::TerminalWorkerRequested { .. }
+        Event::CodexWorkerRequested { .. }
+            | Event::TerminalWorkerRequested { .. }
+            | Event::PlanUpdated { .. }
     ) {
         match actor {
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
@@ -1029,6 +1036,54 @@ mod tests {
             &wcc,
         );
         assert!(res.is_ok(), "spec emitting codex.worker_requested: {res:?}");
+    }
+
+    #[test]
+    fn worker_cannot_emit_plan_updated_644() {
+        // Issue #644. `plan.updated` joins the section-(2.5) spec-only
+        // list: a worker AI actor must not commit task-plan revisions
+        // (the PR-B scheduler dispatches whatever the plan says, so this
+        // would be the #583 recursive-mint hole one hop removed).
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        let err = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &Event::PlanUpdated {
+                wave_id: WaveId::from("w"),
+                changed_keys: vec!["impl-parser".into()],
+                agent_message: None,
+            },
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        )
+        .expect_err("worker AI actor must be refused plan.updated");
+        assert!(
+            matches!(err, RoleViolation::NotSpecForDispatch { .. }),
+            "expected NotSpecForDispatch, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn spec_can_emit_plan_updated_in_own_wave() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("spec-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiSpec(id.clone()),
+            &Event::PlanUpdated {
+                wave_id: WaveId::from("w"),
+                changed_keys: vec!["impl-parser".into()],
+                agent_message: None,
+            },
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "spec emitting plan.updated: {res:?}");
     }
 
     #[test]

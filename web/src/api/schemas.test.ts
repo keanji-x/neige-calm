@@ -355,6 +355,30 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('parses a valid plan.updated (#644)', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'plan.updated',
+      data: {
+        wave_id: 'wv-1',
+        changed_keys: ['t1', 't2'],
+        agent_message: 'plan revision rationale',
+      },
+    });
+    expect(parsed.ev).toBe('plan.updated');
+    if (parsed.ev === 'plan.updated') {
+      expect(parsed.data.changed_keys).toEqual(['t1', 't2']);
+      expect(parsed.data.agent_message).toBe('plan revision rationale');
+    }
+  });
+
+  it('rejects plan.updated missing changed_keys', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'plan.updated',
+      data: { wave_id: 'wv-1' },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 // ---- PR2 of #247: wave.report_edited ----------------------------------
