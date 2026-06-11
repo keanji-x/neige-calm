@@ -10,11 +10,14 @@ import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
 import { SpecCurrentRun } from './SpecCurrentRun';
+import { ChevronIcon } from '../shared/components/ChevronIcon';
 
 export interface WaveReportPageProps {
   wave: Wave;
   cards: WaveCardSlot[];
 }
+
+const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
 
 type CardSlot = Extract<WaveCardSlot, { kind: 'card' }>;
 type ReportCardSlot = CardSlot & { card: WaveReportCardData };
@@ -39,6 +42,27 @@ function selectSpecCard(cards: WaveCardSlot[]): string | null {
     (s): s is CardSlot => s.kind === 'card' && s.card.type === 'spec',
   );
   return slot?.card.id ?? null;
+}
+
+function readReportRailCollapsed(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(REPORT_RAIL_COLLAPSED_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeReportRailCollapsed(collapsed: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      REPORT_RAIL_COLLAPSED_STORAGE_KEY,
+      collapsed ? 'true' : 'false',
+    );
+  } catch {
+    // localStorage may throw in private browsing or under quota pressure.
+  }
 }
 
 function formatUpdatedAt(updatedAt?: number): string {
@@ -245,6 +269,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
   const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
+  const [reportRailCollapsed, setReportRailCollapsed] = useState(
+    () => readReportRailCollapsed(),
+  );
 
   // Sync reset during render so a new wave never renders with the old file path.
   if (lastWaveId !== wave.id) {
@@ -252,8 +279,20 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     setSelectedFilePath('report.md');
   }
 
+  const toggleReportRailCollapsed = () => {
+    setReportRailCollapsed((current) => {
+      const next = !current;
+      writeReportRailCollapsed(next);
+      return next;
+    });
+  };
+
   return (
-    <div className="report-page">
+    <div
+      className={
+        'report-page' + (reportRailCollapsed ? ' report-page--rail-collapsed' : '')
+      }
+    >
       <section className="report-center" aria-label="Report">
         <article className="report-doc">
           {reportSlots.length > 1 && (
@@ -272,31 +311,56 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           )}
         </article>
       </section>
-      <aside className="report-rail" aria-label="Report context">
-        <section className="report-rail-section" aria-label="Files">
-          <header className="report-rail-head">
+      <aside
+        className={
+          'report-rail' + (reportRailCollapsed ? ' report-rail--collapsed' : '')
+        }
+        aria-label="Report context"
+      >
+        <header className="report-rail-head report-rail-head--top">
+          {!reportRailCollapsed && (
             <span>Files</span>
-          </header>
-          <div className="report-rail-files">
-            <WaveFileTree
-              waveId={wave.id}
-              selectedPath={selectedFilePath}
-              onSelectedPathChange={(path) =>
-                setSelectedFilePath(path ?? 'report.md')
-              }
-              ariaLabel="Wave files"
-              fallback={<div className="report-rail-placeholder">No files yet.</div>}
-            />
-          </div>
-        </section>
-        <section className="report-rail-section" aria-label="Event line">
-          <header className="report-rail-head">
-            <span>Event line</span>
-          </header>
-          <div className="report-rail-placeholder">
-            Activity timeline appears here. (Wired in PR-E.)
-          </div>
-        </section>
+          )}
+          <button
+            type="button"
+            className="report-rail-toggle"
+            onClick={toggleReportRailCollapsed}
+            aria-expanded={!reportRailCollapsed}
+            aria-label={
+              reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'
+            }
+            title={reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'}
+          >
+            <ChevronIcon />
+          </button>
+        </header>
+        {!reportRailCollapsed && (
+          <>
+            <section className="report-rail-section" aria-label="Files">
+              <div className="report-rail-files">
+                <WaveFileTree
+                  waveId={wave.id}
+                  selectedPath={selectedFilePath}
+                  onSelectedPathChange={(path) =>
+                    setSelectedFilePath(path ?? 'report.md')
+                  }
+                  ariaLabel="Wave files"
+                  fallback={
+                    <div className="report-rail-placeholder">No files yet.</div>
+                  }
+                />
+              </div>
+            </section>
+            <section className="report-rail-section" aria-label="Event line">
+              <header className="report-rail-head">
+                <span>Event line</span>
+              </header>
+              <div className="report-rail-placeholder">
+                Activity timeline appears here. (Wired in PR-E.)
+              </div>
+            </section>
+          </>
+        )}
       </aside>
       <SpecCurrentRun specCardId={specCardId} />
     </div>
