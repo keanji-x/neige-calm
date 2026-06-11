@@ -93,9 +93,10 @@ test('wave report view renders real report data and staged rail controls', async
   ).toBeVisible();
   await expect(page.getByText('Report smoke body with')).toBeVisible();
   await expect(page.getByRole('tree', { name: /Wave files/i })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Event line' })).toBeVisible();
   await expect(
     page.getByText('Activity timeline appears here. (Wired in PR-E.)'),
-  ).toBeVisible();
+  ).toHaveCount(0);
 
   const chat = page.getByRole('button', { name: /Ask the Spec Agent/ });
   await expect(chat).toBeVisible();

@@ -170,16 +170,16 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     // no-op for now. The registry can refine this when a consumer appears.
   },
   'harness.item.added': noop(
-    'Spec ChatTimeline card-topic consumers handle harness item payloads directly.',
+    'Report view card-topic consumers handle harness item payloads directly.',
   ),
   'harness.phase.changed': noop(
-    'SpecCard card-topic consumers handle harness phase updates directly.',
+    'Report page card-topic consumers handle harness phase updates directly.',
   ),
   'harness.transcript.cleared': noop(
-    'Spec ChatTimeline card-topic consumers reset local transcript state directly.',
+    'Report view card-topic consumers reset local transcript state directly.',
   ),
   'harness.user_message.enqueued': noop(
-    'Spec ChatTimeline card-topic consumers observe queued user messages directly.',
+    'Report view card-topic consumers observe queued user messages directly.',
   ),
   'wave.report_edited': {
     keys: (ev) => [waveFilesKey(ev.data.wave_id)],

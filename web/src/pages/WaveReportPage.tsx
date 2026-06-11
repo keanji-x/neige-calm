@@ -9,8 +9,10 @@ import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
+import { EventLinePanel } from './EventLinePanel';
 import { SpecCurrentRun } from './SpecCurrentRun';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
+import { useAnyRuntimeLive, useEventLineEntries } from './useEventLineEntries';
 
 export interface WaveReportPageProps {
   wave: Wave;
@@ -272,6 +274,8 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
+  const eventEntries = useEventLineEntries(wave.id, cards);
+  const live = useAnyRuntimeLive(wave.id, cards);
 
   // Sync reset during render so a new wave never renders with the old file path.
   if (lastWaveId !== wave.id) {
@@ -352,12 +356,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
               </div>
             </section>
             <section className="report-rail-section" aria-label="Event line">
-              <header className="report-rail-head">
-                <span>Event line</span>
-              </header>
-              <div className="report-rail-placeholder">
-                Activity timeline appears here. (Wired in PR-E.)
-              </div>
+              <EventLinePanel entries={eventEntries} live={live} />
             </section>
           </>
         )}

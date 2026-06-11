@@ -2,7 +2,7 @@
 // Underscored filename + skipped from CI by manual project filter at run time.
 //
 // Goal: capture how mouse-wheel events route in the current build across
-// every kind of scroll container (page .scroll, .wave-report-body,
+// every kind of scroll container (page .scroll, .report-center,
 // .term-body, .file-viewer-*, .codex-card-pty / xterm, .cal-agenda) so we
 // can decide between cursor-routed vs. focus-routed wheel models.
 //
@@ -40,7 +40,7 @@ declare global {
 
 const TARGETS = [
   '.scroll',
-  '.wave-report-body',
+  '.report-center',
   '.term-body',
   '.file-viewer-tree-list',
   '.file-viewer-changes',
@@ -249,7 +249,7 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
 
       // Each card type — best-effort, skips if not present.
       for (const card of [
-        { lbl: 'wave_report_body_no_focus', sel: '.wave-report-body' },
+        { lbl: 'report_center_no_focus', sel: '.report-center' },
         { lbl: 'term_live_xterm_no_focus', sel: '.term.live .xterm-viewport' },
         { lbl: 'term_static_body_no_focus', sel: '.term:not(.live) .term-body' },
         { lbl: 'codex_pty_no_focus', sel: '.codex-card-pty .xterm-viewport' },
@@ -264,25 +264,25 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
         });
       }
 
-      // === Edge-of-card chaining: scroll wave-report all the way down then wheel more ===
-      const hadReport = await page.locator('.wave-report-body').count();
+      // === Edge-of-card chaining: scroll report center all the way down then wheel more ===
+      const hadReport = await page.locator('.report-center').count();
       if (hadReport > 0) {
         await page.evaluate(() => {
-          const el = document.querySelector('.wave-report-body') as HTMLElement | null;
+          const el = document.querySelector('.report-center') as HTMLElement | null;
           if (el) el.scrollTop = el.scrollHeight;
         });
         await runRegion({
-          label: 'wave_report_at_bottom_wheel_down',
-          selector: '.wave-report-body',
+          label: 'report_center_at_bottom_wheel_down',
+          selector: '.report-center',
           deltas: [120, 120, 120, 120],
         });
         await page.evaluate(() => {
-          const el = document.querySelector('.wave-report-body') as HTMLElement | null;
+          const el = document.querySelector('.report-center') as HTMLElement | null;
           if (el) el.scrollTop = 0;
         });
         await runRegion({
-          label: 'wave_report_at_top_wheel_up',
-          selector: '.wave-report-body',
+          label: 'report_center_at_top_wheel_up',
+          selector: '.report-center',
           deltas: [-120, -120, -120, -120],
         });
       }
@@ -290,7 +290,7 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
       // === Focus survey: click each card, capture document.activeElement ===
       const focusSurvey: Record<string, any> = {};
       const cardSelectors = [
-        '.wave-report-card',
+        '.report-doc',
         '.term.live',
         '.term:not(.live)',
         '.codex-card',

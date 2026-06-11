@@ -7,12 +7,17 @@ import {
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
-import { useWaveFileContent, useWaveFileList } from '../api/queries';
+import {
+  useOverlaysByKindQuery,
+  useWaveFileContent,
+  useWaveFileList,
+} from '../api/queries';
 import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 
 vi.mock('../api/queries', () => ({
+  useOverlaysByKindQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
 }));
@@ -33,6 +38,7 @@ vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
 
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
+const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
 
@@ -123,6 +129,9 @@ afterEach(() => {
 
 describe('WaveReportPage', () => {
   beforeEach(() => {
+    mockUseOverlaysByKindQuery.mockReturnValue({
+      data: [],
+    } as unknown as ReturnType<typeof useOverlaysByKindQuery>);
     const files: WaveFsEntry[] = [
       { name: 'report.md', kind: 'file' },
       { name: 'wave.json', kind: 'file' },
@@ -322,6 +331,22 @@ describe('WaveReportPage', () => {
     expect(screen.getByLabelText('Report context'))
       .toHaveClass('report-rail--collapsed');
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
+  });
+
+  it('renders a real Event line panel instead of the PR-E placeholder', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Event rail body')]}
+      />,
+    );
+
+    const eventLine = screen.getByRole('region', { name: 'Event line' });
+    expect(within(eventLine).getByText('Event line')).toBeInTheDocument();
+    expect(within(eventLine).getByText('Nothing yet.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Activity timeline appears here. (Wired in PR-E.)'),
+    ).not.toBeInTheDocument();
   });
 
   it('defaults the main column to report.md content', () => {

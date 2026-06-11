@@ -26,6 +26,7 @@ declare module '../../types' {
 export interface TerminalCardData {
   type: 'terminal';
   id?: string;
+  idempotencyKey?: string;
   title: string;
   lines: TermLine[];
   terminalId?: string;
@@ -57,6 +58,7 @@ const terminalPayloadSchema = z.object({
   // the unknown key by default, so we keep this schema focused on the
   // shape we actually consume.
   terminal_id: z.string().optional(),
+  idempotency_key: z.string().optional(),
 });
 
 function TerminalCard({
@@ -280,6 +282,7 @@ export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> =
     return {
       type: 'terminal',
       id: k.id,
+      idempotencyKey: parsed.data.idempotency_key,
       title: 'terminal',
       lines: [],
       terminalId: parsed.data.terminal_id,
