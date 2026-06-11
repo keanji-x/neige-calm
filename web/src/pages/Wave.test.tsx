@@ -22,7 +22,6 @@ import {
   act,
   fireEvent,
   waitFor,
-  within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -185,14 +184,8 @@ function echoOverlay(body: NewOverlayBody): KernelOverlay {
   };
 }
 
-function getViewModeControls() {
-  const group = screen.getByRole('radiogroup', { name: 'Wave view mode' });
-  return {
-    group,
-    grid: within(group).getByRole('radio', { name: /grid view/i }),
-    list: within(group).getByRole('radio', { name: /list view/i }),
-    report: within(group).getByRole('radio', { name: /report view/i }),
-  };
+function getViewModeButton(name: RegExp = /view — switch to/i) {
+  return screen.getByRole('button', { name });
 }
 
 describe('WavePage rename keyboard entry', () => {
@@ -424,7 +417,7 @@ describe('WavePage schema card create errors', () => {
 });
 
 describe('WavePage report view mode', () => {
-  it('renders grid, list, and report radios with report selected by default', () => {
+  it('renders one cycle button with report selected by default', () => {
     render(
       withClient(
         <WavePage
@@ -438,21 +431,25 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    const { grid, list, report } = getViewModeControls();
-    expect(grid).toHaveAttribute('aria-checked', 'false');
-    expect(list).toHaveAttribute('aria-checked', 'false');
-    expect(report).toHaveAttribute('aria-checked', 'true');
-    expect(grid).toHaveAttribute('tabindex', '-1');
-    expect(list).toHaveAttribute('tabindex', '-1');
-    expect(report).toHaveAttribute('tabindex', '0');
+    const button = getViewModeButton(
+      /^Report view — switch to grid view$/i,
+    );
+    expect(button).toBeInTheDocument();
+    expect(button).toHaveAttribute(
+      'title',
+      'Report view — switch to grid view',
+    );
+    expect(screen.getAllByRole('button', { name: /view — switch to/i }))
+      .toHaveLength(1);
   });
 
-  it('ArrowRight wraps from report to grid and writes the overlay', async () => {
+  it('clicks through report, grid, and list before cycling back to report', async () => {
     const user = userEvent.setup();
     vi.mocked(api.upsertOverlay).mockClear();
-    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
-      echoOverlay(body),
-    );
+    vi.mocked(api.upsertOverlay)
+      .mockImplementationOnce(async (body) => echoOverlay(body))
+      .mockImplementationOnce(async (body) => echoOverlay(body))
+      .mockImplementationOnce(async (body) => echoOverlay(body));
 
     render(
       withClient(
@@ -467,9 +464,10 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    const { grid, report } = getViewModeControls();
-    report.focus();
-    await user.keyboard('{ArrowRight}');
+    const button = getViewModeButton(
+      /^Report view — switch to grid view$/i,
+    );
+    await user.click(button);
 
     expect(api.upsertOverlay).toHaveBeenCalledWith({
       plugin_id: 'kernel',
@@ -478,72 +476,36 @@ describe('WavePage report view mode', () => {
       kind: 'view-mode',
       payload: { schemaVersion: 1, mode: 'grid' },
     });
-    expect(grid).toHaveFocus();
-    await waitFor(() => expect(grid).toHaveAttribute('aria-checked', 'true'));
-  });
-
-  it('writes list mode to the overlay when List is clicked', async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.upsertOverlay).mockClear();
-    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
-      echoOverlay(body),
+    expect(button).toHaveFocus();
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Grid view — switch to list view'),
     );
 
-    render(
-      withClient(
-        <WavePage
-          wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
-          onGo={() => {}}
-          onAddCard={() => {}}
-          onRemoveCard={() => {}}
-          onRenameWave={() => {}}
-        />,
-      ),
-    );
+    await user.click(button);
 
-    const { list } = getViewModeControls();
-    await user.click(list);
-
-    expect(api.upsertOverlay).toHaveBeenCalledWith({
+    expect(api.upsertOverlay).toHaveBeenLastCalledWith({
       plugin_id: 'kernel',
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'view-mode',
       payload: { schemaVersion: 1, mode: 'list' },
     });
-    await waitFor(() => expect(list).toHaveAttribute('aria-checked', 'true'));
-  });
-
-  it('keeps focus on the clicked radio and updates roving tabindex', async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.upsertOverlay).mockClear();
-    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
-      echoOverlay(body),
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('List view — switch to report view'),
     );
 
-    render(
-      withClient(
-        <WavePage
-          wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
-          onGo={() => {}}
-          onAddCard={() => {}}
-          onRemoveCard={() => {}}
-          onRenameWave={() => {}}
-        />,
-      ),
-    );
+    await user.click(button);
 
-    const { grid, list, report } = getViewModeControls();
-    await user.click(list);
-
-    expect(list).toHaveFocus();
-    await waitFor(() => {
-      expect(grid).toHaveAttribute('tabindex', '-1');
-      expect(list).toHaveAttribute('tabindex', '0');
-      expect(report).toHaveAttribute('tabindex', '-1');
+    expect(api.upsertOverlay).toHaveBeenLastCalledWith({
+      plugin_id: 'kernel',
+      entity_kind: 'view',
+      entity_id: 'w1',
+      kind: 'view-mode',
+      payload: { schemaVersion: 1, mode: 'report' },
     });
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Report view — switch to grid view'),
+    );
   });
 
   it('defaults to report when wave has a report card and no overlay', () => {
@@ -564,7 +526,7 @@ describe('WavePage report view mode', () => {
     expect(screen.getByText('Default report body')).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
     expect(
-      screen.getByRole('radiogroup', { name: 'Wave view mode' }),
+      getViewModeButton(/^Report view — switch to grid view$/i),
     ).toBeInTheDocument();
   });
 
@@ -614,7 +576,7 @@ describe('WavePage report view mode', () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('radiogroup', { name: 'Wave view mode' }),
+      getViewModeButton(/^Report view — switch to grid view$/i),
     ).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
@@ -639,13 +601,16 @@ describe('WavePage report view mode', () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('radiogroup', { name: 'Wave view mode' }),
+      getViewModeButton(/^Report view — switch to grid view$/i),
     ).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
-  it('writes report and grid mode changes to the view-mode overlay', async () => {
+  it('writes report and grid mode changes from the cycle button', async () => {
     const user = userEvent.setup();
+    vi.mocked(api.listOverlays).mockResolvedValueOnce([
+      makeViewModeOverlay('list'),
+    ]);
     vi.mocked(api.upsertOverlay).mockClear();
     vi.mocked(api.upsertOverlay)
       .mockImplementationOnce(async (body) => echoOverlay(body))
@@ -664,25 +629,30 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    const { grid, report } = getViewModeControls();
-    await user.click(grid);
+    const button = await screen.findByRole('button', {
+      name: /^List view — switch to report view$/i,
+    });
+    await user.click(button);
 
     expect(api.upsertOverlay).toHaveBeenCalledWith({
       plugin_id: 'kernel',
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'view-mode',
-      payload: { schemaVersion: 1, mode: 'grid' },
+      payload: { schemaVersion: 1, mode: 'report' },
     });
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Report view — switch to grid view'),
+    );
 
-    await user.click(report);
+    await user.click(button);
 
     expect(api.upsertOverlay).toHaveBeenLastCalledWith({
       plugin_id: 'kernel',
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'view-mode',
-      payload: { schemaVersion: 1, mode: 'report' },
+      payload: { schemaVersion: 1, mode: 'grid' },
     });
   });
 

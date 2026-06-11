@@ -1,7 +1,6 @@
 import {
   lazy,
   Suspense,
-  type KeyboardEvent,
   useEffect,
   useId,
   useMemo,
@@ -59,68 +58,40 @@ function isViewMode(s: unknown): s is ViewMode {
   return s === 'grid' || s === 'list' || s === 'report';
 }
 
-const VIEW_MODE_RADIOS = [
-  { mode: 'grid', label: 'Grid view', title: 'Grid view', icon: 'grid' },
-  { mode: 'list', label: 'List view', title: 'List view', icon: 'list' },
-  { mode: 'report', label: 'Report view', title: 'Report view', icon: 'report' },
-] as const;
+const VIEW_MODE_ORDER: readonly ViewMode[] = ['grid', 'list', 'report'];
+const VIEW_MODE_META = {
+  grid: { label: 'Grid view', icon: 'grid' },
+  list: { label: 'List view', icon: 'list' },
+  report: { label: 'Report view', icon: 'report' },
+} as const;
 
-function ViewModeRadioGroup({
+function nextViewMode(mode: ViewMode): ViewMode {
+  const index = VIEW_MODE_ORDER.indexOf(mode);
+  return VIEW_MODE_ORDER[(index + 1) % VIEW_MODE_ORDER.length] ?? 'grid';
+}
+
+function ViewModeCycleButton({
   value,
   onChange,
 }: {
   value: ViewMode;
   onChange: (mode: ViewMode) => void;
 }) {
-  const radioRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  const handleKeyDown = (
-    e: KeyboardEvent<HTMLButtonElement>,
-    index: number,
-  ) => {
-    const last = VIEW_MODE_RADIOS.length - 1;
-    let nextIndex: number | null = null;
-
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-      nextIndex = index === 0 ? last : index - 1;
-    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-      nextIndex = index === last ? 0 : index + 1;
-    } else if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
-      e.preventDefault();
-      onChange(VIEW_MODE_RADIOS[index].mode);
-      return;
-    }
-
-    if (nextIndex === null) return;
-    e.preventDefault();
-    radioRefs.current[nextIndex]?.focus();
-    onChange(VIEW_MODE_RADIOS[nextIndex].mode);
-  };
+  const next = nextViewMode(value);
+  const currentMeta = VIEW_MODE_META[value];
+  const nextMeta = VIEW_MODE_META[next];
+  const label = `${currentMeta.label} — switch to ${nextMeta.label.toLowerCase()}`;
 
   return (
-    <div className="view-radio" role="radiogroup" aria-label="Wave view mode">
-      {VIEW_MODE_RADIOS.map((item, index) => {
-        const selected = value === item.mode;
-        return (
-          <button
-            key={item.mode}
-            ref={(node) => {
-              radioRefs.current[index] = node;
-            }}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            aria-label={item.label}
-            title={item.title}
-            tabIndex={selected ? 0 : -1}
-            onClick={() => onChange(item.mode)}
-            onKeyDown={(e) => handleKeyDown(e, index)}
-          >
-            <Icon n={item.icon} s={14} sw={1.7} />
-          </button>
-        );
-      })}
-    </div>
+    <button
+      type="button"
+      className="view-cycle"
+      aria-label={label}
+      title={label}
+      onClick={() => onChange(next)}
+    >
+      <Icon n={currentMeta.icon} s={14} sw={1.7} />
+    </button>
   );
 }
 
@@ -291,7 +262,7 @@ export function WavePage({
   // partial unique index from migration 0013 / backfill in 0014), so this
   // default is safe. Adding a worker card auto-switches to grid (see
   // `goGridAfterAdd`) so the new card is visible immediately.
-  // PR-E's 3-state radiogroup revisits this.
+  // The header cycle button only changes this persisted overlay value.
   const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'report';
 
   const setViewMode = (mode: ViewMode) => {
@@ -329,8 +300,8 @@ export function WavePage({
           >
             <Icon n="back" s={14} sw={1.7} />
           </button>
-          <ViewModeRadioGroup value={viewMode} onChange={setViewMode} />
-        <span className="wave-crumb">
+          <ViewModeCycleButton value={viewMode} onChange={setViewMode} />
+          <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
           <button
             type="button"

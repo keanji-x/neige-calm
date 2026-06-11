@@ -697,7 +697,7 @@ test.describe('a11y · keyboard-only navigation', () => {
   });
 
   // Slice 9 — list-view alternative to the WaveGrid. The header now exposes
-  // a three-state Grid / List / Report radiogroup backed by the same
+  // a single Grid / List / Report cycle button backed by the same
   // per-wave view-mode overlay row that this spec seeds via REST.
   // List view replaces the RGL grid with a semantic `<ul>` whose `<li>`
   // items use roving tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the
@@ -834,14 +834,25 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(items.last()).toHaveClass(/is-active/);
 
     // Reload — the view-mode overlay must persist, so the page comes
-    // back in list view and the List radio remains selected.
+    // back in list view and the cycle button advertises list as current.
     await page.goto(waveUrl);
     const listAfter = page.getByRole('list', { name: /wave cards/i });
     await expect(listAfter).toBeVisible({ timeout: 5_000 });
-    const viewGroup = page.getByRole('radiogroup', { name: /wave view mode/i });
-    await expect(viewGroup).toBeVisible();
-    const listRadio = viewGroup.getByRole('radio', { name: /list view/i });
-    await expect(listRadio).toHaveAttribute('aria-checked', 'true');
+    const viewButton = page.getByRole('button', {
+      name: /^List view — switch to report view$/i,
+    });
+    await expect(viewButton).toBeVisible();
+    await page.locator('body').focus();
+    await tabUntil(page, (info) =>
+      /^List view — switch to report view$/i.test(info.name ?? ''),
+    );
+    await expect(viewButton).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(
+      page.getByRole('button', {
+        name: /^Report view — switch to grid view$/i,
+      }),
+    ).toBeVisible();
   });
 
   test('Settings page: all controls reachable and labeled', async ({ page }) => {
