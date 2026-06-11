@@ -19,8 +19,8 @@ use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use calm_server::operation::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
-    Operation, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle,
-    SqlxOperationRepo, Tx, TxOutput,
+    Operation, OperationCompletionBus, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx,
+    SpawnOutcome, SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -99,7 +99,7 @@ impl ProviderAdapter for FailingSpawnSpecHarnessStartAdapter {
         _output: &TxOutput,
         _op: &Operation,
         _ctx: &SpawnCtx,
-    ) -> CalmResult<SpawnHandle> {
+    ) -> CalmResult<SpawnOutcome> {
         Err(CalmError::Internal(
             "test spec harness spawn failure".into(),
         ))
@@ -303,15 +303,19 @@ fn install_failing_spec_start_runtime(boot: &mut Boot) {
             None,
         ),
     });
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![start_adapter],
         boot.state.events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             boot.state.daemon.clone(),
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
+            completion,
         ),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);

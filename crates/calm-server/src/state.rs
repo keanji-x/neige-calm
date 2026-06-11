@@ -21,7 +21,7 @@ use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapte
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
-use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
+use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -556,8 +556,9 @@ impl AppState {
             shared_codex_appserver.clone(),
             repo.clone(),
         ));
+        let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
-            operation_repo,
+            operation_repo.clone(),
             vec![
                 terminal_adapter,
                 terminal_worker_adapter,
@@ -570,11 +571,14 @@ impl AppState {
                 spec_harness_shutdown_adapter,
             ],
             events.clone(),
+            completion.clone(),
             SpawnCtx::new(
                 route_repo.clone(),
+                operation_repo,
                 daemon.clone(),
                 terminal_renderer.clone(),
                 events.clone(),
+                completion,
             ),
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
@@ -718,8 +722,9 @@ impl AppState {
             self.shared_codex_appserver.clone(),
             self.raw.clone(),
         ));
+        let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
-            operation_repo,
+            operation_repo.clone(),
             vec![
                 terminal_adapter,
                 terminal_worker_adapter,
@@ -732,11 +737,14 @@ impl AppState {
                 spec_harness_shutdown_adapter,
             ],
             self.events.clone(),
+            completion.clone(),
             SpawnCtx::new(
                 route_repo,
+                operation_repo,
                 self.daemon.clone(),
                 self.terminal_renderer.clone(),
                 self.events.clone(),
+                completion,
             ),
         ));
         self.operation_runtime = runtime.clone();
@@ -952,9 +960,10 @@ impl AppState {
             shared_codex_appserver.clone(),
             repo.clone(),
         ));
+        let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(
             OperationRuntime::new(
-                operation_repo,
+                operation_repo.clone(),
                 vec![
                     terminal_adapter,
                     terminal_worker_adapter,
@@ -967,11 +976,14 @@ impl AppState {
                     spec_harness_shutdown_adapter,
                 ],
                 events.clone(),
+                completion.clone(),
                 SpawnCtx::new(
                     route_repo.clone(),
+                    operation_repo,
                     daemon.clone(),
                     terminal_renderer.clone(),
                     events.clone(),
+                    completion,
                 ),
             )
             .await?,

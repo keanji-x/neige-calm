@@ -26,7 +26,7 @@ use crate::wave_cove_cache::WaveCoveCache;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnHandle, Tx, TxOutput,
+    ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
 #[cfg(feature = "fixtures")]
@@ -254,7 +254,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let card_id = output_string(output, "card_id")?;
         let terminal_id = output_string(output, "terminal_id")?;
         let settings_path = PathBuf::from(output_string(output, "settings_path")?);
@@ -372,7 +372,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                         "failed to mark claude restart runtime running after spawn; continuing operation"
                     );
                 }
-                Ok(handle)
+                Ok(SpawnOutcome::Ready(handle))
             }
             Err(e) => Err(e),
         }

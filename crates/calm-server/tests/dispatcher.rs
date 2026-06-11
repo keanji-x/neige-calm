@@ -41,8 +41,9 @@ use calm_server::model::{
     CardRole, NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
-    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationRuntime, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnHandle, SqlxOperationRepo, Tx, TxOutput,
+    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
+    OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome,
+    SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
@@ -394,7 +395,7 @@ impl ProviderAdapter for FastReportAdapter {
         _output: &TxOutput,
         _op: &Operation,
         _ctx: &SpawnCtx,
-    ) -> CalmResult<SpawnHandle> {
+    ) -> CalmResult<SpawnOutcome> {
         let identity = calm_server::mcp_server::ToolCallIdentity {
             card_id: self.worker_card_id.clone(),
             role: CardRole::Worker,
@@ -411,7 +412,7 @@ impl ProviderAdapter for FastReportAdapter {
         )
         .await
         .map_err(|e| CalmError::Internal(format!("fast worker task_completed failed: {e:?}")))?;
-        Ok(SpawnHandle::NoOp)
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
 
     async fn plan_compensation(
@@ -482,7 +483,7 @@ impl ProviderAdapter for FailingSpawnAdapter {
         _output: &TxOutput,
         _op: &Operation,
         _ctx: &SpawnCtx,
-    ) -> CalmResult<SpawnHandle> {
+    ) -> CalmResult<SpawnOutcome> {
         Err(CalmError::Internal("forced spawn failure".into()))
     }
 
@@ -960,11 +961,20 @@ async fn dispatcher_spawn_failure_auto_promotes_working_to_reviewing() {
     ));
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-    let spawn_ctx = SpawnCtx::new(route_repo, stub_daemon(), terminal_renderer, events.clone());
+    let completion = OperationCompletionBus::new();
+    let spawn_ctx = SpawnCtx::new(
+        route_repo,
+        operation_repo.clone(),
+        stub_daemon(),
+        terminal_renderer,
+        events.clone(),
+        completion.clone(),
+    );
     let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
         vec![Arc::new(FailingSpawnAdapter)],
         events.clone(),
+        completion,
         spawn_ctx,
     ));
     let _dispatcher = Dispatcher::spawn_with_operation_runtime(
@@ -1166,11 +1176,20 @@ async fn dispatcher_promotes_to_working_before_fast_worker_report() {
         idem.to_string(),
     ));
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-    let spawn_ctx = SpawnCtx::new(route_repo, stub_daemon(), terminal_renderer, events.clone());
+    let completion = OperationCompletionBus::new();
+    let spawn_ctx = SpawnCtx::new(
+        route_repo,
+        operation_repo.clone(),
+        stub_daemon(),
+        terminal_renderer,
+        events.clone(),
+        completion.clone(),
+    );
     let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
         vec![fast_report_adapter],
         events.clone(),
+        completion,
         spawn_ctx,
     ));
     let _dispatcher = Dispatcher::spawn_with_operation_runtime(

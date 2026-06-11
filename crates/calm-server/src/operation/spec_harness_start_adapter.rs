@@ -32,7 +32,7 @@ use crate::wave_cove_cache::WaveCoveCache;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
-    Operation, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, Tx, TxOutput,
+    Operation, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
     checkpoint_app_server_interact_tx,
 };
 
@@ -537,7 +537,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let runtime_id = output_string(output, "runtime_id")?;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
@@ -562,7 +562,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         self.harness_registry
             .insert(runtime_id.clone(), handle.clone());
         handle.persist_snapshot().await?;
-        Ok(SpawnHandle::Harness { runtime_id })
+        Ok(SpawnOutcome::Ready(SpawnHandle::Harness { runtime_id }))
     }
 
     async fn plan_compensation(

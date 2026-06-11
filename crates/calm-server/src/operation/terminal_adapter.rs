@@ -26,7 +26,7 @@ use crate::wave_cove_cache::WaveCoveCache;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnHandle, Tx, TxOutput,
+    ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
 pub type SpawnHook = Arc<
@@ -324,7 +324,7 @@ impl ProviderAdapter for TerminalAdapter {
         output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let card_id = output_card_id(output)?;
         let terminal_id = output_string(output, "terminal_id")?;
         let program = output_string(output, "program")?;
@@ -413,7 +413,7 @@ impl ProviderAdapter for TerminalAdapter {
                         "failed to mark terminal runtime running after spawn; continuing operation"
                     );
                 }
-                Ok(handle)
+                Ok(SpawnOutcome::Ready(handle))
             }
             Err(e) => {
                 if let Err(mark_err) = ctx
@@ -648,7 +648,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let card_id = output_card_id(output)?;
         let terminal_id = output_string(output, "terminal_id")?;
         let wave_id = WaveId::from(output_string(output, "wave_id")?);
@@ -684,7 +684,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                     "terminal worker CardAdded append failed after recovery exit preservation; continuing"
                 );
             });
-            return Ok(SpawnHandle::NoOp);
+            return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         let term = ctx
@@ -730,7 +730,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                         "terminal worker CardAdded append failed after live spawn; continuing"
                     );
                 });
-                Ok(handle)
+                Ok(SpawnOutcome::Ready(handle))
             }
             Err(e) if worker_spawn_failure_preserved(ctx.repo.as_ref(), &terminal_id).await? => {
                 tracing::info!(
@@ -756,7 +756,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                         "terminal worker CardAdded append failed after fast-exit preservation; continuing"
                     );
                 });
-                Ok(SpawnHandle::NoOp)
+                Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
             }
             Err(e) => Err(e),
         }

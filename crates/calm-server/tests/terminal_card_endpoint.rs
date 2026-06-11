@@ -37,7 +37,9 @@ use calm_server::ids::ActorId;
 use calm_server::model::{NewCove, NewWave};
 use calm_server::operation::codex_adapter::CodexAdapter;
 use calm_server::operation::terminal_adapter::TerminalAdapter;
-use calm_server::operation::{OperationRuntime, SpawnCtx, SpawnHandle, SqlxOperationRepo};
+use calm_server::operation::{
+    OperationCompletionBus, OperationRuntime, SpawnCtx, SpawnHandle, SqlxOperationRepo,
+};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -207,15 +209,19 @@ fn install_spawn_runtime_with_hook(
         state.wave_cove_cache.clone(),
         silent_spawn_hook(),
     ));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![terminal_adapter, codex_adapter],
         events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             state.daemon.clone(),
             state.terminal_renderer.clone(),
             events,
+            completion,
         ),
     ));
     state.with_operation_runtime(runtime)

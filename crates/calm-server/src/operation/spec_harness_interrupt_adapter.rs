@@ -9,7 +9,7 @@ use crate::runtime_repo::RuntimeId;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, PhaseTag, ProviderAdapter,
-    SpawnCtx, SpawnHandle, Tx, TxOutput,
+    SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
 const INTERRUPT_PHASES: &[PhaseTag] = &[
@@ -101,7 +101,7 @@ impl ProviderAdapter for SpecHarnessInterruptAdapter {
         output: &TxOutput,
         _op: &Operation,
         _ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let runtime_id = output_string(output, "runtime_id")?;
         let reason = output_string(output, "reason")?;
         let harness = self
@@ -109,7 +109,7 @@ impl ProviderAdapter for SpecHarnessInterruptAdapter {
             .get(&runtime_id)
             .ok_or_else(|| CalmError::NotFound(format!("harness {runtime_id}")))?;
         harness.interrupt(reason).await?;
-        Ok(SpawnHandle::NoOp)
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
 
     async fn plan_compensation(

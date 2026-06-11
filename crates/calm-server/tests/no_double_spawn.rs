@@ -29,9 +29,9 @@ use calm_server::operation::terminal_adapter::{
     TerminalWorkerAdapter, TerminalWorkerOperationPayload,
 };
 use calm_server::operation::{
-    CompensationStateVersioned, Operation, OperationKey, OperationOutcome, OperationRepo,
-    OperationResult, OperationRuntime, Phase, PhaseTag, ProviderAdapter, RecoveryItem, SpawnCtx,
-    SpawnHandle, SqlxOperationRepo, TxOutput,
+    CompensationStateVersioned, Operation, OperationCompletionBus, OperationKey, OperationOutcome,
+    OperationRepo, OperationResult, OperationRuntime, Phase, PhaseTag, ProviderAdapter,
+    RecoveryItem, SpawnCtx, SpawnHandle, SqlxOperationRepo, TxOutput,
 };
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -98,6 +98,10 @@ impl ReverseSpawnClaimRepo {
 
 #[async_trait]
 impl OperationRepo for ReverseSpawnClaimRepo {
+    fn sqlite_pool(&self) -> sqlx::SqlitePool {
+        self.inner.sqlite_pool()
+    }
+
     async fn assert_sqlite_version(&self) -> CalmResult<()> {
         self.inner.assert_sqlite_version().await
     }
@@ -217,6 +221,10 @@ impl OperationRepo for ReverseSpawnClaimRepo {
 
 #[async_trait]
 impl OperationRepo for DriveErrorOnceRepo {
+    fn sqlite_pool(&self) -> sqlx::SqlitePool {
+        self.inner.sqlite_pool()
+    }
+
     async fn assert_sqlite_version(&self) -> CalmResult<()> {
         self.inner.assert_sqlite_version().await
     }
@@ -409,15 +417,19 @@ async fn boot_with_counted_spawn() -> Boot {
         state.wave_cove_cache.clone(),
         hook,
     ));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![terminal_adapter],
         events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             state.daemon.clone(),
             state.terminal_renderer.clone(),
             events,
+            completion,
         ),
     ));
     let state = state.with_operation_runtime(runtime);
@@ -534,15 +546,19 @@ async fn boot_codex_with_counted_spawn() -> Boot {
         state.wave_cove_cache.clone(),
         hook,
     ));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![terminal_adapter, codex_adapter],
         events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             state.daemon.clone(),
             state.terminal_renderer.clone(),
             events,
+            completion,
         ),
     ));
     let state = state.with_operation_runtime(runtime);
@@ -644,15 +660,19 @@ async fn boot_claude_with_counted_spawn() -> Boot {
         state.wave_cove_cache.clone(),
         hook,
     ));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![claude_adapter],
         events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             state.daemon.clone(),
             state.terminal_renderer.clone(),
             events,
+            completion,
         ),
     ));
     let state = state.with_operation_runtime(runtime);
@@ -719,15 +739,19 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
         boot.state.wave_cove_cache.clone(),
         hook,
     ));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![codex_adapter],
         boot.state.events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             boot.state.daemon.clone(),
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
+            completion,
         ),
     ));
     boot.state = boot.state.with_operation_runtime(runtime);
@@ -2191,15 +2215,19 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
         boot.state.wave_cove_cache.clone(),
         hook,
     ));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![adapter],
         boot.state.events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             boot.state.daemon.clone(),
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
+            completion,
         ),
     ));
     boot.state = boot.state.with_operation_runtime(runtime);
@@ -2379,15 +2407,19 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         boot.state.wave_cove_cache.clone(),
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![codex_adapter.clone()],
         boot.state.events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             boot.state.daemon.clone(),
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
+            completion,
         ),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
@@ -2668,15 +2700,19 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
         boot.state.wave_cove_cache.clone(),
         hook,
     ));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        repo_for_runtime,
+        repo_for_runtime.clone(),
         vec![adapter],
         boot.state.events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            repo_for_runtime,
             boot.state.daemon.clone(),
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
+            completion,
         ),
     ));
     boot.state = boot.state.with_operation_runtime(runtime);
@@ -2844,15 +2880,19 @@ fn install_terminal_worker_runtime_with_hook(
         hook,
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![adapter.clone()],
         boot.state.events.clone(),
+        completion.clone(),
         SpawnCtx::new(
             route_repo,
+            operation_repo,
             boot.state.daemon.clone(),
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
+            completion,
         ),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
@@ -2948,6 +2988,9 @@ fn pending_operation(kind: &str, target_id: &str, payload: Value) -> Operation {
         compensation_state: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_artifacts: None,
+        parked_at_ms: None,
+        parked_deadline_ms: None,
     }
 }
 

@@ -14,7 +14,8 @@ use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::model::{NewCove, NewWave, new_id};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
 use calm_server::operation::{
-    Operation, OperationKey, OperationOutcome, Phase, PhaseTag, ProviderAdapter, SpawnCtx, TxOutput,
+    Operation, OperationCompletionBus, OperationKey, OperationOutcome, Phase, PhaseTag,
+    ProviderAdapter, SpawnCtx, SqlxOperationRepo, TxOutput,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_lookup::project_runtime_into_cards_payload;
@@ -459,6 +460,9 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         compensation_state: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_artifacts: None,
+        parked_at_ms: None,
+        parked_deadline_ms: None,
     };
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let adapter = CodexWorkerAdapter::new(
@@ -508,11 +512,15 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         state.card_role_cache.clone(),
         state.wave_cove_cache.clone(),
     );
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let completion = OperationCompletionBus::new();
     let spawn_ctx = SpawnCtx::new(
         route_repo,
+        operation_repo,
         state.daemon.clone(),
         state.terminal_renderer.clone(),
         state.events.clone(),
+        completion,
     );
     let compensation = recovered_adapter
         .plan_compensation(
