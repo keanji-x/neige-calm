@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo } from 'react';
+import { lazy, Suspense, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError } from '../api/calm';
@@ -254,10 +254,13 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
+  const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
 
-  useEffect(() => {
+  // Sync reset during render so a new wave never renders with the old file path.
+  if (lastWaveId !== wave.id) {
+    setLastWaveId(wave.id);
     setSelectedFilePath('report.md');
-  }, [wave.id]);
+  }
 
   return (
     <div className="report-page">

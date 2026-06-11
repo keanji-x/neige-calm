@@ -409,6 +409,37 @@ describe('WaveReportPage', () => {
     });
   });
 
+  it('does not query the previous file path under a new wave id when switching waves', () => {
+    mockUseWaveFileContent.mockClear();
+    mockUseWaveFileContent.mockReturnValue(
+      contentResult({
+        data: { content_type: 'text/markdown', content: '# A' },
+      }),
+    );
+
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_A' })}
+        cards={[reportSlot('A body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    mockUseWaveFileContent.mockClear();
+    rerender(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_B' })}
+        cards={[reportSlot('B body')]}
+      />,
+    );
+
+    const badCall = mockUseWaveFileContent.mock.calls.find(
+      (args) => args[0] === 'wave_B' && args[1] === 'wave.json',
+    );
+    expect(badCall).toBeUndefined();
+  });
+
   it('renders the inline loading state while file content is loading', () => {
     mockWaveFileContentForPath('report.md', { isLoading: true });
 
