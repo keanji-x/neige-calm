@@ -151,7 +151,12 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
             </div>
           )}
 
-          <div className="report-chat-input">
+          <div
+            className={
+              'report-chat-input' +
+              (run.submitPending ? ' report-chat-input--pending' : '')
+            }
+          >
             <textarea
               ref={textareaRef}
               value={draft}
@@ -167,19 +172,15 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
                 }
               }}
               placeholder="Ask a follow-up about this report..."
+              enterKeyHint="send"
               rows={1}
               disabled={run.submitPending || run.resetPending}
               aria-label="Follow-up"
+              aria-describedby="report-chat-hint"
             />
-            <button
-              type="button"
-              className="report-chat-send"
-              aria-label="Send"
-              disabled={!draft.trim() || run.submitPending || run.resetPending}
-              onClick={() => void onSubmit()}
-            >
-              Send
-            </button>
+            <span id="report-chat-hint" className="sr-only">
+              Press Enter to send; Shift+Enter inserts a newline.
+            </span>
           </div>
 
           {run.submitError && (
