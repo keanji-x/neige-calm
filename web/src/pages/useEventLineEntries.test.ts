@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { WireEvent } from '../api/wire';
+import type { CodexCardData } from '../cards/builtins/codex';
+import type { WaveCardSlot } from '../types';
 import {
   eventToLineEntry,
+  filterEventLineEntriesForWave,
   reduceEventLineEntries,
   type EventLineEntry,
 } from './useEventLineEntries';
@@ -52,6 +55,51 @@ function taskFailed(key = 'task_1'): EventOf<'task.failed'> {
   };
 }
 
+function runtimeFailed(cardId = 'card_1'): EventOf<'runtime.status_changed'> {
+  return {
+    ev: 'runtime.status_changed',
+    data: {
+      runtime_id: `runtime_${cardId}`,
+      card_id: cardId,
+      old_status: 'running',
+      new_status: 'failed',
+    },
+  };
+}
+
+function workerSlot(
+  cardId = 'card_1',
+  idempotencyKey = 'task_1',
+): WaveCardSlot {
+  const card: CodexCardData = {
+    type: 'codex',
+    id: cardId,
+    idempotencyKey,
+  };
+  return { kind: 'card', card };
+}
+
+function eventScope(
+  waveId = 'wave_1',
+  cards: WaveCardSlot[] = [workerSlot()],
+) {
+  return {
+    waveId,
+    cardIdSet: new Set(
+      cards.flatMap((slot) =>
+        slot.kind === 'card' && slot.card.id ? [slot.card.id] : [],
+      ),
+    ),
+    taskIdempotencyKeySet: new Set(
+      cards.flatMap((slot) => {
+        if (slot.kind !== 'card') return [];
+        const key = (slot.card as { idempotencyKey?: string }).idempotencyKey;
+        return key ? [key] : [];
+      }),
+    ),
+  };
+}
+
 function harnessItem(): EventOf<'harness.item.added'> {
   return {
     ev: 'harness.item.added',
@@ -94,14 +142,16 @@ describe('eventToLineEntry', () => {
     });
   });
 
-  it('maps a wave-report card add to a report-created entry', () => {
+  it('silences kernel-minted wave-report card adds', () => {
     const entry = eventToLineEntry(cardAdded('wave-report', 'report_1'), 1_000);
 
-    expect(entry).toMatchObject({
-      title: 'Report created',
-      tag: 'init',
-      tone: 'accent',
-    });
+    expect(entry).toBeNull();
+  });
+
+  it('silences kernel-minted spec card adds', () => {
+    const entry = eventToLineEntry(cardAdded('spec', 'spec_1'), 1_000);
+
+    expect(entry).toBeNull();
   });
 
   it('maps task.failed to an amber alert entry', () => {
@@ -130,6 +180,102 @@ describe('eventToLineEntry', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ title: 'Task failed', count: 2 });
     expect(entries[0].time).toBe(20_000);
+  });
+
+  it('does not aggregate task failures with different idempotency keys', () => {
+    let entries: EventLineEntry[] = [];
+    const scope = eventScope('wave_1', [
+      workerSlot('card_1', 'task_1'),
+      workerSlot('card_2', 'task_2'),
+    ]);
+
+    entries = reduceEventLineEntries(
+      entries,
+      { type: 'event', ev: taskFailed('task_1'), now: 1_000, scope },
+      { dedupWindowMs: 30_000 },
+    );
+    entries = reduceEventLineEntries(
+      entries,
+      { type: 'event', ev: taskFailed('task_2'), now: 20_000, scope },
+      { dedupWindowMs: 30_000 },
+    );
+
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.identityKey)).toEqual([
+      'task:task.failed:task_2',
+      'task:task.failed:task_1',
+    ]);
+  });
+
+  it('aggregates duplicate task failures with the same idempotency key', () => {
+    let entries: EventLineEntry[] = [];
+    const scope = eventScope();
+
+    entries = reduceEventLineEntries(
+      entries,
+      { type: 'event', ev: taskFailed('task_1'), now: 1_000, scope },
+      { dedupWindowMs: 30_000 },
+    );
+    entries = reduceEventLineEntries(
+      entries,
+      { type: 'event', ev: taskFailed('task_1'), now: 2_000, scope },
+      { dedupWindowMs: 30_000 },
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      identityKey: 'task:task.failed:task_1',
+      count: 2,
+    });
+  });
+
+  it('drops card-scoped events for cards outside the current wave', () => {
+    const entries = reduceEventLineEntries([], {
+      type: 'event',
+      ev: runtimeFailed('card_other'),
+      now: 1_000,
+      scope: eventScope('wave_1', [workerSlot('card_1', 'task_1')]),
+    });
+
+    expect(entries).toEqual([]);
+  });
+
+  it('drops task events whose idempotency key is not owned by current wave cards', () => {
+    const entries = reduceEventLineEntries([], {
+      type: 'event',
+      ev: taskFailed('task_other'),
+      now: 1_000,
+      scope: eventScope('wave_1', [workerSlot('card_1', 'task_1')]),
+    });
+
+    expect(entries).toEqual([]);
+  });
+
+  it('keeps only entries for the active wave when filtering display entries', () => {
+    const waveOneEntry = eventToLineEntry(
+      cardAdded('worker', 'card_1'),
+      1_000,
+      'wave_1',
+    );
+    const waveTwoEntry = eventToLineEntry(
+      cardAdded('worker', 'card_2'),
+      2_000,
+      'wave_2',
+    );
+
+    expect(waveOneEntry).not.toBeNull();
+    expect(waveTwoEntry).not.toBeNull();
+
+    const filtered = filterEventLineEntriesForWave(
+      [waveTwoEntry, waveOneEntry].filter(
+        (entry): entry is EventLineEntry => entry !== null,
+      ),
+      'wave_2',
+    );
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].waveId).toBe('wave_2');
+    expect(filtered[0].title).toBe('Worker added: worker');
   });
 
   it('caps retained entries at maxEntries and drops the oldest', () => {

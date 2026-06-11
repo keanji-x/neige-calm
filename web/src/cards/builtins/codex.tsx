@@ -62,6 +62,7 @@ declare module '../../types' {
 export interface CodexCardData {
   type: 'codex';
   id?: string;
+  idempotencyKey?: string;
   terminalId?: string;
   cwd?: string;
   iconBg?: string;
@@ -72,6 +73,7 @@ export interface CodexCardData {
 export interface ClaudeCardData {
   type: 'claude';
   id?: string;
+  idempotencyKey?: string;
   terminalId?: string;
   cwd?: string;
   iconBg?: string;
@@ -88,6 +90,7 @@ const XtermView = lazy(() =>
 
 const codexPayloadSchema = z.object({
   terminal_id: z.string().optional(),
+  idempotency_key: z.string().optional(),
   // Hands-free seed prompt (#110 superseded). When set server-side, codex
   // boots with the composer pre-filled and the kernel injects `\r` once
   // `session_start` fires; the card itself doesn't read this field, but we
@@ -101,6 +104,7 @@ const codexPayloadSchema = z.object({
 
 const claudePayloadSchema = z.object({
   terminal_id: z.string().optional(),
+  idempotency_key: z.string().optional(),
   prompt: z.string().optional(),
   cwd: z.string().optional(),
   icon_bg: z.string().optional(),
@@ -525,6 +529,7 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
     return {
       type: 'codex',
       id: k.id,
+      idempotencyKey: parsed.data.idempotency_key,
       terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,
@@ -594,6 +599,7 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
     return {
       type: 'claude',
       id: k.id,
+      idempotencyKey: parsed.data.idempotency_key,
       terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,

@@ -274,7 +274,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
-  const eventEntries = useEventLineEntries(wave.id);
+  const eventEntries = useEventLineEntries(wave.id, cards);
   const live = useAnyRuntimeLive(wave.id, cards);
 
   // Sync reset during render so a new wave never renders with the old file path.

@@ -1,11 +1,16 @@
 import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { EventLinePanel } from './EventLinePanel';
-import type { EventLineEntry } from './useEventLineEntries';
+import {
+  isRuntimeLiveState,
+  type EventLineEntry,
+} from './useEventLineEntries';
 
 function entry(overrides: Partial<EventLineEntry> = {}): EventLineEntry {
   return {
     id: 'entry_1',
+    waveId: 'wave_1',
+    identityKey: 'task:task.completed:task_1',
     time: new Date('2026-06-10T12:00:00Z').getTime(),
     tone: 'default',
     title: 'Task completed',
@@ -40,12 +45,31 @@ describe('EventLinePanel', () => {
   });
 
   it('marks the LIVE indicator when a runtime is live', () => {
-    render(<EventLinePanel live entries={[entry()]} />);
+    render(
+      <EventLinePanel
+        live={isRuntimeLiveState('Working')}
+        entries={[entry()]}
+      />,
+    );
 
     const live = screen.getByLabelText('Live runtime');
     expect(live).toHaveAttribute('data-live', 'true');
     expect(within(live).getByText('LIVE')).toBeInTheDocument();
     expect(live.querySelector('.report-live-dot')).toBeTruthy();
+  });
+
+  it('does not mark the LIVE indicator for an idle runtime', () => {
+    render(
+      <EventLinePanel
+        live={isRuntimeLiveState('Idle')}
+        entries={[entry()]}
+      />,
+    );
+
+    expect(screen.getByLabelText('No live runtime')).toHaveAttribute(
+      'data-live',
+      'false',
+    );
   });
 
   it('applies the amber tone class', () => {
