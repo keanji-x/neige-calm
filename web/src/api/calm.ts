@@ -3,6 +3,7 @@
 
 import { fireUnauthorized } from './onUnauthorized';
 import type { paths } from './generated';
+import type { HarnessItem } from './generated-events';
 import type {
   CardPatchBody,
   CovePatchBody,
@@ -248,6 +249,24 @@ export const sendSpecInput = (id: string, text: string) =>
     `/api/cards/${encodeURIComponent(id)}/spec/input`,
     { text },
   );
+export const listHarnessItems = (
+  id: string,
+  params: {
+    afterId?: number;
+    limit?: number;
+    direction?: 'asc' | 'desc';
+  } = {},
+) => {
+  const qs = new URLSearchParams();
+  if (params.afterId !== undefined) qs.set('after_id', String(params.afterId));
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.direction !== undefined) qs.set('direction', params.direction);
+  const tail = qs.toString();
+  return request<HarnessItem[]>(
+    'GET',
+    `/api/cards/${encodeURIComponent(id)}/harness/items${tail ? `?${tail}` : ''}`,
+  );
+};
 export const restartClaudeCard = (id: string) =>
   request<KernelCard>(
     'POST',

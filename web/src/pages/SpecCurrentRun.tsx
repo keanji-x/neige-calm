@@ -1,31 +1,155 @@
 import { useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useState } from '../shared/state';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import {
   humanizeToken,
   useSpecCurrentRun,
 } from './useSpecCurrentRun';
+import {
+  useSpecChatHistory,
+  type VisibleChatEntry,
+} from './useSpecChatHistory';
 
 export interface SpecCurrentRunProps {
   /** Spec card id; null/undefined when wave has no spec card. */
   specCardId: string | null;
 }
 
+const MARKDOWN_PLUGINS = [remarkGfm];
+
+function entryTitle(atMs: number): string {
+  return new Date(atMs).toLocaleString();
+}
+
+function scrollToHistoryBottom(node: HTMLDivElement | null): void {
+  if (!node) return;
+  node.scrollTop = node.scrollHeight;
+}
+
+function SpecChatTypingIndicator() {
+  return (
+    <div
+      className="report-chat-entry report-chat-entry--agent report-chat-typing"
+      role="status"
+      aria-label="Spec Agent is working"
+    >
+      <span className="report-chat-typing-dot" aria-hidden="true" />
+      <span className="report-chat-typing-dot" aria-hidden="true" />
+      <span className="report-chat-typing-dot" aria-hidden="true" />
+    </div>
+  );
+}
+
+function SpecChatEntry({
+  entry,
+  expanded,
+  onToggleExpanded,
+}: {
+  entry: VisibleChatEntry;
+  expanded: boolean;
+  onToggleExpanded(id: number): void;
+}) {
+  if (entry.kind === 'system') {
+    return (
+      <div className="report-chat-system" title={entryTitle(entry.atMs)}>
+        &middot; {entry.label ?? entry.text} &middot;
+      </div>
+    );
+  }
+
+  if (entry.kind === 'agent') {
+    return (
+      <div className="report-chat-entry report-chat-entry--agent">
+        <article
+          className="report-chat-agent report-chat-md"
+          title={entryTitle(entry.atMs)}
+        >
+          <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
+            {entry.text}
+          </ReactMarkdown>
+        </article>
+      </div>
+    );
+  }
+
+  const clamped = entry.clamp === true && !expanded;
+
+  return (
+    <div
+      className={
+        'report-chat-entry report-chat-entry--user' +
+        (entry.queued ? ' report-chat-entry--queued' : '')
+      }
+    >
+      <div
+        className="report-chat-bubble report-chat-bubble--user"
+        title={entryTitle(entry.atMs)}
+      >
+        <p
+          className={
+            'report-chat-user-text' +
+            (clamped ? ' report-chat-user-text--clamped' : '')
+          }
+        >
+          {entry.text}
+        </p>
+        {entry.queued && (
+          <span className="report-chat-queued-chip">Queued</span>
+        )}
+      </div>
+      {entry.clamp === true && (
+        <button
+          type="button"
+          className="report-chat-expand"
+          aria-expanded={expanded}
+          onClick={() => onToggleExpanded(entry.id)}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
   const run = useSpecCurrentRun(specCardId ?? undefined);
+  const chatHistory = useSpecChatHistory(specCardId ?? undefined);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [resetOpen, setResetOpen] = useState(false);
   const [resetAttempted, setResetAttempted] = useState(false);
+  const [expandedEntries, setExpandedEntries] = useState<Set<number>>(
+    () => new Set(),
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const latestSpecCardIdRef = useRef<string | null>(specCardId);
   latestSpecCardIdRef.current = specCardId;
 
   useEffect(() => {
     if (!open) return;
-    const id = window.setTimeout(() => textareaRef.current?.focus(), 30);
+    stickToBottomRef.current = true;
+    const id = window.setTimeout(() => {
+      scrollToHistoryBottom(historyRef.current);
+      textareaRef.current?.focus();
+    }, 30);
     return () => window.clearTimeout(id);
   }, [open]);
+
+  useEffect(() => {
+    setExpandedEntries(new Set());
+  }, [specCardId]);
+
+  useEffect(() => {
+    if (!open || !stickToBottomRef.current) return;
+    const id = window.setTimeout(() => {
+      scrollToHistoryBottom(historyRef.current);
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [chatHistory.entries.length, open, run.fsm]);
 
   if (specCardId == null) {
     return (
@@ -52,8 +176,8 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
       // If the component has been reused for another card, the draft/open
       // state now belongs to that card.
       if (cardIdAtSubmit !== latestSpecCardIdRef.current) return;
+      chatHistory.addEcho(text);
       setDraft('');
-      setOpen(false);
     } catch {
       // submitError is captured by useSpecCurrentRun and rendered below.
     }
@@ -71,6 +195,29 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
       // resetError is captured by useSpecCurrentRun and rendered in-dialog.
     }
   };
+
+  const onHistoryScroll = () => {
+    const node = historyRef.current;
+    if (!node) return;
+    const distanceFromBottom =
+      node.scrollHeight - node.scrollTop - node.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= 40;
+  };
+
+  const toggleExpandedEntry = (id: number) => {
+    setExpandedEntries((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const isWorking = run.fsm === 'Working';
+  const historyIsEmpty = chatHistory.entries.length === 0 && !isWorking;
 
   return (
     <div
@@ -137,6 +284,45 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
               &times;
             </button>
           </header>
+
+          <div
+            ref={historyRef}
+            className={
+              'report-chat-history' +
+              (historyIsEmpty ? ' report-chat-history--empty' : '')
+            }
+            onScroll={onHistoryScroll}
+          >
+            {chatHistory.hasEarlier && (
+              <button
+                type="button"
+                className="report-chat-load-earlier"
+                disabled={chatHistory.loadEarlierPending}
+                onClick={() => {
+                  void chatHistory.loadEarlier();
+                }}
+              >
+                {chatHistory.loadEarlierPending ? 'Loading...' : 'Load earlier'}
+              </button>
+            )}
+
+            {historyIsEmpty && (
+              <p className="report-chat-empty">
+                No messages yet &mdash; ask a follow-up about this report.
+              </p>
+            )}
+
+            {chatHistory.entries.map((entry) => (
+              <SpecChatEntry
+                key={`${entry.queued ? 'queued' : 'item'}:${entry.id}`}
+                entry={entry}
+                expanded={expandedEntries.has(entry.id)}
+                onToggleExpanded={toggleExpandedEntry}
+              />
+            ))}
+
+            {isWorking && <SpecChatTypingIndicator />}
+          </div>
 
           {run.latestTool.toolLabel != null && (
             <div className="report-chat-tool" aria-label="Latest tool">

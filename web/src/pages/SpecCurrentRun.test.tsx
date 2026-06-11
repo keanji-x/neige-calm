@@ -13,13 +13,35 @@ import type { SpecRunSnapshot } from './useSpecCurrentRun';
 
 const mocks = vi.hoisted(() => {
   const state: { currentRun: unknown } = { currentRun: null };
+  const streamListeners = new Set<(ev: unknown) => void>();
+  const stream = {
+    addTopic: vi.fn(),
+    on: vi.fn((fn: (ev: unknown) => void) => {
+      streamListeners.add(fn);
+      return () => {
+        streamListeners.delete(fn);
+      };
+    }),
+  };
   return {
     state,
     submit: vi.fn(),
     reset: vi.fn(),
     useSpecCurrentRun: vi.fn(() => state.currentRun),
+    listHarnessItems: vi.fn(),
+    sharedEventStream: vi.fn(() => stream),
+    stream,
+    streamListeners,
   };
 });
+
+vi.mock('../api/calm', () => ({
+  listHarnessItems: mocks.listHarnessItems,
+}));
+
+vi.mock('../api/events', () => ({
+  sharedEventStream: mocks.sharedEventStream,
+}));
 
 vi.mock('./useSpecCurrentRun', () => ({
   useSpecCurrentRun: mocks.useSpecCurrentRun,
@@ -54,6 +76,57 @@ function deferredVoid(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+function harnessUserRow(id: number, text: string) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `msg_${id}`,
+    item_type: 'userMessage',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        content: [{ text: `User says:\n${text}`, type: 'text' }],
+        id: `msg_${id}`,
+        type: 'userMessage',
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
+function harnessAgentRow(id: number, text: string) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `msg_${id}`,
+    item_type: 'agentMessage',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `msg_${id}`,
+        phase: 'final_answer',
+        text,
+        type: 'agentMessage',
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
 describe('SpecCurrentRun', () => {
   beforeEach(() => {
     mocks.submit.mockReset();
@@ -61,6 +134,12 @@ describe('SpecCurrentRun', () => {
     mocks.reset.mockReset();
     mocks.reset.mockResolvedValue(undefined);
     mocks.useSpecCurrentRun.mockClear();
+    mocks.listHarnessItems.mockReset();
+    mocks.listHarnessItems.mockResolvedValue([]);
+    mocks.sharedEventStream.mockClear();
+    mocks.stream.addTopic.mockClear();
+    mocks.stream.on.mockClear();
+    mocks.streamListeners.clear();
     mocks.state.currentRun = makeRun();
   });
 
@@ -106,7 +185,7 @@ describe('SpecCurrentRun', () => {
     ).toBeInTheDocument();
   });
 
-  it('submits textarea input with Enter, clears the draft, and collapses', async () => {
+  it('submits textarea input with Enter and clears the draft', async () => {
     const user = userEvent.setup();
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
@@ -120,12 +199,8 @@ describe('SpecCurrentRun', () => {
       expect(mocks.submit).toHaveBeenCalledWith('What changed?');
     });
     expect(
-      screen.queryByRole('region', { name: 'Ask the Spec Agent' }),
-    ).not.toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
-    );
+      screen.getByRole('region', { name: 'Ask the Spec Agent' }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Follow-up')).toHaveValue('');
   });
 
@@ -281,5 +356,59 @@ describe('SpecCurrentRun', () => {
     expect(
       screen.queryByRole('dialog', { name: 'Reset spec session?' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('renders fetched chat history in the expanded box', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    mocks.listHarnessItems.mockResolvedValue([
+      harnessUserRow(1, 'What changed?'),
+      harnessAgentRow(2, '**Done**'),
+    ]);
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+
+    const userText = await screen.findByText('What changed?');
+    expect(userText.closest('.report-chat-bubble--user')).not.toBeNull();
+    const agentText = await screen.findByText('Done');
+    expect(agentText.closest('.report-chat-agent')).not.toBeNull();
+  });
+
+  it('shows an empty history state', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+
+    expect(
+      screen.getByText('No messages yet — ask a follow-up about this report.'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders a queued local echo after submit resolves', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+
+    render(<SpecCurrentRun specCardId="card_spec_1" />);
+
+    await user.click(
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
+    );
+    await user.type(screen.getByLabelText('Follow-up'), 'Queue this');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(mocks.submit).toHaveBeenCalledWith('Queue this');
+    });
+    expect(await screen.findByText('Queue this')).toBeInTheDocument();
+    expect(screen.getByText('Queued')).toBeInTheDocument();
   });
 });
