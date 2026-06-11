@@ -26,6 +26,16 @@ use crate::wave_vcs;
 const OBSERVATION_BUFFER: usize = 256;
 const MAX_PENDING_QUEUE_LEN: usize = 256;
 const RECENT_HOOK_KEY_CACHE_LEN: usize = 256;
+/// #615 F3 fold-in: upper bound on the size of a folded `UserMessage` tail
+/// entry. Each individual `/spec/input` body is capped at 32_768 chars at the
+/// route layer, but the fold path concatenates adjacent UserMessage
+/// observations into one entry. Under sustained backpressure a stream of
+/// max-size posts could otherwise grow the tail without bound and inflate every
+/// snapshot rewrite. Once the folded text would exceed this cap, refuse to
+/// fold; the eviction-fallback path in `enqueue_pending_observation` then drops
+/// a non-hard-fire entry from the queue front and lets the incoming UserMessage
+/// take a fresh slot.
+const MAX_FOLDED_USER_MESSAGE_CHARS: usize = 4 * 32_768;
 
 #[derive(Clone)]
 pub struct SpecHarness {
@@ -521,6 +531,27 @@ fn try_fold_pending_tail(
             *body_sha256 = new_body_sha256.clone();
             *body = new_body.clone();
             true
+        }
+        // #615 F3: preserve both adjacent user intents under backpressure
+        // rather than evicting the older send. Capped at
+        // `MAX_FOLDED_USER_MESSAGE_CHARS` so the per-tail size cannot grow
+        // unboundedly under sustained backpressure; once the cap is reached the
+        // eviction fallback in `enqueue_pending_observation` drops a
+        // non-hard-fire entry and lets the new UserMessage take a fresh slot.
+        // Replacing would lose earlier intent, separate entries surface as
+        // separate `User says:` blocks at turn-issuance.
+        (Observation::UserMessage { text }, Observation::UserMessage { text: new_text }) => {
+            let current_chars = text.chars().count();
+            let new_chars = new_text.chars().count();
+            if current_chars.saturating_add(new_chars).saturating_add(2)
+                > MAX_FOLDED_USER_MESSAGE_CHARS
+            {
+                false
+            } else {
+                text.push_str("\n\n");
+                text.push_str(new_text);
+                true
+            }
         }
         _ => false,
     };
@@ -1392,5 +1423,99 @@ mod tests {
             CalmError::Conflict(ref msg) if msg.contains("shutting down")
         ));
         assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn user_message_folds_with_paragraph_breaks() {
+        use super::try_fold_pending_tail;
+        use crate::harness::observation::Observation;
+        use std::collections::VecDeque;
+
+        let mut queue: VecDeque<Observation> = VecDeque::new();
+        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        queue.push_back(Observation::UserMessage {
+            text: "first message".into(),
+        });
+        env_ids.push_back(Some(1));
+
+        let folded = try_fold_pending_tail(
+            &mut queue,
+            &mut env_ids,
+            &Observation::UserMessage {
+                text: "second message".into(),
+            },
+            Some(2),
+        );
+
+        assert!(folded);
+        assert_eq!(queue.len(), 1);
+        let Some(Observation::UserMessage { text }) = queue.back() else {
+            panic!("expected single folded UserMessage, got {:?}", queue);
+        };
+        assert_eq!(text, "first message\n\nsecond message");
+        assert_eq!(
+            env_ids.back().copied().flatten(),
+            Some(2),
+            "folded envelope id should advance to the newest send"
+        );
+    }
+
+    #[test]
+    fn user_message_does_not_fold_with_other_kinds() {
+        use super::try_fold_pending_tail;
+        use crate::harness::observation::Observation;
+        use std::collections::VecDeque;
+
+        let mut queue: VecDeque<Observation> = VecDeque::new();
+        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        queue.push_back(Observation::WaveGoal {
+            text: "goal".into(),
+        });
+        env_ids.push_back(None);
+
+        let folded = try_fold_pending_tail(
+            &mut queue,
+            &mut env_ids,
+            &Observation::UserMessage {
+                text: "user".into(),
+            },
+            None,
+        );
+
+        assert!(!folded, "UserMessage must not fold into WaveGoal");
+        assert_eq!(
+            queue.len(),
+            1,
+            "non-folding path should not mutate the queue"
+        );
+    }
+
+    #[test]
+    fn user_message_fold_refuses_beyond_cap() {
+        use super::{MAX_FOLDED_USER_MESSAGE_CHARS, try_fold_pending_tail};
+        use crate::harness::observation::Observation;
+        use std::collections::VecDeque;
+
+        let mut queue: VecDeque<Observation> = VecDeque::new();
+        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        let seed = "a".repeat(MAX_FOLDED_USER_MESSAGE_CHARS - 1);
+        queue.push_back(Observation::UserMessage { text: seed });
+        env_ids.push_back(Some(1));
+
+        let folded = try_fold_pending_tail(
+            &mut queue,
+            &mut env_ids,
+            &Observation::UserMessage {
+                text: "x".repeat(10),
+            },
+            Some(2),
+        );
+
+        assert!(!folded, "fold must refuse when result would exceed cap");
+        let Some(Observation::UserMessage { text }) = queue.back() else {
+            panic!("expected UserMessage tail");
+        };
+        assert_eq!(text.chars().count(), MAX_FOLDED_USER_MESSAGE_CHARS - 1);
+        assert_eq!(env_ids.back().copied().flatten(), Some(1));
     }
 }
