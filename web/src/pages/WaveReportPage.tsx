@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Wave, WaveCardSlot } from '../types';
@@ -6,6 +6,7 @@ import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
+import { SpecCurrentRun } from './SpecCurrentRun';
 
 export interface WaveReportPageProps {
   wave: Wave;
@@ -22,6 +23,13 @@ function isReportSlot(slot: WaveCardSlot): slot is ReportCardSlot {
 function selectReportCards(cards: WaveCardSlot[]): ReportCardSlot[] {
   const reports = cards.filter(isReportSlot);
   return reports.slice().sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+}
+
+function selectSpecCard(cards: WaveCardSlot[]): string | null {
+  const slot = cards.find(
+    (s): s is CardSlot => s.kind === 'card' && s.card.type === 'spec',
+  );
+  return slot?.card.id ?? null;
 }
 
 function formatUpdatedAt(updatedAt?: number): string {
@@ -96,6 +104,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const title = waveDisplayTitle(wave.title);
   const reportSlots = selectReportCards(cards);
   const reportCard = reportSlots[0]?.card;
+  const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
 
   useEffect(() => {
@@ -146,15 +155,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           </div>
         </section>
       </aside>
-      <div className="report-chat" aria-label="Ask the research agent">
-        <button type="button" className="report-chat-pill" disabled>
-          <span className="report-chat-avatar" aria-hidden="true">
-            R
-          </span>
-          <span className="report-chat-label">Ask the Research Agent</span>
-          <span className="sr-only">(Wired in PR-C)</span>
-        </button>
-      </div>
+      <SpecCurrentRun specCardId={specCardId} />
     </div>
   );
 }

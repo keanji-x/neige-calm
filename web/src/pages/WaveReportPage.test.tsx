@@ -57,6 +57,19 @@ function reportSlot(
   };
 }
 
+function specSlot(id = 'card_spec_1'): WaveCardSlot {
+  return {
+    kind: 'card',
+    card: {
+      type: 'spec',
+      id,
+      goal: 'Answer follow-up questions',
+    },
+    sort: 0,
+    deletable: false,
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -197,5 +210,32 @@ describe('WaveReportPage', () => {
         screen.getByRole('treeitem', { name: /report\.md/ }),
       ).toHaveAttribute('aria-selected', 'false');
     });
+  });
+
+  it('renders the SpecCurrentRun collapsed pill when a spec card exists', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[specSlot(), reportSlot('Report with chat')]}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the unavailable chat placeholder when no spec card exists', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report without spec')]}
+      />,
+    );
+
+    expect(screen.getByText('Spec agent unavailable')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Ask the Research Agent' }),
+    ).not.toBeInTheDocument();
   });
 });
