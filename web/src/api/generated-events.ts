@@ -397,6 +397,24 @@ cwd: string,
  */
 terminal_at: number | null, created_at: number, updated_at: number, };
 
+export type WaveFsCardMeta = { created_at: number, deletable: boolean, id: CardId, kind: string, role: CardRole, sort: number, updated_at: number, };
+
+export type WaveFsHookEvent = { created_at: number, event_id: number, hook_kind: string, kind: string, payload: unknown, };
+
+export type WaveFsRunDetail = { events: WaveFsRunEvents, finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: WaveFsRunStatus, verdict: WaveFsRunVerdict | null, worker_card_id: CardId | null, worker_card_payload: unknown | null, };
+
+export type WaveFsRunEventRef = { created_at: number, event_id: number, kind: string, payload: unknown, };
+
+export type WaveFsRunEvents = { completed: WaveFsRunEventRef | null, failed: WaveFsRunEventRef | null, requested: WaveFsRunEventRef | null, verdict: WaveFsRunEventRef | null, };
+
+export type WaveFsRunIndexEntry = { finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: WaveFsRunStatus, verdict: WaveFsRunVerdictSummary | null, worker_card_id: CardId | null, };
+
+export type WaveFsRunStatus = "completed" | "failed" | "running" | "requested" | "unknown";
+
+export type WaveFsRunVerdict = { at: number, reason: string | null, status: string, };
+
+export type WaveFsRunVerdictSummary = { at: number, status: string, };
+
 /**
  * Wave identifier. See [`CoveId`] for the opacity contract.
  */

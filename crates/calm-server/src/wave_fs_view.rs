@@ -13,9 +13,13 @@ use crate::ids::{ActorId, CardId};
 use crate::model::{Card, CardRole, CardRuntimeView, Wave};
 use crate::runtime_lookup::runtime_view_from_runtime;
 use crate::state::WriteContext;
+use crate::wave_fs_dto::{
+    WaveFsCardMeta, WaveFsHookEvent, WaveFsRunDetail, WaveFsRunEventRef, WaveFsRunEvents,
+    WaveFsRunIndexEntry, WaveFsRunStatus, WaveFsRunVerdict, WaveFsRunVerdictSummary,
+};
 use crate::wave_report::WaveReportPayload;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
@@ -124,12 +128,12 @@ impl<'a> WaveFsView<'a> {
             }
             "cards/index.json" => {
                 let cards = self.cards_for_wave(wave).await?;
-                let metas: Vec<Value> = cards.iter().map(|card| self.card_meta(card)).collect();
+                let metas: Vec<_> = cards.iter().map(|card| self.card_meta(card)).collect();
                 content_json(&metas)
             }
             "runs/index.json" => {
                 let runs = self.runs_for_wave(wave).await?;
-                let summaries: Vec<Value> = runs.iter().map(run_index_entry).collect();
+                let summaries: Vec<_> = runs.iter().map(run_index_entry).collect();
                 content_json(&summaries)
             }
             path if path.starts_with("cards/") => {
@@ -304,22 +308,22 @@ impl<'a> WaveFsView<'a> {
         })
     }
 
-    fn card_meta(&self, card: &Card) -> Value {
+    fn card_meta(&self, card: &Card) -> WaveFsCardMeta {
         let role = self.write.verify_role(&card.id).unwrap_or_default();
-        card_meta_value(card, serde_json::to_value(role).unwrap_or(Value::Null))
+        card_meta_value(card, role)
     }
 }
 
-pub(crate) fn card_meta_value(card: &Card, role: Value) -> Value {
-    json!({
-        "id": card.id,
-        "kind": card.kind,
-        "role": role,
-        "sort": card.sort,
-        "deletable": card.deletable,
-        "created_at": card.created_at,
-        "updated_at": card.updated_at,
-    })
+pub(crate) fn card_meta_value(card: &Card, role: CardRole) -> WaveFsCardMeta {
+    WaveFsCardMeta {
+        id: card.id.clone(),
+        kind: card.kind.clone(),
+        role,
+        sort: card.sort,
+        deletable: card.deletable,
+        created_at: card.created_at,
+        updated_at: card.updated_at,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -439,7 +443,7 @@ pub(crate) struct RunVerdictProjection {
 #[derive(Clone, Debug)]
 pub(crate) struct RunProjection {
     pub(crate) idempotency_key: String,
-    pub(crate) status: &'static str,
+    pub(crate) status: WaveFsRunStatus,
     pub(crate) kind: String,
     pub(crate) requested_at: Option<i64>,
     pub(crate) finished_at: Option<i64>,
@@ -555,10 +559,14 @@ fn project_runs(
             };
 
             let (status, finished_at) = match (requested_event.as_ref(), final_event) {
-                (Some(_), Some((kind, event))) => (kind, Some(event.at)),
-                (Some(_), None) if worker_card.is_some() => ("running", None),
-                (Some(_), None) => ("requested", None),
-                (None, _) => ("unknown", None),
+                (Some(_), Some(("completed", event))) => {
+                    (WaveFsRunStatus::Completed, Some(event.at))
+                }
+                (Some(_), Some(("failed", event))) => (WaveFsRunStatus::Failed, Some(event.at)),
+                (Some(_), Some((_, event))) => (WaveFsRunStatus::Unknown, Some(event.at)),
+                (Some(_), None) if worker_card.is_some() => (WaveFsRunStatus::Running, None),
+                (Some(_), None) => (WaveFsRunStatus::Requested, None),
+                (None, _) => (WaveFsRunStatus::Unknown, None),
             };
 
             let kind = worker_card
@@ -727,9 +735,12 @@ fn run_listing_entry(run: &RunProjection, extension: &str) -> WaveFsEntry {
             "idempotency_key",
             Value::String(run.idempotency_key.clone()),
         )
-        .with_extra("status", Value::String(run.status.into()))
+        .with_extra("status", Value::String(run.status.as_str().into()))
         .with_extra("run_kind", Value::String(run.kind.clone()))
-        .with_extra("verdict", run_verdict_index_json(run))
+        .with_extra(
+            "verdict",
+            serde_json::to_value(run_verdict_index(run)).unwrap_or(Value::Null),
+        )
         .with_extra("requested_at", option_i64(run.requested_at))
         .with_extra("finished_at", option_i64(run.finished_at))
         .with_extra(
@@ -745,82 +756,70 @@ fn run_listing_entry(run: &RunProjection, extension: &str) -> WaveFsEntry {
     entry
 }
 
-pub(crate) fn run_index_entry(run: &RunProjection) -> Value {
-    json!({
-        "idempotency_key": run.idempotency_key,
-        "status": run.status,
-        "kind": run.kind,
-        "verdict": run_verdict_index_json(run),
-        "requested_at": run.requested_at,
-        "finished_at": run.finished_at,
-        "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
-    })
+pub(crate) fn run_index_entry(run: &RunProjection) -> WaveFsRunIndexEntry {
+    WaveFsRunIndexEntry {
+        idempotency_key: run.idempotency_key.clone(),
+        status: run.status,
+        kind: run.kind.clone(),
+        verdict: run_verdict_index(run),
+        requested_at: run.requested_at,
+        finished_at: run.finished_at,
+        worker_card_id: run.worker_card.as_ref().map(|card| card.id.clone()),
+    }
 }
 
-pub(crate) fn run_json(run: &RunProjection) -> Value {
-    json!({
-        "idempotency_key": run.idempotency_key,
-        "status": run.status,
-        "kind": run.kind,
-        "verdict": run_verdict_full_json(run),
-        "requested_at": run.requested_at,
-        "finished_at": run.finished_at,
-        "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
-        "worker_card_payload": run.worker_card.as_ref().map(|card| card.payload.clone()),
-        "events": {
-            "requested": run.requested_event.as_ref().map(event_json),
-            "completed": run.completed_event.as_ref().map(event_json),
-            "failed": run.failed_event.as_ref().map(event_json),
-            "verdict": run.verdict_event.as_ref().map(event_json),
+pub(crate) fn run_json(run: &RunProjection) -> WaveFsRunDetail {
+    WaveFsRunDetail {
+        idempotency_key: run.idempotency_key.clone(),
+        status: run.status,
+        kind: run.kind.clone(),
+        verdict: run_verdict_full(run),
+        requested_at: run.requested_at,
+        finished_at: run.finished_at,
+        worker_card_id: run.worker_card.as_ref().map(|card| card.id.clone()),
+        worker_card_payload: run.worker_card.as_ref().map(|card| card.payload.clone()),
+        events: WaveFsRunEvents {
+            requested: run.requested_event.as_ref().map(event_ref),
+            completed: run.completed_event.as_ref().map(event_ref),
+            failed: run.failed_event.as_ref().map(event_ref),
+            verdict: run.verdict_event.as_ref().map(event_ref),
         },
+    }
+}
+
+fn run_verdict_index(run: &RunProjection) -> Option<WaveFsRunVerdictSummary> {
+    run.verdict.as_ref().map(|verdict| WaveFsRunVerdictSummary {
+        status: verdict.status.clone(),
+        at: verdict.at,
     })
 }
 
-fn run_verdict_index_json(run: &RunProjection) -> Value {
-    run.verdict
-        .as_ref()
-        .map(|verdict| {
-            json!({
-                "status": verdict.status,
-                "at": verdict.at,
-            })
-        })
-        .unwrap_or(Value::Null)
-}
-
-fn run_verdict_full_json(run: &RunProjection) -> Value {
-    run.verdict
-        .as_ref()
-        .map(|verdict| {
-            json!({
-                "status": verdict.status,
-                "reason": verdict.reason,
-                "at": verdict.at,
-            })
-        })
-        .unwrap_or(Value::Null)
-}
-
-fn event_json(event: &RunEventProjection) -> Value {
-    json!({
-        "event_id": event.event_id,
-        "kind": event.kind,
-        "created_at": event.at,
-        "payload": event.payload,
+fn run_verdict_full(run: &RunProjection) -> Option<WaveFsRunVerdict> {
+    run.verdict.as_ref().map(|verdict| WaveFsRunVerdict {
+        status: verdict.status.clone(),
+        reason: verdict.reason.clone(),
+        at: verdict.at,
     })
 }
 
-pub(crate) fn hook_events_json(events: &[HookEventProjection]) -> Vec<Value> {
+fn event_ref(event: &RunEventProjection) -> WaveFsRunEventRef {
+    WaveFsRunEventRef {
+        event_id: event.event_id,
+        kind: event.kind.to_string(),
+        created_at: event.at,
+        payload: event.payload.clone(),
+    }
+}
+
+pub(crate) fn hook_events_json(events: &[HookEventProjection]) -> Vec<WaveFsHookEvent> {
     events
         .iter()
-        .map(|event| {
-            json!({
-                "event_id": event.event_id,
-                "kind": event.kind,
-                "hook_kind": event.hook_kind,
-                "created_at": event.at,
-                "payload": event.payload,
-            })
+        .map(|event| WaveFsHookEvent {
+            event_id: event.event_id,
+            kind: event.kind.to_string(),
+            hook_kind: event.hook_kind.clone(),
+            created_at: event.at,
+            payload: event.payload.clone(),
         })
         .collect()
 }
@@ -1049,4 +1048,283 @@ fn path_not_available(path: &str) -> WaveFsError {
         "calm.wave: path not available in this view: {}",
         if path.is_empty() { "/" } else { path }
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::WaveId;
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    fn pretty_json<T: Serialize>(value: &T) -> String {
+        serde_json::to_string_pretty(value).expect("value serializes")
+    }
+
+    fn assert_same_json_bytes<T: Serialize>(new_value: &T, old_value: &Value) {
+        assert_eq!(pretty_json(new_value), pretty_json(old_value));
+    }
+
+    fn test_card(id: &str, kind: &str, payload: Value) -> Card {
+        Card {
+            id: CardId::from(id),
+            wave_id: WaveId::from("wave-test"),
+            kind: kind.to_string(),
+            sort: 1.25,
+            payload,
+            runtime: None,
+            deletable: true,
+            created_at: 1000,
+            updated_at: 2000,
+        }
+    }
+
+    fn run_event(event_id: i64, at: i64, kind: &'static str, payload: Value) -> RunEventProjection {
+        RunEventProjection {
+            event_id,
+            at,
+            kind,
+            payload,
+        }
+    }
+
+    fn old_card_meta_value(card: &Card, role: Value) -> Value {
+        json!({
+            "id": card.id,
+            "kind": card.kind,
+            "role": role,
+            "sort": card.sort,
+            "deletable": card.deletable,
+            "created_at": card.created_at,
+            "updated_at": card.updated_at,
+        })
+    }
+
+    fn old_run_index_entry(run: &RunProjection) -> Value {
+        json!({
+            "idempotency_key": run.idempotency_key,
+            "status": run.status.as_str(),
+            "kind": run.kind,
+            "verdict": old_run_verdict_index_json(run),
+            "requested_at": run.requested_at,
+            "finished_at": run.finished_at,
+            "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
+        })
+    }
+
+    fn old_run_json(run: &RunProjection) -> Value {
+        json!({
+            "idempotency_key": run.idempotency_key,
+            "status": run.status.as_str(),
+            "kind": run.kind,
+            "verdict": old_run_verdict_full_json(run),
+            "requested_at": run.requested_at,
+            "finished_at": run.finished_at,
+            "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
+            "worker_card_payload": run.worker_card.as_ref().map(|card| card.payload.clone()),
+            "events": {
+                "requested": run.requested_event.as_ref().map(old_event_json),
+                "completed": run.completed_event.as_ref().map(old_event_json),
+                "failed": run.failed_event.as_ref().map(old_event_json),
+                "verdict": run.verdict_event.as_ref().map(old_event_json),
+            },
+        })
+    }
+
+    fn old_run_verdict_index_json(run: &RunProjection) -> Value {
+        run.verdict
+            .as_ref()
+            .map(|verdict| {
+                json!({
+                    "status": verdict.status,
+                    "at": verdict.at,
+                })
+            })
+            .unwrap_or(Value::Null)
+    }
+
+    fn old_run_verdict_full_json(run: &RunProjection) -> Value {
+        run.verdict
+            .as_ref()
+            .map(|verdict| {
+                json!({
+                    "status": verdict.status,
+                    "reason": verdict.reason,
+                    "at": verdict.at,
+                })
+            })
+            .unwrap_or(Value::Null)
+    }
+
+    fn old_event_json(event: &RunEventProjection) -> Value {
+        json!({
+            "event_id": event.event_id,
+            "kind": event.kind,
+            "created_at": event.at,
+            "payload": event.payload,
+        })
+    }
+
+    fn old_hook_events_json(events: &[HookEventProjection]) -> Vec<Value> {
+        events
+            .iter()
+            .map(|event| {
+                json!({
+                    "event_id": event.event_id,
+                    "kind": event.kind,
+                    "hook_kind": event.hook_kind,
+                    "created_at": event.at,
+                    "payload": event.payload,
+                })
+            })
+            .collect()
+    }
+
+    fn run_with_verdict_and_events() -> RunProjection {
+        let worker_card = test_card(
+            "card-worker",
+            "codex",
+            json!({
+                "idempotency_key": "run-full",
+                "prompt": "do the thing",
+                "context": {"priority": "high"},
+            }),
+        );
+        let requested_event = run_event(
+            10,
+            1100,
+            "codex.worker_requested",
+            json!({"idempotency_key": "run-full", "goal": "ship it"}),
+        );
+        let completed_event = run_event(
+            11,
+            1200,
+            "task.completed",
+            json!({"idempotency_key": "run-full", "result": {"summary": "done"}}),
+        );
+        let verdict_event = run_event(
+            12,
+            1300,
+            "task.completed",
+            json!({"idempotency_key": "run-full", "result": {"status": "accepted"}}),
+        );
+        RunProjection {
+            idempotency_key: "run-full".into(),
+            status: WaveFsRunStatus::Completed,
+            kind: "codex".into(),
+            requested_at: Some(requested_event.at),
+            finished_at: Some(completed_event.at),
+            worker_card: Some(worker_card),
+            requested_event: Some(requested_event),
+            completed_event: Some(completed_event),
+            failed_event: None,
+            verdict: Some(RunVerdictProjection {
+                status: "accepted".into(),
+                reason: None,
+                at: verdict_event.at,
+            }),
+            verdict_event: Some(verdict_event),
+        }
+    }
+
+    fn run_without_verdict_or_events() -> RunProjection {
+        RunProjection {
+            idempotency_key: "run-empty".into(),
+            status: WaveFsRunStatus::Unknown,
+            kind: "unknown".into(),
+            requested_at: None,
+            finished_at: None,
+            worker_card: None,
+            requested_event: None,
+            completed_event: None,
+            failed_event: None,
+            verdict: None,
+            verdict_event: None,
+        }
+    }
+
+    #[test]
+    fn card_meta_dto_serializes_like_old_json_builder() {
+        let card = test_card("card-meta", "terminal", json!({"terminal_id": "term-1"}));
+
+        assert_same_json_bytes(
+            &card_meta_value(&card, CardRole::Worker),
+            &old_card_meta_value(&card, json!("worker")),
+        );
+        assert_same_json_bytes(
+            &card_meta_value(&card, CardRole::default()),
+            &old_card_meta_value(&card, json!("worker")),
+        );
+    }
+
+    #[test]
+    fn run_index_entry_dto_serializes_like_old_json_builder() {
+        let full = run_with_verdict_and_events();
+        assert_same_json_bytes(&run_index_entry(&full), &old_run_index_entry(&full));
+
+        let full_value = serde_json::to_value(run_index_entry(&full)).expect("dto serializes");
+        assert!(
+            full_value["verdict"].get("reason").is_none(),
+            "index verdict must not include reason: {full_value:?}"
+        );
+
+        let empty = run_without_verdict_or_events();
+        assert_same_json_bytes(&run_index_entry(&empty), &old_run_index_entry(&empty));
+        let empty_value = serde_json::to_value(run_index_entry(&empty)).expect("dto serializes");
+        assert!(empty_value["verdict"].is_null());
+        assert!(empty_value["worker_card_id"].is_null());
+        assert!(empty_value["requested_at"].is_null());
+        assert!(empty_value["finished_at"].is_null());
+    }
+
+    #[test]
+    fn run_detail_dto_serializes_like_old_json_builder() {
+        let full = run_with_verdict_and_events();
+        assert_same_json_bytes(&run_json(&full), &old_run_json(&full));
+        let full_value = serde_json::to_value(run_json(&full)).expect("dto serializes");
+        assert!(full_value["events"]["requested"].is_object());
+        assert!(full_value["events"]["completed"].is_object());
+        assert!(full_value["events"]["failed"].is_null());
+        assert!(full_value["events"]["verdict"].is_object());
+        assert!(
+            full_value["verdict"]["reason"].is_null(),
+            "detail verdict must emit explicit null reason: {full_value:?}"
+        );
+
+        let empty = run_without_verdict_or_events();
+        assert_same_json_bytes(&run_json(&empty), &old_run_json(&empty));
+        let empty_value = serde_json::to_value(run_json(&empty)).expect("dto serializes");
+        assert!(empty_value["verdict"].is_null());
+        assert!(empty_value["worker_card_id"].is_null());
+        assert!(empty_value["worker_card_payload"].is_null());
+        assert!(empty_value["events"]["requested"].is_null());
+        assert!(empty_value["events"]["completed"].is_null());
+        assert!(empty_value["events"]["failed"].is_null());
+        assert!(empty_value["events"]["verdict"].is_null());
+    }
+
+    #[test]
+    fn hook_events_dto_serializes_like_old_json_builder() {
+        let events = vec![
+            HookEventProjection {
+                event_id: 21,
+                at: 2100,
+                kind: "codex.hook",
+                hook_kind: "hook.codex.user_prompt_submit".into(),
+                payload: json!({"prompt": "hello"}),
+            },
+            HookEventProjection {
+                event_id: 22,
+                at: 2200,
+                kind: "claude.hook",
+                hook_kind: "Stop".into(),
+                payload: json!({"last_assistant_message": "done"}),
+            },
+        ];
+
+        assert_same_json_bytes(
+            &hook_events_json(&events),
+            &json!(old_hook_events_json(&events)),
+        );
+    }
 }

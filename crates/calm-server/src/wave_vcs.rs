@@ -19,11 +19,12 @@ use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, Wave, now_ms};
+use crate::model::{Card, CardRole, Wave, now_ms};
 use crate::runtime_lookup;
 use crate::runtime_row::{
     projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
 };
+use crate::wave_fs_dto::WaveFsRunStatus;
 use crate::wave_fs_view::{
     self, HookEventProjection, RunEventProjection, RunProjection, RunVerdictProjection,
 };
@@ -1512,7 +1513,10 @@ async fn apply_run_key_delta_tx(
         index.remove(&key);
         match project_run_by_key_tx(tx, wave_id, &key, card_visibility).await? {
             Some(run) => {
-                index.insert(key.clone(), wave_fs_view::run_index_entry(&run));
+                index.insert(
+                    key.clone(),
+                    serde_json::to_value(wave_fs_view::run_index_entry(&run))?,
+                );
                 put_rendered_entry(
                     tx,
                     entries,
@@ -2212,10 +2216,14 @@ async fn project_runs_tx(
             let verdict = verdict_event.as_ref().and_then(verdict_from_event);
             let final_event = latest_final_event(completed_event.as_ref(), failed_event.as_ref());
             let (status, finished_at) = match (requested_event.as_ref(), final_event) {
-                (Some(_), Some((kind, event))) => (kind, Some(event.at)),
-                (Some(_), None) if worker_card.is_some() => ("running", None),
-                (Some(_), None) => ("requested", None),
-                (None, _) => ("unknown", None),
+                (Some(_), Some(("completed", event))) => {
+                    (WaveFsRunStatus::Completed, Some(event.at))
+                }
+                (Some(_), Some(("failed", event))) => (WaveFsRunStatus::Failed, Some(event.at)),
+                (Some(_), Some((_, event))) => (WaveFsRunStatus::Unknown, Some(event.at)),
+                (Some(_), None) if worker_card.is_some() => (WaveFsRunStatus::Running, None),
+                (Some(_), None) => (WaveFsRunStatus::Requested, None),
+                (None, _) => (WaveFsRunStatus::Unknown, None),
             };
             let kind = worker_card
                 .as_ref()
@@ -2337,10 +2345,12 @@ async fn project_run_by_key_tx(
     let verdict = verdict_event.as_ref().and_then(verdict_from_event);
     let final_event = latest_final_event(completed_event.as_ref(), failed_event.as_ref());
     let (status, finished_at) = match (requested_event.as_ref(), final_event) {
-        (Some(_), Some((kind, event))) => (kind, Some(event.at)),
-        (Some(_), None) if worker_card.is_some() => ("running", None),
-        (Some(_), None) => ("requested", None),
-        (None, _) => ("unknown", None),
+        (Some(_), Some(("completed", event))) => (WaveFsRunStatus::Completed, Some(event.at)),
+        (Some(_), Some(("failed", event))) => (WaveFsRunStatus::Failed, Some(event.at)),
+        (Some(_), Some((_, event))) => (WaveFsRunStatus::Unknown, Some(event.at)),
+        (Some(_), None) if worker_card.is_some() => (WaveFsRunStatus::Running, None),
+        (Some(_), None) => (WaveFsRunStatus::Requested, None),
+        (None, _) => (WaveFsRunStatus::Unknown, None),
     };
     let kind = worker_card
         .as_ref()
@@ -2629,11 +2639,9 @@ fn card_meta_json(card: &CardProjection) -> Result<BlobContent> {
     content_json(&card_meta_value(card)?)
 }
 
-fn card_meta_value(card: &CardProjection) -> Result<Value> {
-    Ok(wave_fs_view::card_meta_value(
-        &card.card,
-        Value::String(card.role.clone()),
-    ))
+fn card_meta_value(card: &CardProjection) -> Result<crate::wave_fs_dto::WaveFsCardMeta> {
+    let role = serde_json::from_value::<CardRole>(Value::String(card.role.clone()))?;
+    Ok(wave_fs_view::card_meta_value(&card.card, role))
 }
 
 fn card_payload_json(card: &CardProjection) -> Result<BlobContent> {
