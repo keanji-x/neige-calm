@@ -32,15 +32,15 @@ use crate::db::{Repo, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
+use crate::proc_identity::{
+    read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
+};
 use crate::routes::settings::load_settings;
 use crate::runtime_lookup::{
     merge_active_shared_thread_attribution, resolve_active_thread_for_card, resolve_card_for_thread,
 };
 use crate::runtime_repo::AgentProvider;
 use crate::shared_codex_home::SharedCodexHome;
-use crate::spec_appserver::{
-    read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
-};
 
 pub type TurnId = String;
 

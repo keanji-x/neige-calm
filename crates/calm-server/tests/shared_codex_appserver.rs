@@ -9,13 +9,13 @@ use calm_server::db::{
     Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
 };
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::{
     BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams,
     bounded_exponential_backoff, drop_spawned_child_guard_for_test,
 };
-use calm_server::spec_appserver::{read_boot_id, read_proc_start_time};
 use clap::Parser;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -422,7 +422,7 @@ async fn stale_daemon_detected_by_boot_id_mismatch() {
 async fn stale_daemon_detected_by_start_time_mismatch() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
-    let live_boot = calm_server::spec_appserver::read_boot_id().unwrap_or_default();
+    let live_boot = calm_server::proc_identity::read_boot_id().unwrap_or_default();
     repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
         state: "running".into(),
         pid: Some(999_998),

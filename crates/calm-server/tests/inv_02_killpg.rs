@@ -7,7 +7,7 @@
 //! `codex app-server` as a grandchild in the same pgid; a pid-only kill
 //! reaps only the launcher and leaks the grandchild (which keeps the
 //! listen socket bound and continues writing rollouts). The production
-//! code today uses `spec_appserver::signal_process_group(pgid, …)`
+//! code today uses `proc_identity::signal_process_group(pgid, …)`
 //! everywhere (Drop, `reap_spec_push`, takeover pre-respawn cleanup),
 //! which IS correct.
 //!
@@ -74,7 +74,7 @@
 //! ship the two regression-guard tests above instead of inventing a
 //! failing-on-main test that doesn't reflect an actual invariant.
 //!
-//! See: `src/spec_appserver.rs::signal_process_group` and the production
+//! See: `src/proc_identity.rs::signal_process_group` and the production
 //! teardown callers that route through process-group signaling.
 
 // `/proc/<pid>/stat` is Linux-only — same convention as inv_05.
@@ -83,7 +83,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use calm_server::spec_appserver::signal_process_group;
+use calm_server::proc_identity::signal_process_group;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -264,6 +264,6 @@ async fn inv2_signal_process_group_targets_group_not_pid() {
          grandchild pid={grandchild_pid} within 500ms. The helper must target the \
          process GROUP (`kill(-pgid, …)`), not just the leader pid — a pid-only \
          kill leaves the native `codex app-server` grandchild alive holding the \
-         listen socket. See spec_appserver.rs::signal_process_group."
+         listen socket. See proc_identity.rs::signal_process_group."
     );
 }

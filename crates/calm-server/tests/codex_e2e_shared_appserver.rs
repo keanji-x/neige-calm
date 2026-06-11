@@ -168,7 +168,7 @@ async fn shared_appserver_restart_resumes_thread() {
         .await
         .unwrap();
     let pgid = d.status_snapshot().runtime.unwrap().pgid;
-    calm_server::spec_appserver::signal_process_group(pgid, libc::SIGTERM);
+    calm_server::proc_identity::signal_process_group(pgid, libc::SIGTERM);
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(d.status_snapshot().restart_count >= 1);
 }
