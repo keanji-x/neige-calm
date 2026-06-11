@@ -628,7 +628,13 @@ async fn plan_upsert(
 
     // Pre-tx resolve: validates the batch against current state and
     // short-circuits a pure idempotent retry (all `unchanged`, no
-    // lifecycle request) without writing a row or emitting an event.
+    // effective lifecycle request) without writing a row or emitting an
+    // event. A `lifecycle` equal to the wave's current state counts as
+    // "no request": `validate_transition` blesses same-state asks from
+    // lifecycle-authorized actors (spec-only tool, so always here) and
+    // `apply_requested_transition_in_tx` would return `None` — entering
+    // the tx anyway would hand `write_with_actor_events` an empty
+    // batch, which it rejects as an internal error (#656 round 3, F1).
     // The tx below re-resolves against in-tx state, so this read is a
     // fast path, not the correctness boundary.
     let existing = ctx
@@ -638,7 +644,10 @@ async fn plan_upsert(
         .map_err(|e| RpcError::internal(format!("plan_upsert: tasks_by_wave: {e}")))?;
     let pre_outcomes = resolve_plan_batch(&existing, &batch)
         .map_err(|m| RpcError::invalid_params(format!("plan_upsert: {m}")))?;
-    if write_args.lifecycle.is_none() && pre_outcomes.iter().all(|o| *o == PlanOutcome::Unchanged) {
+    let lifecycle_is_noop = write_args
+        .lifecycle
+        .is_none_or(|target| target == wave.lifecycle);
+    if lifecycle_is_noop && pre_outcomes.iter().all(|o| *o == PlanOutcome::Unchanged) {
         return Ok(results_json(&batch, &pre_outcomes));
     }
 
@@ -734,6 +743,20 @@ async fn plan_upsert(
                         },
                     ));
                 }
+                // Race-only guard: the pre-tx short-circuit already
+                // returns deterministic no-ops (identical batch +
+                // same-state lifecycle) before this tx, so an empty
+                // batch here means a concurrent writer turned the
+                // request into a no-op mid-flight. The tx wrote nothing
+                // (no row change, no lifecycle flip), and
+                // `write_with_actor_events` rejects empty batches as an
+                // internal error — surface a retryable conflict
+                // instead; the retry resolves via the short-circuit.
+                if events.is_empty() {
+                    return Err(CalmError::Conflict(
+                        "wave or plan changed concurrently; retry".into(),
+                    ));
+                }
                 Ok((outcomes, events))
             })
         },
@@ -827,14 +850,28 @@ async fn plan_cancel(
             RpcError::invalid_params(format!("plan_cancel: unknown task `{key}` in this wave"))
         })?;
 
+    // A `lifecycle` equal to the wave's current state is the same-state
+    // idempotency shortcut: `validate_transition` blesses it for
+    // lifecycle-authorized actors (spec-only tool, so always here) and
+    // `apply_requested_transition_in_tx` would emit nothing — for
+    // short-circuit purposes it is equivalent to no lifecycle at all
+    // (#656 round 3, F2).
+    let lifecycle_is_noop = write_args
+        .lifecycle
+        .is_none_or(|target| target == wave.lifecycle);
+
     match task.status {
         // §3.1 — already-canceled is idempotent success, no write, no
         // event (a retry must not re-trigger the scheduler). Mirror of
         // the upsert all-`unchanged` short-circuit: only when no
-        // `lifecycle` rode along — a requested lifecycle must not be
-        // silently dropped, so that path falls through into the tx
-        // (which applies the lifecycle and skips the `plan.updated`).
-        TaskStatus::Canceled if write_args.lifecycle.is_none() => {
+        // effective `lifecycle` rode along — a real lifecycle request
+        // must not be silently dropped, so that path falls through into
+        // the tx (which applies the lifecycle and skips the
+        // `plan.updated`). A same-state lifecycle short-circuits too:
+        // it would apply nothing, and an all-no-op tx would hand
+        // `write_with_actor_events` an empty event batch (rejected as
+        // an internal error).
+        TaskStatus::Canceled if lifecycle_is_noop => {
             return Ok(json!({ "ok": true }));
         }
         TaskStatus::Canceled | TaskStatus::Pending => {}
@@ -936,10 +973,24 @@ async fn plan_cancel(
                         scope,
                         Event::PlanUpdated {
                             wave_id: wave_id_typed,
-                            changed_keys: vec![key],
+                            changed_keys: vec![key.clone()],
                             agent_message: Some(message),
                         },
                     ));
+                }
+                // Race-only guard: the pre-read short-circuit already
+                // returns deterministic no-ops (already-canceled +
+                // same-state lifecycle) before this tx, so an empty
+                // batch here means a concurrent writer turned the
+                // request into a no-op mid-flight. The tx wrote nothing
+                // (0-row flip, no lifecycle change), and
+                // `write_with_actor_events` rejects empty batches as an
+                // internal error — surface a retryable conflict
+                // instead; the retry resolves via the short-circuit.
+                if events.is_empty() {
+                    return Err(CalmError::Conflict(format!(
+                        "task {key} or wave changed state concurrently; retry"
+                    )));
                 }
                 Ok(((), events))
             })

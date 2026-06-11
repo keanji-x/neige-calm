@@ -623,6 +623,48 @@ async fn upsert_all_unchanged_with_lifecycle_applies_lifecycle_without_plan_upda
     );
 }
 
+/// Review round 3 (#656 F1): a spec retrying the exact same call —
+/// identical batch + `lifecycle` equal to the wave's current state —
+/// is fully idempotent. It must short-circuit to success (all
+/// `unchanged`, zero events) instead of reaching the tx with an empty
+/// event batch, which `write_with_actor_events` rejects as an internal
+/// error.
+#[tokio::test]
+async fn upsert_identical_batch_with_same_state_lifecycle_is_idempotent_success() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    let tasks = json!([{ "key": "a", "kind": "codex", "goal": "g" }]);
+    let args = json!({ "tasks": tasks, "message": "plan is final", "lifecycle": "dispatching" });
+    call_tool(&boot, TOOL_PLAN_UPSERT, spec_identity(&boot), args.clone())
+        .await
+        .expect("first upsert with lifecycle ok");
+
+    // Retry the exact same call: batch is identical, wave is already
+    // `dispatching`.
+    let mut rx = boot.ctx.events.subscribe();
+    let resp = call_tool(&boot, TOOL_PLAN_UPSERT, spec_identity(&boot), args)
+        .await
+        .expect("idempotent retry with same-state lifecycle must succeed");
+    assert_eq!(
+        outcomes_of(&resp),
+        vec![("a".to_string(), "unchanged".to_string())]
+    );
+
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+
+    let events = drain_events(&mut rx).await;
+    assert!(
+        events.is_empty(),
+        "idempotent retry must emit nothing: {events:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // calm.plan.cancel
 // ---------------------------------------------------------------------------
@@ -738,6 +780,53 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
             .iter()
             .any(|e| matches!(e, Event::PlanUpdated { .. })),
         "idempotent cancel emitted plan.updated: {events:?}"
+    );
+}
+
+/// Review round 3 (#656 F2): re-cancel of an already-`canceled` task
+/// with a `lifecycle` equal to the wave's current state is a fully
+/// idempotent retry — success, zero events — instead of falling into
+/// the tx where the 0-row flip plus the same-state lifecycle would
+/// produce an empty event batch (rejected by `write_with_actor_events`
+/// as an internal error).
+#[tokio::test]
+async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    let args =
+        json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" });
+    call_tool(&boot, TOOL_PLAN_CANCEL, spec_identity(&boot), args.clone())
+        .await
+        .expect("first cancel with lifecycle ok");
+
+    // Retry the exact same call: row already `canceled`, wave already
+    // `dispatching`.
+    let mut rx = boot.ctx.events.subscribe();
+    let out = call_tool(&boot, TOOL_PLAN_CANCEL, spec_identity(&boot), args)
+        .await
+        .expect("idempotent re-cancel with same-state lifecycle must succeed");
+    assert_eq!(out["ok"], true);
+
+    let row = boot
+        .repo
+        .task_get(&format!("{}:a", boot.wave_id.as_str()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(serde_json::to_value(row.status).unwrap(), json!("canceled"));
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+
+    let events = drain_events(&mut rx).await;
+    assert!(
+        events.is_empty(),
+        "idempotent re-cancel must emit nothing: {events:?}"
     );
 }
 
