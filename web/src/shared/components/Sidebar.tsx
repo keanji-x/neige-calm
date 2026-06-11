@@ -14,8 +14,30 @@ import { PlusIcon } from './PlusIcon';
 // ---------------- Sidebar ----------------
 
 const EXPANDED_COVES_STORAGE_KEY = 'calm:sidebar:expandedCoves';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'calm:sidebar:collapsed';
 
 type ExpandedCoves = Record<string, true>;
+
+function readSidebarCollapsed(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(collapsed: boolean) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      SIDEBAR_COLLAPSED_STORAGE_KEY,
+      collapsed ? 'true' : 'false',
+    );
+  } catch {
+    // localStorage may throw in private browsing or under quota pressure.
+  }
+}
 
 function readExpandedCoves(): ExpandedCoves {
   if (typeof window === 'undefined') return {};
@@ -132,6 +154,9 @@ export function Sidebar({
   const [activeWaveRowEl, setActiveWaveRowEl] = useState<HTMLDivElement | null>(
     null,
   );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => readSidebarCollapsed(),
+  );
   const [expandedCoves, toggleCoveExpanded, expandCove] = useExpandedCoves();
   const activeWaveId = route.name === 'wave' ? route.id : null;
   const activeCoveId = useMemo(
@@ -176,6 +201,13 @@ export function Sidebar({
     if (!w || !onDeleteWave) return;
     void onDeleteWave(w.id);
   };
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      writeSidebarCollapsed(next);
+      return next;
+    });
+  };
   // Pinned waves sorted by the timestamp they were pinned, oldest first
   // so the order is stable and user-determined (first pin = top).
   const pinnedWaves = waves
@@ -206,8 +238,24 @@ export function Sidebar({
   // "Today" in the section vs. the Today nav button in the nav. See
   // docs/a11y-contract.md §2.2.
   return (
-    <aside className="side" aria-label="Navigation">
-      <nav className="side-nav" aria-label="Sidebar navigation">
+    <aside
+      className={'side' + (sidebarCollapsed ? ' side--collapsed' : '')}
+      aria-label="Navigation"
+    >
+      <button
+        type="button"
+        className="side-collapse-toggle"
+        onClick={toggleSidebarCollapsed}
+        aria-expanded={!sidebarCollapsed}
+        aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        <ChevronIcon />
+      </button>
+
+      {!sidebarCollapsed && (
+        <>
+          <nav className="side-nav" aria-label="Sidebar navigation">
         <button
           className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
           onClick={() => onGo({ name: 'today' })}
@@ -376,32 +424,34 @@ export function Sidebar({
 
       <UserMenu onOpenSettings={onOpenSettings} onSignOut={onSignOut} />
 
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        title="Delete cove?"
-        description={
-          pendingDelete
-            ? `Delete cove "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
-            : null
-        }
-        confirmLabel="Delete cove"
-        cancelLabel="Cancel"
-        onConfirm={confirmDelete}
-        onCancel={cancelDelete}
-      />
-      <ConfirmDialog
-        open={pendingDeleteWave !== null}
-        title="Delete wave?"
-        description={
-          pendingDeleteWave
-            ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
-            : null
-        }
-        confirmLabel="Delete wave"
-        cancelLabel="Cancel"
-        onConfirm={confirmDeleteWave}
-        onCancel={cancelDeleteWave}
-      />
+          <ConfirmDialog
+            open={pendingDelete !== null}
+            title="Delete cove?"
+            description={
+              pendingDelete
+                ? `Delete cove "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
+                : null
+            }
+            confirmLabel="Delete cove"
+            cancelLabel="Cancel"
+            onConfirm={confirmDelete}
+            onCancel={cancelDelete}
+          />
+          <ConfirmDialog
+            open={pendingDeleteWave !== null}
+            title="Delete wave?"
+            description={
+              pendingDeleteWave
+                ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
+                : null
+            }
+            confirmLabel="Delete wave"
+            cancelLabel="Cancel"
+            onConfirm={confirmDeleteWave}
+            onCancel={cancelDeleteWave}
+          />
+        </>
+      )}
     </aside>
   );
 }

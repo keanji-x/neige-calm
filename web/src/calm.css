@@ -495,8 +495,61 @@ select:-webkit-autofill {
   gap: var(--space-1);
   border-right: 1px solid var(--hairline);
   background: var(--surface-rail);
+  overflow-x: hidden;
+  transition:
+    width var(--motion-medium) ease,
+    padding var(--motion-medium) ease,
+    background var(--motion-quick),
+    border-color var(--motion-quick);
 }
 [data-theme="dark"] .side { background: var(--surface-rail); }
+.side.side--collapsed {
+  width: 44px;
+  padding: var(--space-3) var(--space-3) var(--space-7);
+  align-items: center;
+}
+.side .side-collapse-toggle {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  align-self: flex-end;
+  padding: var(--space-0);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition:
+    background var(--motion-quick),
+    border-color var(--motion-quick),
+    color var(--motion-quick);
+}
+.side.side--collapsed .side-collapse-toggle {
+  align-self: center;
+  background: var(--overlay-hover-faint);
+  border-color: var(--hairline);
+}
+[data-theme="dark"] .side.side--collapsed .side-collapse-toggle {
+  background: var(--overlay-hover);
+}
+.side .side-collapse-toggle svg {
+  transform: rotate(180deg);
+  transition: transform var(--motion-medium) ease;
+}
+.side.side--collapsed .side-collapse-toggle svg {
+  transform: rotate(0deg);
+}
+.side .side-collapse-toggle:hover {
+  background: var(--overlay-hover);
+  border-color: var(--hairline-strong);
+  color: var(--text);
+}
+.side .side-collapse-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 /* Sub-landmark wrappers (<nav>, <section>) inside the sidebar. They
    exist for a11y scoping (see Sidebar.tsx + a11y-contract.md §2.2);
    visually they're invisible — children should sit in the same flex
