@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KernelOverlay, WireEvent } from '../api/wire';
 import type { CodexCardData } from '../cards/builtins/codex';
 import type { SpecCardData } from '../cards/builtins/spec';
+import type { TerminalCardData } from '../cards/builtins/terminal';
 import type { WaveCardSlot } from '../types';
 
 const streamMock = vi.hoisted(() => {
@@ -82,6 +83,22 @@ function cardAdded(
   };
 }
 
+function specHarnessCardAdded(id = 'spec_harness_1'): EventOf<'card.added'> {
+  return {
+    ev: 'card.added',
+    data: {
+      id,
+      wave_id: 'wave_1',
+      kind: 'codex',
+      sort: 0,
+      payload: { spec_harness: true },
+      deletable: false,
+      created_at: 0,
+      updated_at: 0,
+    },
+  };
+}
+
 function cardDeleted(id: string): EventOf<'card.deleted'> {
   return {
     ev: 'card.deleted',
@@ -143,6 +160,17 @@ function specSlot(cardId = 'spec_1'): WaveCardSlot {
   const card: SpecCardData = {
     type: 'spec',
     id: cardId,
+  };
+  return { kind: 'card', card };
+}
+
+function terminalSlot(cardId = 'terminal_1'): WaveCardSlot {
+  const card: TerminalCardData = {
+    type: 'terminal',
+    id: cardId,
+    title: 'terminal',
+    lines: [],
+    terminalId: 'terminal_runtime_1',
   };
   return { kind: 'card', card };
 }
@@ -244,6 +272,12 @@ describe('eventToLineEntry', () => {
 
   it('silences kernel-minted spec card adds', () => {
     const entry = eventToLineEntry(cardAdded('spec', 'spec_1'), 1_000);
+
+    expect(entry).toBeNull();
+  });
+
+  it('silences spec-harness card adds minted as codex cards', () => {
+    const entry = eventToLineEntry(specHarnessCardAdded(), 1_000);
 
     expect(entry).toBeNull();
   });
@@ -513,5 +547,14 @@ describe('selectAnyRuntimeLive', () => {
         [statusOverlay('worker_1', 'Working')],
       ),
     ).toBe(true);
+  });
+
+  it('does not treat terminal-only waves as live from card status overlays', () => {
+    expect(
+      selectAnyRuntimeLive(
+        [terminalSlot('terminal_1')],
+        [statusOverlay('terminal_1', 'Working')],
+      ),
+    ).toBe(false);
   });
 });

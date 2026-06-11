@@ -3,6 +3,7 @@ import { sharedEventStream } from '../api/events';
 import { useOverlaysByKindQuery } from '../api/queries';
 import type { KernelOverlay } from '../api/wire';
 import type { WireEvent } from '../api/wire';
+import { isSpecHarnessPayload } from '../cards/builtins/spec';
 import type { StatusOverlayPayload } from '../cards/overlayRegistry';
 import { useReducer } from '../shared/state';
 import type { WaveCardSlot } from '../types';
@@ -157,7 +158,13 @@ export function eventToLineEntry(
     }
 
     case 'card.added': {
-      if (ev.data.kind === 'wave-report' || ev.data.kind === 'spec') return null;
+      if (
+        ev.data.kind === 'wave-report' ||
+        ev.data.kind === 'spec' ||
+        isSpecHarnessPayload(ev.data.payload)
+      ) {
+        return null;
+      }
       return entry(
         `Worker added: ${ev.data.kind}`,
         'worker',
@@ -580,9 +587,9 @@ export function useEventLineEntries(
 }
 
 function isRuntimeBearingCardType(type: string): boolean {
+  // Overlay-backed LIVE covers only hook agents; WaveCardSlot carries no terminal runtime state.
   return (
     type === 'spec' ||
-    type === 'terminal' ||
     type === 'codex' ||
     type === 'claude'
   );
