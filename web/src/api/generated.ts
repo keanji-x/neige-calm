@@ -1850,8 +1850,22 @@ export interface components {
              *     or omit (`None`) to leave alone.
              */
             pinned_at?: number | null;
+            /**
+             * @description Issue #644 — wave-level gate policy (`waves.require_task_gates`,
+             *     migration 0041). `Some(v)` sets the flag, omit to leave alone.
+             *     Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
+             */
+            require_task_gates?: boolean | null;
             /** Format: double */
             sort?: number | null;
+            /**
+             * Format: int64
+             * @description Issue #644 — per-wave scheduler budget (`waves.task_budget`,
+             *     migration 0041). Pass `Some(Some(n))` to set, `Some(None)` to
+             *     clear back to the kernel default, or omit (`None`) to leave
+             *     alone. Inert until the PR-B scheduler reads it.
+             */
+            task_budget?: number | null;
             title?: string | null;
         };
         /**
