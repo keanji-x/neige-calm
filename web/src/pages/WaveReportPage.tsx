@@ -1,6 +1,9 @@
-import { useEffect, useMemo } from 'react';
+import { lazy, Suspense, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { CalmApiError } from '../api/calm';
+import { useWaveFileContent } from '../api/queries';
+import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
@@ -15,6 +18,12 @@ export interface WaveReportPageProps {
 
 type CardSlot = Extract<WaveCardSlot, { kind: 'card' }>;
 type ReportCardSlot = CardSlot & { card: WaveReportCardData };
+
+const LazyCodePane = lazy(() =>
+  import('../cards/builtins/file-viewer-codemirror').then((m) => ({
+    default: m.CodePane,
+  })),
+);
 
 function isReportSlot(slot: WaveCardSlot): slot is ReportCardSlot {
   return slot.kind === 'card' && slot.card.type === 'wave-report';
@@ -100,16 +109,158 @@ function ReportEmptyState() {
   );
 }
 
+function ReportContent({
+  waveId,
+  path,
+  reportCardBody,
+}: {
+  waveId: string;
+  path: string;
+  reportCardBody?: string;
+}) {
+  const contentQ = useWaveFileContent(waveId, path, { enabled: true });
+  const isReportMissing =
+    path === 'report.md' &&
+    contentQ.error instanceof CalmApiError &&
+    contentQ.error.status === 404;
+  const isReportUnavailable =
+    isReportMissing ||
+    (path === 'report.md' && isRelativeFetchUrlError(contentQ.error));
+  const isFetching = queryIsFetching(contentQ);
+  const shouldFallbackToReportCard =
+    path === 'report.md' &&
+    !!reportCardBody &&
+    (!!contentQ.error ||
+      (!contentQ.data && !contentQ.error) ||
+      (contentQ.isLoading && isFetching));
+
+  if (contentQ.isLoading) {
+    if (path === 'report.md' && isFetching) {
+      return shouldFallbackToReportCard ? (
+        <ReportMarkdown body={reportCardBody ?? ''} />
+      ) : (
+        <ReportEmptyState />
+      );
+    }
+    return (
+      <div className="report-empty" role="status">
+        Loading…
+      </div>
+    );
+  }
+
+  if (shouldFallbackToReportCard) {
+    return <ReportMarkdown body={reportCardBody ?? ''} />;
+  }
+
+  if (isReportUnavailable) {
+    return <ReportEmptyState />;
+  }
+
+  if (contentQ.error) {
+    return <InlineApiError error={contentQ.error} />;
+  }
+
+  if (!contentQ.data) {
+    return <ReportEmptyState />;
+  }
+
+  if (contentQ.data.content_type === 'text/markdown') {
+    return <ReportMarkdown body={contentQ.data.content} />;
+  }
+
+  if (isTextContent(contentQ.data.content_type)) {
+    return (
+      <div className="report-code">
+        <ReportCodeContent path={path} text={contentQ.data.content} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="report-empty" role="status">
+      Preview unavailable for {contentQ.data.content_type}
+    </div>
+  );
+}
+
+function ReportMarkdown({ body }: { body: string }) {
+  return (
+    <div className="report-prose">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
+    </div>
+  );
+}
+
+function ReportCodeContent({ path, text }: { path: string; text: string }) {
+  const { resolved: theme } = useTheme();
+
+  return (
+    <Suspense
+      fallback={
+        <div className="report-empty" role="status">
+          Loading viewer…
+        </div>
+      }
+    >
+      <LazyCodePane path={path} text={text} theme={theme} />
+    </Suspense>
+  );
+}
+
+function InlineApiError({ error }: { error: Error }) {
+  return (
+    <div role="alert" className="report-empty report-error">
+      {formatApiError(error)}
+    </div>
+  );
+}
+
+function formatApiError(error: Error): string {
+  if (error instanceof CalmApiError) {
+    return error.message || error.code || `HTTP ${error.status}`;
+  }
+  return error.message || 'Request failed';
+}
+
+function isTextContent(contentType: string): boolean {
+  return (
+    contentType.startsWith('text/') ||
+    contentType === 'application/json' ||
+    contentType.endsWith('+json') ||
+    contentType === 'application/xml' ||
+    contentType.endsWith('+xml')
+  );
+}
+
+function isRelativeFetchUrlError(error: Error | null): boolean {
+  return (
+    error instanceof TypeError &&
+    error.message.startsWith('Failed to parse URL from /api/waves/')
+  );
+}
+
+function queryIsFetching(query: unknown): boolean {
+  if (typeof query !== 'object' || query === null || !('fetchStatus' in query)) {
+    return false;
+  }
+  return (query as { fetchStatus?: unknown }).fetchStatus === 'fetching';
+}
+
 export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const title = waveDisplayTitle(wave.title);
   const reportSlots = selectReportCards(cards);
+  const hasReportCard = reportSlots.length > 0;
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
+  const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
 
-  useEffect(() => {
-    setSelectedFilePath(null);
-  }, [wave.id]);
+  // Sync reset during render so a new wave never renders with the old file path.
+  if (lastWaveId !== wave.id) {
+    setLastWaveId(wave.id);
+    setSelectedFilePath('report.md');
+  }
 
   return (
     <div className="report-page">
@@ -120,12 +271,12 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           )}
           <h1 className="report-title">{title}</h1>
           <ReportByline report={reportCard} />
-          {reportCard ? (
-            <div className="report-prose">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {reportCard.body}
-              </ReactMarkdown>
-            </div>
+          {hasReportCard || selectedFilePath !== 'report.md' ? (
+            <ReportContent
+              waveId={wave.id}
+              path={selectedFilePath}
+              reportCardBody={reportCard?.body}
+            />
           ) : (
             <ReportEmptyState />
           )}
@@ -140,7 +291,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             <WaveFileTree
               waveId={wave.id}
               selectedPath={selectedFilePath}
-              onSelectedPathChange={setSelectedFilePath}
+              onSelectedPathChange={(path) =>
+                setSelectedFilePath(path ?? 'report.md')
+              }
               ariaLabel="Wave files"
               fallback={<div className="report-rail-placeholder">No files yet.</div>}
             />

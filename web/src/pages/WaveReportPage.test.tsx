@@ -8,13 +8,27 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
 import { useWaveFileContent, useWaveFileList } from '../api/queries';
-import type { WaveFsEntry } from '../api/calm';
+import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 
 vi.mock('../api/queries', () => ({
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
+}));
+
+vi.mock('../app/theme', () => ({
+  useTheme: () => ({
+    mode: 'light',
+    resolved: 'light',
+    setMode: () => {},
+  }),
+}));
+
+vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
+  CodePane: ({ text }: { text: string }) => (
+    <pre data-testid="code-pane">{text}</pre>
+  ),
 }));
 
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
@@ -70,6 +84,36 @@ function specSlot(id = 'card_spec_1'): WaveCardSlot {
   };
 }
 
+function contentResult(
+  value: Partial<ReturnType<typeof useWaveFileContent>> = {},
+) {
+  return {
+    data: undefined,
+    error: null,
+    isLoading: false,
+    ...value,
+  } as unknown as ReturnType<typeof useWaveFileContent>;
+}
+
+function mockWaveFileContentForPath(
+  path: string,
+  value: Partial<ReturnType<typeof useWaveFileContent>>,
+) {
+  mockUseWaveFileContent.mockImplementation((_, requestedPath) => {
+    if (requestedPath === path) {
+      return contentResult(value);
+    }
+    return contentResult();
+  });
+}
+
+function mockWaveFileContents(contents: Record<string, WaveFsContent>) {
+  mockUseWaveFileContent.mockImplementation((_, requestedPath) => {
+    const data = requestedPath ? contents[requestedPath] : undefined;
+    return contentResult(data ? { data } : undefined);
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -85,18 +129,53 @@ describe('WaveReportPage', () => {
       error: null,
       isLoading: false,
     } as unknown as ReturnType<typeof useWaveFileList>);
-    mockUseWaveFileContent.mockReturnValue({
-      data: undefined,
-      error: null,
-      isLoading: false,
-    } as unknown as ReturnType<typeof useWaveFileContent>);
+    mockUseWaveFileContent.mockImplementation((_, requestedPath) => {
+      if (requestedPath === 'report.md') {
+        return contentResult({
+          error: new CalmApiError(404, 'not_found', 'File not found'),
+        });
+      }
+      return contentResult();
+    });
   });
 
-  it('renders the empty state when there is no report card', () => {
+  it('renders the empty state when there is no report card and report.md is missing', () => {
     render(<WaveReportPage wave={makeWave()} cards={[]} />);
 
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'Report not ready. The spec agent has not produced a report yet.',
+    expect(
+      screen.getByText(
+        'Report not ready. The spec agent has not produced a report yet.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('skips the report.md fetch when there is no report card', () => {
+    mockUseWaveFileContent.mockClear();
+
+    render(<WaveReportPage wave={makeWave()} cards={[]} />);
+
+    const reportMdCall = mockUseWaveFileContent.mock.calls.find(
+      (args) => args[1] === 'report.md',
+    );
+    expect(reportMdCall).toBeUndefined();
+  });
+
+  it('renders a non-report file even when the wave has no report card', async () => {
+    mockUseWaveFileContent.mockImplementation((_, requestedPath) => {
+      if (requestedPath === 'wave.json') {
+        return contentResult({
+          data: { content_type: 'text/plain', content: 'plain text' },
+        });
+      }
+      return contentResult();
+    });
+
+    render(<WaveReportPage wave={makeWave()} cards={[]} />);
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      'plain text',
     );
   });
 
@@ -186,30 +265,261 @@ describe('WaveReportPage', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('resets the selected file when the wave id changes', async () => {
-    const { rerender } = render(
+  it('defaults the main column to report.md content', () => {
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+    });
+
+    render(
       <WaveReportPage
-        wave={makeWave({ id: 'wave_A' })}
-        cards={[reportSlot('Files rail body')]}
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
       />,
     );
 
-    const reportFile = screen.getByRole('treeitem', { name: /report\.md/ });
-    fireEvent.click(reportFile);
-    expect(reportFile).toHaveAttribute('aria-selected', 'true');
+    expect(
+      screen.getByRole('treeitem', { name: /report\.md/ }),
+    ).toHaveAttribute('aria-selected', 'true');
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Hi' }),
+    ).toBeInTheDocument();
+    expect(mockUseWaveFileContent).toHaveBeenCalledWith('wave_1', 'report.md', {
+      enabled: true,
+    });
+  });
+
+  it('switches the main column to another selected file', async () => {
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'wave.json': {
+        content_type: 'application/json',
+        content: '{"ok":true}',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Hi' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    expect(
+      screen.queryByRole('heading', { level: 1, name: 'Hi' }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      '{"ok":true}',
+    );
+  });
+
+  it('switches back to report.md from the Files tree', async () => {
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'wave.json': {
+        content_type: 'application/json',
+        content: '{"ok":true}',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      '{"ok":true}',
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /report\.md/ }));
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Hi' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('resets the selected file to report.md when the wave id changes', async () => {
+    mockUseWaveFileContent.mockImplementation((waveId, requestedPath) => {
+      if (requestedPath === 'report.md') {
+        return contentResult({
+          data: {
+            content_type: 'text/markdown',
+            content: waveId === 'wave_B' ? '# New report' : '# Old report',
+          },
+        });
+      }
+      if (requestedPath === 'wave.json') {
+        return contentResult({
+          data: {
+            content_type: 'application/json',
+            content: '{"ok":true}',
+          },
+        });
+      }
+      return contentResult();
+    });
+
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_A' })}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      '{"ok":true}',
+    );
 
     rerender(
       <WaveReportPage
         wave={makeWave({ id: 'wave_B' })}
-        cards={[reportSlot('Files rail body')]}
+        cards={[reportSlot('Fallback report body')]}
       />,
     );
 
     await waitFor(() => {
       expect(
         screen.getByRole('treeitem', { name: /report\.md/ }),
+      ).toHaveAttribute('aria-selected', 'true');
+      expect(
+        screen.getByRole('treeitem', { name: /wave\.json/ }),
       ).toHaveAttribute('aria-selected', 'false');
+      expect(
+        screen.getByRole('heading', { level: 1, name: 'New report' }),
+      ).toBeInTheDocument();
     });
+  });
+
+  it('does not query the previous file path under a new wave id when switching waves', () => {
+    mockUseWaveFileContent.mockClear();
+    mockUseWaveFileContent.mockReturnValue(
+      contentResult({
+        data: { content_type: 'text/markdown', content: '# A' },
+      }),
+    );
+
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_A' })}
+        cards={[reportSlot('A body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    mockUseWaveFileContent.mockClear();
+    rerender(
+      <WaveReportPage
+        wave={makeWave({ id: 'wave_B' })}
+        cards={[reportSlot('B body')]}
+      />,
+    );
+
+    const badCall = mockUseWaveFileContent.mock.calls.find(
+      (args) => args[0] === 'wave_B' && args[1] === 'wave.json',
+    );
+    expect(badCall).toBeUndefined();
+  });
+
+  it('renders the inline loading state while file content is loading', () => {
+    mockWaveFileContentForPath('report.md', { isLoading: true });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading…');
+  });
+
+  it('renders an inline error when a non-report file fails (no fallback)', () => {
+    mockWaveFileContentForPath('wave.json', {
+      error: new CalmApiError(500, 'file_read_failed', 'File read failed'),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /wave\.json/ }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('File read failed');
+  });
+
+  it('renders a distinct inline message for unsupported content types', () => {
+    mockWaveFileContentForPath('report.md', {
+      data: {
+        content_type: 'image/png',
+        content: '...',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Preview unavailable for image\/png/i),
+    ).toBeInTheDocument();
+  });
+
+  it('falls back to the report card body when report.md returns 404', () => {
+    mockWaveFileContentForPath('report.md', {
+      error: new CalmApiError(404, 'not_found', 'File not found'),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('# Card fallback')]}
+      />,
+    );
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Card fallback' }),
+    ).toBeInTheDocument();
+  });
+
+  it('falls back to the report card body when report.md returns 500 (legacy)', () => {
+    mockWaveFileContentForPath('report.md', {
+      error: new CalmApiError(500, 'file_read_failed', 'File read failed'),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Card body **fallback**')]}
+      />,
+    );
+
+    expect(screen.getByText('fallback').tagName).toBe('STRONG');
   });
 
   it('renders the SpecCurrentRun collapsed pill when a spec card exists', () => {

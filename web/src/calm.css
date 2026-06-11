@@ -1808,6 +1808,26 @@ select:-webkit-autofill {
   border: none;
   border-top: 1px solid var(--hairline);
 }
+.report-code {
+  height: auto;
+  min-height: 320px;
+  margin-top: var(--space-10);
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+}
+.report-code .cm-theme,
+.report-code .cm-editor,
+.report-code .cm-scroller {
+  min-height: 320px;
+}
+.report-code .cm-scroller {
+  font-family: var(--font-code);
+}
+.report-error {
+  color: var(--error-text);
+}
 .report-rail {
   min-width: 0;
   min-height: 0;
