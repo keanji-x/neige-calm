@@ -600,6 +600,11 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
             .bind(&wave_id)
             .execute(&mut **tx)
             .await?;
+        // #644 — `tasks` has no FK to `waves`; mirror `wave_delete_tx`.
+        sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .execute(&mut **tx)
+            .await?;
     }
     let res = sqlx::query("DELETE FROM coves WHERE id = ?1")
         .bind(id)
@@ -962,6 +967,37 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     Ok(())
 }
 
+/// In-tx single-row read of one plan row. Used by `calm.plan.cancel`
+/// to disambiguate a 0-row guarded flip (concurrent cancel → idempotent
+/// success vs. concurrent dispatch → conflict) against state consistent
+/// with the write it just attempted.
+pub async fn task_get_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Option<Task>> {
+    let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
+    let row = sqlx::query_as::<_, Task>(&sql)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row)
+}
+
+/// In-tx wave-existence guard for the plan writers. `tasks.wave_id`
+/// deliberately has no FK to `waves` (design §2 — events-outlive-rows
+/// convention), so without this check a delete/upsert race could insert
+/// plan rows for a wave whose row was just removed. Surfaced as
+/// `Conflict` so the tool layer maps it onto the 409-style vocabulary.
+pub async fn require_wave_exists_tx(tx: &mut Transaction<'_, Sqlite>, wave_id: &str) -> Result<()> {
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_none() {
+        return Err(CalmError::Conflict(format!(
+            "wave {wave_id} was deleted concurrently"
+        )));
+    }
+    Ok(())
+}
+
 /// Guarded `pending → canceled` flip (design §3.1). Returns the number
 /// of rows moved (`0` = the task was not `pending`; the caller decides
 /// between idempotent success and the in-flight refusal).
@@ -988,6 +1024,13 @@ pub async fn wave_delete_tx(
         .execute(&mut **tx)
         .await?;
     sqlx::query("DELETE FROM wave_vcs_commits WHERE wave_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    // #644 — `tasks.wave_id` has no FK to `waves` (events-outlive-rows
+    // convention, design §2), so plan rows must be deleted explicitly
+    // alongside the other no-FK wave-owned tables above.
+    sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
         .bind(id)
         .execute(&mut **tx)
         .await?;

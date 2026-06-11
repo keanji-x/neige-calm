@@ -31,7 +31,6 @@ struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
-    #[allow(dead_code)]
     cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
@@ -178,6 +177,32 @@ async fn upsert_ok(boot: &Boot, tasks: Value) -> Value {
     )
     .await
     .expect("plan.upsert ok")
+}
+
+/// Count surviving `tasks` rows for the boot wave directly — after a
+/// wave/cove delete the repo read path would trivially return empty, so
+/// orphan detection must go to the table.
+async fn task_row_count(boot: &Boot) -> i64 {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE wave_id = ?1")
+        .bind(boot.wave_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .expect("count tasks");
+    count
+}
+
+/// Drain every envelope the bus delivers within a short quiet window.
+async fn drain_events(
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+) -> Vec<Event> {
+    let mut seen = Vec::new();
+    while let Ok(Ok(env)) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
+    {
+        seen.push(env.event);
+    }
+    seen
 }
 
 fn outcomes_of(resp: &Value) -> Vec<(String, String)> {
@@ -551,6 +576,53 @@ async fn upsert_auto_promotes_draft_wave() {
     assert_eq!(wave.lifecycle, WaveLifecycle::Planning);
 }
 
+#[tokio::test]
+async fn upsert_all_unchanged_with_lifecycle_applies_lifecycle_without_plan_updated() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    let tasks = json!([{ "key": "a", "kind": "codex", "goal": "g" }]);
+    upsert_ok(&boot, tasks.clone()).await;
+
+    let mut rx = boot.ctx.events.subscribe();
+    let resp = call_tool(
+        &boot,
+        TOOL_PLAN_UPSERT,
+        spec_identity(&boot),
+        json!({ "tasks": tasks, "message": "plan is final", "lifecycle": "dispatching" }),
+    )
+    .await
+    .expect("all-unchanged upsert with lifecycle ok");
+    assert_eq!(
+        outcomes_of(&resp),
+        vec![("a".to_string(), "unchanged".to_string())]
+    );
+
+    // The lifecycle landed…
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+
+    // …with its own events, but no `plan.updated` (the plan rows did
+    // not change; empty `changed_keys` must never be emitted).
+    let events = drain_events(&mut rx).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::WaveLifecycleChanged { .. })),
+        "lifecycle event missing: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::PlanUpdated { .. })),
+        "all-unchanged batch emitted plan.updated: {events:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // calm.plan.cancel
 // ---------------------------------------------------------------------------
@@ -603,6 +675,70 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     assert_eq!(out["ok"], true);
     let no_event = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(no_event.is_err(), "idempotent cancel emitted: {no_event:?}");
+}
+
+/// Review F2/F3 (#656): an already-`canceled` task + a `lifecycle` arg
+/// must not short-circuit before the lifecycle applies. This also pins
+/// the in-tx re-read: the guarded UPDATE flips 0 rows (the row is
+/// already `canceled` — same branch a lost cancel/cancel race lands
+/// in), the re-read classifies it as idempotent success, and no
+/// `plan.updated` is emitted.
+#[tokio::test]
+async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_updated() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    call_tool(
+        &boot,
+        TOOL_PLAN_CANCEL,
+        spec_identity(&boot),
+        json!({ "key": "a", "message": "obsolete" }),
+    )
+    .await
+    .expect("first cancel ok");
+
+    let mut rx = boot.ctx.events.subscribe();
+    let out = call_tool(
+        &boot,
+        TOOL_PLAN_CANCEL,
+        spec_identity(&boot),
+        json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" }),
+    )
+    .await
+    .expect("idempotent cancel with lifecycle ok");
+    assert_eq!(out["ok"], true);
+
+    // Row untouched, lifecycle applied.
+    let row = boot
+        .repo
+        .task_get(&format!("{}:a", boot.wave_id.as_str()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(serde_json::to_value(row.status).unwrap(), json!("canceled"));
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
+
+    // Lifecycle events land; `plan.updated` is suppressed (nothing in
+    // the plan changed, a retry must not re-trigger the scheduler).
+    let events = drain_events(&mut rx).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::WaveLifecycleChanged { .. })),
+        "lifecycle event missing: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::PlanUpdated { .. })),
+        "idempotent cancel emitted plan.updated: {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -665,6 +801,76 @@ async fn cancel_terminal_or_unknown_task_rejected() {
     .expect_err("unknown task");
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("unknown task `ghost`"), "{err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// delete cleanup — `tasks` has no FK to `waves` (review F1, #656)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wave_delete_removes_plan_rows() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    upsert_ok(
+        &boot,
+        json!([
+            { "key": "a", "kind": "codex", "goal": "g" },
+            { "key": "b", "kind": "terminal", "goal": "cargo test" }
+        ]),
+    )
+    .await;
+    assert_eq!(task_row_count(&boot).await, 2);
+
+    boot.repo
+        .wave_delete(boot.wave_id.as_str())
+        .await
+        .expect("wave delete");
+    assert_eq!(
+        task_row_count(&boot).await,
+        0,
+        "wave delete must not orphan plan rows"
+    );
+}
+
+#[tokio::test]
+async fn cove_delete_removes_plan_rows() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    assert_eq!(task_row_count(&boot).await, 1);
+
+    boot.repo
+        .cove_delete(boot.cove_id.as_str())
+        .await
+        .expect("cove delete");
+    assert_eq!(
+        task_row_count(&boot).await,
+        0,
+        "cove delete must not orphan plan rows"
+    );
+}
+
+/// The upsert tx re-checks the wave row in-tx (no FK backs it), so a
+/// wave deleted between the tool's resolve and the write surfaces as a
+/// conflict instead of inserting plan rows for a dead wave. Pinned at
+/// the tx layer — the tool layer can't interleave a delete mid-call.
+#[tokio::test]
+async fn upsert_wave_guard_refuses_deleted_wave_in_tx() {
+    let boot = boot().await;
+    boot.repo
+        .wave_delete(boot.wave_id.as_str())
+        .await
+        .expect("wave delete");
+
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let mut tx = pool.begin().await.expect("begin tx");
+    let err = calm_server::db::sqlite::require_wave_exists_tx(&mut tx, boot.wave_id.as_str())
+        .await
+        .expect_err("deleted wave refused");
+    assert!(
+        matches!(err, calm_server::error::CalmError::Conflict(_)),
+        "expected Conflict, got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

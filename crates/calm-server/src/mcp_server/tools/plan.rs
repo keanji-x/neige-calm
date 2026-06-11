@@ -40,7 +40,10 @@
 //! event is wave-scoped with actor `AiSpec`; the in-tx role gate
 //! refuses it from worker actors (`role_gate.rs` section 2.5).
 
-use crate::db::sqlite::{task_cancel_tx, task_insert_tx, task_update_pending_tx, tasks_by_wave_tx};
+use crate::db::sqlite::{
+    require_wave_exists_tx, task_cancel_tx, task_get_tx, task_insert_tx, task_update_pending_tx,
+    tasks_by_wave_tx,
+};
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
@@ -661,6 +664,11 @@ async fn plan_upsert(
             let scope = scope.clone();
             let message = message.clone();
             Box::pin(async move {
+                // `tasks.wave_id` has no FK to `waves` (design §2), so
+                // re-check the wave row in-tx: a wave deleted between
+                // the resolve above and this tx must not regrow plan
+                // rows.
+                require_wave_exists_tx(tx, &wave_id_str).await?;
                 // Re-resolve against in-tx state — the whole batch
                 // validates against the rows it is about to join, and a
                 // concurrent writer between the pre-check and this tx
@@ -711,15 +719,21 @@ async fn plan_upsert(
                             .map(|event| (actor.clone(), scope.clone(), event)),
                     );
                 }
-                events.push((
-                    actor,
-                    scope,
-                    Event::PlanUpdated {
-                        wave_id: wave_id_typed,
-                        changed_keys,
-                        agent_message: Some(message),
-                    },
-                ));
+                // An all-`unchanged` batch that entered the tx only to
+                // apply a `lifecycle` changed no plan row — emitting a
+                // `plan.updated` with empty `changed_keys` would be a
+                // spurious wake-up for plan subscribers.
+                if !changed_keys.is_empty() {
+                    events.push((
+                        actor,
+                        scope,
+                        Event::PlanUpdated {
+                            wave_id: wave_id_typed,
+                            changed_keys,
+                            agent_message: Some(message),
+                        },
+                    ));
+                }
                 Ok((outcomes, events))
             })
         },
@@ -815,9 +829,15 @@ async fn plan_cancel(
 
     match task.status {
         // §3.1 — already-canceled is idempotent success, no write, no
-        // event (a retry must not re-trigger the scheduler).
-        TaskStatus::Canceled => return Ok(json!({ "ok": true })),
-        TaskStatus::Pending => {}
+        // event (a retry must not re-trigger the scheduler). Mirror of
+        // the upsert all-`unchanged` short-circuit: only when no
+        // `lifecycle` rode along — a requested lifecycle must not be
+        // silently dropped, so that path falls through into the tx
+        // (which applies the lifecycle and skips the `plan.updated`).
+        TaskStatus::Canceled if write_args.lifecycle.is_none() => {
+            return Ok(json!({ "ok": true }));
+        }
+        TaskStatus::Canceled | TaskStatus::Pending => {}
         TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying => {
             return Err(RpcError::custom(
                 -32409,
@@ -867,10 +887,20 @@ async fn plan_cancel(
                 // back instead of canceling an in-flight run.
                 let rows = task_cancel_tx(tx, &task_id, now_ms()).await?;
                 if rows == 0 {
-                    return Err(CalmError::Conflict(format!(
-                        "task {key} changed state concurrently; re-check with \
-                         calm.plan.list and retry"
-                    )));
+                    // Disambiguate the 0-row flip with an in-tx re-read:
+                    // a concurrent (or pre-read-visible) `canceled` is
+                    // the §3.1 idempotent path — no row changed, so no
+                    // `plan.updated` below — while anything else is a
+                    // real concurrent state change.
+                    let now_canceled = task_get_tx(tx, &task_id)
+                        .await?
+                        .is_some_and(|t| t.status == TaskStatus::Canceled);
+                    if !now_canceled {
+                        return Err(CalmError::Conflict(format!(
+                            "task {key} changed state concurrently; re-check with \
+                             calm.plan.list and retry"
+                        )));
+                    }
                 }
 
                 let mut events = Vec::new();
@@ -897,15 +927,20 @@ async fn plan_cancel(
                             .map(|event| (actor.clone(), scope.clone(), event)),
                     );
                 }
-                events.push((
-                    actor,
-                    scope,
-                    Event::PlanUpdated {
-                        wave_id: wave_id_typed,
-                        changed_keys: vec![key],
-                        agent_message: Some(message),
-                    },
-                ));
+                // Idempotent re-cancel changed nothing — suppress the
+                // `plan.updated` so a retry can't re-trigger the
+                // scheduler; the lifecycle events above still land.
+                if rows > 0 {
+                    events.push((
+                        actor,
+                        scope,
+                        Event::PlanUpdated {
+                            wave_id: wave_id_typed,
+                            changed_keys: vec![key],
+                            agent_message: Some(message),
+                        },
+                    ));
+                }
                 Ok(((), events))
             })
         },
@@ -1221,6 +1256,21 @@ mod tests {
         );
     }
 
+    // -------------------------------------------------------- goal
+
+    #[test]
+    fn empty_or_whitespace_goal_rejected() {
+        for bad in ["", "   ", "\t\n"] {
+            let mut t = raw_task("a");
+            t.goal = bad.into();
+            let err = normalize_task_input(t).expect_err("empty goal");
+            assert!(
+                err.contains("`goal` must be non-empty"),
+                "goal {bad:?}: err = {err}"
+            );
+        }
+    }
+
     // -------------------------------------------------------- rule 7: cwd + gate shape
 
     #[test]
@@ -1279,6 +1329,13 @@ mod tests {
         let err = validate_gate_shape("a", &gate(vec![step("t", "true")], Some(7201), None))
             .expect_err("timeout cap");
         assert!(err.contains("1..=7200"), "err = {err}");
+
+        // Timeout at or below zero.
+        for bad in [0, -1] {
+            let err = validate_gate_shape("a", &gate(vec![step("t", "true")], Some(bad), None))
+                .expect_err("non-positive timeout");
+            assert!(err.contains("1..=7200"), "timeout {bad}: err = {err}");
+        }
 
         // Relative gate cwd.
         let err = validate_gate_shape("a", &gate(vec![step("t", "true")], None, Some("rel/path")))

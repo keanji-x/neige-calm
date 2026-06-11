@@ -31,6 +31,15 @@ use tower::ServiceExt;
 /// Build a minimal AppState + seed one cove + wave + (optional) card. Returns
 /// the wave id (and an optional card id) the test will hit.
 async fn boot() -> (AppState, String) {
+    let (state, wave_id, _repo) = boot_with_repo().await;
+    (state, wave_id)
+}
+
+/// [`boot`] variant that also hands back the full-capability repo —
+/// `AppState.repo` is the narrower `RouteRepo`, which deliberately has
+/// no `sqlite_pool` escape hatch, but the #644 WavePatch tests need raw
+/// column reads (the `Wave` row struct doesn't carry the new columns).
+async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -61,7 +70,7 @@ async fn boot() -> (AppState, String) {
         Arc::new(DaemonClient::new_stub()),
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
-            repo,
+            repo.clone(),
             std::path::PathBuf::new(),
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
@@ -75,7 +84,7 @@ async fn boot() -> (AppState, String) {
         None,
         None,
     );
-    (state, wave.id.to_string())
+    (state, wave.id.to_string(), repo)
 }
 
 fn app(state: AppState) -> axum::Router {
@@ -839,5 +848,75 @@ async fn wave_patch_same_state_lifecycle_with_title_still_writes_title() {
     assert!(
         bus.is_err(),
         "no WaveLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
+    );
+}
+
+// --------------------------------------------------------------------------
+// Wave scheduler-policy PATCH — issue #644 `task_budget` / `require_task_gates`
+//
+// Route-level coverage for the new WavePatch fields: a valid patch lands in
+// the DB columns (the `Wave` row struct doesn't carry them, so persistence is
+// asserted against the table), and a negative budget is rejected with 400
+// before anything is written.
+// --------------------------------------------------------------------------
+
+async fn wave_policy_columns(repo: &Arc<dyn Repo>, wave_id: &str) -> (Option<i64>, i64) {
+    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let (budget, require_gates): (Option<i64>, i64) =
+        sqlx::query_as("SELECT task_budget, require_task_gates FROM waves WHERE id = ?1")
+            .bind(wave_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read wave policy columns");
+    (budget, require_gates)
+}
+
+#[tokio::test]
+async fn wave_patch_task_budget_and_require_task_gates_persist() {
+    let (state, wave_id, repo) = boot_with_repo().await;
+
+    let resp = patch_wave(
+        app(state.clone()),
+        &wave_id,
+        json!({"task_budget": 3, "require_task_gates": false}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let (budget, require_gates) = wave_policy_columns(&repo, &wave_id).await;
+    assert_eq!(budget, Some(3));
+    assert_eq!(require_gates, 0);
+
+    // `task_budget: null` clears back to the kernel default; the other
+    // column is left alone.
+    let resp = patch_wave(app(state.clone()), &wave_id, json!({"task_budget": null})).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (budget, require_gates) = wave_policy_columns(&repo, &wave_id).await;
+    assert_eq!(budget, None);
+    assert_eq!(require_gates, 0, "untouched by the budget-only patch");
+}
+
+#[tokio::test]
+async fn wave_patch_negative_task_budget_rejected_with_400() {
+    let (state, wave_id, repo) = boot_with_repo().await;
+
+    let resp = patch_wave(app(state.clone()), &wave_id, json!({"task_budget": -1})).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["code"], "bad_request");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("task_budget must be >= 0"),
+        "error message should explain the bound: {body:?}"
+    );
+
+    // Nothing was written.
+    let (budget, require_gates) = wave_policy_columns(&repo, &wave_id).await;
+    assert_eq!(budget, None);
+    assert_eq!(
+        require_gates, 1,
+        "post-migration default untouched by the rejected patch"
     );
 }

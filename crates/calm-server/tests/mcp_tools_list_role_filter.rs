@@ -44,7 +44,7 @@ async fn tools_list_names_for_role(role: CardRole) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn tools_list_for_spec_role_returns_only_writes() {
+async fn tools_list_for_spec_role_returns_spec_toolset() {
     let names = tools_list_names_for_role(CardRole::Spec).await;
     assert_eq!(
         names,
