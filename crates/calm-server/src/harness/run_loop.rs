@@ -869,6 +869,7 @@ fn should_persist_item_method(method: &str) -> bool {
 /// hypothesis), this ceiling converts an unobservable hang into a logged
 /// warn + a degraded-but-functional turn issuance.
 const SINCE_LAST_TURN_DIFF_TIMEOUT: Duration = Duration::from_secs(5);
+const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Most ticks find the queue empty; bail before any logging so the 50ms
@@ -1081,28 +1082,37 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
 }
 
 /// Wrap `since_last_turn_diff_block` in a 5s timeout. On timeout, log a warn
-/// and fall through with an empty block so the turn still issues — the diff
+/// and fall through without a diff block so the turn still issues — the diff
 /// block is contextual augmentation, never a correctness requirement (#639).
 async fn diff_with_timeout(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
-    diff_or_empty_on_timeout(
+    diff_or_fallback_on_timeout(
         since_last_turn_diff_block(inner),
         SINCE_LAST_TURN_DIFF_TIMEOUT,
         &inner.runtime_id,
         inner.card_id.as_str(),
         inner.wave_id.as_str(),
+        || async {
+            wave_vcs::SinceLastTurnBlock {
+                current_head: current_head_after_diff_timeout(inner).await,
+                block: None,
+            }
+        },
     )
     .await
 }
 
-async fn diff_or_empty_on_timeout<F>(
+async fn diff_or_fallback_on_timeout<F, G, H>(
     fut: F,
     timeout: Duration,
     runtime_id: &RuntimeId,
     card_id: &str,
     wave_id: &str,
+    fallback: H,
 ) -> wave_vcs::SinceLastTurnBlock
 where
     F: std::future::Future<Output = wave_vcs::SinceLastTurnBlock>,
+    G: std::future::Future<Output = wave_vcs::SinceLastTurnBlock>,
+    H: FnOnce() -> G,
 {
     match tokio::time::timeout(timeout, fut).await {
         Ok(diff) => diff,
@@ -1115,7 +1125,38 @@ where
                 timeout_secs = timeout.as_secs(),
                 "since-last-turn diff timed out; issuing turn without diff block"
             );
-            wave_vcs::SinceLastTurnBlock::empty()
+            fallback().await
+        }
+    }
+}
+
+async fn current_head_after_diff_timeout(inner: &Arc<Inner>) -> Option<wave_vcs::CommitHash> {
+    let pool = inner.repo.sqlite_pool()?;
+
+    match tokio::time::timeout(
+        SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT,
+        wave_vcs::head(&pool, &inner.wave_id),
+    )
+    .await
+    {
+        Ok(Ok(head)) => head,
+        Ok(Err(head_err)) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                wave_id = %inner.wave_id,
+                error = %head_err,
+                "spec harness could not read wave-vcs head after diff timeout"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                wave_id = %inner.wave_id,
+                timeout_secs = SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT.as_secs(),
+                "spec harness wave-vcs head read timed out after diff timeout"
+            );
+            None
         }
     }
 }
@@ -1638,20 +1679,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn diff_or_empty_on_timeout_returns_empty_when_underlying_future_hangs() {
-        use super::diff_or_empty_on_timeout;
+    async fn diff_or_fallback_on_timeout_returns_fallback_when_underlying_future_hangs() {
+        use super::diff_or_fallback_on_timeout;
         use crate::wave_vcs::SinceLastTurnBlock;
         use std::future::pending;
         use std::time::Duration;
 
         let runtime_id: String = "c501ea4e-test".into();
 
-        let result = diff_or_empty_on_timeout(
+        let result = diff_or_fallback_on_timeout(
             pending::<SinceLastTurnBlock>(),
             Duration::from_secs(5),
             &runtime_id,
             "47e6ce46-test",
             "w-test",
+            || async {
+                SinceLastTurnBlock {
+                    current_head: Some("head-after-timeout".into()),
+                    block: None,
+                }
+            },
         )
         .await;
 
@@ -1659,9 +1706,10 @@ mod tests {
             result.block.is_none(),
             "timeout fallback must return an empty diff block"
         );
-        assert!(
-            result.current_head.is_none(),
-            "timeout fallback must not carry a stale head"
+        assert_eq!(
+            result.current_head.as_deref(),
+            Some("head-after-timeout"),
+            "timeout fallback must preserve the fallback current head"
         );
     }
 
