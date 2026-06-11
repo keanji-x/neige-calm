@@ -186,11 +186,13 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           </div>
         </section>
       </aside>
-      <WaveFileDrawer
-        waveId={wave.id}
-        path={selectedFilePath}
-        onClose={closeFileDrawer}
-      />
+      {selectedFilePath !== null && (
+        <WaveFileDrawer
+          waveId={wave.id}
+          path={selectedFilePath}
+          onClose={closeFileDrawer}
+        />
+      )}
       <SpecCurrentRun specCardId={specCardId} />
     </div>
   );

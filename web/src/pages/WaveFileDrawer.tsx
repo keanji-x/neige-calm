@@ -9,7 +9,7 @@ import { useState } from '../shared/state';
 
 export interface WaveFileDrawerProps {
   waveId: string;
-  path: string | null;
+  path: string;
   onClose: () => void;
 }
 
@@ -17,21 +17,15 @@ export function WaveFileDrawer({ waveId, path, onClose }: WaveFileDrawerProps) {
   const backdropRef = useRef<HTMLDivElement | null>(null);
   const [entered, setEntered] = useState(false);
   const { resolved: theme } = useTheme();
-  const contentQ = useWaveFileContent(waveId, path, { enabled: !!path });
+  const contentQ = useWaveFileContent(waveId, path, { enabled: true });
   const title = useMemo(() => leafName(path), [path]);
-  const isOpen = path !== null;
 
   useEffect(() => {
-    if (!isOpen) {
-      setEntered(false);
-      return;
-    }
     const cancel = scheduleFrame(() => setEntered(true));
     return cancel;
-  }, [isOpen]);
+  }, []);
 
   useEffect(() => {
-    if (!path) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
@@ -39,10 +33,9 @@ export function WaveFileDrawer({ waveId, path, onClose }: WaveFileDrawerProps) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onClose, path]);
+  }, [onClose]);
 
   useEffect(() => {
-    if (!path) return;
     const backdrop = backdropRef.current;
     if (!backdrop) return;
     const handleMouseDown = (event: MouseEvent) => {
@@ -52,9 +45,7 @@ export function WaveFileDrawer({ waveId, path, onClose }: WaveFileDrawerProps) {
     return () => {
       backdrop.removeEventListener('mousedown', handleMouseDown);
     };
-  }, [onClose, path]);
-
-  if (!path) return null;
+  }, [onClose]);
 
   return (
     <div ref={backdropRef} className="wave-file-drawer-backdrop">
@@ -148,8 +139,7 @@ function formatApiError(error: Error): string {
   return error.message || 'Request failed';
 }
 
-function leafName(path: string | null): string {
-  if (!path) return 'Select a file';
+function leafName(path: string): string {
   return path.split('/').filter(Boolean).pop() ?? path;
 }
 
