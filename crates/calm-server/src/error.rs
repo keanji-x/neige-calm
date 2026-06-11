@@ -23,10 +23,10 @@ pub struct ErrorBody {
     /// Stable machine-readable code — one of `not_found`, `conflict`,
     /// `idempotency_collision`, `bad_request`, `unauthorized`,
     /// `forbidden`, `plugin_install`, `plugin_permission`,
-    /// `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
-    /// `io_error`, `serde_error`, `codex_app_server`,
-    /// `service_unavailable`, `internal`, `forbidden_tool`,
-    /// `not_a_card_tool`, `tool_call_failed`.
+    /// `plugin_conflict`, `plugin_kernel_too_old`,
+    /// `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
+    /// `codex_app_server`, `service_unavailable`, `internal`,
+    /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
 }
 
@@ -93,6 +93,17 @@ pub enum CalmError {
     #[error("spec reset unsupported in shared mode: {0}")]
     SpecResetUnsupportedInSharedMode(String),
 
+    /// 409 — `/spec/input` hit a spec card whose harness session is dormant
+    /// and not lazily recoverable: no active runtime row exists (the
+    /// `spec-harness-start` operation failed at wave creation), or the active
+    /// row is unusable (NULL/empty `thread_id` from a half-failed start, or a
+    /// corrupt/unknown snapshot shape). Distinct from the generic
+    /// [`CalmError::Conflict`] 409 ("runtime shutting down") so the web client
+    /// can branch on the error code and steer the user to `/spec/reset`
+    /// instead of retrying. Issue #649 (i2).
+    #[error("spec harness dormant: {0}")]
+    SpecHarnessDormant(String),
+
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 
@@ -142,6 +153,7 @@ impl CalmError {
             CalmError::SpecResetUnsupportedInSharedMode(_) => {
                 "spec_reset_unsupported_in_shared_mode"
             }
+            CalmError::SpecHarnessDormant(_) => "spec_harness_dormant",
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
@@ -156,7 +168,8 @@ impl CalmError {
             CalmError::NotFound(_) => StatusCode::NOT_FOUND,
             CalmError::Conflict(_)
             | CalmError::IdempotencyCollision(_)
-            | CalmError::PluginConflict(_) => StatusCode::CONFLICT,
+            | CalmError::PluginConflict(_)
+            | CalmError::SpecHarnessDormant(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,

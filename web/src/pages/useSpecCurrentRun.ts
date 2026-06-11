@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from 'react';
-import { resetSpecCard, sendSpecInput } from '../api/calm';
+import { CalmApiError, resetSpecCard, sendSpecInput } from '../api/calm';
 import { sharedEventStream } from '../api/events';
 import { useCardStatusOverlay } from '../cards/overlayRegistry';
 import { useState } from '../shared/state';
@@ -32,6 +32,12 @@ export interface SpecRunSnapshot {
   submit(text: string): Promise<void>;
   submitPending: boolean;
   submitError: string | null;
+  /**
+   * True when the last submit failed with the server's typed
+   * `spec_harness_dormant` 409 — no recoverable harness session exists
+   * for this card and the user should Reset to start one (issue #649 i2).
+   */
+  submitDormant: boolean;
 }
 
 export function toFsmState(state: string | undefined): FsmState {
@@ -80,6 +86,7 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
   const [resetError, setResetError] = useState<string | null>(null);
   const [submitPending, setSubmitPending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitDormant, setSubmitDormant] = useState(false);
 
   useEffect(() => {
     setPhase(null);
@@ -104,6 +111,7 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     setResetError(null);
     setSubmitPending(false);
     setSubmitError(null);
+    setSubmitDormant(false);
   }, [cardId]);
 
   const reset = useCallback(async () => {
@@ -117,6 +125,10 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     try {
       await resetSpecCard(cardId);
       setPhase(null);
+      // A successful reset mints a fresh harness session — the dormant
+      // state (and its stale error) no longer applies.
+      setSubmitDormant(false);
+      setSubmitError(null);
     } catch (err) {
       const msg = errorMessage(err, 'Reset failed');
       setResetError(msg);
@@ -140,11 +152,18 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     }
     setSubmitPending(true);
     setSubmitError(null);
+    setSubmitDormant(false);
     try {
       await sendSpecInput(cardId, trimmed);
     } catch (err) {
-      const msg = errorMessage(err, 'Failed to send message');
-      setSubmitError(msg);
+      if (err instanceof CalmApiError && err.code === 'spec_harness_dormant') {
+        setSubmitDormant(true);
+        setSubmitError(
+          "Research agent isn't running for this wave — Reset to start a session",
+        );
+      } else {
+        setSubmitError(errorMessage(err, 'Failed to send message'));
+      }
       throw err;
     } finally {
       setSubmitPending(false);
@@ -163,5 +182,6 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     submit,
     submitPending,
     submitError,
+    submitDormant,
   };
 }

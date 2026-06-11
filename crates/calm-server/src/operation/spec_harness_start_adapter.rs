@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -21,6 +20,10 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
+// Issue #649 i2 lifted the per-card lock-map machinery that used to live in
+// this module into `crate::per_card_lock` so the `/spec/input` lazy-recovery
+// path can share it. Same semantics: guards self-clean their entry on drop.
+use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::routes::cards::card_scope;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
@@ -42,40 +45,6 @@ const START_PHASES: &[PhaseTag] = &[
     PhaseTag::Succeeded,
 ];
 
-type PerCardMintLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
-
-struct PerCardMintLockGuard {
-    card_id: String,
-    lock: Arc<tokio::sync::Mutex<()>>,
-    locks: PerCardMintLocks,
-    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
-}
-
-// Transient stale entries are possible if a waiter is canceled between
-// strong_count snapshots; same-card mints will reuse a stale entry safely.
-impl Drop for PerCardMintLockGuard {
-    fn drop(&mut self) {
-        let _ = self.guard.take();
-        self.locks.remove_if(&self.card_id, |_, existing| {
-            Arc::ptr_eq(existing, &self.lock) && Arc::strong_count(existing) == 2
-        });
-    }
-}
-
-async fn lock_card(locks: &PerCardMintLocks, card_id: &str) -> PerCardMintLockGuard {
-    let lock = locks
-        .entry(card_id.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
-    let guard = lock.clone().lock_owned().await;
-    PerCardMintLockGuard {
-        card_id: card_id.to_string(),
-        lock,
-        locks: locks.clone(),
-        guard: Some(guard),
-    }
-}
-
 #[cfg(feature = "fixtures")]
 pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
 
@@ -95,7 +64,7 @@ pub struct SpecHarnessStartAdapter {
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
     mcp_socket_path: Option<PathBuf>,
-    per_card_mint_locks: PerCardMintLocks,
+    per_card_mint_locks: PerCardLocks,
 }
 
 impl SpecHarnessStartAdapter {
@@ -114,7 +83,7 @@ impl SpecHarnessStartAdapter {
             card_role_cache,
             wave_cove_cache,
             mcp_socket_path,
-            per_card_mint_locks: Arc::new(DashMap::new()),
+            per_card_mint_locks: new_per_card_locks(),
         }
     }
 
@@ -122,7 +91,7 @@ impl SpecHarnessStartAdapter {
     /// drive_mutex, but if drive ever shifts to per-card-lease parallelism,
     /// this lock keeps card_mcp_token rotation atomic with the thread/start
     /// RPC that ships the matching raw token.
-    async fn lock_card_mint(&self, card_id: &str) -> PerCardMintLockGuard {
+    async fn lock_card_mint(&self, card_id: &str) -> PerCardLockGuard {
         lock_card(&self.per_card_mint_locks, card_id).await
     }
 
@@ -919,47 +888,5 @@ fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
         })
 }
 
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn per_card_mint_locks_block_same_card_only_and_cleanup() {
-        let locks: PerCardMintLocks = Arc::new(DashMap::new());
-        let first_a = lock_card(&locks, "card-A").await;
-
-        let locks_for_a = locks.clone();
-        let same_card = async move {
-            let mut second_a = Box::pin(lock_card(&locks_for_a, "card-A"));
-            tokio::select! {
-                _guard = &mut second_a => {
-                    panic!("same-card lock acquired while the first card-A guard was held");
-                }
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
-            }
-
-            drop(first_a);
-            let second_guard = tokio::time::timeout(Duration::from_secs(1), &mut second_a)
-                .await
-                .expect("same-card lock should complete after first guard drops");
-            drop(second_guard);
-        };
-
-        let locks_for_b = locks.clone();
-        let other_card = async move {
-            let guard =
-                tokio::time::timeout(Duration::from_millis(50), lock_card(&locks_for_b, "card-B"))
-                    .await
-                    .expect("card-B lock should not wait behind card-A");
-            drop(guard);
-        };
-
-        tokio::join!(same_card, other_card);
-        assert!(
-            !locks.contains_key("card-A"),
-            "card-A lock entry should be removed once all guards drop"
-        );
-    }
-}
+// The per-card lock behavior test moved to `crate::per_card_lock::tests`
+// alongside the lifted implementation (issue #649 i2).
