@@ -130,6 +130,10 @@ styling matches):
   * `# Timeline` — a chronological log of significant events. The UI \
     collapses this by default.
 
+Custom blocks: `:::findings` with `::row[prose]{stat=... unit=...}`, \
+`:::chart{label=... caption=...}`, and GFM footnotes (`[^1]`). Plain \
+Markdown works.
+
 `summary` is the one-line preview the sidebar / wave-list shows. Keep \
 it under ~80 characters.
 
@@ -412,6 +416,24 @@ mod tests {
                 && !p.contains("calm.wave.ls")
                 && !p.contains("calm.report.read"),
             "spec prompt must not instruct reads via MCP"
+        );
+    }
+
+    #[test]
+    fn spec_prompt_documents_findings_directive() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+
+        assert!(
+            p.contains("::row[prose]{stat=... unit=...}"),
+            "prompt must document findings row syntax"
+        );
+        assert!(
+            p.contains(":::chart{label=... caption=...}"),
+            "prompt must document chart directive syntax"
+        );
+        assert!(
+            p.contains("GFM footnotes (`[^1]`)"),
+            "prompt must mention footnote syntax"
         );
     }
 

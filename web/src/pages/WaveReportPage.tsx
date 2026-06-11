@@ -1,6 +1,11 @@
 import { useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkDirective from 'remark-directive';
+import {
+  reactMarkdownComponents,
+  remarkReportDirectives,
+} from './reportDirectives';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
@@ -65,6 +70,13 @@ function readTime(body: string | undefined): string {
   return `${Math.max(1, Math.ceil(words / 220))} min read`;
 }
 
+const reportRemarkPlugins = [
+  remarkGfm,
+  remarkDirective,
+  remarkReportDirectives,
+];
+const reportRemarkRehypeOptions = { clobberPrefix: '' };
+
 function ReportByline({ report }: { report?: WaveReportCardData }) {
   return (
     <div className="report-byline" aria-label="Report metadata">
@@ -122,7 +134,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           <ReportByline report={reportCard} />
           {reportCard ? (
             <div className="report-prose">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                components={reactMarkdownComponents}
+                remarkPlugins={reportRemarkPlugins}
+                remarkRehypeOptions={reportRemarkRehypeOptions}
+              >
                 {reportCard.body}
               </ReactMarkdown>
             </div>

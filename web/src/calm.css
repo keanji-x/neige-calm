@@ -1808,6 +1808,145 @@ select:-webkit-autofill {
   border: none;
   border-top: 1px solid var(--hairline);
 }
+.report-prose .findings {
+  margin-top: var(--space-10);
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+}
+.report-prose .findings .fh {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-7);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-normal);
+  text-transform: uppercase;
+}
+.report-prose .findings .fh .star {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+}
+.report-prose .find-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: var(--space-7);
+  align-items: baseline;
+  padding: var(--space-6) var(--space-7);
+}
+.report-prose .find-row + .find-row {
+  border-top: 1px solid var(--hairline);
+}
+.report-prose .find-stat {
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-none);
+}
+.report-prose .find-stat .u {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--text-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-normal);
+}
+.report-prose .find-txt {
+  color: var(--text-2);
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+}
+.report-prose .find-txt > p {
+  margin: var(--space-0);
+  font-size: inherit;
+  line-height: inherit;
+}
+.report-prose .find-txt strong {
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+.report-prose .chart {
+  position: relative;
+  min-height: 248px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  margin-top: var(--space-10);
+  overflow: hidden;
+  padding: var(--space-7);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background:
+    repeating-linear-gradient(
+      135deg,
+      var(--surface-code) 0 9px,
+      var(--surface-card) 9px 18px
+    );
+}
+.report-prose .chart .ph-tag {
+  position: absolute;
+  top: var(--space-5);
+  left: var(--space-6);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-3);
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+}
+.report-prose .chart .cap {
+  position: absolute;
+  bottom: var(--space-5);
+  left: var(--space-6);
+  color: var(--text-3);
+  font-family: var(--font-code);
+  font-size: var(--text-2xs);
+}
+.report-prose .figcap {
+  margin-top: var(--space-3);
+  color: var(--text-3);
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+.report-prose .figcap p {
+  margin: var(--space-0);
+  font-size: inherit;
+  line-height: var(--leading-base);
+}
+.report-prose .report-ref {
+  color: var(--accent);
+  font-family: var(--font-code);
+  font-size: 0.75em;
+  text-decoration: none;
+  vertical-align: super;
+}
+.report-prose .report-ref:hover {
+  text-decoration: underline;
+}
+.report-prose .report-footnotes {
+  margin-top: var(--space-10);
+  color: var(--text-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+}
+.report-prose .report-footnotes li,
+.report-prose .report-footnotes p {
+  font-size: inherit;
+  line-height: var(--leading-base);
+}
 .report-rail {
   min-width: 0;
   min-height: 0;

@@ -89,7 +89,15 @@ test('wave report view renders real report data and staged rail controls', async
   const ts = Date.now();
   const cove = await createCove(page, ts);
   const wave = await createWave(page, cove.id, ts);
-  const body = 'Report smoke body with **markdown** content.';
+  const body = [
+    'Report smoke body with **markdown** content and a citation.[^1]',
+    '',
+    ':::findings',
+    '::row[Directive **finding** renders.]{stat="2" unit="signals"}',
+    ':::',
+    '',
+    '[^1]: Source note.',
+  ].join('\n');
   await writeReport(page, wave.id, body);
 
   await page.goto(`/calm/wave/${wave.id}`);
@@ -98,6 +106,15 @@ test('wave report view renders real report data and staged rail controls', async
     page.getByRole('heading', { level: 1, name: wave.title }),
   ).toBeVisible();
   await expect(page.getByText('Report smoke body with')).toBeVisible();
+  await expect(page.locator('.report-prose .findings')).toBeVisible();
+  await expect(page.locator('.report-prose .find-row')).toContainText(
+    'Directive finding renders.',
+  );
+  await expect(page.locator('.report-prose sup:has(a.report-ref)')).toBeVisible();
+  await expect(page.locator('.report-prose sup a.report-ref')).toHaveAttribute(
+    'href',
+    '#fn-1',
+  );
   await expect(page.getByRole('tree', { name: /Wave files/i })).toBeVisible();
   await expect(
     page.getByText('Activity timeline appears here. (Wired in PR-E.)'),

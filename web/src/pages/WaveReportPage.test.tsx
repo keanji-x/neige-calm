@@ -148,6 +148,50 @@ describe('WaveReportPage', () => {
     expect(container.querySelector('del')).toHaveTextContent('stale');
   });
 
+  it('renders report findings directives', () => {
+    const { container } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot(
+            ':::findings\n::row[Directive **finding**.]{stat="2" unit="signals"}\n:::\n',
+          ),
+        ]}
+      />,
+    );
+
+    expect(container.querySelector('.findings')).toBeInTheDocument();
+    expect(container.querySelector('.find-row')).toHaveTextContent(
+      'Directive finding.',
+    );
+  });
+
+  it('renders GFM footnotes as report citation refs', () => {
+    const { container } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Claim with source.[^1]\n\n[^1]: Source note.')]}
+      />,
+    );
+
+    const ref = container.querySelector('sup .report-ref');
+    expect(ref).toBeInTheDocument();
+    expect(ref).toHaveAttribute('href', '#fn-1');
+    expect(ref).toHaveTextContent('[1]');
+  });
+
+  it('renders raw script tags as text, not executable elements', () => {
+    const { container } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('<script>alert(1)</script>')]}
+      />,
+    );
+
+    expect(container.querySelector('script')).not.toBeInTheDocument();
+    expect(screen.getByText('<script>alert(1)</script>')).toBeInTheDocument();
+  });
+
   it('shows a relative updatedAt byline when present', () => {
     vi.spyOn(Date, 'now').mockReturnValue(
       new Date('2026-06-10T12:00:00Z').getTime(),
