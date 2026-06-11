@@ -47,17 +47,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::Overlay;
+use calm_server::model::{NewCove, NewWave, Overlay};
 use calm_server::replay::{self, Fixture};
+use calm_server::routes;
 use calm_server::ws;
 use futures_util::{SinkExt, StreamExt};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message as TMessage;
+use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
 // Fixture loader — fixture types + parser live in `calm_server::replay`
@@ -106,6 +112,14 @@ async fn raw_insert_fixture_events(repo: &SqlxRepo, bus: &EventBus, fixture: &Fi
     replay::seed_events(repo, bus, fixture)
         .await
         .expect("seed fixture events")
+}
+
+async fn route_json(app: axum::Router, req: Request<Body>) -> (StatusCode, Value) {
+    let resp = app.oneshot(req).await.expect("route request");
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
 }
 
 async fn recv_json<S>(ws: &mut S) -> serde_json::Value
@@ -217,6 +231,127 @@ async fn replay_wave_grid_layout_trace() {
         actual_positions.len(),
         fixture.expected.layout_positions.len(),
         "positions cardinality must match — no extras",
+    );
+}
+
+#[tokio::test]
+async fn replay_router_terminal_card_create_persists_without_supervisor() {
+    let (repo, events, state) = replay::boot_in_memory()
+        .await
+        .expect("boot in-memory replay state");
+    let cove = repo
+        .cove_create(NewCove {
+            name: "replay-terminal".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .expect("create cove");
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "replay-terminal".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create wave");
+    let wave_id = wave.id.to_string();
+
+    let worker_idempotency_key = "replay-terminal-worker-hook";
+    repo.log_pure_event(
+        ActorId::User,
+        EventScope::Wave {
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
+        None,
+        &events,
+        &state.card_role_cache,
+        &state.wave_cove_cache,
+        Event::TerminalWorkerRequested {
+            idempotency_key: worker_idempotency_key.into(),
+            cmd: "printf replay-worker".into(),
+            cwd: Some(String::new()),
+            agent_message: None,
+        },
+    )
+    .await
+    .expect("emit replay terminal worker request");
+
+    let worker_card = timeout(Duration::from_secs(2), async {
+        loop {
+            let cards = repo.cards_by_wave(&wave_id).await.expect("list wave cards");
+            if let Some(card) = cards.into_iter().find(|card| {
+                card.payload.get("idempotency_key").and_then(Value::as_str)
+                    == Some(worker_idempotency_key)
+            }) {
+                break card;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("dispatcher terminal worker should use replay spawn hook");
+    assert_eq!(
+        worker_card.kind, "terminal",
+        "dispatcher should persist the replay terminal worker card"
+    );
+    let worker_terminal = repo
+        .terminal_get_by_card(worker_card.id.as_ref())
+        .await
+        .expect("lookup worker terminal")
+        .expect("worker terminal row");
+    assert!(
+        worker_terminal.exit_code.is_none() && !worker_terminal.signal_killed,
+        "replay dispatcher terminal worker should not record a spawn failure: {worker_terminal:?}"
+    );
+
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state);
+
+    let body = json!({
+        "program": "/bin/sh",
+        "cwd": "",
+        "env": {},
+        "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+    });
+    let (post_status, card) = route_json(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/waves/{wave_id}/terminal-cards"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("build terminal-card request"),
+    )
+    .await;
+    assert!(
+        post_status.is_success(),
+        "replay terminal-card POST should be 2xx: {post_status}, body={card:?}"
+    );
+    assert_eq!(card["kind"], "terminal", "created card body: {card:?}");
+    let card_id = card["id"].as_str().expect("created card id").to_string();
+
+    let (get_status, detail) = route_json(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/waves/{wave_id}"))
+            .body(Body::empty())
+            .expect("build wave detail request"),
+    )
+    .await;
+    assert_eq!(get_status, StatusCode::OK, "wave detail: {detail:?}");
+    let cards = detail["cards"].as_array().expect("wave detail cards array");
+    assert!(
+        cards.iter().any(|card| card["id"] == card_id),
+        "created terminal card row should survive replay no-op spawn: {detail:?}"
     );
 }
 

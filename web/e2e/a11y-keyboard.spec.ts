@@ -162,6 +162,23 @@ async function waitForBootstrap(page: Page): Promise<void> {
   await page.waitForFunction(() => Array.isArray(window.__neigeEvents__));
 }
 
+function containsTerminalCard(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsTerminalCard);
+  }
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    (record.kind === 'terminal' || record.type === 'terminal') &&
+    (typeof record.id === 'string' || typeof record.card_id === 'string')
+  ) {
+    return true;
+  }
+  return Object.values(record).some(containsTerminalCard);
+}
+
 test.describe('a11y · keyboard-only navigation', () => {
   test.beforeEach(async ({ page, request }) => {
     // Reset the replay binary's in-memory repo + event log first, so the
@@ -345,6 +362,63 @@ test.describe('a11y · keyboard-only navigation', () => {
     // globally while open; we don't need focus to be inside the menu.
     await page.keyboard.press('Escape');
     await expect(menu).toBeHidden();
+  });
+
+  test('Wave → AddPanel terminal menuitem creates a card via keyboard', async ({
+    page,
+  }) => {
+    // Navigate to the Atlas/Today wave via keyboard so the AddPanel
+    // trigger is reached through the same user-visible path as the
+    // broader keyboard contract tests.
+    await tabUntil(
+      page,
+      (info) =>
+        info.className.includes('cove-nav') &&
+        (info.name?.toLowerCase().startsWith('atlas') ?? false),
+    );
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
+    await tabUntil(
+      page,
+      (info) =>
+        info.tag === 'button' &&
+        info.className.split(/\s+/).includes('wave-row') &&
+        /today/i.test(info.name ?? ''),
+    );
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+    const waveUrl = page.url();
+    const waveId = waveUrl.match(/\/calm\/wave\/([^/?#]+)/)?.[1];
+    expect(waveId, `wave id parsed from ${waveUrl}`).toBeTruthy();
+
+    // Old #632-removed coverage: focus the Add-card button, open with
+    // Enter, assert the terminal menuitem receives focus, then activate
+    // it with Enter.
+    await tabUntil(page, (info) => /add card/i.test(info.name ?? ''));
+    await expect(page.getByRole('button', { name: /add card/i })).toBeFocused();
+    await page.keyboard.press('Enter');
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    const terminalItem = page.getByRole('menuitem', { name: /terminal/i }).first();
+    await expect(terminalItem).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(menu).toBeHidden();
+
+    // Assert the keyboard activation persisted a terminal card row.
+    // Poll the replay API instead of sleeping: the card lands via the
+    // same async mutation/WS path as production.
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(`/api/waves/${encodeURIComponent(waveId!)}`);
+          if (!response.ok()) {
+            return false;
+          }
+          return containsTerminalCard(await response.json());
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
   });
 
   // Slice 7 wires the full WAI-ARIA menu keyboard contract on AddPanel:

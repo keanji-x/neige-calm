@@ -20,7 +20,7 @@ use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
-use crate::operation::terminal_adapter::{TerminalAdapter, TerminalWorkerAdapter};
+use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::{OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
@@ -413,6 +413,56 @@ impl AppState {
         card_role_cache: Option<CardRoleCache>,
         wave_cove_cache: Option<WaveCoveCache>,
     ) -> Self {
+        Self::from_parts_inner(
+            repo,
+            events,
+            daemon,
+            plugin,
+            codex,
+            card_role_cache,
+            wave_cove_cache,
+            None,
+        )
+    }
+
+    /// Replay-lib hatch for constructing the first `OperationRuntime`
+    /// with a terminal spawn hook. The dispatcher is spawned from that
+    /// same runtime, so replay worker requests cannot fall back to the
+    /// real process supervisor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_with_terminal_spawn_hook(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        daemon: Arc<DaemonClient>,
+        plugin: Arc<PluginHost>,
+        codex: Arc<CodexClient>,
+        card_role_cache: Option<CardRoleCache>,
+        wave_cove_cache: Option<WaveCoveCache>,
+        terminal_spawn_hook: SpawnHook,
+    ) -> Self {
+        Self::from_parts_inner(
+            repo,
+            events,
+            daemon,
+            plugin,
+            codex,
+            card_role_cache,
+            wave_cove_cache,
+            Some(terminal_spawn_hook),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts_inner(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        daemon: Arc<DaemonClient>,
+        plugin: Arc<PluginHost>,
+        codex: Arc<CodexClient>,
+        card_role_cache: Option<CardRoleCache>,
+        wave_cove_cache: Option<WaveCoveCache>,
+        terminal_spawn_hook: Option<SpawnHook>,
+    ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
@@ -428,16 +478,34 @@ impl AppState {
             repo.sqlite_pool()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
         ));
-        let terminal_adapter = Arc::new(TerminalAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
+        let terminal_adapter = if let Some(spawn_hook) = terminal_spawn_hook.clone() {
+            Arc::new(TerminalAdapter::new_with_spawn_hook(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+                spawn_hook,
+            ))
+        } else {
+            Arc::new(TerminalAdapter::new(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+            ))
+        };
+        let terminal_worker_adapter = if let Some(spawn_hook) = terminal_spawn_hook {
+            Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+                spawn_hook,
+            ))
+        } else {
+            Arc::new(TerminalWorkerAdapter::new(
+                route_repo.clone(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+            ))
+        };
         let codex_adapter = Arc::new(CodexAdapter::new(
             route_repo.clone(),
             codex.clone(),
@@ -569,7 +637,7 @@ impl AppState {
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
         self.shared_codex_appserver = shared.clone();
         self.codex_shell.shared_codex_appserver = shared;
-        self.rebuild_fixture_operation_runtime();
+        self.rebuild_operation_runtime();
         self
     }
 
@@ -577,16 +645,16 @@ impl AppState {
     pub fn with_pending_codex_threads(mut self, pending: Arc<PendingThreadStartRegistry>) -> Self {
         self.pending_codex_threads = pending.clone();
         self.codex_shell.pending_codex_threads = pending;
-        self.rebuild_fixture_operation_runtime();
+        self.rebuild_operation_runtime();
         self
     }
 
     #[cfg(feature = "fixtures")]
-    fn rebuild_fixture_operation_runtime(&mut self) {
+    fn rebuild_operation_runtime(&mut self) {
         let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
         let operation_repo =
             Arc::new(SqlxOperationRepo::new(self.raw.sqlite_pool().expect(
-                "fixture OperationRuntime requires a sqlite-backed Repo",
+                "OperationRuntime rebuild requires a sqlite-backed Repo",
             )));
         let terminal_adapter = Arc::new(TerminalAdapter::new(
             route_repo.clone(),

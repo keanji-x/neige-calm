@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -28,11 +29,7 @@ use super::{
     ProviderAdapter, SpawnCtx, SpawnHandle, Tx, TxOutput,
 };
 
-#[cfg(feature = "fixtures")]
-use futures::future::BoxFuture;
-
-#[cfg(feature = "fixtures")]
-type SpawnHook = Arc<
+pub type SpawnHook = Arc<
     dyn Fn(String, String, String, Value) -> BoxFuture<'static, Result<SpawnHandle>> + Send + Sync,
 >;
 
@@ -49,7 +46,6 @@ pub struct TerminalAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
-    #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
 
@@ -58,7 +54,6 @@ pub struct TerminalWorkerAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
-    #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
 
@@ -72,12 +67,10 @@ impl TerminalAdapter {
             repo,
             card_role_cache,
             wave_cove_cache,
-            #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
     }
 
-    #[cfg(feature = "fixtures")]
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
@@ -107,7 +100,6 @@ impl TerminalAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
-        #[cfg(feature = "fixtures")]
         if let Some(hook) = &self.spawn_hook {
             return hook(terminal_id, program, cwd, env).await;
         }
@@ -126,12 +118,10 @@ impl TerminalWorkerAdapter {
             repo,
             card_role_cache,
             wave_cove_cache,
-            #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
     }
 
-    #[cfg(feature = "fixtures")]
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
@@ -703,14 +693,11 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
-        #[cfg(feature = "fixtures")]
         let spawn_result = if let Some(hook) = &self.spawn_hook {
             hook(terminal_id.clone(), cmd.clone(), cwd.clone(), env.clone()).await
         } else {
             ctx.spawn_terminal(&term, &cmd, &cwd, &env).await
         };
-        #[cfg(not(feature = "fixtures"))]
-        let spawn_result = ctx.spawn_terminal(&term, &cmd, &cwd, &env).await;
 
         match spawn_result {
             Ok(handle) => {
