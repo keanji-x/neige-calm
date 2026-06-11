@@ -75,6 +75,7 @@ describe('SpecCurrentRun', () => {
     expect(
       screen.getByRole('region', { name: 'Ask the Spec Agent' }),
     ).toBeInTheDocument();
+    expect(screen.queryByLabelText('Latest tool')).not.toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByLabelText('Follow-up')).toHaveFocus();
     });
@@ -212,7 +213,7 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     const textarea = screen.getByLabelText('Follow-up');
     await user.type(textarea, 'abc');
@@ -227,7 +228,7 @@ describe('SpecCurrentRun', () => {
     render(<SpecCurrentRun specCardId="card_spec_1" />);
 
     await user.click(
-      screen.getByRole('button', { name: 'Ask the Research Agent' }),
+      screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
     const textarea = screen.getByLabelText('Follow-up');
     await user.type(textarea, 'zhong');
@@ -245,7 +246,7 @@ describe('SpecCurrentRun', () => {
     await user.click(
       screen.getByRole('button', { name: 'Ask the Spec Agent' }),
     );
-    await user.click(screen.getByRole('button', { name: 'Reset session...' }));
+    await user.click(screen.getByRole('button', { name: 'Reset spec session' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Reset spec session?' });
     await user.click(within(dialog).getByRole('button', { name: 'Reset session' }));

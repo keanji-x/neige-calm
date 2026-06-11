@@ -114,6 +114,18 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
                     {humanizeToken(run.phase)}
                   </span>
                 )}
+                <button
+                  type="button"
+                  className="report-chat-reset-pill"
+                  aria-label="Reset spec session"
+                  disabled={run.resetPending}
+                  onClick={() => {
+                    setResetAttempted(false);
+                    setResetOpen(true);
+                  }}
+                >
+                  Reset
+                </button>
               </span>
             </div>
             <button
@@ -126,16 +138,18 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
             </button>
           </header>
 
-          <div className="report-chat-tool" aria-label="Latest tool">
-            <span className="report-chat-tool-label">
-              {run.latestTool.toolLabel ?? 'No active tool'}
-            </span>
-            {run.latestTool.toolStatus && (
-              <span className="report-chat-tool-status">
-                {humanizeToken(run.latestTool.toolStatus)}
+          {run.latestTool.toolLabel != null && (
+            <div className="report-chat-tool" aria-label="Latest tool">
+              <span className="report-chat-tool-label">
+                {run.latestTool.toolLabel}
               </span>
-            )}
-          </div>
+              {run.latestTool.toolStatus && (
+                <span className="report-chat-tool-status">
+                  {humanizeToken(run.latestTool.toolStatus)}
+                </span>
+              )}
+            </div>
+          )}
 
           <div className="report-chat-input">
             <textarea
@@ -173,19 +187,6 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
               {run.submitError}
             </p>
           )}
-
-          <footer className="report-chat-footer">
-            <button
-              type="button"
-              className="report-chat-reset"
-              onClick={() => {
-                setResetAttempted(false);
-                setResetOpen(true);
-              }}
-            >
-              Reset session...
-            </button>
-          </footer>
         </section>
       )}
 
