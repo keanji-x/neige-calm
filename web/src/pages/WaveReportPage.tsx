@@ -9,6 +9,7 @@ import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
+import { useWaveFsViewer } from '../wave-fs-viewers';
 import { SpecCurrentRun } from './SpecCurrentRun';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 
@@ -147,6 +148,12 @@ function ReportContent({
     (!!contentQ.error ||
       (!contentQ.data && !contentQ.error) ||
       (contentQ.isLoading && isFetching));
+  const jsonViewer = useWaveFsViewer(
+    contentQ.data && isJsonContent(contentQ.data.content_type) ? path : '',
+    contentQ.data && isJsonContent(contentQ.data.content_type)
+      ? contentQ.data.content
+      : '',
+  );
 
   if (contentQ.isLoading) {
     if (path === 'report.md' && isFetching) {
@@ -181,6 +188,15 @@ function ReportContent({
 
   if (contentQ.data.content_type === 'text/markdown') {
     return <ReportMarkdown body={contentQ.data.content} />;
+  }
+
+  if (isJsonContent(contentQ.data.content_type) && jsonViewer) {
+    const { Viewer, data } = jsonViewer;
+    return (
+      <div className="report-json-card">
+        <Viewer data={data} path={path} />
+      </div>
+    );
   }
 
   if (isTextContent(contentQ.data.content_type)) {
@@ -240,11 +256,14 @@ function formatApiError(error: Error): string {
 function isTextContent(contentType: string): boolean {
   return (
     contentType.startsWith('text/') ||
-    contentType === 'application/json' ||
-    contentType.endsWith('+json') ||
+    isJsonContent(contentType) ||
     contentType === 'application/xml' ||
     contentType.endsWith('+xml')
   );
+}
+
+function isJsonContent(contentType: string): boolean {
+  return contentType === 'application/json' || contentType.endsWith('+json');
 }
 
 function isRelativeFetchUrlError(error: Error | null): boolean {

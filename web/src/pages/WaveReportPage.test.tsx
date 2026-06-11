@@ -116,6 +116,17 @@ function mockWaveFileContents(contents: Record<string, WaveFsContent>) {
   });
 }
 
+function mockWaveFileLists(lists: Record<string, WaveFsEntry[]>) {
+  mockUseWaveFileList.mockImplementation((_, requestedPath = '') => {
+    const path = requestedPath ?? '';
+    return {
+      data: lists[path],
+      error: null,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useWaveFileList>;
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   window.localStorage.clear();
@@ -413,6 +424,141 @@ describe('WaveReportPage', () => {
       await screen.findByRole('heading', { level: 1, name: 'Hi' }),
     ).toBeInTheDocument();
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('renders the cards/index.json wave fs viewer', async () => {
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'index.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: JSON.stringify([
+          {
+            id: 'card_codex_1',
+            kind: 'codex',
+            title: 'Draft findings',
+            sort: 10,
+          },
+          {
+            id: 'card_report_1',
+            kind: 'wave-report',
+            title: 'Final report',
+            sort: 20,
+          },
+        ]),
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(await screen.findByRole('treeitem', { name: /index\.json/ }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Cards in this wave (2)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('codex')).toHaveClass('wave-fs-viewer-kind');
+    expect(screen.getByText('Draft findings')).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('falls back to raw JSON when cards/index.json is malformed', async () => {
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'index.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: '{"not":"an array"}',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(await screen.findByRole('treeitem', { name: /index\.json/ }));
+
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      '{"not":"an array"}',
+    );
+    expect(
+      screen.queryByRole('heading', { name: /Cards in this wave/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to raw JSON for unknown JSON paths', async () => {
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [
+        { name: 'index.json', kind: 'file' },
+        { name: 'card_x/', kind: 'dir' },
+      ],
+      'cards/card_x': [{ name: 'runtime.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: '[{"id":"card_x","kind":"codex"}]',
+      },
+      'cards/card_x/runtime.json': {
+        content_type: 'application/json',
+        content: '{"status":"running"}',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(await screen.findByRole('treeitem', { name: /codex card_x/ }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /runtime\.json/ }),
+    );
+
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      '{"status":"running"}',
+    );
+    expect(
+      screen.queryByRole('heading', { name: /Cards in this wave/ }),
+    ).not.toBeInTheDocument();
   });
 
   it('resets the selected file to report.md when the wave id changes', async () => {

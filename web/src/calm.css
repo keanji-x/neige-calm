@@ -1893,6 +1893,92 @@ select:-webkit-autofill {
 .report-code .cm-scroller {
   font-family: var(--font-code);
 }
+.report-json-card {
+  margin-top: var(--space-10);
+}
+.wave-fs-viewer-cards-index {
+  padding: var(--space-8);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  color: var(--text-2);
+  font-family: var(--font-sans);
+}
+.wave-fs-viewer-title {
+  margin: var(--space-0);
+  color: var(--text);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-normal);
+}
+.wave-fs-viewer-empty {
+  margin: var(--space-6) var(--space-0) var(--space-0);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-base);
+}
+.wave-fs-viewer-card-list {
+  display: grid;
+  gap: var(--space-4);
+  margin: var(--space-7) var(--space-0) var(--space-0);
+  padding: var(--space-0);
+  list-style: none;
+}
+.wave-fs-viewer-card-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+.wave-fs-viewer-kind {
+  min-width: 0;
+  max-width: 120px;
+  overflow: hidden;
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--surface-chip);
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-snug);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wave-fs-viewer-card-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.wave-fs-viewer-card-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-medium);
+}
+.wave-fs-viewer-card-id {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wave-fs-viewer-card-sort {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  white-space: nowrap;
+}
 .report-error {
   color: var(--error-text);
 }
