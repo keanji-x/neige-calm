@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { WireEvent } from '../api/wire';
+import type { KernelOverlay, WireEvent } from '../api/wire';
 import type { CodexCardData } from '../cards/builtins/codex';
+import type { SpecCardData } from '../cards/builtins/spec';
 import type { WaveCardSlot } from '../types';
 import {
   createEventLineState,
@@ -8,6 +9,7 @@ import {
   filterEventLineEntriesForWave,
   reduceEventLineEntries,
   reduceEventLineState,
+  selectAnyRuntimeLive,
   type EventLineEntry,
 } from './useEventLineEntries';
 
@@ -106,6 +108,26 @@ function workerSlot(
     idempotencyKey,
   };
   return { kind: 'card', card };
+}
+
+function specSlot(cardId = 'spec_1'): WaveCardSlot {
+  const card: SpecCardData = {
+    type: 'spec',
+    id: cardId,
+  };
+  return { kind: 'card', card };
+}
+
+function statusOverlay(cardId: string, state: string): KernelOverlay {
+  return {
+    id: `overlay_${cardId}`,
+    plugin_id: 'kernel',
+    entity_kind: 'card',
+    entity_id: cardId,
+    kind: 'status',
+    payload: { state },
+    updated_at: 0,
+  };
 }
 
 function eventScope(
@@ -410,5 +432,34 @@ describe('eventToLineEntry', () => {
     });
 
     expect(entries).toEqual([]);
+  });
+});
+
+describe('selectAnyRuntimeLive', () => {
+  it('treats a running worker with an idle spec as live', () => {
+    expect(
+      selectAnyRuntimeLive(
+        [specSlot('spec_1'), workerSlot('worker_1')],
+        [statusOverlay('spec_1', 'Idle'), statusOverlay('worker_1', 'Working')],
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat all-idle runtime cards as live', () => {
+    expect(
+      selectAnyRuntimeLive(
+        [specSlot('spec_1'), workerSlot('worker_1')],
+        [statusOverlay('spec_1', 'Idle'), statusOverlay('worker_1', 'Idle')],
+      ),
+    ).toBe(false);
+  });
+
+  it('treats a running worker as live when the spec card is absent', () => {
+    expect(
+      selectAnyRuntimeLive(
+        [workerSlot('worker_1')],
+        [statusOverlay('worker_1', 'Working')],
+      ),
+    ).toBe(true);
   });
 });

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { sharedEventStream } from '../api/events';
+import { useOverlaysByKindQuery } from '../api/queries';
+import type { KernelOverlay } from '../api/wire';
 import type { WireEvent } from '../api/wire';
-import { useCardStatusOverlay } from '../cards/overlayRegistry';
+import type { StatusOverlayPayload } from '../cards/overlayRegistry';
 import { useReducer } from '../shared/state';
 import type { WaveCardSlot } from '../types';
 
@@ -578,12 +580,35 @@ export function useEventLineEntries(
   );
 }
 
-function selectSpecCardId(cards: WaveCardSlot[]): string | undefined {
-  const slot = cards.find(
-    (candidate) =>
-      candidate.kind === 'card' && candidate.card.type === 'spec',
+function isRuntimeBearingCardType(type: string): boolean {
+  return (
+    type === 'spec' ||
+    type === 'terminal' ||
+    type === 'codex' ||
+    type === 'claude'
   );
-  return slot?.kind === 'card' ? slot.card.id : undefined;
+}
+
+function selectRuntimeCardIds(cards: WaveCardSlot[]): Set<string> {
+  const cardIds = new Set<string>();
+  for (const slot of cards) {
+    if (
+      slot.kind === 'card' &&
+      slot.card.id &&
+      isRuntimeBearingCardType(slot.card.type)
+    ) {
+      cardIds.add(slot.card.id);
+    }
+  }
+  return cardIds;
+}
+
+function isStatusOverlayPayload(payload: unknown): payload is StatusOverlayPayload {
+  return (
+    payload !== null &&
+    typeof payload === 'object' &&
+    typeof (payload as { state?: unknown }).state === 'string'
+  );
 }
 
 export function isRuntimeLiveState(state: string | undefined): boolean {
@@ -593,11 +618,33 @@ export function isRuntimeLiveState(state: string | undefined): boolean {
   );
 }
 
+export function selectAnyRuntimeLive(
+  cards: WaveCardSlot[],
+  overlays: readonly KernelOverlay[],
+): boolean {
+  const runtimeCardIds = selectRuntimeCardIds(cards);
+  if (runtimeCardIds.size === 0) return false;
+
+  return overlays.some(
+    (overlay) =>
+      overlay.entity_kind === 'card' &&
+      overlay.kind === 'status' &&
+      runtimeCardIds.has(overlay.entity_id) &&
+      isStatusOverlayPayload(overlay.payload) &&
+      isRuntimeLiveState(overlay.payload.state),
+  );
+}
+
 export function useAnyRuntimeLive(
-  _waveId: string,
+  waveId: string,
   cards: WaveCardSlot[],
 ): boolean {
-  const specCardId = useMemo(() => selectSpecCardId(cards), [cards]);
-  const status = useCardStatusOverlay(specCardId);
-  return isRuntimeLiveState(status?.state);
+  const runtimeCardIds = useMemo(() => selectRuntimeCardIds(cards), [cards]);
+  const overlaysQuery = useOverlaysByKindQuery('card', {
+    enabled: waveId.length > 0 && runtimeCardIds.size > 0,
+  });
+  return useMemo(
+    () => selectAnyRuntimeLive(cards, overlaysQuery.data ?? []),
+    [cards, overlaysQuery.data],
+  );
 }
