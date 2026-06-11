@@ -255,16 +255,21 @@ describe('SpecConversation', () => {
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
   });
 
-  it('shows the status chips only in conversation mode', async () => {
+  it('shows the status chips and Reset only in conversation mode', async () => {
     const user = userEvent.setup();
     render(<Harness initialView="report" />);
 
     expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Reset spec session' }),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('tab', { name: 'Conversation' }));
 
     expect(screen.getByText('Running')).toBeInTheDocument();
     expect(screen.getByText('Turn Running')).toBeInTheDocument();
+    const reset = screen.getByRole('button', { name: 'Reset spec session' });
+    expect(reset.closest('.report-convo-status')).not.toBeNull();
   });
 
   it('focuses the input when entering conversation mode', async () => {

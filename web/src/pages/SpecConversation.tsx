@@ -300,6 +300,18 @@ export function SpecConversation({
                   {humanizeToken(run.phase)}
                 </span>
               )}
+              <button
+                type="button"
+                className="report-convo-reset"
+                aria-label="Reset spec session"
+                disabled={run.resetPending}
+                onClick={() => {
+                  setResetAttempted(false);
+                  setResetOpen(true);
+                }}
+              >
+                Reset
+              </button>
             </span>
           )}
         </div>
@@ -402,18 +414,6 @@ export function SpecConversation({
                   &#8629;
                 </button>
               )}
-              <button
-                type="button"
-                className="report-convo-reset"
-                aria-label="Reset spec session"
-                disabled={run.resetPending}
-                onClick={() => {
-                  setResetAttempted(false);
-                  setResetOpen(true);
-                }}
-              >
-                Reset
-              </button>
             </div>
           </div>
         </footer>
