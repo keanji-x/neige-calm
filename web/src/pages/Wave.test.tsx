@@ -16,7 +16,14 @@
 // path that hasn't changed shape).
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  act,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -175,6 +182,16 @@ function echoOverlay(body: NewOverlayBody): KernelOverlay {
     kind: body.kind,
     payload: body.payload,
     updated_at: 0,
+  };
+}
+
+function getViewModeControls() {
+  const group = screen.getByRole('radiogroup', { name: 'Wave view mode' });
+  return {
+    group,
+    grid: within(group).getByRole('radio', { name: /grid view/i }),
+    list: within(group).getByRole('radio', { name: /list view/i }),
+    report: within(group).getByRole('radio', { name: /report view/i }),
   };
 }
 
@@ -407,6 +424,128 @@ describe('WavePage schema card create errors', () => {
 });
 
 describe('WavePage report view mode', () => {
+  it('renders grid, list, and report radios with report selected by default', () => {
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot('Default report body')] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    const { grid, list, report } = getViewModeControls();
+    expect(grid).toHaveAttribute('aria-checked', 'false');
+    expect(list).toHaveAttribute('aria-checked', 'false');
+    expect(report).toHaveAttribute('aria-checked', 'true');
+    expect(grid).toHaveAttribute('tabindex', '-1');
+    expect(list).toHaveAttribute('tabindex', '-1');
+    expect(report).toHaveAttribute('tabindex', '0');
+  });
+
+  it('ArrowRight wraps from report to grid and writes the overlay', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
+      echoOverlay(body),
+    );
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    const { grid, report } = getViewModeControls();
+    report.focus();
+    await user.keyboard('{ArrowRight}');
+
+    expect(api.upsertOverlay).toHaveBeenCalledWith({
+      plugin_id: 'kernel',
+      entity_kind: 'view',
+      entity_id: 'w1',
+      kind: 'view-mode',
+      payload: { schemaVersion: 1, mode: 'grid' },
+    });
+    expect(grid).toHaveFocus();
+    await waitFor(() => expect(grid).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  it('writes list mode to the overlay when List is clicked', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
+      echoOverlay(body),
+    );
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    const { list } = getViewModeControls();
+    await user.click(list);
+
+    expect(api.upsertOverlay).toHaveBeenCalledWith({
+      plugin_id: 'kernel',
+      entity_kind: 'view',
+      entity_id: 'w1',
+      kind: 'view-mode',
+      payload: { schemaVersion: 1, mode: 'list' },
+    });
+    await waitFor(() => expect(list).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  it('keeps focus on the clicked radio and updates roving tabindex', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay).mockImplementationOnce(async (body) =>
+      echoOverlay(body),
+    );
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot()] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    const { grid, list, report } = getViewModeControls();
+    await user.click(list);
+
+    expect(list).toHaveFocus();
+    await waitFor(() => {
+      expect(grid).toHaveAttribute('tabindex', '-1');
+      expect(list).toHaveAttribute('tabindex', '0');
+      expect(report).toHaveAttribute('tabindex', '-1');
+    });
+  });
+
   it('defaults to report when wave has a report card and no overlay', () => {
     render(
       withClient(
@@ -425,7 +564,7 @@ describe('WavePage report view mode', () => {
     expect(screen.getByText('Default report body')).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
     expect(
-      screen.getByRole('switch', { name: 'Switch wave to cards view' }),
+      screen.getByRole('radiogroup', { name: 'Wave view mode' }),
     ).toBeInTheDocument();
   });
 
@@ -474,7 +613,9 @@ describe('WavePage report view mode', () => {
         'Report not ready. The spec agent has not produced a report yet.',
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole('switch')).toBeInTheDocument();
+    expect(
+      screen.getByRole('radiogroup', { name: 'Wave view mode' }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
@@ -498,12 +639,12 @@ describe('WavePage report view mode', () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('switch', { name: 'Switch wave to cards view' }),
+      screen.getByRole('radiogroup', { name: 'Wave view mode' }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('add-panel-stub')).toBeInTheDocument();
   });
 
-  it('writes report and cards mode changes to the view-mode overlay', async () => {
+  it('writes report and grid mode changes to the view-mode overlay', async () => {
     const user = userEvent.setup();
     vi.mocked(api.upsertOverlay).mockClear();
     vi.mocked(api.upsertOverlay)
@@ -523,7 +664,8 @@ describe('WavePage report view mode', () => {
       ),
     );
 
-    await user.click(screen.getByRole('switch', { name: 'Switch wave to cards view' }));
+    const { grid, report } = getViewModeControls();
+    await user.click(grid);
 
     expect(api.upsertOverlay).toHaveBeenCalledWith({
       plugin_id: 'kernel',
@@ -533,9 +675,7 @@ describe('WavePage report view mode', () => {
       payload: { schemaVersion: 1, mode: 'grid' },
     });
 
-    await user.click(
-      await screen.findByRole('switch', { name: 'Switch wave to report view' }),
-    );
+    await user.click(report);
 
     expect(api.upsertOverlay).toHaveBeenLastCalledWith({
       plugin_id: 'kernel',

@@ -696,13 +696,9 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(display).toBeFocused();
   });
 
-  // Slice 9 — list-view alternative to the WaveGrid. The #594 demo
-  // dropped the Grid↔List UI entry (the header now carries ONE binary
-  // Grid↔Report switch), but the per-wave view-mode overlay still
-  // drives which cards surface renders while Report is off — so this
-  // spec enters list mode by seeding the overlay row via REST
-  // (`seedWaveViewMode`) and reloading. PR2 of #594 restores a real
-  // three-state ViewMode control; the click path can return then.
+  // Slice 9 — list-view alternative to the WaveGrid. The header now exposes
+  // a three-state Grid / List / Report radiogroup backed by the same
+  // per-wave view-mode overlay row that this spec seeds via REST.
   // List view replaces the RGL grid with a semantic `<ul>` whose `<li>`
   // items use roving tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the
   // focused card by swapping `card.sort` via the existing optimistic
@@ -760,10 +756,8 @@ test.describe('a11y · keyboard-only navigation', () => {
       2,
     );
 
-    // Enter list mode. The #594 demo removed the Grid↔List UI entry
-    // (the header's only view control is now the binary Grid↔Report
-    // switch), so we seed the per-wave `view-mode` overlay via REST —
-    // the same row the removed control wrote — and reload. `?trace=1`
+    // Enter list mode by seeding the per-wave `view-mode` overlay via REST,
+    // then reload. `?trace=1`
     // re-arms the event ring buffer for the reorder assertions below
     // (the flag is read once per page load, and the client-side route
     // URL we captured may not carry it).
@@ -840,22 +834,14 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(items.last()).toHaveClass(/is-active/);
 
     // Reload — the view-mode overlay must persist, so the page comes
-    // back in list view. The binary Grid↔Report switch reads "Grid"
-    // (aria-checked=false): list is a cards-surface mode, not the
-    // report surface, and the switch only tracks cards↔report. Its
-    // accessible name carries the action verb per the Slice-9
-    // convention ("Switch wave to report view" while showing cards).
+    // back in list view and the List radio remains selected.
     await page.goto(waveUrl);
     const listAfter = page.getByRole('list', { name: /wave cards/i });
     await expect(listAfter).toBeVisible({ timeout: 5_000 });
-    const viewFlip = page.getByRole('switch', {
-      name: /switch wave to report view/i,
-    });
-    await expect(viewFlip).toBeVisible();
-    await expect(viewFlip).toHaveAttribute('aria-checked', 'false');
-    // The visible content is an `<Icon n="grid" />` SVG (#594 r6 swapped
-    // the text label to an icon); current-state assertion lives on
-    // aria-checked above, no separate text-content check needed.
+    const viewGroup = page.getByRole('radiogroup', { name: /wave view mode/i });
+    await expect(viewGroup).toBeVisible();
+    const listRadio = viewGroup.getByRole('radio', { name: /list view/i });
+    await expect(listRadio).toHaveAttribute('aria-checked', 'true');
   });
 
   test('Settings page: all controls reachable and labeled', async ({ page }) => {

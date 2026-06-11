@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useId, useMemo, useRef } from 'react';
+import {
+  lazy,
+  Suspense,
+  type KeyboardEvent,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+} from 'react';
 import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
@@ -49,6 +57,71 @@ const EMPTY_CARD_SLOTS: WaveCardSlot[] = [];
  *  string drifting in from a future server schema. */
 function isViewMode(s: unknown): s is ViewMode {
   return s === 'grid' || s === 'list' || s === 'report';
+}
+
+const VIEW_MODE_RADIOS = [
+  { mode: 'grid', label: 'Grid view', title: 'Grid view', icon: 'grid' },
+  { mode: 'list', label: 'List view', title: 'List view', icon: 'list' },
+  { mode: 'report', label: 'Report view', title: 'Report view', icon: 'report' },
+] as const;
+
+function ViewModeRadioGroup({
+  value,
+  onChange,
+}: {
+  value: ViewMode;
+  onChange: (mode: ViewMode) => void;
+}) {
+  const radioRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const handleKeyDown = (
+    e: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) => {
+    const last = VIEW_MODE_RADIOS.length - 1;
+    let nextIndex: number | null = null;
+
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      nextIndex = index === 0 ? last : index - 1;
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      nextIndex = index === last ? 0 : index + 1;
+    } else if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      onChange(VIEW_MODE_RADIOS[index].mode);
+      return;
+    }
+
+    if (nextIndex === null) return;
+    e.preventDefault();
+    radioRefs.current[nextIndex]?.focus();
+    onChange(VIEW_MODE_RADIOS[nextIndex].mode);
+  };
+
+  return (
+    <div className="view-radio" role="radiogroup" aria-label="Wave view mode">
+      {VIEW_MODE_RADIOS.map((item, index) => {
+        const selected = value === item.mode;
+        return (
+          <button
+            key={item.mode}
+            ref={(node) => {
+              radioRefs.current[index] = node;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            aria-label={item.label}
+            title={item.title}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onChange(item.mode)}
+            onKeyDown={(e) => handleKeyDown(e, index)}
+          >
+            <Icon n={item.icon} s={14} sw={1.7} />
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function formatCreateCardError(err: unknown): string {
@@ -256,23 +329,7 @@ export function WavePage({
           >
             <Icon n="back" s={14} sw={1.7} />
           </button>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={viewMode === 'report'}
-            className="view-flip"
-            onClick={() =>
-              setViewMode(viewMode === 'report' ? 'grid' : 'report')
-            }
-            aria-label={
-              viewMode === 'report'
-                ? 'Switch wave to cards view'
-                : 'Switch wave to report view'
-            }
-            title={viewMode === 'report' ? 'Cards' : 'Report'}
-          >
-            <Icon n={viewMode === 'report' ? 'report' : 'grid'} s={14} sw={1.7} />
-          </button>
+          <ViewModeRadioGroup value={viewMode} onChange={setViewMode} />
         <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
           <button
