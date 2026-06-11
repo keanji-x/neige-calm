@@ -143,7 +143,11 @@ export function SpecCurrentRun({ specCardId }: SpecCurrentRunProps) {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                const isComposing =
+                  e.nativeEvent.isComposing === true || e.keyCode === 229;
+                if (isComposing) return;
+
+                if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   void onSubmit();
                 }
