@@ -1,11 +1,10 @@
 // ---------------- CloseIcon ----------------
 //
 // Inline SVG `×` glyph for close/delete affordances. Replaces the
-// Unicode U+00D7 `×` character which, in IBM Plex Sans, sits on the
-// font's math-axis — ~30-40% above em-box center. Flex-centering a
-// Unicode `×` inside a button visually places the ink high; the
-// previous workaround was a `transform: translateY(2px)` hack that
-// was font+size coupled (change either, the magic number's wrong).
+// Unicode U+00D7 `×` character, whose optical center varies across
+// system fonts and can sit high inside compact buttons. The previous
+// workaround was a `transform: translateY(2px)` hack that was font+size
+// coupled (change either, the magic number's wrong).
 //
 // The SVG is geometrically centered inside a 24x24 viewBox so flex
 // `align-items: center` lands the visible ink exactly on the row

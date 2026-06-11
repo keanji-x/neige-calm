@@ -7,24 +7,21 @@
    block. */
 /* stylelint-disable color-no-hex, declaration-property-value-disallowed-list */
 :root {
-  --font-sans: "IBM Plex Sans", "IBM Plex Sans SC", "IBM Plex Sans JP", "IBM Plex Sans KR", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
-  --font-mono: "IBM Plex Mono", "PingFang SC", "SF Mono", ui-monospace, "Menlo", monospace;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   /* Semantic font-family aliases over positional --font-sans/serif/mono
-     (slice 4 of #150). After unification onto a single editorial typeface,
-     --font-display and --font-numeric both alias --font-sans (IBM Plex Sans)
-     rather than the serif stack — the surface is no longer mixed sans+serif.
+     (slice 4 of #150). The app uses local system UI fonts for the primary
+     surface; --font-display and --font-numeric both alias --font-sans rather
+     than the serif stack, so the surface stays unified across UI chrome.
      --font-serif stays defined as positional vocabulary for future opt-in
      (marketing/editorial pages) but has zero consumers in this file.
 
-     CJK fallback: the IBM Plex Sans SC/JP/KR + PingFang SC + Hiragino Sans
-     GB entries are declared in the chain so the browser's per-character
-     fallback picks them up for CJK text. Plex CJK is NOT preloaded as a
-     webfont (hundreds of KB before the first Han char is unacceptable for
-     a primarily-Latin UI); when Plex CJK isn't installed locally, the
-     system CJK face takes over. Aliases resolve through the cascade — no
-     dark override; fonts don't theme-vary. */
+     CJK fallback: PingFang SC, Hiragino Sans GB, and Microsoft YaHei are
+     declared in the chain so the browser's per-character fallback picks up
+     local system CJK faces without downloading webfonts. Aliases resolve
+     through the cascade — no dark override; fonts don't theme-vary. */
   --font-display: var(--font-sans);   /* large titles, modal attn heads */
   --font-numeric: var(--font-sans);   /* clocks, dates, large stats — could diverge from --font-display later */
   --font-code:    var(--font-mono);   /* terminal, diff, inline code, settings hint code */

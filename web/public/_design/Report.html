@@ -27,10 +27,9 @@
   /* Token VALUES mirror the app palette (web/src/calm.css) so the demo
      reads as "the app's future layout", not a foreign artifact — see
      docs/_research-594-demo-visual-subagent.md. Variable NAMES stay the
-     design's own so the layout CSS below is untouched. Fonts are the
-     app stacks: Plex Sans/Mono + the dormant --font-serif stack
-     (calm.css:11) carrying the editorial-serif voice without Google
-     Fonts (e2e blocks them; codex review red line). */
+     design's own so the layout CSS below is untouched. Fonts use the app's
+     system sans/mono stacks plus the dormant --font-serif stack (calm.css:11)
+     carrying the editorial-serif voice without webfont downloads. */
   :root{
     color-scheme: light;
     --canvas: oklch(98.8% 0.003 240);      /* = app --bg */
@@ -48,9 +47,9 @@
     --amber-soft: oklch(96% 0.03 30);      /* = app --warn-soft */
     --green: oklch(54% 0.14 145);          /* = app --success */
 
-    --sans: "IBM Plex Sans", "IBM Plex Sans SC", "IBM Plex Sans JP", "IBM Plex Sans KR", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     --serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
-    --mono: "IBM Plex Mono", "PingFang SC", "SF Mono", ui-monospace, "Menlo", monospace;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
     --glass: color-mix(in oklab, var(--surface) 82%, transparent);
     --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
