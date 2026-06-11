@@ -637,7 +637,7 @@ impl AppState {
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
         self.shared_codex_appserver = shared.clone();
         self.codex_shell.shared_codex_appserver = shared;
-        self.rebuild_fixture_operation_runtime();
+        self.rebuild_operation_runtime();
         self
     }
 
@@ -645,15 +645,11 @@ impl AppState {
     pub fn with_pending_codex_threads(mut self, pending: Arc<PendingThreadStartRegistry>) -> Self {
         self.pending_codex_threads = pending.clone();
         self.codex_shell.pending_codex_threads = pending;
-        self.rebuild_fixture_operation_runtime();
+        self.rebuild_operation_runtime();
         self
     }
 
     #[cfg(feature = "fixtures")]
-    fn rebuild_fixture_operation_runtime(&mut self) {
-        self.rebuild_operation_runtime();
-    }
-
     fn rebuild_operation_runtime(&mut self) {
         let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
         let operation_repo =
