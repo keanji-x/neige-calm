@@ -258,6 +258,7 @@ impl<'a> WaveFsView<'a> {
                 &[
                     "codex.worker_requested",
                     "terminal.worker_requested",
+                    "task.dispatched",
                     "task.completed",
                     "task.failed",
                 ],
@@ -474,6 +475,8 @@ fn project_runs(
 
     let mut requested = BTreeMap::<String, RunEventProjection>::new();
     let mut requested_kind = BTreeMap::<String, &'static str>::new();
+    let mut dispatched = BTreeMap::<String, RunEventProjection>::new();
+    let mut dispatched_kind = BTreeMap::<String, &'static str>::new();
     let mut completed = BTreeMap::<String, RunEventProjection>::new();
     let mut failed = BTreeMap::<String, RunEventProjection>::new();
     let mut verdict = BTreeMap::<String, RunEventProjection>::new();
@@ -512,6 +515,23 @@ fn project_runs(
                     ),
                 );
             }
+            // Issue #644 PR-B — the scheduler's claim record (§5.6).
+            // Collected separately and merged below as the fallback
+            // requested-record for keys with no `*.worker_requested`
+            // event (scheduler-dispatched tasks emit none).
+            Event::TaskDispatched {
+                idempotency_key,
+                kind,
+                ..
+            } => {
+                keys.insert(idempotency_key.clone());
+                dispatched_kind.insert(idempotency_key.clone(), run_kind_static(kind));
+                record_earliest(
+                    &mut dispatched,
+                    idempotency_key,
+                    run_event(row.id, row.at, "task.dispatched", row.event.payload_value()),
+                );
+            }
             Event::TaskCompleted {
                 idempotency_key, ..
             } => {
@@ -538,6 +558,16 @@ fn project_runs(
             }
             _ => {}
         }
+    }
+
+    // §5.6 fallback: a key with a `task.dispatched` record but no
+    // `*.worker_requested` event treats the dispatch record as its
+    // requested-record (`requested_at`, kind, requested/running status).
+    for (key, event) in dispatched {
+        requested.entry(key).or_insert(event);
+    }
+    for (key, kind) in dispatched_kind {
+        requested_kind.entry(key).or_insert(kind);
     }
 
     keys.into_iter()
@@ -591,6 +621,17 @@ fn project_runs(
             }
         })
         .collect()
+}
+
+/// Map a `task.dispatched` event's worker-kind field onto the static
+/// run-kind vocabulary the projection uses. Unknown values degrade to
+/// `"unknown"` (same convention as a key with no kind source at all).
+pub(crate) fn run_kind_static(kind: &str) -> &'static str {
+    match kind {
+        "codex" => "codex",
+        "terminal" => "terminal",
+        _ => "unknown",
+    }
 }
 
 fn run_event(event_id: i64, at: i64, kind: &'static str, payload: Value) -> RunEventProjection {

@@ -75,6 +75,11 @@ pub enum RoleViolation {
     #[error("only spec cards (or User/Kernel) may emit dispatch-request events (actor={actor})")]
     NotSpecForDispatch { actor: String },
 
+    #[error(
+        "task.dispatched is a kernel-only scheduler record; no card-derived actor may emit it (actor={actor})"
+    )]
+    NotKernelForTaskDispatched { actor: String },
+
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
 
@@ -188,6 +193,33 @@ pub fn enforce_role(
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
                 return Err(RoleViolation::NotSpecForDispatch {
+                    actor: ai_worker_actor_label(actor, card_id),
+                });
+            }
+        }
+    }
+
+    // --- (2.6) `task.dispatched` is kernel-only. ---
+    //
+    // Issue #644 PR-B. The scheduler appends `Event::TaskDispatched`
+    // inside its claim tx as the projection's dispatch record (§5.6).
+    // It is a *kernel observation* of plan execution, not a card
+    // authority: a spec forging it could fabricate "the kernel claimed
+    // this task" records that desynchronize the runs projection from
+    // the tasks table, and a worker forging it is the #583 recursive
+    // hole again. Every card-derived actor (AiSpec included) is refused;
+    // User / Kernel / KernelDispatcher / Plugin keep their unrestricted
+    // access, matching the other kernel-internal sections.
+    if matches!(event, Event::TaskDispatched { .. }) {
+        match actor {
+            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher | ActorId::Plugin(_) => {}
+            ActorId::AiSpec(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskDispatched {
+                    actor: format!("AiSpec({card_id})"),
+                });
+            }
+            ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskDispatched {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
@@ -1084,6 +1116,48 @@ mod tests {
             &wcc,
         );
         assert!(res.is_ok(), "spec emitting plan.updated: {res:?}");
+    }
+
+    #[test]
+    fn task_dispatched_is_kernel_only_644_pr_b() {
+        // Issue #644 PR-B. `task.dispatched` is the scheduler's claim
+        // record — every card-derived actor is refused, spec included
+        // (it is a kernel observation, not a card authority), while the
+        // kernel families pass.
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let spec = CardId::from("spec-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        let event = Event::TaskDispatched {
+            idempotency_key: "w:impl-parser".into(),
+            kind: "codex".into(),
+            agent_message: None,
+        };
+
+        for (actor, label) in [
+            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+        ] {
+            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused task.dispatched"));
+            assert!(
+                matches!(err, RoleViolation::NotKernelForTaskDispatched { .. }),
+                "{label}: expected NotKernelForTaskDispatched, got {err:?}",
+            );
+        }
+
+        for actor in [
+            ActorId::User,
+            ActorId::Kernel,
+            ActorId::KernelDispatcher,
+            ActorId::Plugin("p".into()),
+        ] {
+            let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
+            assert!(res.is_ok(), "{actor:?} emitting task.dispatched: {res:?}");
+        }
     }
 
     #[test]

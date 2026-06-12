@@ -699,6 +699,27 @@ pub enum Event {
         #[ts(optional)]
         agent_message: Option<String>,
     },
+
+    /// Issue #644 PR-B — the kernel scheduler claimed a plan task
+    /// (`pending → dispatched`). Appended **inside the claim tx** (design
+    /// §5.4/§5.6) so the runs projection stays purely event-sourced: a
+    /// scheduler-dispatched task has no `*.worker_requested` event, and
+    /// this record is the projection's requested-record fallback
+    /// (`requested_at`, `kind`, the `requested`/`running` statuses).
+    ///
+    /// `idempotency_key` is the task id (`"{wave_id}:{key}"`); `kind` is
+    /// the worker kind (`"codex"` / `"terminal"`). Wave-scoped, actor
+    /// `ActorId::KernelDispatcher`, kernel-only: the in-tx role gate
+    /// refuses it from any card-derived actor (spec included) — only the
+    /// scheduler may claim tasks.
+    #[serde(rename = "task.dispatched")]
+    TaskDispatched {
+        idempotency_key: String,
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
+    },
 }
 
 /// Central event-classifier result for the kernel's event surfaces.
@@ -882,6 +903,15 @@ impl Event {
                 entity_kind: Some("wave".into()),
                 entity_id: Some(wave_id.to_string()),
             },
+            // Issue #644 PR-B — like the other task-lifecycle signals:
+            // no plugin / entity classification; consumers filter via the
+            // events kind clause + the envelope's wave scope.
+            Event::TaskDispatched { .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: None,
+                entity_id: None,
+            },
         }
     }
 
@@ -918,6 +948,7 @@ impl Event {
             Event::TaskCompleted { .. } => "task.completed",
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
+            Event::TaskDispatched { .. } => "task.dispatched",
         }
     }
 
@@ -1070,7 +1101,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::CodexWorkerRequested { .. }
         | Event::TerminalWorkerRequested { .. }
         | Event::TaskCompleted { .. }
-        | Event::TaskFailed { .. } => vec!["*".into()],
+        | Event::TaskFailed { .. }
+        | Event::TaskDispatched { .. } => vec!["*".into()],
 
         // Issue #644 — plan revisions are wave-scoped on the payload, so
         // wave subscribers (future UI task list) can filter without the
