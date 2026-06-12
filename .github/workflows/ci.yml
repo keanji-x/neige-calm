@@ -421,8 +421,10 @@ jobs:
       - uses: actions/checkout@v4
 
       # Issue #634 — `npm run gen:api` builds three test-profile binaries
-      # (`cargo test export_bindings_` for calm-server / calm-session /
-      # calm-editor) plus `cargo run --bin emit-openapi`, all on the shared
+      # (`cargo test export_bindings_` for calm-types / calm-session /
+      # calm-editor; #679 PR1 moved the WS-event bindings source from
+      # calm-server to calm-types) plus `cargo run --bin emit-openapi`,
+      # all on the shared
       # `workspace` rust-cache. Peak target/ + cache exceeds the ~14GB free
       # that `ubuntu-latest` ships with, and the link stage was repeatedly
       # dying with SIGBUS (tmpfs object-file truncation) or ENOSPC at the

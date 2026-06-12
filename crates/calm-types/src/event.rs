@@ -320,7 +320,11 @@ impl EventScope {
 ///   WITHOUT advancing the cursor. Migration 0043 re-stamps any
 ///   `plan.updated` / `task.dispatched` rows persisted at version 2
 ///   before this bump shipped.
-pub const SYNC_EVENT_VERSION: u32 = 3;
+/// * `4` — gate-result wire kind (issue #644 PR-C). Adds
+///   `task.gate_result` to the event union. A v3 tab whose per-frame
+///   gate cached `syncEventVersion=3` at mount would otherwise advance
+///   its replay cursor past the new variant and silently fail zod.
+pub const SYNC_EVENT_VERSION: u32 = 4;
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
