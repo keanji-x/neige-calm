@@ -199,7 +199,7 @@ pub async fn prepare_claude_create_request(
         .to_string();
     let env = build_claude_env(repo, codex, &card_id).await?;
     let mut command_line = format!(
-        "{} --settings {} --session-id {}",
+        "{} --allow-dangerously-skip-permissions --settings {} --session-id {}",
         shell_single_quote(&codex.claude_bin),
         shell_single_quote(&settings_path),
         shell_single_quote(&claude_session_id),
