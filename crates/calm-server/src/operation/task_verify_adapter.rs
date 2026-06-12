@@ -1269,6 +1269,61 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The record-then-release handshake's failure half, against a REAL
+    /// `/bin/sh`: kernel death before release drops the only write end
+    /// of the stdin pipe — the wrapper's first action (`read -r _go`)
+    /// hits EOF and the child exits 75 having executed **nothing** (no
+    /// step ran, no exit file written; the verdict classifier maps the
+    /// sentinel-less 75 to `gate-infra`).
+    #[tokio::test]
+    async fn wrapper_handshake_eof_exits_75_having_run_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "gate-handshake-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("step-ran");
+        let script_path = dir.join("wrapper.sh");
+        let exit_path = dir.join("wrapper.exit");
+        let steps = vec![GateStep {
+            name: "touch".into(),
+            cmd: format!("touch {}", marker.display()),
+        }];
+        std::fs::write(&script_path, render_gate_wrapper(&steps)).unwrap();
+
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg(&script_path)
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .env("NEIGE_GATE_EXIT_PATH", &exit_path)
+            .spawn()
+            .unwrap();
+        // Kernel-death stand-in: drop the held stdin WITHOUT writing
+        // the go-token.
+        drop(child.stdin.take());
+        let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .expect("EOF must release the held wrapper promptly")
+            .unwrap();
+        assert_eq!(status.code(), Some(75), "{status:?}");
+        assert!(!marker.exists(), "no gate step may run before release");
+        assert!(
+            !exit_path.exists(),
+            "the handshake exit path bypasses neige_gate_finish"
+        );
+
+        // And the classifier lands it as infra, never red.
+        let log = dir.join("empty.log");
+        std::fs::write(&log, "").unwrap();
+        let verdict = verdict_from_exit_code(75, &log, 1);
+        assert_eq!(verdict.status_detail.as_deref(), Some("gate-infra"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn gate_timeout_clamps() {
         let mut gate = GateSpec {

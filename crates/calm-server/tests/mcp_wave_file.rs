@@ -2042,3 +2042,124 @@ async fn wave_json_uses_bound_wave_metadata() {
         .unwrap();
     assert_eq!(wave["created_at"], json!(repo_wave.created_at));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #644 PR-C — plan/<key>/gate.log (spec-role-gated, file-backed)
+// ---------------------------------------------------------------------------
+
+async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
+    let task = calm_server::model::Task {
+        id: format!("{}:{key}", boot.wave_id.as_str()),
+        wave_id: boot.wave_id.as_str().to_string(),
+        key: key.to_string(),
+        kind: calm_server::model::TaskKind::Codex,
+        goal: "g".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: Some(json!({ "steps": [{ "name": "t", "cmd": "true" }] }).to_string()),
+        status: calm_server::model::TaskStatus::Verifying,
+        status_detail: None,
+        worker_card_id: None,
+        gate_result_json: None,
+        gate_attempt,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        created_at_ms: now_ms(),
+        updated_at_ms: now_ms(),
+        finished_at_ms: None,
+    };
+    let id = task.id.clone();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            calm_server::db::sqlite::task_insert_tx(tx, &task).await?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed gated task");
+    id
+}
+
+#[tokio::test]
+async fn gate_log_view_is_spec_only_and_file_backed() {
+    use calm_server::wave_fs_view::{WaveFsError, WaveFsView};
+
+    let boot = boot().await;
+    let dir = std::env::temp_dir().join(format!(
+        "neige-gate-log-view-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let task_id = seed_gated_task(&boot, "gated", 2).await;
+    std::fs::write(
+        dir.join(format!("{task_id}-g2.log")),
+        "::gate-step t\ngate-log-body\n",
+    )
+    .unwrap();
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let write = boot.ctx.write.clone();
+
+    // Spec role with access wired: reads the CURRENT attempt's log.
+    let view = WaveFsView::new(boot.ctx.repo.as_ref(), &write)
+        .with_gate_log_access(CardRole::Spec, dir.clone());
+    let content = view.cat(&wave, "plan/gated/gate.log").await.expect("read");
+    assert_eq!(content.content_type, "text/plain");
+    assert!(content.content.contains("gate-log-body"), "{content:?}");
+
+    // Worker role: Forbidden (§6.7 — workers never read gate material).
+    let view = WaveFsView::new(boot.ctx.repo.as_ref(), &write)
+        .with_gate_log_access(CardRole::Worker, dir.clone());
+    let err = view
+        .cat(&wave, "plan/gated/gate.log")
+        .await
+        .expect_err("worker forbidden");
+    assert!(matches!(err, WaveFsError::Forbidden(_)), "{err:?}");
+
+    // Surface without gate-log access (HTTP wave routes): Forbidden.
+    let view = WaveFsView::new(boot.ctx.repo.as_ref(), &write);
+    let err = view
+        .cat(&wave, "plan/gated/gate.log")
+        .await
+        .expect_err("unwired surface forbidden");
+    assert!(matches!(err, WaveFsError::Forbidden(_)), "{err:?}");
+
+    // No such task / no attempt yet: path not available, not an error
+    // leak.
+    let view = WaveFsView::new(boot.ctx.repo.as_ref(), &write)
+        .with_gate_log_access(CardRole::Spec, dir.clone());
+    let err = view
+        .cat(&wave, "plan/missing/gate.log")
+        .await
+        .expect_err("missing task");
+    assert!(matches!(err, WaveFsError::PathNotAvailable(_)), "{err:?}");
+    seed_gated_task(&boot, "fresh", 0).await;
+    let err = view
+        .cat(&wave, "plan/fresh/gate.log")
+        .await
+        .expect_err("no attempt yet");
+    assert!(matches!(err, WaveFsError::PathNotAvailable(_)), "{err:?}");
+
+    // MCP wiring: a worker calling calm.wave.cat on the gate log gets
+    // the Forbidden mapping (-32403), proving identity.role is threaded.
+    let err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        worker_identity(&boot),
+        json!({ "path": "plan/gated/gate.log" }),
+    )
+    .await
+    .expect_err("worker forbidden at the MCP surface");
+    assert_eq!(err.code, -32403, "{err:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
