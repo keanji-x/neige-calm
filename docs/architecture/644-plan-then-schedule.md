@@ -747,11 +747,17 @@ recovery as `VerifyParked` — #653 §2-4).
      target), stdin piped from the kernel. First action is the release
      handshake `read -r _go || exit 75` — kernel death before release EOFs
      the pipe and the held child exits having executed nothing. The wrapper
-     echoes `::gate-step <name>` sentinels, runs steps sequentially, and
-     writes its exit code to `{task_id}-g{N}.exit` via tmp + `rename(2)` as
-     its last action (a mid-write SIGKILL leaves no file, never a truncated
-     one). stdout+stderr → `{task_id}-g{N}.log`. Env: proxy settings only;
-     `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` removed (§6.3).
+     then captures the exit-file path into an unexported shell variable and
+     `unset`s `NEIGE_GATE_EXIT_PATH` BEFORE any step runs, so step children
+     (the untrusted repo code a gate executes) never inherit the
+     verdict-file path. It echoes `::gate-step <name>` sentinels, runs each
+     step body in a subshell `( … )` (a step's top-level `exit`/`exec`/`set
+     -e` ends the step, never bypasses the finish handler), and writes its
+     exit code to `{task_id}-g{N}.exit` via tmp + `rename(2)` as its last
+     action (a mid-write SIGKILL leaves no file, never a truncated one).
+     stdout+stderr → `{task_id}-g{N}.log`. Env: `env_clear()` + explicit
+     `PATH`/`HOME`/`LANG`/`LC_ALL`/`TERM` + proxy settings; in particular no
+     `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (§6.3).
   4. *Record, then release* (under a kernel-side 60s timeout; expiry kills
      the held group and fails the op): record the identity on the tasks row
      (guarded `WHERE status='verifying' AND gate_attempt=N`) **and** as op
@@ -765,14 +771,15 @@ recovery as `VerifyParked` — #653 §2-4).
      only after its park committed).
 - **Exit observer** (owns the `Child`): `wait()` the wrapper, group-killing
   at `timeout_secs` (live timeout enforcement stays with the handle owner;
-  the parked deadline is the backstop for a dead observer). Verdict
-  derivation prefers a present, parseable exit file over the wait status
-  (#653 §4.4 ordering B — a durable verdict beats a kill-induced signal
-  death); wrapper exit 0 → green; non-zero with a `::gate-step` sentinel →
+  the parked deadline is the backstop for a dead observer). **The live
+  verdict is the wrapper's wait status, observed over the kernel-owned
+  process handle — the exit file is never consulted while a wait status
+  exists** (§6.7: gate steps execute untrusted repo code in a
+  worker-reachable tree; a forged exit file must not flip a killed/red gate
+  green). Wrapper exit 0 → green; non-zero with a `::gate-step` sentinel →
   `gate-red` + `failing_step` + `exit_code`; non-zero with NO sentinel (e.g.
-  handshake EOF, exit 75) → `gate-infra`; timeout group-kill →
-  `gate-timeout`; present-but-unparseable exit file → `gate-infra` (foreign
-  artifact — truncation is impossible per the tmp+rename). Completion is ONE
+  handshake EOF, exit 75) → `gate-infra`; signal death → `gate-infra`;
+  timeout group-kill → `gate-timeout`. Completion is ONE
   tx: `complete_parked_tx(op, verdict)` and — **only on
   `ParkedCompletion::Completed`** (#653 §3.3 write-gate) — the guarded flip
   `verifying → done|failed` + clear the pid triple + `Event::TaskGateResult`
@@ -781,14 +788,17 @@ recovery as `VerifyParked` — #653 §2-4).
   NOTHING is written — enforcement won; the scheduler's reconcile copies the
   op outcome to the row instead.
 - `recover_parked` (#653 §4.2/§6.3 — boot `VerifyParked`, `sweep_parked`
-  dead-probe, past-deadline arm): **exit file first, liveness second**.
-  Present+parseable → `Complete(verdict)` regardless of liveness/mode;
-  unparseable → fail (`gate-infra`); no file + dead → fail (`gate-infra`);
-  no file + alive + `Boot` → re-attach (spawn an observer that polls
+  dead-probe, past-deadline arm): **liveness first; the exit file is the
+  crashed-kernel recovery hint, consulted only for DEAD work** (once no
+  wait status can ever exist it is the only verdict channel left — §6.7
+  documents the residual same-user tamper risk this accepts). Dead +
+  present+parseable → `Complete(verdict)`; dead + unparseable → fail
+  (`gate-infra`); dead + no file → fail (`gate-infra`);
+  alive + `Boot` → re-attach (spawn an observer that polls
   `verify_owned_pid` until the gate dies, then reads the exit file;
   completes via the same Completed-gated one-tx body) and `LeaveParked`;
-  `PreDeadlineProbe` → `LeaveParked`; `PastDeadline` → fail ("gate
-  timeout"), no reattach observer (the caller kills the group next).
+  alive + `PreDeadlineProbe` → `LeaveParked`; alive + `PastDeadline` → fail
+  ("gate timeout"), no reattach observer (the caller kills the group next).
 - `plan_compensation` / `compensate_step`: kill the recorded group (op
   artifacts + tasks-row triple, both `verify_owned_pid`-guarded), then mark
   the task `failed('gate-infra')` via the same one-tx gate-result body if it
@@ -827,9 +837,12 @@ result events surface.
 
 ### 6.3 Execution semantics
 
-- Env: minimal kernel env + proxy settings (like `terminal_worker_env`,
-  `terminal_adapter.rs:837-849`). **No `NEIGE_MCP_TOKEN`/`NEIGE_MCP_SOCKET`** —
-  the gate cannot write kernel state.
+- Env: built from EMPTY (`env_clear()`), then explicit
+  `PATH`/`HOME`/`LANG`/`LC_ALL`/`TERM` (copied from the kernel) + the proxy
+  settings `terminal_worker_env` resolves (`terminal_adapter.rs:837-849`).
+  **No `NEIGE_MCP_TOKEN`/`NEIGE_MCP_SOCKET`** — the gate cannot write kernel
+  state — and no incidental kernel env. `NEIGE_GATE_EXIT_PATH` is handed to
+  the wrapper only; the wrapper unsets it before any step runs (§6.2 step 3).
 - Timeout: waiter kills the process group at `timeout_secs` (default 1800,
   cap 7200) → red, `status_detail='gate-timeout'`.
 - Exit semantics: wrapper exit 0 → green; non-zero → red with `failing_step`
@@ -920,8 +933,29 @@ privileges, no sandbox. This is the **same trust level the spec already has**:
 `calm.task.dispatch kind=terminal` runs arbitrary `cmd` as a kernel-spawned
 PTY today (`emit.rs:151-167`, `terminal_adapter.rs:563+`). What the gate adds:
 
-- Workers cannot read or edit the gate definition (kernel-side storage; not in
-  card payloads; `plan/` list omits commands for non-spec roles).
+- The gate definition's *authoritative* copy is kernel-side (`tasks.gate_json`;
+  not in card payloads; `plan/` list omits commands for non-spec roles) — but
+  the **rendered wrapper script is NOT secret**: it is written to
+  `<data_dir>/gate-logs/{task_id}-g{N}.sh`, which sits in the same
+  generally-worker-reachable tree as the logs (below). A same-user worker can
+  read it (learning the step commands and, between spawn and the wrapper's
+  `unset`, the exit-file path is also visible in `/proc/<pid>/environ`) and
+  could edit it before the spawn reads it. What actually holds is the
+  wait-status invariant below: the script's *effect* is judged by the
+  kernel-owned process handle, and the run that gets recorded was frozen in
+  `prepare_tx`. Possible future hardening (not done): pipe the wrapper body
+  to `sh -s` over stdin after the handshake instead of materializing a file.
+- **Verdict channel.** The live verdict is the wrapper's exit status observed
+  by the kernel over the process handle (`wait()`); the worker-reachable
+  `.exit` file is never consulted while a wait status exists, and the wrapper
+  unsets `NEIGE_GATE_EXIT_PATH` before running any step, so step children
+  cannot learn the path from their environment. **Residual concession**: after
+  a kernel crash the wait status is gone forever, and the `.exit` file is the
+  only verdict channel left — recovery for a *dead* gate trusts it. Since the
+  path is derivable by any same-user process (it can read the wrapper script;
+  secrecy is unattainable), a hostile same-user worker that wins the race
+  against its own gate's real exit can forge a crashed-kernel verdict. This is
+  the same out-of-scope same-user trust boundary as the log tampering below.
 - Workers **can** still game the *tree being gated*: they edit the same
   checkout the gate runs in and could alter tests, add a `build.rs`, or wrap
   the toolchain. The gate proves "this tree passes these commands", not "the

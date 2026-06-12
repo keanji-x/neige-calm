@@ -3020,6 +3020,136 @@ async fn gate_spawn_kills_prior_recorded_group() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// PR #685 review F1 — the verdict channel is the wait status, never
+/// the worker-reachable exit file: a step that forges `0` into the
+/// exit path and then SIGKILLs the wrapper group must still land a
+/// FAILED row (signal death → gate-infra), not a green one.
+#[tokio::test]
+async fn forged_exit_file_and_group_kill_cannot_flip_gate_green() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("forge");
+    let task_id = format!("{}:forge", boot.wave_id.as_str());
+    let exit_path = dir.join(format!("{task_id}-g1.exit"));
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ {
+            "name": "forge",
+            "cmd": format!("printf '0\\n' > '{}'; kill -9 0", exit_path.display()),
+        } ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "forge", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "forge", 30).await;
+
+    assert_eq!(
+        row.status,
+        TaskStatus::Failed,
+        "forged exit file must not pass the gate: {row:?}"
+    );
+    assert_eq!(row.status_detail.as_deref(), Some("gate-infra"));
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], false, "{verdict}");
+    // The forged file IS on disk — proving the observer ignored it.
+    assert_eq!(
+        std::fs::read_to_string(&exit_path).unwrap().trim(),
+        "0",
+        "forged artifact present but not consulted"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F2 — a step body is a free-form snippet: a top-level
+/// `exit 7` must end the STEP (red, exit_code 7) and still flow
+/// through `neige_gate_finish`, leaving the exit file for
+/// crashed-kernel recovery.
+#[tokio::test]
+async fn step_exit_ends_step_and_still_writes_exit_file() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("stepexit");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "bail", "cmd": "exit 7" } ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "stepexit", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "stepexit", 30).await;
+
+    assert_eq!(row.status, TaskStatus::Failed, "{row:?}");
+    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["exit_code"], 7, "{verdict}");
+    assert_eq!(verdict["failing_step"], "bail");
+    // The finish handler ran despite the step's `exit`: the durable
+    // recovery hint exists and carries the real code.
+    let task_id = format!("{}:stepexit", boot.wave_id.as_str());
+    let exit = std::fs::read_to_string(dir.join(format!("{task_id}-g1.exit"))).unwrap();
+    assert_eq!(exit.trim(), "7");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F1+F5 — step env hygiene: `NEIGE_GATE_EXIT_PATH` is
+/// unset before any step runs, the kernel's environment does not leak
+/// (env_clear), and the explicit minimal set (PATH, HOME) survives.
+#[tokio::test]
+async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    // Sentinel for the env_clear assertion: cargo always sets this for
+    // the test process, so it stands in for "arbitrary kernel env".
+    assert!(
+        std::env::var_os("CARGO_MANIFEST_DIR").is_some(),
+        "test must run under cargo for the kernel-env sentinel"
+    );
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("env");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [
+            { "name": "no-exit-path", "cmd": "test -z \"$NEIGE_GATE_EXIT_PATH\"" },
+            { "name": "no-kernel-env", "cmd": "test -z \"$CARGO_MANIFEST_DIR\"" },
+            { "name": "minimal-set", "cmd": "test -n \"$PATH\" && test -n \"$HOME\"" }
+        ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "env", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "env", 30).await;
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        row.status,
+        TaskStatus::Done,
+        "all env-hygiene steps must pass: {verdict}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[tokio::test]
 async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
