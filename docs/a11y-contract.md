@@ -21,7 +21,7 @@ Slices that have shipped against this contract:
 - Slice 2 (#63): Modal focus trap, initial focus, focus restore, background inert.
 - Slice 3 (#64): Implicit keyboard entry (Enter / F2) to rename.
 - Slice 4 (#65): `prefers-reduced-motion` universal CSS override.
-- Slice 5 (#66): Event-trace exposure (`window.__neigeEvents__`) + Playwright `a11y` project with `cargo run --bin replay --serve`.
+- Slice 5 (#66): Event-trace exposure (`window.__neigeEvents__`) + Playwright `a11y` project with `cargo run --bin replay --features fixtures --serve`.
 - Slice 6 (#71): Keyboard-only E2E suite + axe scans + `npm run a11y*` scripts.
 - Slice 7: AddPanel full menu keyboard semantics (arrow keys, Home/End, type-ahead, focus restore) via `useRovingTabindex`.
 - Slice 8 (#67): this document.
@@ -251,7 +251,7 @@ Helpers live in `web/e2e/helpers/trace.ts`:
 Two projects share `playwright.config.ts`:
 
 - **`chromium`** — points at the developer's `make dev` stack (`http://localhost:4041/calm/`). Used for `golden-path.spec.ts`, `wave-create.spec.ts`. No replay binary needed.
-- **`a11y`** — boots `cargo run --bin replay --serve` (Slice 5, see `web/e2e/_setup/replay-server.ts`) preloaded with a curated event-trace fixture. Use this project for any spec that needs the event trace ring buffer. Reference impl: `web/e2e/a11y-trace-smoke.spec.ts`.
+- **`a11y`** — boots `cargo run --bin replay --features fixtures --serve` (Slice 5, see `web/e2e/_setup/replay-server.ts`) preloaded with a curated event-trace fixture. Use this project for any spec that needs the event trace ring buffer. Reference impl: `web/e2e/a11y-trace-smoke.spec.ts`.
 
 The replay binary is spawned exclusively by the `replay-setup` setup project, which only runs as a dependency of `a11y`. Running `--project=chromium` alone never needs cargo on PATH.
 

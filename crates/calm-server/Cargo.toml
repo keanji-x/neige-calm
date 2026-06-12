@@ -31,6 +31,21 @@ codex-e2e = []
 name = "calm-server"
 path = "src/main.rs"
 
+# Issue #682 — the replay binary's `POST /dev/force-spec-phase` reaches the
+# fixtures-gated `SpecHarness::force_phase_for_dev` seam via
+# `replay::force_spec_phase`, so the whole (dev/CI-only) binary requires the
+# feature. Builds without it fail loudly ("target `replay` ... requires the
+# features: `fixtures`") instead of silently shipping a binary missing the
+# dev hook. Every spawn site passes the flag:
+#   * web/e2e/_setup/replay-server.setup.ts (`cargo run ... --features fixtures`)
+#   * .github/workflows/ci.yml a11y job (`cargo build ... --features fixtures`)
+# `cargo test` / `clippy --all-targets` builds pick the feature up
+# automatically via the `[dev-dependencies]` self-loop below.
+[[bin]]
+name = "replay"
+path = "src/bin/replay.rs"
+required-features = ["fixtures"]
+
 # Test-only stub plugins, built as side artifacts by `cargo test` and located
 # at runtime via `env!("CARGO_BIN_EXE_<name>")`. Kept under tests/fixtures/ so
 # they don't pollute `cargo install` and so `cargo build --release` for the

@@ -254,6 +254,74 @@ impl SpecHarness {
         on_observation(&self.inner, obs, envelope_id).await;
     }
 
+    /// Issue #682 — dev-only seam for the replay binary's
+    /// `POST /dev/force-spec-phase`. Forces the harness FSM into the state
+    /// matching `tag` (synthesized with `"dev-forced"` sentinel ids) and
+    /// runs the regular [`persist_snapshot`] path — the single write point
+    /// that updates the persisted snapshot (`runtime_set_handle_state_tx`),
+    /// the runtime row status, and emits `HarnessPhaseChanged` when the
+    /// phase actually changed. All three read surfaces (`GET /spec/run`,
+    /// the WS event stream, the DB snapshot) stay consistent by
+    /// construction. Forcing the same phase twice emits no duplicate event
+    /// (persist only emits on `last_phase != new_phase`).
+    ///
+    /// Returns `(old_phase, new_phase)` so the dev endpoint can report
+    /// what it did.
+    #[cfg(feature = "fixtures")]
+    pub async fn force_phase_for_dev(
+        &self,
+        tag: HarnessPhaseTag,
+    ) -> Result<(HarnessPhaseTag, HarnessPhaseTag)> {
+        const DEV_FORCED_TURN_ID: &str = "dev-forced";
+        let now = Instant::now();
+        let state = match tag {
+            HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
+            HarnessPhaseTag::Idle => HarnessState::Idle,
+            HarnessPhaseTag::IssuingTurn => HarnessState::Issuing {
+                since: now,
+                kind: IssuingKind::TurnStart,
+            },
+            HarnessPhaseTag::IssuingInterrupt => HarnessState::Issuing {
+                since: now,
+                kind: IssuingKind::Interrupt {
+                    target_turn_id: DEV_FORCED_TURN_ID.into(),
+                    reason: "dev-forced".into(),
+                },
+            },
+            HarnessPhaseTag::TurnRunning => HarnessState::TurnRunning {
+                turn_id: DEV_FORCED_TURN_ID.into(),
+                started_at: now,
+            },
+            HarnessPhaseTag::TurnCompleted => HarnessState::TurnCompleted {
+                last_turn_id: DEV_FORCED_TURN_ID.into(),
+            },
+            HarnessPhaseTag::Resumed => HarnessState::Resumed { resumed_at: now },
+            HarnessPhaseTag::Wedged => HarnessState::Wedged {
+                since: now,
+                reason: "dev-forced".into(),
+            },
+        };
+        let old_phase = *self.inner.last_phase.lock().await;
+        *self.inner.state.lock().await = state;
+        // Phases that imply a known turn need `last_turn_id` populated so
+        // `persist_snapshot` can derive `active_turn_id` (TurnRunning /
+        // IssuingInterrupt) and the snapshot round-trips through
+        // `state_from_snapshot` recovery. Keep a real id if one exists.
+        if matches!(
+            tag,
+            HarnessPhaseTag::TurnRunning
+                | HarnessPhaseTag::IssuingInterrupt
+                | HarnessPhaseTag::TurnCompleted
+        ) {
+            let mut last_turn_id = self.inner.last_turn_id.lock().await;
+            if last_turn_id.is_none() {
+                *last_turn_id = Some(DEV_FORCED_TURN_ID.into());
+            }
+        }
+        persist_snapshot(&self.inner).await?;
+        Ok((old_phase, tag))
+    }
+
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
     }
