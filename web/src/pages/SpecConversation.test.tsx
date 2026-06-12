@@ -88,6 +88,14 @@ function deferredVoid(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function harnessUserRow(id: number, text: string) {
   return {
     id,
@@ -628,6 +636,51 @@ describe('SpecConversation', () => {
     });
   });
 
+  it('stops on Esc when no widget has focus (body target)', async () => {
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(<Harness />);
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(mocks.stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('does not stop on Esc from outside the conversation region', () => {
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(
+      <>
+        <button type="button" data-testid="sibling-widget">
+          Sibling widget
+        </button>
+        <Harness />
+      </>,
+    );
+
+    const sibling = screen.getByTestId('sibling-widget');
+    sibling.focus();
+    fireEvent.keyDown(sibling, { key: 'Escape' });
+
+    expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  it('does not stop on Esc a closer listener already consumed', () => {
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(<Harness />);
+
+    const textarea = draftBox();
+    const consume = (e: Event) => e.preventDefault();
+    textarea.addEventListener('keydown', consume);
+    try {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    } finally {
+      textarea.removeEventListener('keydown', consume);
+    }
+
+    expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
   it('does not stop on Esc while idle, mid-IME, or with the reset dialog open', async () => {
     const user = userEvent.setup();
     mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
@@ -742,6 +795,34 @@ describe('SpecConversation', () => {
         t.includes('Turn stopped') ? 'note' : 'row',
       ),
     ).toEqual(['note', 'row', 'note']);
+  });
+
+  it('anchors a stop note created before the initial load to the transcript end', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    const initialPage = deferred<unknown[]>();
+    mocks.listHarnessItems.mockReturnValueOnce(initialPage.promise);
+
+    render(<Harness />);
+
+    // Stop while the initial history fetch is still in flight: the anchor
+    // is unknowable, so it must resolve to the end of the page, not null.
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+
+    await act(async () => {
+      initialPage.resolve([
+        harnessUserRow(1, 'Earlier question'),
+        harnessAgentRow(2, 'Earlier answer'),
+      ]);
+    });
+    expect(await screen.findByText('Earlier answer')).toBeInTheDocument();
+
+    expect(
+      transcriptBlocks().map((t) =>
+        t.includes('Turn stopped') ? 'note' : 'row',
+      ),
+    ).toEqual(['row', 'row', 'note']);
   });
 
   it('continues fetching the tail after a full asc page with no messages', async () => {

@@ -199,6 +199,7 @@ export function SpecConversation({
   );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputbarRef = useRef<HTMLElement>(null);
   const stickToBottomRef = useRef(true);
   // Per-view reading position (#654 finding 4): the report and conversation
   // documents share one scroll container, and the conversation forces the
@@ -319,15 +320,26 @@ export function SpecConversation({
   const isWorking = run.fsm === 'Working';
 
   // Esc stops the running turn (#668). A document-level listener (instead
-  // of per-element onKeyDown) covers focus anywhere in the conversation —
-  // input, scroll area, header chips. Gated on conversation mode + Working,
-  // skipped while the reset ConfirmDialog is open (its own Esc-to-cancel
-  // wins) and during IME composition; preventDefault only when handled.
+  // of per-element onKeyDown) covers focus anywhere in the conversation
+  // region — the scroll area and the inputbar — plus document.body (a
+  // keyboard user with no focused widget). Esc from a sibling widget
+  // (report rail, menus) is left alone, as is an Esc a closer listener
+  // already consumed (defaultPrevented). Gated on conversation mode +
+  // Working, skipped while the reset ConfirmDialog is open (its own
+  // Esc-to-cancel wins) and during IME composition; preventDefault only
+  // when handled.
   useEffect(() => {
     if (!inConversation || !isWorking || resetOpen) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      if (e.defaultPrevented) return;
       if (e.isComposing || e.keyCode === 229) return;
+      const target = e.target;
+      const inConversationRegion =
+        target instanceof Node &&
+        (scrollRef.current?.contains(target) === true ||
+          inputbarRef.current?.contains(target) === true);
+      if (!inConversationRegion && target !== document.body) return;
       e.preventDefault();
       void onStopRef.current();
     };
@@ -481,7 +493,7 @@ export function SpecConversation({
       </div>
 
       {specCardId != null && (
-        <footer className="report-convo-inputbar">
+        <footer ref={inputbarRef} className="report-convo-inputbar">
           <div className="report-convo-inputbar-inner">
             {(run.submitError ?? run.stopError) != null && (
               <p

@@ -34,12 +34,17 @@ export interface SpecChatHistorySnapshot {
  * `afterEntryId` is the id of the newest server entry when the note was
  * created (null when the transcript was empty), so the note stays between
  * the entries it was created between even after newer rows arrive.
+ * A note created while the INITIAL history fetch is still in flight cannot
+ * know its anchor yet — it carries `'pending'` and is resolved to the
+ * newest entry of the initial page when that page lands (null only if the
+ * transcript is genuinely empty), so it renders at the end of the existing
+ * conversation rather than at the top (#668 review P3).
  */
 type SystemNote = {
   id: number;
   text: string;
   atMs: number;
-  afterEntryId: number | null;
+  afterEntryId: number | null | 'pending';
 };
 
 function isCompletedMessageItem(
@@ -107,6 +112,9 @@ export function useSpecChatHistory(
   const loadingEarlierRef = useRef(false);
   const tailInFlightRef = useRef(false);
   const tailRefetchQueuedRef = useRef(false);
+  // False until the first full-page fetch for the current card resolves;
+  // notes created before that get a 'pending' anchor (#668 review P3).
+  const initialLoadDoneRef = useRef(false);
 
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [echoes, setEchoes] = useState<VisibleChatEntry[]>([]);
@@ -146,12 +154,30 @@ export function useSpecChatHistory(
     const parsed = parseRows(rows);
     entriesRef.current = parsed;
     setEntries(parsed);
+
+    // The initial page has landed: resolve 'pending' note anchors to the
+    // newest loaded entry so a stop-before-load note renders at the end of
+    // the conversation, not the top (#668 review P3). Null only when the
+    // transcript is genuinely empty.
+    initialLoadDoneRef.current = true;
+    const newestEntryId = parsed.length > 0 ? parsed[parsed.length - 1].id : null;
+    setSystemNotes((current) =>
+      current.some((note) => note.afterEntryId === 'pending')
+        ? current.map((note) =>
+            note.afterEntryId === 'pending'
+              ? { ...note, afterEntryId: newestEntryId }
+              : note,
+          )
+        : current,
+    );
+
     dropEchoesFor(parsed);
   }, [dropEchoesFor]);
 
   const clearHistory = useCallback(() => {
     oldestRawIdRef.current = null;
     newestRawIdRef.current = null;
+    initialLoadDoneRef.current = false;
     tailInFlightRef.current = false;
     tailRefetchQueuedRef.current = false;
     loadingEarlierRef.current = false;
@@ -371,9 +397,16 @@ export function useSpecChatHistory(
   const addSystemNote = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    // Before the initial history page resolves the anchor is unknowable —
+    // an empty entriesRef just means "not loaded yet". Mark it 'pending';
+    // replaceWithRows resolves it when the page lands (#668 review P3).
     const loaded = entriesRef.current;
-    const afterEntryId =
-      loaded.length > 0 ? loaded[loaded.length - 1].id : null;
+    const afterEntryId: number | null | 'pending' =
+      !initialLoadDoneRef.current
+        ? 'pending'
+        : loaded.length > 0
+          ? loaded[loaded.length - 1].id
+          : null;
     echoIdRef.current -= 1;
     setSystemNotes((current) => [
       ...current,
@@ -391,14 +424,16 @@ export function useSpecChatHistory(
 
     // Insert each note right after its anchor entry so later-arriving rows
     // render below it (#668 review P2). Slot k means "after entries[k-1]";
-    // slot 0 renders before all loaded entries — used for null anchors and
-    // anchors older than the loaded window (paged out). An anchor id that is
-    // in range but no longer loaded falls back to id order: after the last
-    // loaded entry whose id <= anchor.
+    // slot 0 renders before all loaded entries — used for null anchors,
+    // not-yet-resolved 'pending' anchors (the transcript is still empty
+    // then, so slot 0 is the whole list), and anchors older than the loaded
+    // window (paged out). An anchor id that is in range but no longer
+    // loaded falls back to id order: after the last loaded entry whose
+    // id <= anchor.
     const slots = new Map<number, VisibleChatEntry[]>();
     for (const note of systemNotes) {
       let slot = 0;
-      if (note.afterEntryId != null) {
+      if (typeof note.afterEntryId === 'number') {
         for (let i = entries.length - 1; i >= 0; i -= 1) {
           if (entries[i].id <= note.afterEntryId) {
             slot = i + 1;
