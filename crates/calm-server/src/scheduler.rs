@@ -45,8 +45,9 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::db::sqlite::{
-    begin_immediate_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, wave_lifecycle_tx,
+    TaskReporter, begin_immediate_tx, task_claim_pending_tx, task_complete_from_worker_tx,
+    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, tasks_by_wave_tx,
+    wave_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -420,7 +421,9 @@ impl Scheduler {
     ///
     /// `Ok(None)` = race lost: another claimer won, the wave's
     /// lifecycle left the schedulable set since the ready-set pass
-    /// (review F4), or the wave row was deleted. No event is persisted.
+    /// (review F4), the frozen row's ready predicate no longer holds
+    /// (round-2 review F1), or the wave row was deleted. No event is
+    /// persisted.
     async fn claim_task(&self, task: &Task, wave: &Wave) -> Result<Option<Task>> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
@@ -428,6 +431,7 @@ impl Scheduler {
         };
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
+        let budget_default = self.budget_default;
         let result =
             write_with_actor_events_typed::<Task, _>(
                 self.repo.as_ref(),
@@ -441,9 +445,10 @@ impl Scheduler {
                         // stale across the semaphore wait, and a wave moved
                         // to Blocked/Canceled/Done must not have new work
                         // claimed. Loss is silent (race-lost, no event).
-                        let lifecycle = wave_lifecycle_tx(tx, wave_id.as_str())
-                            .await?
-                            .ok_or_else(race_lost_err)?;
+                        let (lifecycle, task_budget) =
+                            wave_lifecycle_and_budget_tx(tx, wave_id.as_str())
+                                .await?
+                                .ok_or_else(race_lost_err)?;
                         if !lifecycle_allows_scheduling(lifecycle) {
                             return Err(race_lost_err());
                         }
@@ -454,6 +459,47 @@ impl Scheduler {
                         // Post-claim re-read = the frozen row (review F2).
                         // Gone row = concurrent wave delete; treat as lost.
                         let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
+                        // Round-2 review F1: revalidate the §5.2 ready
+                        // predicate against the wave's CURRENT plan in the
+                        // same tx. The pass's ready set was computed before
+                        // the semaphore wait, so a `plan.updated` that added
+                        // a dependency or a PATCH that shrank the budget
+                        // mid-window must abort the claim (race-lost, the
+                        // rollback un-flips the row, the next poke
+                        // re-evaluates). Strict priority ORDER is
+                        // deliberately NOT revalidated — the design only
+                        // fixes the ready-set order per pass (§5.4).
+                        let siblings = tasks_by_wave_tx(tx, wave_id.as_str()).await?;
+                        let done_keys: BTreeSet<&str> = siblings
+                            .iter()
+                            .filter(|t| t.status == TaskStatus::Done)
+                            .map(|t| t.key.as_str())
+                            .collect();
+                        if !frozen
+                            .depends_on()
+                            .iter()
+                            .all(|dep| done_keys.contains(dep.as_str()))
+                        {
+                            return Err(race_lost_err());
+                        }
+                        let budget = task_budget.unwrap_or(budget_default).max(0);
+                        // `siblings` was read AFTER the claim flip, so the
+                        // in-flight count includes this row — it must fit
+                        // the budget, not stay strictly under it.
+                        let in_flight = siblings
+                            .iter()
+                            .filter(|t| {
+                                matches!(
+                                    t.status,
+                                    TaskStatus::Dispatched
+                                        | TaskStatus::Running
+                                        | TaskStatus::Verifying
+                                )
+                            })
+                            .count() as i64;
+                        if in_flight > budget {
+                            return Err(race_lost_err());
+                        }
                         let mut events = vec![(
                             ActorId::KernelDispatcher,
                             scope.clone(),
@@ -631,7 +677,7 @@ impl Scheduler {
                         tx,
                         &task_id,
                         wave_id.as_str(),
-                        None,
+                        TaskReporter::Kernel,
                         "spawn-failed",
                         now_ms(),
                     )
@@ -992,16 +1038,19 @@ pub async fn complete_terminal_task(
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
             let now = now_ms();
+            // Round-2 review F2: both completion-path callers resolve
+            // `worker_card_id` FROM the task binding itself — the live
+            // hook walks terminal → card → payload `idempotency_key` to
+            // find the task, and the sweep arm resolves the card from
+            // the row stamp or the worker operation's idempotency key —
+            // so the card owns the key by construction.
+            let reporter = TaskReporter::Card {
+                card_id: worker_card_id.as_str(),
+                owns_key: true,
+            };
             let (rows, event) = if success {
                 (
-                    task_complete_from_worker_tx(
-                        tx,
-                        &task_id,
-                        &wave_id_str,
-                        Some(worker_card_id.as_str()),
-                        now,
-                    )
-                    .await?,
+                    task_complete_from_worker_tx(tx, &task_id, &wave_id_str, reporter, now).await?,
                     Event::TaskCompleted {
                         idempotency_key: task_id.clone(),
                         result: json!({ "exit_code": 0, "source": "terminal-exit" }),
@@ -1027,7 +1076,7 @@ pub async fn complete_terminal_task(
                         tx,
                         &task_id,
                         &wave_id_str,
-                        Some(worker_card_id.as_str()),
+                        reporter,
                         "worker-reported",
                         now,
                     )

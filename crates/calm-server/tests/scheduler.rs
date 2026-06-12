@@ -274,6 +274,21 @@ async fn call_tool(
     handler(boot.ctx.clone(), identity, args).await
 }
 
+/// Stamp the boot worker card's payload `idempotency_key` to `task_id`
+/// — the binding every scheduler-spawned worker card carries from
+/// `prepare_tx` (round-2 review F2). Tests that exercise reports
+/// against UNSTAMPED rows need it: the report flip's unstamped-row arm
+/// only accepts a card that proves payload ownership of the key.
+async fn bind_worker_card_payload(boot: &Boot, task_id: &str) {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+        .bind(json!({ "idempotency_key": task_id }).to_string())
+        .bind(boot.worker_card_id.as_str())
+        .execute(&pool)
+        .await
+        .expect("bind worker card payload");
+}
+
 fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
@@ -761,6 +776,9 @@ async fn fast_worker_report_beats_running_stamp() {
     let task = plan_task(&boot.wave_id, "fast", TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
+    // The report lands while the row is dispatched + UNSTAMPED, so the
+    // reporting card must carry the payload binding (round-2 F2).
+    bind_worker_card_payload(&boot, &task_id).await;
     let handler = boot
         .registry
         .lookup(TOOL_TASK_COMPLETE)
@@ -857,6 +875,8 @@ async fn worker_report_flips_row_inside_emit_tx() {
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
+    // Unstamped row → the report needs the payload binding (round-2 F2).
+    bind_worker_card_payload(&boot, &task_id).await;
 
     call_tool(
         &boot,
@@ -885,6 +905,7 @@ async fn duplicate_report_is_idempotent() {
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
+    bind_worker_card_payload(&boot, &task_id).await;
 
     call_tool(
         &boot,
@@ -899,6 +920,10 @@ async fn duplicate_report_is_idempotent() {
 
     // A retried report appends another event but the guarded flip
     // no-ops — the row keeps its original terminal state + timestamps.
+    // This is round-2 F3 case (iii): the row is already TERMINAL, so
+    // the 0-row flip must NOT be treated as an ownership rejection —
+    // the duplicate report still succeeds and still persists its event
+    // (consumers tolerate duplicate task events per key, design §1.3).
     call_tool(
         &boot,
         TOOL_TASK_FAIL,
@@ -915,6 +940,11 @@ async fn duplicate_report_is_idempotent() {
     );
     assert_eq!(second.finished_at_ms, first.finished_at_ms);
     assert_eq!(second.updated_at_ms, first.updated_at_ms);
+    assert_eq!(
+        event_rows(&boot, "task.failed").await.len(),
+        1,
+        "F3 case (iii): the duplicate report's event still persists"
+    );
 }
 
 #[tokio::test]
@@ -929,6 +959,7 @@ async fn gated_row_is_left_alone_on_complete() {
     task.gate_json = Some(json!({ "steps": [{ "name": "t", "cmd": "true" }] }).to_string());
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
+    bind_worker_card_payload(&boot, &task_id).await;
 
     call_tool(
         &boot,
@@ -1368,7 +1399,9 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         thread_id: "sibling-thread".into(),
     };
 
-    // Sibling completes "someone else's" task → guarded flip no-ops.
+    // Sibling completes "someone else's" task → guarded flip no-ops AND
+    // (round-2 F3 case iv) the whole report is refused: error back to
+    // the caller, NO event persisted, no lifecycle transition.
     call_tool(
         &boot,
         TOOL_TASK_COMPLETE,
@@ -1376,7 +1409,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         json!({ "idempotency_key": task_id, "result": { "ok": true } }),
     )
     .await
-    .expect("sibling complete report (event persists, flip no-ops)");
+    .expect_err("sibling report against a row stamped to another card must be rejected");
     let row = task_row(&boot, "owned").await;
     assert_eq!(
         row.status,
@@ -1388,6 +1421,10 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         Some(boot.worker_card_id.as_str()),
         "stamp untouched"
     );
+    assert!(
+        event_rows(&boot, "task.completed").await.is_empty(),
+        "rejected report must persist no terminal event"
+    );
 
     // Same guard on the failure flip.
     call_tool(
@@ -1397,8 +1434,20 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         json!({ "idempotency_key": task_id, "reason": "not mine" }),
     )
     .await
-    .expect("sibling fail report");
+    .expect_err("sibling fail report must be rejected");
     assert_eq!(task_row(&boot, "owned").await.status, TaskStatus::Running);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "rejected reports must not run the Working → Reviewing transition"
+    );
 
     // The stamped owner still flips normally.
     call_tool(
@@ -1410,6 +1459,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
     .await
     .expect("owner complete report");
     assert_eq!(task_row(&boot, "owned").await.status, TaskStatus::Done);
+    assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,4 +1836,255 @@ async fn sweep_fails_task_when_preexisting_op_failed() {
     let failed = event_rows(&boot, "task.failed").await;
     assert_eq!(failed.len(), 1);
     assert!(failed[0].0.contains("KernelDispatcher"));
+}
+
+// ---------------------------------------------------------------------------
+// Review round 2 — F1: the claim tx revalidates the ready predicate
+// (deps + budget) against the CURRENT plan, not the pre-claim snapshot
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn claim_aborts_when_dep_added_pre_claim() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let task = plan_task(&boot.wave_id, "revised", TaskKind::Codex, &[]);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Park the pass inside `dispatch_task` between the ready-set
+    // snapshot and the claim (the semaphore wait window).
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = Arc::clone(&semaphore)
+        .acquire_owned()
+        .await
+        .expect("test holds the only permit");
+    let (_runtime, scheduler) = build_scheduler_with_semaphore(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+        semaphore,
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        let wave_id = boot.wave_id.clone();
+        async move { scheduler.schedule_wave(wave_id).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // The plan.updated shape: the spec inserts a new prerequisite task
+    // and revises the still-pending row to depend on it.
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "prereq", TaskKind::Codex, &[]),
+    )
+    .await;
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let revised =
+        sqlx::query("UPDATE tasks SET depends_on_json = ?1 WHERE id = ?2 AND status = 'pending'")
+            .bind(json!(["prereq"]).to_string())
+            .bind(&task_id)
+            .execute(&pool)
+            .await
+            .expect("revise pending row deps");
+    assert_eq!(revised.rows_affected(), 1, "dep added while parked");
+
+    drop(permit);
+    handle.await.expect("schedule_wave task");
+
+    assert_eq!(
+        task_row(&boot, "revised").await.status,
+        TaskStatus::Pending,
+        "in-tx dep revalidation must abort the claim (race-lost, silent)"
+    );
+    assert!(
+        event_rows(&boot, "task.dispatched").await.is_empty(),
+        "a lost claim persists no dispatch record"
+    );
+    assert_eq!(operation_count(&boot, "codex-worker").await, 0);
+}
+
+#[tokio::test]
+async fn claim_aborts_when_budget_shrunk_pre_claim() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "held", TaskKind::Codex, &[]),
+    )
+    .await;
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = Arc::clone(&semaphore)
+        .acquire_owned()
+        .await
+        .expect("test holds the only permit");
+    let (_runtime, scheduler) = build_scheduler_with_semaphore(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+        semaphore,
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        let wave_id = boot.wave_id.clone();
+        async move { scheduler.schedule_wave(wave_id).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // `PATCH /api/waves` shrinks the budget to 0 mid-window.
+    boot.repo
+        .wave_update(
+            boot.wave_id.as_str(),
+            WavePatch {
+                task_budget: Some(Some(0)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("shrink budget");
+
+    drop(permit);
+    handle.await.expect("schedule_wave task");
+
+    assert_eq!(
+        task_row(&boot, "held").await.status,
+        TaskStatus::Pending,
+        "in-tx budget revalidation must abort the claim"
+    );
+    assert!(event_rows(&boot, "task.dispatched").await.is_empty());
+    assert_eq!(operation_count(&boot, "codex-worker").await, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 2 — F2 + F3 case (iv): an UNSTAMPED dispatched row only
+// accepts the card that proves payload ownership of the key; rejected
+// reports error and emit nothing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn unstamped_dispatched_row_rejects_sibling_report() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    // Claimed but the running stamp hasn't landed yet — the
+    // report-beats-stamp window round 1 left open for siblings.
+    let mut task = plan_task(&boot.wave_id, "unstamped", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Sibling worker in the SAME wave whose payload binds a DIFFERENT
+    // idempotency key — it echoes this task's id in its report.
+    let sibling = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({ "idempotency_key": "some-other-task" }),
+        })
+        .await
+        .expect("sibling worker card");
+    boot.card_role_cache
+        .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    let sibling_identity = ToolCallIdentity {
+        card_id: sibling.id.as_str().to_string(),
+        role: CardRole::Worker,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "sibling-thread".into(),
+    };
+
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        sibling_identity.clone(),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect_err("sibling without the payload binding must be rejected on an unstamped row");
+    let row = task_row(&boot, "unstamped").await;
+    assert_eq!(row.status, TaskStatus::Dispatched, "row untouched");
+    assert_eq!(row.worker_card_id, None, "no stamp stolen");
+    assert!(
+        event_rows(&boot, "task.completed").await.is_empty(),
+        "rejected report persists nothing"
+    );
+
+    // Same on the fail path.
+    call_tool(
+        &boot,
+        TOOL_TASK_FAIL,
+        sibling_identity,
+        json!({ "idempotency_key": task_id, "reason": "not mine" }),
+    )
+    .await
+    .expect_err("sibling fail report must be rejected");
+    assert_eq!(
+        task_row(&boot, "unstamped").await.status,
+        TaskStatus::Dispatched
+    );
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "rejected reports must not promote Working → Reviewing"
+    );
+
+    // The card that DOES carry the binding flips the unstamped row and
+    // stamps itself — the legitimate report-beats-stamp path survives.
+    bind_worker_card_payload(&boot, &task_id).await;
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("owning card's report");
+    let row = task_row(&boot, "unstamped").await;
+    assert_eq!(row.status, TaskStatus::Done);
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Review round 2 — F3 case (i): legacy `calm.task.dispatch` reports
+// (no tasks row for the key) keep today's emit behavior
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn legacy_report_without_task_row_still_emits() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    // No tasks row exists for this key, and the boot worker card's
+    // payload carries no binding — the legacy dispatch shape.
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": "legacy-dispatch-key", "result": { "ok": true } }),
+    )
+    .await
+    .expect("legacy report must keep succeeding");
+    let completed = event_rows(&boot, "task.completed").await;
+    assert_eq!(completed.len(), 1, "event persisted exactly as before");
+    // ... including the Working → Reviewing first-report promotion.
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
 }

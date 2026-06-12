@@ -1014,20 +1014,25 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
-/// Issue #644 PR-B — in-tx read of one wave's lifecycle. The scheduler's
-/// claim tx re-checks schedulability against this (not the pre-claim
-/// snapshot) so a wave moved to Blocked/Canceled/Done between the
-/// ready-set pass and the claim can never have new work claimed
-/// (review F4). `None` = the wave row is gone (concurrent delete).
-pub async fn wave_lifecycle_tx(
+/// Issue #644 PR-B — in-tx read of one wave's lifecycle plus its raw
+/// `task_budget` override. The scheduler's claim tx re-checks
+/// schedulability against this (not the pre-claim snapshot) so a wave
+/// moved to Blocked/Canceled/Done between the ready-set pass and the
+/// claim can never have new work claimed (review F4), and the budget is
+/// revalidated in the same tx so a PATCH that shrank it mid-window
+/// cannot over-fill the wave (round-2 review F1). `None` = the wave row
+/// is gone (concurrent delete); the inner `Option<i64>` is the nullable
+/// `task_budget` column (NULL = kernel default).
+pub async fn wave_lifecycle_and_budget_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &str,
-) -> Result<Option<WaveLifecycle>> {
-    let row: Option<(WaveLifecycle,)> = sqlx::query_as("SELECT lifecycle FROM waves WHERE id = ?1")
-        .bind(wave_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    Ok(row.map(|(lifecycle,)| lifecycle))
+) -> Result<Option<(WaveLifecycle, Option<i64>)>> {
+    let row: Option<(WaveLifecycle, Option<i64>)> =
+        sqlx::query_as("SELECT lifecycle, task_budget FROM waves WHERE id = ?1")
+            .bind(wave_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(row)
 }
 
 /// Issue #644 PR-B — the scheduler's single-winner claim
@@ -1080,6 +1085,41 @@ pub async fn task_mark_running_tx(
     Ok(res.rows_affected())
 }
 
+/// Who is asserting a worker-report flip (round-2 review F2).
+///
+/// The two-sided `worker_card_id` guard from round 1 only protects
+/// rows that already carry a stamp; an UNSTAMPED `dispatched` row (the
+/// report-beat-the-running-stamp window) would otherwise accept any
+/// same-wave worker that echoes the task id. The ownership proof for
+/// that window is the worker-card payload binding: every worker card
+/// the scheduler spawns carries the task's `idempotency_key` in its
+/// payload (stamped at `prepare_tx` by both the codex and terminal
+/// adapters, immutable afterwards), so only the card actually spawned
+/// for the task can present it.
+#[derive(Clone, Copy, Debug)]
+pub enum TaskReporter<'a> {
+    /// Kernel-internal caller that owns the row by construction (the
+    /// scheduler's spawn-failure reconcile). Bypasses the card guard
+    /// and leaves `worker_card_id` untouched (NULL COALESCE arm).
+    Kernel,
+    /// A worker card's report. `owns_key` must be the result of
+    /// resolving the REPORTING card's payload `idempotency_key` and
+    /// comparing it to the task id — `true` is the unstamped-row
+    /// ownership proof; stamped rows are still guarded by
+    /// `worker_card_id = card_id`.
+    Card { card_id: &'a str, owns_key: bool },
+}
+
+impl<'a> TaskReporter<'a> {
+    /// `(card_id bind, owns_key bind)` for the shared SQL guard shape.
+    fn binds(self) -> (Option<&'a str>, bool) {
+        match self {
+            TaskReporter::Kernel => (None, true),
+            TaskReporter::Card { card_id, owns_key } => (Some(card_id), owns_key),
+        }
+    }
+}
+
 /// Issue #644 PR-B — worker-reported success flip
 /// (`dispatched/running → done`, design §3), run **inside** the
 /// `calm.task.complete` emit tx (and by the terminal-exit completion
@@ -1094,21 +1134,21 @@ pub async fn task_mark_running_tx(
 /// `wave_id` is part of the guard so a caller can never flip another
 /// wave's row even if it echoes a foreign task id.
 ///
-/// `worker_card_id` is two-sided (review F3): besides the COALESCE
-/// stamp, a `Some(card)` caller is also *guarded* by it — the flip only
-/// lands when the row's `worker_card_id` is still NULL (report beat the
-/// running stamp) or matches the reporting card. A sibling worker in
-/// the same wave echoing another task's idempotency key can therefore
-/// never terminalize that row. `None` bypasses the guard — reserved
-/// for kernel callers that own the row (the scheduler's spawn-failure
-/// reconcile), never for card-derived reports.
+/// The card guard is two-sided (review F3 + round-2 F2): besides the
+/// COALESCE stamp, a [`TaskReporter::Card`] caller only flips a row
+/// whose `worker_card_id` matches it, or an unstamped row when the
+/// reporting card proves payload ownership (`owns_key`). A sibling
+/// worker echoing another task's idempotency key can therefore never
+/// terminalize that row, stamped or not. [`TaskReporter::Kernel`]
+/// bypasses — reserved for kernel callers that own the row.
 pub async fn task_complete_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     wave_id: &str,
-    worker_card_id: Option<&str>,
+    reporter: TaskReporter<'_>,
     now: i64,
 ) -> Result<u64> {
+    let (worker_card_id, owns_key) = reporter.binds();
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'done',
@@ -1119,12 +1159,14 @@ pub async fn task_complete_from_worker_tx(
            WHERE id = ?3 AND wave_id = ?4
              AND status IN ('dispatched', 'running')
              AND gate_json IS NULL
-             AND (?1 IS NULL OR worker_card_id IS NULL OR worker_card_id = ?1)"#,
+             AND (?1 IS NULL OR worker_card_id = ?1
+                  OR (worker_card_id IS NULL AND ?5))"#,
     )
     .bind(worker_card_id)
     .bind(now)
     .bind(id)
     .bind(wave_id)
+    .bind(owns_key)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())
@@ -1138,17 +1180,18 @@ pub async fn task_complete_from_worker_tx(
 /// terminal exited non-zero) from `'spawn-failed'` (the scheduler could
 /// not start it).
 ///
-/// `worker_card_id` carries the same two-sided guard as the success
-/// flip (review F3): `Some(card)` only flips an unstamped or matching
-/// row; `None` (kernel spawn-failure path) bypasses.
+/// `reporter` carries the same two-sided guard as the success flip
+/// (review F3 + round-2 F2): a card only flips a matching-stamp row or
+/// an unstamped row it proves payload ownership of; `Kernel` bypasses.
 pub async fn task_fail_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     wave_id: &str,
-    worker_card_id: Option<&str>,
+    reporter: TaskReporter<'_>,
     status_detail: &str,
     now: i64,
 ) -> Result<u64> {
+    let (worker_card_id, owns_key) = reporter.binds();
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'failed',
@@ -1158,13 +1201,15 @@ pub async fn task_fail_from_worker_tx(
                finished_at_ms = ?3
            WHERE id = ?4 AND wave_id = ?5
              AND status IN ('dispatched', 'running')
-             AND (?2 IS NULL OR worker_card_id IS NULL OR worker_card_id = ?2)"#,
+             AND (?2 IS NULL OR worker_card_id = ?2
+                  OR (worker_card_id IS NULL AND ?6))"#,
     )
     .bind(status_detail)
     .bind(worker_card_id)
     .bind(now)
     .bind(id)
     .bind(wave_id)
+    .bind(owns_key)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())

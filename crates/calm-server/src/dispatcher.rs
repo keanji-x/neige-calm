@@ -613,11 +613,14 @@ impl Dispatcher {
             "wave.report_edited".into(),
             "codex.hook".into(),
             "claude.hook".into(),
-            // Issue #644 PR-B — scheduler triggers (§5.1). These two
+            // Issue #644 PR-B — scheduler triggers (§5.1). These
             // only poke the scheduler; they never enter the push branch
-            // or the worker-spawn path.
+            // or the worker-spawn path. `wave.updated` (round-2 review
+            // F4) covers budget-changing PATCHes, which emit no
+            // lifecycle event when the lifecycle is unchanged.
             "plan.updated".into(),
             "wave.lifecycle_changed".into(),
+            "wave.updated".into(),
         ];
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
@@ -714,8 +717,8 @@ struct Inner {
     harness: HarnessRegistry,
     operation_runtime: Weak<OperationRuntime>,
     /// Issue #644 PR-B — scheduler poked by the subscription arms
-    /// (`plan.updated`, `wave.lifecycle_changed`, and the task report
-    /// kinds after their push handling).
+    /// (`plan.updated`, `wave.lifecycle_changed`, `wave.updated`, and
+    /// the task report kinds after their push handling).
     scheduler: Arc<Scheduler>,
     /// #293 PR3b — DEDICATED push watermark cache keyed by the spec
     /// `CardId`. A push fires only when `envelope_id > cursor`, then bumps;
@@ -790,6 +793,16 @@ impl Inner {
             }
             Event::WaveLifecycleChanged { id, .. } => {
                 self.scheduler.poke(id.clone());
+                return;
+            }
+            // Round-2 review F4 — `PATCH /api/waves` emits only
+            // `wave.updated` when it changes `task_budget` without a
+            // lifecycle transition; without this arm a raised budget
+            // would strand pending tasks until the reconcile tick. Poke
+            // only (never the push branch); pokes are idempotent and
+            // cheap, so no budget diffing.
+            Event::WaveUpdated(payload) => {
+                self.scheduler.poke(payload.id.clone());
                 return;
             }
             Event::WaveReportEdited {
@@ -1657,6 +1670,7 @@ mod tests {
                 "claude.hook".into(),
                 "plan.updated".into(),
                 "wave.lifecycle_changed".into(),
+                "wave.updated".into(),
             ]),
         };
         let wave = WaveId::from("w");
@@ -1733,6 +1747,26 @@ mod tests {
             to: crate::model::WaveLifecycle::Planning,
             agent_message: None,
         })));
+        // Round-2 review F4 — budget PATCHes emit only `wave.updated`
+        // when the lifecycle is unchanged; it must reach the poke arm.
+        assert!(filter.matches(&env(Event::WaveUpdated(
+            crate::event::WaveUpdatedPayload::new(
+                crate::model::Wave {
+                    id: wave.clone(),
+                    cove_id: cove.clone(),
+                    title: "w".into(),
+                    sort: 0.0,
+                    archived_at: None,
+                    pinned_at: None,
+                    lifecycle: crate::model::WaveLifecycle::Working,
+                    cwd: String::new(),
+                    terminal_at: None,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                None,
+            )
+        ))));
         // `task.dispatched` is emitted BY the scheduler inside its claim
         // tx and deliberately NOT subscribed (§5.1).
         assert!(!filter.matches(&env(Event::TaskDispatched {
