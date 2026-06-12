@@ -10,8 +10,8 @@
 import { test, expect } from '@playwright/test';
 
 import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
-import { forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
-import { clearEventTrace, getEventTrace } from './helpers/trace';
+import { SPEC_CHAT_COPY, forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
+import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
 test.describe('spec chat input path', () => {
   let waveId: string;
@@ -47,7 +47,19 @@ test.describe('spec chat input path', () => {
     const textarea = page.getByRole('textbox', { name: 'Ask the Spec Agent' });
     await textarea.fill('Summarize the open risks');
     // Reset the trace AFTER setup settles so the no-churn assertion below
-    // sees only what the send itself produced.
+    // sees only what the send itself produced. "Settled" must include the
+    // WS replay of the pre-navigation `forceSpecPhase('idle')` — the
+    // stream subscribes with `since: 0`, so that `harness.phase.changed`
+    // is replayed to this fresh page and could otherwise land AFTER the
+    // clear and trip the zero-churn assertion. Wait for it first.
+    await page.waitForFunction((cardId) => {
+      const buf = window.__neigeEvents__ ?? [];
+      return buf.some((e) => {
+        if (e.ev !== 'harness.phase.changed') return false;
+        const data = e.data as { card_id?: string; new_phase?: string };
+        return data.card_id === cardId && data.new_phase === 'idle';
+      });
+    }, specCardId);
     await clearEventTrace(page);
 
     const [response] = await Promise.all([
@@ -67,15 +79,20 @@ test.describe('spec chat input path', () => {
     // harness would emit the real item — which the paused dev harness
     // never does).
     await expect(page.getByText('Summarize the open risks')).toBeVisible();
-    await expect(page.getByText('You · queued')).toBeVisible();
+    await expect(page.getByText(SPEC_CHAT_COPY.queuedEcho)).toBeVisible();
     // No error surface.
     await expect(page.getByRole('alert')).toHaveCount(0);
 
     // Phase stability: observe is enqueue-only, the paused harness never
-    // starts a turn from it. Give a rogue transition a fair chance to
-    // cross bus → WS → bridge, then assert the chip never moved and the
-    // trace recorded zero phase churn.
-    await page.waitForTimeout(500);
+    // starts a turn from it. Deterministic anchor: `/spec/input` emits
+    // `harness.user_message.enqueued` (routes/cards.rs), so its arrival
+    // in the trace proves the send's bus → WS → bridge round trip
+    // completed. A short settle after it gives a hypothetical async
+    // phase transition (which would be emitted by the harness loop, not
+    // the route) a fair chance to surface, then we assert the chip never
+    // moved and the trace recorded zero phase churn.
+    await waitForEvent(page, 'harness.user_message.enqueued');
+    await page.waitForTimeout(200);
     await expect(chip).toHaveText('Idle');
     const phaseEvents = (await getEventTrace(page)).filter(
       (e) => e.ev === 'harness.phase.changed',

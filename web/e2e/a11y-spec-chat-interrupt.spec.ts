@@ -22,7 +22,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
-import { forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
+import { SPEC_CHAT_COPY, forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
 
 test.describe('spec chat interrupt UI', () => {
   let waveId: string;
@@ -60,7 +60,9 @@ test.describe('spec chat interrupt UI', () => {
       page.getByRole('status', { name: 'Spec Agent is working' }),
     ).toHaveCount(0);
     // The FE-local system note is the user's only "it stopped" feedback.
-    await expect(page.locator('.report-convo-system')).toContainText('Turn stopped');
+    await expect(page.locator('.report-convo-system')).toContainText(
+      SPEC_CHAT_COPY.turnStopped,
+    );
     // And the 200 `{stopped: true}` answer means no error surface.
     await expect(page.getByRole('alert')).toHaveCount(0);
   }

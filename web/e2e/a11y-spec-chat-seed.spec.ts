@@ -17,7 +17,12 @@
 import { test, expect } from '@playwright/test';
 
 import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
-import { forceSpecPhase, getSpecCardId, getSpecRun } from './helpers/spec-chat';
+import {
+  dropServerPhaseFrames,
+  forceSpecPhase,
+  getSpecCardId,
+  getSpecRun,
+} from './helpers/spec-chat';
 
 test.describe('spec chat seed path (#676 pin)', () => {
   let waveId: string;
@@ -38,15 +43,18 @@ test.describe('spec chat seed path (#676 pin)', () => {
     request,
   }) => {
     // Force the harness into a running turn BEFORE any navigation. After
-    // this the browser session starts cold: the only liveness source the
-    // freshly-loaded page has is the `GET /spec/run` seed (plus the WS
-    // replay of the same phase, which carries the identical wire value).
+    // this the browser session starts cold. The WS stream would normally
+    // replay the forced `harness.phase.changed` too (it subscribes with
+    // `since: 0`), so the frame-drop filter below removes that second
+    // source: the only way the freshly-loaded page can learn the turn is
+    // live is the `GET /spec/run` seed.
     const forced = await forceSpecPhase(request, specCardId, 'turn_running');
     expect(forced.new_phase).toBe('turn_running');
     // Cross-check the seed surface the FE is about to read.
     const run = await getSpecRun(request, specCardId);
     expect(run.phase).toBe('turn_running');
 
+    await dropServerPhaseFrames(page);
     await page.goto(`/calm/wave/${waveId}?trace=1`);
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec seed test' }),
@@ -79,6 +87,9 @@ test.describe('spec chat seed path (#676 pin)', () => {
   }) => {
     await forceSpecPhase(request, specCardId, 'idle');
 
+    // Same hardening as the mid-turn test: with the WS phase replay
+    // dropped, the Idle chip below can only come from the REST seed.
+    await dropServerPhaseFrames(page);
     await page.goto(`/calm/wave/${waveId}?trace=1`);
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec seed test' }),

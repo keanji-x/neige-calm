@@ -23,15 +23,28 @@
 //     where a 30s watchdog will wedge it — interrupt tests must act,
 //     assert, and let the next `dev/reset` clean up (never idle >30s).
 
-import type { APIRequestContext } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 
 import { REPLAY_PORT } from './reset';
 
 /**
+ * FE copy the spec-chat suite pins verbatim (lives in
+ * `web/src/pages/SpecConversation.tsx`). Centralized so a copy change
+ * breaks exactly one constant instead of assertions scattered across
+ * the input + interrupt specs.
+ */
+export const SPEC_CHAT_COPY = {
+  /** FE-local system note after a successful interrupt (#668). */
+  turnStopped: 'Turn stopped',
+  /** Author label on the FE-local echo entry of a queued user message. */
+  queuedEcho: 'You · queued',
+} as const;
+
+/**
  * Forceable `HarnessPhaseTag` wire values. Mirrors the snake_case serde
- * tags in `crates/calm-server/src/harness.rs`; `wedged` is deliberately
- * absent — the dev endpoint rejects it with 400 (a failed runtime row is
- * no longer projectable by `GET /spec/run`).
+ * tags of `HarnessPhaseTag` in `crates/calm-server/src/harness/snapshot.rs`;
+ * `wedged` is deliberately absent — the dev endpoint rejects it with 400
+ * (a failed runtime row is no longer projectable by `GET /spec/run`).
  */
 export type SpecHarnessPhase =
   | 'pending_thread_start'
@@ -138,4 +151,40 @@ export async function getSpecRun(
     );
   }
   return (await response.json()) as SpecRunSnapshot;
+}
+
+/**
+ * Intercept the page's `/api/events` WebSocket and drop every
+ * server→client `harness.phase.changed` frame; everything else (both
+ * directions, including the client's `{sub, since}` publishes and the
+ * server's `_replay_complete` control frame) proxies through untouched.
+ *
+ * Why: the event stream subscribes with `since: 0`, so a phase forced
+ * BEFORE navigation is replayed to the fresh page over WS anyway — and
+ * the replayed frame carries the same wire value as the REST seed. A
+ * seed-path test without this filter could stay green even if the
+ * component never consumed `GET /spec/run`. With the frames dropped,
+ * the seed read is provably the ONLY liveness source.
+ *
+ * Must be installed before `page.goto`. Seed-path tests only — live /
+ * input / interrupt specs depend on real phase frames.
+ */
+export async function dropServerPhaseFrames(page: Page): Promise<void> {
+  await page.routeWebSocket(/\/api\/events/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((message) => {
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      if (typeof message === 'string') {
+        try {
+          const parsed = JSON.parse(message) as { ev?: unknown };
+          if (parsed.ev === 'harness.phase.changed') return;
+        } catch {
+          // Non-JSON frame — pass through.
+        }
+      }
+      ws.send(message);
+    });
+  });
 }
