@@ -1,0 +1,73 @@
+[
+  {
+    "description": "User may emit wave.updated (wave scope)",
+    "actor": { "kind": "User" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "Kernel may emit wave.updated (FSM projector / sweeper authority)",
+    "actor": { "kind": "Kernel" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "KernelDispatcher may emit wave.updated",
+    "actor": { "kind": "KernelDispatcher" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "Plugin actor is unrestricted on wave.updated (PR3 policy)",
+    "note": "Characterization: plugins keep unrestricted write access today; if a later PR tightens plugin authority this vector must be consciously flipped (FROZEN-VECTOR-CHANGE).",
+    "actor": { "kind": "Plugin", "id": "hello-world" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiSpec actor bound to a Spec-roled card may emit wave.updated",
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiCodex worker must never emit wave.updated, even with a known Worker card",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit wave.updated" }
+  },
+  {
+    "description": "AiClaude worker must never emit wave.updated",
+    "actor": { "kind": "AiClaude", "id": "$CLAUDE_WORKER_CARD" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit wave.updated" }
+  },
+  {
+    "description": "AiCodex actor bound to a Spec-roled card is still refused wave.updated (actor variant is the wire claim; hook carveout must not regress this)",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit wave.updated" }
+  },
+  {
+    "description": "AiSpec wire claim over a Worker-roled card is refused wave.updated (claimed identity vs cached truth mismatch)",
+    "actor": { "kind": "AiSpec", "id": "$WORKER_CARD" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit wave.updated" }
+  },
+  {
+    "description": "AiSpec wire claim over an unknown (never-minted) card is refused wave.updated",
+    "actor": { "kind": "AiSpec", "id": "$UNKNOWN_CARD" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit wave.updated" }
+  }
+]

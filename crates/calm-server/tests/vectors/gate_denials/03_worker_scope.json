@@ -1,0 +1,65 @@
+[
+  {
+    "description": "AiCodex worker may report task.completed in its own card scope (dispatcher push delivery path)",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-21", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiClaude worker may report task.completed in its own card scope",
+    "actor": { "kind": "AiClaude", "id": "$CLAUDE_WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-22", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$CLAUDE_WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiCodex worker emitting a Wave-scoped event is refused (scope broader than own card)",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-23", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "is out of scope" }
+  },
+  {
+    "description": "AiCodex worker emitting a Cove-scoped event is refused",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-24", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Cove", "id": { "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "is out of scope" }
+  },
+  {
+    "description": "AiCodex worker emitting a System-scoped event is refused",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-25", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "System" },
+    "expected": { "decision": "deny", "error_contains": "is out of scope" }
+  },
+  {
+    "description": "AiCodex worker writing into ANOTHER card's scope (same wave) is refused — per-card-id strict",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-26", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$OTHER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "is out of scope" }
+  },
+  {
+    "description": "AiCodex worker forging scope.wave (own card id, foreign wave) is refused (#232 fan-out spoof)",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-27", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$OTHER_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "scope.wave mismatch" }
+  },
+  {
+    "description": "AiCodex worker forging scope.cove (own card id + home wave, foreign cove) is refused (#234 cross-cove spoof)",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-28", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$OTHER_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "scope.cove mismatch" }
+  },
+  {
+    "description": "AiClaude worker emitting a Wave-scoped event is refused (scope rule is actor-variant agnostic for workers)",
+    "actor": { "kind": "AiClaude", "id": "$CLAUDE_WORKER_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-29", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "is out of scope" }
+  }
+]
