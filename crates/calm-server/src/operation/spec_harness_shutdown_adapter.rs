@@ -13,7 +13,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, PhaseTag, ProviderAdapter,
-    SpawnCtx, SpawnHandle, Tx, TxOutput,
+    SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
 const SHUTDOWN_PHASES: &[PhaseTag] = &[
@@ -110,7 +110,7 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
         output: &TxOutput,
         _op: &Operation,
         _ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let runtime_id = output_string(output, "runtime_id")?;
         if let Some(harness) = self.harness_registry.remove(&runtime_id) {
             harness.shutdown().await?;
@@ -139,7 +139,7 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
                 );
             }
         }
-        Ok(SpawnHandle::NoOp)
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
 
     async fn plan_compensation(

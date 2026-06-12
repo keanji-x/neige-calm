@@ -51,7 +51,8 @@ use crate::operation::terminal_adapter::{
     normalize_terminal_worker_cwd,
 };
 use crate::operation::{
-    OperationKey, OperationOutcome, OperationResult, OperationRuntime, SpawnCtx, SqlxOperationRepo,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationResult, OperationRuntime,
+    SpawnCtx, SqlxOperationRepo,
 };
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::routes::terminal_cards::stable_payload_hash;
@@ -236,8 +237,9 @@ fn dispatcher_operation_runtime(
         shared_codex_appserver,
         repo,
     ));
+    let completion = OperationCompletionBus::new();
     Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
+        operation_repo.clone(),
         vec![
             terminal_adapter,
             terminal_worker_adapter,
@@ -250,7 +252,15 @@ fn dispatcher_operation_runtime(
             spec_harness_shutdown_adapter,
         ],
         events.clone(),
-        SpawnCtx::new(route_repo, daemon, terminal_renderer, events),
+        completion.clone(),
+        SpawnCtx::new(
+            route_repo,
+            operation_repo,
+            daemon,
+            terminal_renderer,
+            events,
+            completion,
+        ),
     ))
 }
 

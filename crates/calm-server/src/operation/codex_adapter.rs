@@ -38,7 +38,7 @@ use crate::wave_cove_cache::WaveCoveCache;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
-    Operation, Phase, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, Tx, TxOutput,
+    Operation, Phase, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
     checkpoint_app_server_interact_tx,
 };
 
@@ -475,7 +475,7 @@ impl ProviderAdapter for CodexAdapter {
         output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let terminal_id = output_string(output, "terminal_id")?;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
@@ -514,18 +514,27 @@ impl ProviderAdapter for CodexAdapter {
 
             #[cfg(feature = "fixtures")]
             if let Some(hook) = &self.spawn_hook {
-                return hook(terminal_id, command_line, cwd, env).await;
+                return hook(terminal_id, command_line, cwd, env)
+                    .await
+                    .map(SpawnOutcome::Ready);
             }
 
-            return ctx.spawn_terminal(&term, &command_line, &cwd, &env).await;
+            return ctx
+                .spawn_terminal(&term, &command_line, &cwd, &env)
+                .await
+                .map(SpawnOutcome::Ready);
         }
 
         #[cfg(feature = "fixtures")]
         if let Some(hook) = &self.spawn_hook {
-            return hook(terminal_id, command_line, cwd, env).await;
+            return hook(terminal_id, command_line, cwd, env)
+                .await
+                .map(SpawnOutcome::Ready);
         }
 
-        ctx.spawn_terminal(&term, &command_line, &cwd, &env).await
+        ctx.spawn_terminal(&term, &command_line, &cwd, &env)
+            .await
+            .map(SpawnOutcome::Ready)
     }
 
     async fn plan_compensation(
@@ -788,7 +797,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle> {
+    ) -> Result<SpawnOutcome> {
         let card_id = output_string(output, "card_id")?;
         let runtime_id = output_string(output, "runtime_id")?;
         let terminal_id = output_string(output, "terminal_id")?;
@@ -826,7 +835,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
                     "codex worker CardAdded append failed after recovery exit preservation; continuing"
                 );
             });
-            return Ok(SpawnHandle::NoOp);
+            return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
 
         if !self.shared_codex_appserver.is_running() {
@@ -873,7 +882,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 "codex worker CardAdded append failed after live spawn; continuing"
             );
         });
-        Ok(handle)
+        Ok(SpawnOutcome::Ready(handle))
     }
 
     async fn plan_compensation(
