@@ -602,6 +602,69 @@ async fn seed_head_payload_blob(
     blob_hash
 }
 
+async fn seed_legacy_card_lens_manifest(
+    repo: &SqlxRepo,
+    wave_id: &WaveId,
+    card_id: &CardId,
+) -> String {
+    let parent = wave_vcs::head(repo.pool(), wave_id)
+        .await
+        .expect("head query")
+        .expect("head");
+    let mut manifest = wave_vcs::tree_at(repo.pool(), &parent)
+        .await
+        .expect("tree query")
+        .expect("tree");
+
+    for (new_leaf, legacy_leaf) in [
+        (".meta.json", "meta.json"),
+        (".payload.json", "payload.json"),
+    ] {
+        let new_path = format!("cards/{}/{new_leaf}", card_id.as_str());
+        let legacy_path = format!("cards/{}/{legacy_leaf}", card_id.as_str());
+        let entry = manifest
+            .entries
+            .remove(&new_path)
+            .unwrap_or_else(|| panic!("missing {new_path}"));
+        manifest.entries.insert(legacy_path, entry);
+    }
+
+    let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest json");
+    let tree_hash = format!("legacy-tree-{}", new_id());
+    let mut tx = repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin legacy manifest seed");
+    sqlx::query(
+        r#"INSERT INTO wave_vcs_objects (hash, kind, bytes, created_at)
+           VALUES (?1, 'tree', ?2, ?3)"#,
+    )
+    .bind(&tree_hash)
+    .bind(manifest_bytes)
+    .bind(now_ms())
+    .execute(&mut *tx)
+    .await
+    .expect("insert legacy tree object");
+    let tree = wave_vcs::TreeSnapshot {
+        tree_hash,
+        manifest,
+    };
+    let legacy_head = wave_vcs::commit_tree(
+        &mut tx,
+        wave_id,
+        Some(&parent),
+        &tree,
+        None,
+        "legacy card lens path seed",
+        MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("commit legacy manifest seed");
+    tx.commit().await.expect("commit legacy manifest seed");
+    legacy_head
+}
+
 #[tokio::test]
 async fn snapshot_tree_hash_is_deterministic_for_same_state() {
     let repo = fresh_repo().await;
@@ -635,6 +698,65 @@ async fn snapshot_tree_hash_is_deterministic_for_same_state() {
         assert_eq!(next.manifest, first.manifest);
     }
     tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+async fn next_commit_after_legacy_card_lens_manifest_rewrites_dotfile_paths() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "terminal",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "legacy-paths"}),
+    )
+    .await;
+    let legacy_head = seed_legacy_card_lens_manifest(&repo, &wave.id, &worker.id).await;
+    let legacy_manifest = wave_vcs::tree_at(repo.pool(), &legacy_head)
+        .await
+        .expect("legacy tree query")
+        .expect("legacy tree");
+
+    let legacy_meta_path = format!("cards/{}/meta.json", worker.id.as_str());
+    let legacy_payload_path = format!("cards/{}/payload.json", worker.id.as_str());
+    let meta_path = format!("cards/{}/.meta.json", worker.id.as_str());
+    let payload_path = format!("cards/{}/.payload.json", worker.id.as_str());
+    assert!(legacy_manifest.entries.contains_key(&legacy_meta_path));
+    assert!(legacy_manifest.entries.contains_key(&legacy_payload_path));
+    assert!(!legacy_manifest.entries.contains_key(&meta_path));
+    assert!(!legacy_manifest.entries.contains_key(&payload_path));
+
+    update_wave_title_with_actor(
+        &repo,
+        &bus,
+        &write,
+        &wave.id,
+        &cove.id,
+        "post cutover",
+        ActorId::User,
+    )
+    .await;
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    assert!(manifest.entries.contains_key(&meta_path));
+    assert!(manifest.entries.contains_key(&payload_path));
+    assert!(!manifest.entries.contains_key(&legacy_meta_path));
+    assert!(!manifest.entries.contains_key(&legacy_payload_path));
+
+    let legacy_manifest_after = wave_vcs::tree_at(repo.pool(), &legacy_head)
+        .await
+        .expect("legacy tree query after")
+        .expect("legacy tree after");
+    assert_eq!(legacy_manifest_after, legacy_manifest);
 }
 
 #[test]
@@ -1239,7 +1361,7 @@ async fn backfilled_eventless_cards_survive_incremental_index_rerenders() {
     assert!(
         manifest
             .entries
-            .contains_key(&format!("cards/{}/meta.json", worker.id.as_str())),
+            .contains_key(&format!("cards/{}/.meta.json", worker.id.as_str())),
         "backfilled card path disappeared from manifest"
     );
 
@@ -2068,7 +2190,7 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
     .expect("runtime superseded event");
 
     let manifest = head_manifest(&repo, &wave.id).await;
-    let payload_path = format!("cards/{}/payload.json", worker.id.as_str());
+    let payload_path = format!("cards/{}/.payload.json", worker.id.as_str());
     let entry = manifest.entries.get(&payload_path).expect("payload entry");
     let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
     let view = WaveFsView::new(&repo, &write);
@@ -2164,7 +2286,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
     .expect("runtime started event");
 
     let manifest = head_manifest(&repo, &wave.id).await;
-    let payload_path = format!("cards/{}/payload.json", spec.id.as_str());
+    let payload_path = format!("cards/{}/.payload.json", spec.id.as_str());
     let entry = manifest.entries.get(&payload_path).expect("payload entry");
     let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
     let view = WaveFsView::new(&repo, &write);
@@ -2211,7 +2333,7 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
     .await;
     let runtime_id =
         start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &cove.id, &worker.id).await;
-    let payload_path = format!("cards/{}/payload.json", worker.id.as_str());
+    let payload_path = format!("cards/{}/.payload.json", worker.id.as_str());
 
     let legacy_hash = seed_head_payload_blob(
         &repo,

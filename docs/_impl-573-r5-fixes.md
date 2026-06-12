@@ -9,7 +9,7 @@
 - Web invalidation: added `runtime.started`, `runtime.status_changed`, and
   `runtime.superseded` to the wave-file derived event helper.
 - Runtime events now invalidate owning wave detail, card overlays, and
-  `['wave-files', waveId]`, matching `cards/<id>/payload.json` runtime
+  `['wave-files', waveId]`, matching `cards/<id>/.payload.json` runtime
   status projection.
 - A11y menu focus: changed Menu hover focus from `onMouseEnter` to
   `onMouseMove`.

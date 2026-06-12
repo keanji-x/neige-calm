@@ -36,7 +36,7 @@ Issue #573. Phase 1 backend already landed on this branch (HTTP routes `GET /api
 
 ## Tests
 
-- Component test `wave-report-sidebar.test.tsx`: mock fetch, assert root render, expand cards/, click `cards/<id>/payload.json`, viewer shows JSON via `CodePane`. Cover empty-root + error paths.
+- Component test `wave-report-sidebar.test.tsx`: mock fetch, assert root render, expand cards/, click `cards/<id>/.payload.json`, viewer shows JSON via `CodePane`. Cover empty-root + error paths.
 - Markdown branch: click `report.md`, viewer shows rendered markdown (assert a heading element).
 - Add 1 chromium spec `web/e2e/wave-report-sidebar-files.spec.ts`: open a wave → Report card shows sidebar → click a real file → viewer shows content.
 

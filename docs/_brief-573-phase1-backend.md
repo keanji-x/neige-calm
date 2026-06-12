@@ -19,7 +19,7 @@ Issue: #573. Design + impl notes in `docs/_explore-573-report-sidebar.md` — fo
 
 ## Tests
 
-Add `crates/calm-server/tests/http_wave_file.rs`. Seed one wave with one card + one report; assert HTTP `/files/ls` and `/files/cat` for representative paths (`/`, `cards`, `runs`, `cards/index.json`, `report.md`, `cards/<id>/payload.json`) match the equivalent MCP `tools/call` output byte-for-byte after JSON parse. Add 401 / 404 / 400 / 403 negative cases. Reuse fixture style from `tests/mcp_wave_file.rs` — if its helpers are private, lift the minimum to `tests/support/wave_file.rs`.
+Add `crates/calm-server/tests/http_wave_file.rs`. Seed one wave with one card + one report; assert HTTP `/files/ls` and `/files/cat` for representative paths (`/`, `cards`, `runs`, `cards/index.json`, `report.md`, `cards/<id>/.payload.json`) match the equivalent MCP `tools/call` output byte-for-byte after JSON parse. Add 401 / 404 / 400 / 403 negative cases. Reuse fixture style from `tests/mcp_wave_file.rs` — if its helpers are private, lift the minimum to `tests/support/wave_file.rs`.
 
 ## Gates before declaring done
 

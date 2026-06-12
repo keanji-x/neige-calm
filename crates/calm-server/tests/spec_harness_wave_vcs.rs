@@ -888,10 +888,10 @@ async fn spec_card_own_payload_path_is_suppressed_from_turn_observation() {
 
     assert!(text.starts_with("## Wave state changes since your last turn"));
     assert!(
-        !text.contains(&format!("cards/{}/payload.json", boot.spec_card_id)),
+        !text.contains(&format!("cards/{}/.payload.json", boot.spec_card_id)),
         "spec card payload path should be internal observation noise: {text}"
     );
-    assert!(text.contains(&format!("cards/{}/meta.json edited", boot.spec_card_id)));
+    assert!(text.contains(&format!("cards/{}/.meta.json edited", boot.spec_card_id)));
     assert!(text.contains("idempotency_key=spec-payload-only"));
     boot.harness.shutdown().await.unwrap();
 }
@@ -931,7 +931,7 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
     assert!(text.starts_with("## Wave state changes since your last turn"));
     assert!(text.contains("report.md new"));
     assert!(
-        !text.contains(&format!("cards/{}/payload.json", worker.id.as_str())),
+        !text.contains(&format!("cards/{}/.payload.json", worker.id.as_str())),
         "current-schema runtime re-render must not create payload diff noise: {text}"
     );
     assert!(text.contains("idempotency_key=runtime-status-current-schema"));
@@ -1003,7 +1003,7 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
         "batched diff must start from the issued first-turn head: {text}"
     );
     assert!(text.contains(first.id.as_str()));
-    assert!(text.contains(&format!("cards/{}/payload.json new", first.id)));
+    assert!(text.contains(&format!("cards/{}/.payload.json new", first.id)));
     assert!(text.contains(second.id.as_str()));
     assert!(text.contains(third.id.as_str()));
     assert_eq!(text.matches("A dispatched task completed").count(), 3);

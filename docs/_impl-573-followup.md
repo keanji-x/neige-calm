@@ -30,7 +30,7 @@
 
 - New wave-report card assertions:
   - edit pencil visible when `selectedPath === null`.
-  - edit pencil hidden when `selectedPath === "cards/card_1/payload.json"`.
+  - edit pencil hidden when `selectedPath === "cards/card_1/.payload.json"`.
 - New WavePage assertion:
   - rejected codex create with 500 shows `internal: shared codex app-server is not running`.
   - directory modal stays open after failure.
