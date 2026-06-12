@@ -9,6 +9,34 @@ use support::mcp::{
     recv_frame, send_frame, tools_list_frame,
 };
 
+fn expected_spec_toolset() -> Vec<&'static str> {
+    vec![
+        "calm.plan.cancel",
+        "calm.plan.list",
+        "calm.plan.upsert",
+        "calm.report.edit",
+        "calm.report.write",
+        "calm.task.dispatch",
+        "calm.task.verdict",
+    ]
+}
+
+fn tool_names_from_response(resp: &serde_json::Value) -> Vec<String> {
+    let mut names = resp["result"]["tools"]
+        .as_array()
+        .expect("tools is an array")
+        .iter()
+        .map(|tool| {
+            tool["name"]
+                .as_str()
+                .expect("tool name is a string")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
 async fn tools_list_names_for_role(role: CardRole) -> Vec<String> {
     let boot = boot_with_role(role).await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
@@ -27,18 +55,7 @@ async fn tools_list_names_for_role(role: CardRole) -> Vec<String> {
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
 
-    let mut names = resp["result"]["tools"]
-        .as_array()
-        .expect("tools is an array")
-        .iter()
-        .map(|tool| {
-            tool["name"]
-                .as_str()
-                .expect("tool name is a string")
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    names.sort();
+    let names = tool_names_from_response(&resp);
     let _ = &boot.server;
     names
 }
@@ -46,18 +63,7 @@ async fn tools_list_names_for_role(role: CardRole) -> Vec<String> {
 #[tokio::test]
 async fn tools_list_for_spec_role_returns_spec_toolset() {
     let names = tools_list_names_for_role(CardRole::Spec).await;
-    assert_eq!(
-        names,
-        vec![
-            "calm.plan.cancel",
-            "calm.plan.list",
-            "calm.plan.upsert",
-            "calm.report.edit",
-            "calm.report.write",
-            "calm.task.dispatch",
-            "calm.task.verdict",
-        ]
-    );
+    assert_eq!(names, expected_spec_toolset());
 }
 
 #[tokio::test]
@@ -108,26 +114,39 @@ async fn tools_list_for_shared_daemon_resolves_thread_role() {
     send_frame(&mut wr, tools_list_frame(2, &boot.thread_id)).await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
-    let tools = resp
-        .pointer("/result/tools")
-        .and_then(|v| v.as_array())
-        .expect("tools");
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|tool| tool.get("name").and_then(|name| name.as_str()))
-        .collect();
+    let names = tool_names_from_response(&resp);
+    assert_eq!(names, expected_spec_toolset());
+    let _ = (&boot.server, &boot.repo);
+}
+
+#[tokio::test]
+async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
+    let boot = boot_shared_daemon_with_spec_thread().await;
+    let (mut rd, mut wr) = connect(&boot.socket_path).await;
+    let daemon_token = boot.daemon_token.as_deref().expect("daemon token");
+    handshake_daemon(&mut rd, &mut wr, daemon_token).await;
+
+    send_frame(
+        &mut wr,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
+
+    let names = tool_names_from_response(&resp);
     assert!(
-        names.contains(&"calm.task.dispatch"),
-        "spec thread on shared daemon must see task.dispatch, got: {names:?}"
+        names.contains(&"calm.task.dispatch".to_string()),
+        "daemon-trust tools/list without threadId must include task.dispatch, got: {names:?}"
     );
     assert!(
-        names.contains(&"calm.plan.upsert"),
-        "spec thread on shared daemon must see plan.upsert (#644), got: {names:?}"
-    );
-    assert_eq!(
-        names.len(),
-        7,
-        "spec thread sees the 4 retained write tools + 3 plan tools (#644), got: {names:?}"
+        names.contains(&"calm.report.write".to_string()),
+        "daemon-trust tools/list without threadId must include report.write, got: {names:?}"
     );
     let _ = (&boot.server, &boot.repo);
 }

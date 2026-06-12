@@ -40,6 +40,7 @@ use crate::mcp_server::handshake::handle_initialize;
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
 };
+use crate::model::CardRole;
 use crate::runtime_lookup::resolve_card_for_thread as resolve_card_for_thread_runtime;
 use crate::runtime_repo::AgentProvider;
 use crate::state::WriteContext;
@@ -385,35 +386,45 @@ async fn dispatch_request(
             let top_meta = request_meta_outcome(request_meta.as_ref());
             let params_meta = extract_request_meta_outcome(&params);
             let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
-            let role = match connection_identity {
+            let descriptors = match connection_identity {
                 ConnectionIdentity::DaemonTrust => match thread_id {
                     Some(tid) => resolve_thread_identity(ctx, Some(tid), "tools/list")
                         .await
                         .ok()
-                        .map(|identity| identity.role),
-                    None => None,
+                        .map(|identity| registry.descriptors_for_role(identity.role))
+                        .unwrap_or_else(|| {
+                            registry.descriptors_visible_to_any_role(&[
+                                CardRole::Spec,
+                                CardRole::Worker,
+                            ])
+                        }),
+                    // Shared-daemon Codex sessions may send tools/list before
+                    // a thread is attributed. Discovery can safely return the
+                    // role-visible union because tools/call still resolves and
+                    // enforces the exact per-thread identity.
+                    None => registry
+                        .descriptors_visible_to_any_role(&[CardRole::Spec, CardRole::Worker]),
                 },
                 ConnectionIdentity::CardBound(bound) => match thread_id {
                     Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
                         .await
                         .ok()
                     {
-                        Some(identity) if same_bound_card(&identity, bound) => Some(identity.role),
+                        Some(identity) if same_bound_card(&identity, bound) => {
+                            registry.descriptors_for_role(identity.role)
+                        }
                         Some(identity) => {
                             warn_cross_card_reject(tid, &identity, bound);
-                            None
+                            Vec::new()
                         }
-                        _ => None,
+                        _ => Vec::new(),
                     },
-                    None => Some(bound.role),
+                    None => registry.descriptors_for_role(bound.role),
                 },
             };
             // Codex's `tools/list` expects `{ "tools": [...] }`. Each
             // entry is `{ name, description, inputSchema }`, optionally
             // carrying MCP `annotations` when a descriptor provides them.
-            let descriptors = role
-                .map(|role| registry.descriptors_for_role(role))
-                .unwrap_or_default();
             let tools: Vec<Value> = descriptors
                 .into_iter()
                 .map(|d| {

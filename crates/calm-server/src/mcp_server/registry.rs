@@ -272,6 +272,14 @@ impl ToolRegistry {
             .filter(|d| d.visible_to_roles.contains(&role))
             .collect()
     }
+
+    pub fn descriptors_visible_to_any_role(&self, roles: &[CardRole]) -> Vec<ToolDescriptor> {
+        self.by_name
+            .values()
+            .filter(|d| roles.iter().any(|role| d.0.visible_to_roles.contains(role)))
+            .map(|(d, _)| d.clone())
+            .collect()
+    }
 }
 
 /// Register `old_name` as a hidden alias for an already-registered tool
@@ -424,6 +432,40 @@ mod tests {
 
         assert!(names.contains(&"calm.foo.bar".to_string()));
         assert!(!names.contains(&"calm.foo_bar".to_string()));
+    }
+
+    #[test]
+    fn descriptors_visible_to_any_role_returns_union_without_hidden_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            fake_descriptor("calm.spec.only", &[CardRole::Spec]),
+            fake_handler("spec"),
+        );
+        registry.register(
+            fake_descriptor("calm.worker.only", &[CardRole::Worker]),
+            fake_handler("worker"),
+        );
+        registry.register(
+            fake_descriptor("calm.shared", &[CardRole::Spec, CardRole::Worker]),
+            fake_handler("shared"),
+        );
+        registry.register(
+            fake_descriptor("calm.report.only", &[CardRole::ReportCard]),
+            fake_handler("report"),
+        );
+        registry.register(fake_descriptor("calm.hidden", &[]), fake_handler("hidden"));
+
+        let mut names = registry
+            .descriptors_visible_to_any_role(&[CardRole::Spec, CardRole::Worker])
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec!["calm.shared", "calm.spec.only", "calm.worker.only"]
+        );
     }
 
     #[tokio::test]

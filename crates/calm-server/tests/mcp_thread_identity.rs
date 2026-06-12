@@ -945,7 +945,7 @@ async fn tools_list_cardbound_without_thread_id_uses_bound_role() {
 }
 
 #[tokio::test]
-async fn tools_list_daemontrust_without_thread_id_returns_empty() {
+async fn tools_list_daemontrust_without_thread_id_returns_role_union() {
     let daemon_token = "daemon-token-tools-list";
     let mut registry = ToolRegistry::new();
     let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
@@ -971,10 +971,9 @@ async fn tools_list_daemontrust_without_thread_id_returns_empty() {
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
-    assert!(
-        resp["result"]["tools"].as_array().unwrap().is_empty(),
-        "DaemonTrust tools/list without threadId must return no tools"
-    );
+    let tools = resp["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], json!("test.spec_tool"));
     let _ = &boot.server;
 }
 
