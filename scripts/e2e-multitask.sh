@@ -3,7 +3,11 @@ set -euo pipefail
 set -E
 
 # Opt-in local E2E. Burns real Codex tokens; do not run from CI.
-# The host filesystem is only touched by e2e-artifacts/ when a run fails.
+# Host writes are not zero: make dev writes standard build outputs (target/,
+# web/dist) and XDG dirs, rebuilds the shared neige-calm-server:local image tag,
+# and may create/reuse the shared proxy-forwarder container. The no-host-writes
+# expectation applies only to test data/workspace; e2e-artifacts/ is written when
+# a run fails.
 
 : "${HOME:?HOME must be set}"
 
@@ -14,7 +18,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 ENV_FILE="$REPO_ROOT/.env"
 ARTIFACT_DIR="$REPO_ROOT/e2e-artifacts"
-WORKSPACE="/var/lib/neige-calm/e2e-workspace"
+WORKSPACE=""
 SERVER_CONTAINER="neige-calm-$DEV_ID-server-1"
 COOKIE_HEADER=""; PORT=""; SERVER_CID=""
 
@@ -32,8 +36,11 @@ cleanup() {
     printf 'Failure: dumping compose logs to %s\n' "$log_file" >&2
     (cd "$REPO_ROOT" && docker compose -p "$PROJECT" logs --no-color --tail=300) >"$log_file" 2>&1 || true
   fi
-  command -v docker >/dev/null 2>&1 \
-    && (cd "$REPO_ROOT" && docker compose -p "$PROJECT" down -v --remove-orphans) >/dev/null 2>&1
+  if command -v docker >/dev/null 2>&1; then
+    if ! (cd "$REPO_ROOT" && docker compose -p "$PROJECT" down -v --remove-orphans) >/dev/null 2>&1; then
+      printf 'WARN: docker compose down failed for project %s\n' "$PROJECT" >&2
+    fi
+  fi
   exit "$status"
 }
 on_err() {
@@ -131,7 +138,7 @@ check_server_logs() {
   [[ -n "$SERVER_CID" ]] || return 0
   local match
   match="$(docker logs --tail 500 "$SERVER_CID" 2>&1 \
-    | grep -F -e 'spec harness start submission failed' -e 'wave created but spec agent is inert' \
+    | grep -F -e 'spec harness start submission failed' -e 'spec harness start wait failed' -e 'wave created but spec agent is inert' \
     | tail -n 1 || true)"
   [[ -z "$match" ]] || fail "server logs contain fatal spec-harness warning: $match"
 }
@@ -196,8 +203,8 @@ const body = typeof report?.payload?.body === "string" ? report.payload.body : "
 const flags = [
   process.env.GREET,
   process.env.USAGE,
-  body && body !== "# Goal\n\n_The spec agent will fill this in._\n" ? "changed" : "placeholder",
-  wave.lifecycle === "reviewing" || wave.lifecycle === "done" ? "yes" : "no",
+  body.length > 0 && !body.includes("_The spec agent will fill this in._") ? "changed" : "placeholder",
+  wave.lifecycle === "done" ? "yes" : "no",
 ];
 process.stdout.write([wave.lifecycle ?? "unknown", workers.length, workers.map((c) => c.runtime?.status ?? "none").join(",") || "-", ...flags].join("\t") + "\n");
 '
@@ -246,6 +253,7 @@ main() {
   local auth_probe_status
   cd "$REPO_ROOT" || exit 1
   preflight
+  WORKSPACE="$(dotenv_get CALM_CONTAINER_STATE_DIR || printf '/var/lib/neige-calm')/e2e-workspace"
   PORT="$(pick_port)"
   start_stack; wait_for_health
   api GET /api/coves - || fail "curl failed for GET /api/coves auth probe"
