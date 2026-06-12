@@ -99,6 +99,10 @@ async fn replay_harness_events_since(
             &[
                 "task.completed",
                 "task.failed",
+                // Issue #644 PR-C (§6.5/§8) — gate verdicts that
+                // landed while the kernel was down replay like live
+                // pushes.
+                "task.gate_result",
                 "wave.report_edited",
                 "codex.hook",
                 "claude.hook",
@@ -110,6 +114,13 @@ async fn replay_harness_events_since(
     for row in rows {
         let role = role_needed_for_spec_push_filter(repo.as_ref(), &row.event).await?;
         if !dispatcher::event_warrants_spec_push_with_role(&row.event, &row.actor, |_| role) {
+            continue;
+        }
+        // Issue #644 PR-C (§6.5) — the SAME gated-self-report
+        // consultation the live push branch runs: a crash between the
+        // emit tx and the live push must not replay a gated task's
+        // raw self-report to the spec.
+        if dispatcher::is_gated_self_report(repo.as_ref(), &row.event).await {
             continue;
         }
         let Some(obs) = dispatcher::harness_observation_from_event(wave_id, &row.event) else {

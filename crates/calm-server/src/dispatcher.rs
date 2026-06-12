@@ -87,6 +87,14 @@ pub(crate) fn event_warrants_spec_push_with_role(
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
             !matches!(actor, ActorId::AiSpec(_))
         }
+        // Issue #644 PR-C (§6.5) — the gate runner's verdict is always
+        // pushed: it is kernel-only at the role gate (actor
+        // `KernelDispatcher`), so no self-push loop is possible. For a
+        // gated task this is the wake-up that replaces the suppressed
+        // worker self-report (the gated-self-report consultation is a
+        // tasks-row lookup and lives with the async callers — see
+        // `is_gated_self_report`).
+        Event::TaskGateResult { .. } => true,
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
@@ -94,6 +102,38 @@ pub(crate) fn event_warrants_spec_push_with_role(
             is_turn_end && is_worker
         }
         _ => false,
+    }
+}
+
+/// Issue #644 PR-C (§6.5) — the gated-self-report predicate shared by
+/// the live push branch and the boot replay
+/// (`harness::replay_harness_events_since`): a worker `task.completed`
+/// whose idempotency key resolves to a tasks row **with `gate_json`
+/// set** is not pushed — the spec hears the gate verdict
+/// (`task.gate_result`), not the self-report. Deliberately NOT
+/// status-based: a fast gate can flip the row terminal before this
+/// read, and a status predicate would then push both. Ungated tasks,
+/// non-task keys (legacy), `task.failed` (no gate runs on failure),
+/// and lookup errors (fail-open: a spurious self-report push is
+/// benign; a silently lost wake-up is not) all push as today.
+pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Event) -> bool {
+    let Event::TaskCompleted {
+        idempotency_key, ..
+    } = event
+    else {
+        return false;
+    };
+    match repo.task_get(idempotency_key).await {
+        Ok(Some(task)) => task.gate_json.is_some(),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                idempotency_key = %idempotency_key,
+                error = %e,
+                "dispatcher push: gated-self-report lookup failed; pushing self-report (fail-open)"
+            );
+            false
+        }
     }
 }
 
@@ -616,6 +656,11 @@ impl Dispatcher {
             "terminal.worker_requested".into(),
             "task.completed".into(),
             "task.failed".into(),
+            // Issue #644 PR-C — the gate runner's verdict: pushed to
+            // the spec (hard-fire) and a scheduler trigger (a gate
+            // verdict terminalizes the task — budget freed / deps
+            // satisfiable).
+            "task.gate_result".into(),
             "wave.report_edited".into(),
             "codex.hook".into(),
             "claude.hook".into(),
@@ -774,8 +819,17 @@ impl Inner {
         // worker-request path (the two `*.worker_requested` kinds) falls through
         // untouched.
         match &envelope.event {
-            Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
+            Event::TaskCompleted { .. } | Event::TaskFailed { .. } | Event::TaskGateResult { .. } => {
+                // Issue #644 PR-C (§6.5) — gated self-report
+                // suppression: a `task.completed` whose key resolves
+                // to a tasks row WITH a gate is a claim, not evidence;
+                // the spec hears the gate result instead. The
+                // predicate is "task has gate_json", deliberately not
+                // status-based — a fast gate can flip the row to
+                // `done` before this read.
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write)
+                    && !is_gated_self_report(self.repo.as_ref(), &envelope.event).await
+                {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.observe_harness(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -1440,6 +1494,31 @@ pub(crate) fn harness_observation_from_event(
             idempotency_key: idempotency_key.clone(),
             error: reason.clone(),
         }),
+        // Issue #644 PR-C (§6.5) — the gate runner's verdict. The plan
+        // key is recovered from the task-id convention
+        // `"{wave_id}:{key}"` (§2.1) for the turn text's
+        // `plan/<key>/gate.log` path.
+        Event::TaskGateResult {
+            task_id,
+            idempotency_key,
+            passed,
+            failing_step,
+            exit_code,
+            log_tail,
+            attempt,
+            ..
+        } => Some(HarnessObservation::TaskGateResult {
+            idempotency_key: idempotency_key.clone(),
+            key: task_id
+                .strip_prefix(&format!("{}:", wave_id.as_str()))
+                .unwrap_or(task_id)
+                .to_string(),
+            passed: *passed,
+            failing_step: failing_step.clone(),
+            exit_code: *exit_code,
+            log_tail: log_tail.clone(),
+            attempt: *attempt,
+        }),
         Event::WaveReportEdited { body_after, .. } => Some(HarnessObservation::ReportEdited {
             wave_id: wave_id.clone(),
             body_sha256: sha256_hex(body_after),
@@ -1676,6 +1755,7 @@ mod tests {
                 "terminal.worker_requested".into(),
                 "task.completed".into(),
                 "task.failed".into(),
+                "task.gate_result".into(),
                 "wave.report_edited".into(),
                 "codex.hook".into(),
                 "claude.hook".into(),
@@ -1720,6 +1800,19 @@ mod tests {
         assert!(filter.matches(&env(Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            agent_message: None,
+        })));
+        // Issue #644 PR-C — gate verdicts route to the push branch
+        // (and poke the scheduler).
+        assert!(filter.matches(&env(Event::TaskGateResult {
+            task_id: "w:k".into(),
+            idempotency_key: "w:k".into(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: String::new(),
+            log_path: "/tmp/gate.log".into(),
+            attempt: 1,
             agent_message: None,
         })));
         assert!(filter.matches(&env(Event::WaveReportEdited {
@@ -1805,6 +1898,51 @@ mod tests {
         assert!(EditAuthor::Kernel != EditAuthor::User);
     }
 
+    /// Issue #644 PR-C — `task.gate_result` maps to the hard-fire
+    /// `Observation::TaskGateResult`, with the plan key recovered from
+    /// the `"{wave_id}:{key}"` task-id convention (§2.1).
+    #[test]
+    fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
+        let wave = WaveId::from("wave-1");
+        let event = Event::TaskGateResult {
+            task_id: "wave-1:impl-parser".into(),
+            idempotency_key: "wave-1:impl-parser".into(),
+            passed: false,
+            failing_step: Some("test".into()),
+            exit_code: Some(101),
+            log_tail: "boom".into(),
+            log_path: "/tmp/gate-logs/wave-1:impl-parser-g2.log".into(),
+            attempt: 2,
+            agent_message: None,
+        };
+        let obs = harness_observation_from_event(&wave, &event)
+            .expect("gate result must map to an observation");
+        assert!(obs.is_hard_fire(), "gate results are hard-fired (§6.5)");
+        match &obs {
+            HarnessObservation::TaskGateResult {
+                idempotency_key,
+                key,
+                passed,
+                failing_step,
+                exit_code,
+                attempt,
+                ..
+            } => {
+                assert_eq!(idempotency_key, "wave-1:impl-parser");
+                assert_eq!(key, "impl-parser", "plan key = task id minus wave prefix");
+                assert!(!passed);
+                assert_eq!(failing_step.as_deref(), Some("test"));
+                assert_eq!(*exit_code, Some(101));
+                assert_eq!(*attempt, 2);
+            }
+            other => panic!("expected TaskGateResult observation, got {other:?}"),
+        }
+        let text = obs.to_turn_text();
+        assert!(text.contains("Task impl-parser gate FAILED at step test (exit 101)"));
+        assert!(text.contains("plan/impl-parser/gate.log"));
+        assert!(text.contains("runs/wave-1:impl-parser.md"));
+    }
+
     #[test]
     fn event_warrants_spec_push_covers_push_allowlist() {
         let cache = CardRoleCache::new();
@@ -1847,6 +1985,26 @@ mod tests {
         assert!(!event_warrants_spec_push(
             &failed,
             &ActorId::AiSpec(spec.clone()),
+            &write
+        ));
+
+        // Issue #644 PR-C — the gate verdict always warrants a push
+        // (kernel-only kind; the gated-self-report consultation is a
+        // separate async predicate).
+        let gate_result = Event::TaskGateResult {
+            task_id: "w:k".into(),
+            idempotency_key: "w:k".into(),
+            passed: false,
+            failing_step: Some("test".into()),
+            exit_code: Some(101),
+            log_tail: "boom".into(),
+            log_path: "/tmp/gate.log".into(),
+            attempt: 1,
+            agent_message: None,
+        };
+        assert!(event_warrants_spec_push(
+            &gate_result,
+            &ActorId::KernelDispatcher,
             &write
         ));
 
