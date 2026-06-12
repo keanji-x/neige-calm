@@ -1,0 +1,103 @@
+{
+  "_comment": [
+    "Issue #679 PR0-C — frozen characterization golden for the runtime exit",
+    "arbitration kernel (`runtime_status_transition_allowed`, db/sqlite.rs).",
+    "Full (from_status x to_status) -> allow/deny table, 7x7 = 49 cells,",
+    "14 allow / 35 deny. Generated from the implementation, then hand-audited",
+    "cell by cell and written down as data. Asserted black-box through the",
+    "real sqlite write paths (`runtime_set_status_tx` / `runtime_complete_tx`)",
+    "by tests/runtime_status_matrix_golden.rs.",
+    "",
+    "Shape notes (the semantics this file pins):",
+    "  * `starting` is the only state that may reach every non-terminal state",
+    "    AND both exit terminals directly (spawn may settle anywhere).",
+    "  * `running` / `idle` / `turn_pending` may exit (failed/exited);",
+    "    running<->idle cycles; turn_pending resolves only via running.",
+    "  * running->turn_pending and idle->turn_pending are DENIED: turn_pending",
+    "    is an insert-time-only status today, never reached by transition.",
+    "  * No self-loop is allowed (the diagonal is all deny).",
+    "  * `superseded` is unreachable via status transition from ANY state:",
+    "    rows only become superseded through `runtime_supersede_tx`'s guarded",
+    "    UPDATE (old active row -> superseded + replacement insert, one tx).",
+    "  * Terminal absorption: `failed` / `exited` / `superseded` rows accept",
+    "    nothing — first terminal writer wins, forever.",
+    "",
+    "Do NOT regenerate this file mechanically from the implementation; that",
+    "would defeat the golden. Any diff here is a semantic change to exit",
+    "arbitration and needs explicit review under #679."
+  ],
+  "statuses": [
+    "starting",
+    "running",
+    "idle",
+    "turn_pending",
+    "failed",
+    "exited",
+    "superseded"
+  ],
+  "matrix": {
+    "starting": {
+      "starting": "deny",
+      "running": "allow",
+      "idle": "allow",
+      "turn_pending": "allow",
+      "failed": "allow",
+      "exited": "allow",
+      "superseded": "deny"
+    },
+    "running": {
+      "starting": "deny",
+      "running": "deny",
+      "idle": "allow",
+      "turn_pending": "deny",
+      "failed": "allow",
+      "exited": "allow",
+      "superseded": "deny"
+    },
+    "idle": {
+      "starting": "deny",
+      "running": "allow",
+      "idle": "deny",
+      "turn_pending": "deny",
+      "failed": "allow",
+      "exited": "allow",
+      "superseded": "deny"
+    },
+    "turn_pending": {
+      "starting": "deny",
+      "running": "allow",
+      "idle": "deny",
+      "turn_pending": "deny",
+      "failed": "allow",
+      "exited": "allow",
+      "superseded": "deny"
+    },
+    "failed": {
+      "starting": "deny",
+      "running": "deny",
+      "idle": "deny",
+      "turn_pending": "deny",
+      "failed": "deny",
+      "exited": "deny",
+      "superseded": "deny"
+    },
+    "exited": {
+      "starting": "deny",
+      "running": "deny",
+      "idle": "deny",
+      "turn_pending": "deny",
+      "failed": "deny",
+      "exited": "deny",
+      "superseded": "deny"
+    },
+    "superseded": {
+      "starting": "deny",
+      "running": "deny",
+      "idle": "deny",
+      "turn_pending": "deny",
+      "failed": "deny",
+      "exited": "deny",
+      "superseded": "deny"
+    }
+  }
+}

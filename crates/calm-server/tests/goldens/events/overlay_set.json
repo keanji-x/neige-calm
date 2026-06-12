@@ -1,0 +1,17 @@
+{
+  "description": "overlay.set tuple variant over the Overlay row.",
+  "wire": {
+    "ev": "overlay.set",
+    "data": {
+      "id": "ovl-01",
+      "plugin_id": "plugin-x",
+      "entity_kind": "card",
+      "entity_id": "card-01",
+      "kind": "status",
+      "payload": {
+        "progress": 50
+      },
+      "updated_at": 2000
+    }
+  }
+}

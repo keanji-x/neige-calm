@@ -1,0 +1,72 @@
+[
+  {
+    "description": "AiSpec (Spec-roled card) may emit codex.worker_requested (wave scope)",
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-d-11", "goal": "frozen vector goal", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiSpec (Spec-roled card) may emit terminal.worker_requested (wave scope)",
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "terminal.worker_requested", "data": { "idempotency_key": "vec-d-12", "cmd": "echo hi", "cwd": null, "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiSpec (Spec-roled card) may emit plan.updated (wave scope)",
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "plan.updated", "data": { "wave_id": "$HOME_WAVE", "changed_keys": ["impl-parser"], "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiCodex worker is refused codex.worker_requested even in its own card scope (#583 recursive-mint hole)",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-d-14", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  },
+  {
+    "description": "AiCodex worker is refused terminal.worker_requested even in its own card scope (#583)",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "terminal.worker_requested", "data": { "idempotency_key": "vec-d-15", "cmd": "rm -rf /", "cwd": null, "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  },
+  {
+    "description": "AiClaude worker is refused codex.worker_requested even in its own card scope",
+    "actor": { "kind": "AiClaude", "id": "$CLAUDE_WORKER_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-d-16", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$CLAUDE_WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  },
+  {
+    "description": "AiCodex worker is refused plan.updated (#644 — plan is wave-level authority, recursive-mint one hop removed)",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "plan.updated", "data": { "wave_id": "$HOME_WAVE", "changed_keys": ["forged-task"], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  },
+  {
+    "description": "AiSpec wire claim over a Worker-roled card is refused codex.worker_requested",
+    "actor": { "kind": "AiSpec", "id": "$WORKER_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-d-18", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  },
+  {
+    "description": "AiCodex actor bound to a Spec-roled card is refused codex.worker_requested (dispatch authority lives with the AiSpec variant only)",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-d-19", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  },
+  {
+    "description": "AiSpec wire claim over an unknown card is refused codex.worker_requested",
+    "actor": { "kind": "AiSpec", "id": "$UNKNOWN_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-d-20", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "description": "harness.item.added with every Option present (item_type carries the camelCase harness item type verbatim).",
+  "wire": {
+    "ev": "harness.item.added",
+    "data": {
+      "runtime_id": "rt-01",
+      "card_id": "card-01",
+      "wave_id": "wave-01",
+      "item_db_id": 42,
+      "item_uuid": "uuid-01",
+      "item_type": "agentMessage",
+      "turn_id": "turn-01",
+      "method": "item.completed"
+    }
+  }
+}

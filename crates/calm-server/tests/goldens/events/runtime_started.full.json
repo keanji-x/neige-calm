@@ -1,0 +1,13 @@
+{
+  "description": "runtime.started with agent_provider present (RuntimeKind::ClaudeCard serializes as \"claude\").",
+  "wire": {
+    "ev": "runtime.started",
+    "data": {
+      "runtime_id": "rt-01",
+      "card_id": "card-01",
+      "kind": "claude",
+      "agent_provider": "claude",
+      "status": "starting"
+    }
+  }
+}

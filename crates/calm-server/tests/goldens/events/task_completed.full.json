@@ -1,0 +1,17 @@
+{
+  "description": "task.completed with agent_message and a non-empty ArtifactRef list (transparent string wire shape).",
+  "wire": {
+    "ev": "task.completed",
+    "data": {
+      "idempotency_key": "idem-01",
+      "result": {
+        "summary": "done"
+      },
+      "artifacts": [
+        "artifact://report.md",
+        "artifact://diff.patch"
+      ],
+      "agent_message": "worker finished"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "description": "wave.deleted inline struct variant.",
+  "wire": {
+    "ev": "wave.deleted",
+    "data": {
+      "id": "wave-01",
+      "cove_id": "cove-01"
+    }
+  }
+}

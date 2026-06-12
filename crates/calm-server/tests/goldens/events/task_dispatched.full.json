@@ -1,0 +1,11 @@
+{
+  "description": "task.dispatched (#644 PR-B scheduler claim) with agent_message present.",
+  "wire": {
+    "ev": "task.dispatched",
+    "data": {
+      "idempotency_key": "wave-01:build-step",
+      "kind": "codex",
+      "agent_message": "scheduler claimed build-step"
+    }
+  }
+}

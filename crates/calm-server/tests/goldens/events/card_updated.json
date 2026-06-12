@@ -1,0 +1,23 @@
+{
+  "description": "card.updated whose runtime view carries only the required fields: the six inner Options are skip_serializing_if so they stay absent (not null) on the wire.",
+  "wire": {
+    "ev": "card.updated",
+    "data": {
+      "id": "card-01",
+      "wave_id": "wave-01",
+      "kind": "ui://plugin-x/view-y",
+      "sort": 2.5,
+      "payload": {
+        "n": 1
+      },
+      "runtime": {
+        "runtime_id": "rt-02",
+        "kind": "terminal",
+        "status": "exited"
+      },
+      "deletable": true,
+      "created_at": 1000,
+      "updated_at": 2000
+    }
+  }
+}

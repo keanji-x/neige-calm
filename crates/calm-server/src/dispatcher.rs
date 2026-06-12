@@ -1933,6 +1933,222 @@ mod tests {
         ));
     }
 
+    /// #679 PR0-E — actor-matrix pin for task terminal events plus the
+    /// request-kind exclusion. `event_warrants_spec_push_covers_push_allowlist`
+    /// above pins the AiCodex/AiSpec rows; this pins the remaining actor
+    /// variants (only `AiSpec` is excluded — everything else pushes) and
+    /// that the two `*.worker_requested` kinds never push back to the spec
+    /// regardless of actor.
+    #[test]
+    fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
+        let cache = CardRoleCache::new();
+        let wave = WaveId::from("w");
+        let worker = CardId::from("worker");
+        let spec = CardId::from("spec");
+        cache.insert(worker.clone(), CardRole::Worker, wave.clone());
+        cache.insert(spec.clone(), CardRole::Spec, wave.clone());
+        let write = WriteContext::new(cache, crate::wave_cove_cache::WaveCoveCache::new());
+
+        let completed = Event::TaskCompleted {
+            idempotency_key: "done".into(),
+            result: serde_json::Value::Null,
+            artifacts: Vec::new(),
+            agent_message: None,
+        };
+        let failed = Event::TaskFailed {
+            idempotency_key: "fail".into(),
+            reason: "boom".into(),
+            agent_message: None,
+        };
+        // Every non-AiSpec actor warrants a push for task terminal events —
+        // including the kernel dispatcher itself (its spawn-failure
+        // `task.failed` fallback must wake the spec).
+        for actor in [
+            ActorId::User,
+            ActorId::Kernel,
+            ActorId::KernelDispatcher,
+            ActorId::Plugin("p".into()),
+            ActorId::AiClaude(worker.clone()),
+        ] {
+            assert!(
+                event_warrants_spec_push(&completed, &actor, &write),
+                "task.completed must push for actor {actor}"
+            );
+            assert!(
+                event_warrants_spec_push(&failed, &actor, &write),
+                "task.failed must push for actor {actor}"
+            );
+        }
+        assert!(!event_warrants_spec_push(
+            &completed,
+            &ActorId::AiSpec(spec.clone()),
+            &write
+        ));
+
+        // The two request kinds are dispatcher *inputs*, never spec pushes
+        // — for any actor, including the spec that authored them.
+        let codex_req = Event::CodexWorkerRequested {
+            idempotency_key: "k".into(),
+            goal: "g".into(),
+            context: serde_json::Value::Null,
+            acceptance_criteria: None,
+            agent_message: None,
+        };
+        let terminal_req = Event::TerminalWorkerRequested {
+            idempotency_key: "k".into(),
+            cmd: "ls".into(),
+            cwd: None,
+            agent_message: None,
+        };
+        for actor in [
+            ActorId::User,
+            ActorId::KernelDispatcher,
+            ActorId::AiSpec(spec.clone()),
+            ActorId::AiCodex(worker.clone()),
+        ] {
+            assert!(
+                !event_warrants_spec_push(&codex_req, &actor, &write),
+                "codex.worker_requested must never push for actor {actor}"
+            );
+            assert!(
+                !event_warrants_spec_push(&terminal_req, &actor, &write),
+                "terminal.worker_requested must never push for actor {actor}"
+            );
+        }
+    }
+
+    /// #679 PR0-E — characterization golden for the event → harness
+    /// observation mapping. Both the live push path and the boot-recovery
+    /// replay (`harness::replay_harness_events_since`) funnel through
+    /// `harness_observation_from_event`; PR5-8 must preserve this mapping
+    /// byte-for-byte or consciously edit this pin.
+    #[test]
+    fn harness_observation_from_event_mapping_pin() {
+        let wave = WaveId::from("wave-map");
+        let worker = CardId::from("card-map");
+
+        // task.completed — idempotency key + verbatim result.
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::TaskCompleted {
+                    idempotency_key: "map-a".into(),
+                    result: serde_json::json!({"ok": true, "n": 7}),
+                    artifacts: vec![ArtifactRef::from("art-1")],
+                    agent_message: Some("ignored".into()),
+                }
+            ),
+            Some(HarnessObservation::TaskCompleted {
+                idempotency_key: "map-a".into(),
+                result: serde_json::json!({"ok": true, "n": 7}),
+            })
+        );
+
+        // task.failed — the event's `reason` becomes the observation `error`.
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::TaskFailed {
+                    idempotency_key: "map-b".into(),
+                    reason: "boom".into(),
+                    agent_message: None,
+                }
+            ),
+            Some(HarnessObservation::TaskFailed {
+                idempotency_key: "map-b".into(),
+                error: "boom".into(),
+            })
+        );
+
+        // wave.report_edited — body_after verbatim + its sha256 (golden hex
+        // computed externally, NOT via the same sha256_hex helper).
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::WaveReportEdited {
+                    wave_id: wave.clone(),
+                    card_id: worker.clone(),
+                    author: EditAuthor::User,
+                    edit_id: "e".into(),
+                    summary_before: String::new(),
+                    summary_after: "s".into(),
+                    body_before: "old".into(),
+                    body_after: "loop-pin-body".into(),
+                    agent_message: None,
+                }
+            ),
+            Some(HarnessObservation::ReportEdited {
+                wave_id: wave.clone(),
+                body_sha256: "09b37878497ec46015d1913ba0dff1cd051ca244859c80f4a3fc14d88a4a9465"
+                    .into(),
+                body: "loop-pin-body".into(),
+            })
+        );
+
+        // Stop hooks — exact kind discriminators map to WorkerHookStop.
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::CodexHook {
+                    card_id: worker.clone(),
+                    kind: "hook.codex.stop".into(),
+                    hook_idempotency_key: "hook-c".into(),
+                    payload: serde_json::Value::Null,
+                }
+            ),
+            Some(HarnessObservation::WorkerHookStop {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                kind: HarnessHookKind::CodexStop,
+                idempotency_key: "hook-c".into(),
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ClaudeHook {
+                    card_id: worker.clone(),
+                    kind: "hook.claude.stop".into(),
+                    hook_idempotency_key: "hook-l".into(),
+                    payload: serde_json::Value::Null,
+                }
+            ),
+            Some(HarnessObservation::WorkerHookStop {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                kind: HarnessHookKind::ClaudeStop,
+                idempotency_key: "hook-l".into(),
+            })
+        );
+
+        // Non-stop hooks and non-push kinds map to nothing.
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::CodexHook {
+                    card_id: worker.clone(),
+                    kind: "hook.codex.permission_request".into(),
+                    hook_idempotency_key: "hook-p".into(),
+                    payload: serde_json::Value::Null,
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::CodexWorkerRequested {
+                    idempotency_key: "k".into(),
+                    goal: "g".into(),
+                    context: serde_json::Value::Null,
+                    acceptance_criteria: None,
+                    agent_message: None,
+                }
+            ),
+            None
+        );
+    }
+
     /// #313 round-2 (B3) — the per-wave push lock map must serialize
     /// concurrent acquisitions for the SAME wave (so boot takeover's
     /// `Dispatcher::push_lock` and the live `push_to_spec`'s lock cannot run

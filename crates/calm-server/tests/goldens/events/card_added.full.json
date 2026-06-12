@@ -1,0 +1,29 @@
+{
+  "description": "card.added with the joined CardRuntimeView fully populated (RuntimeKind::CodexCard serializes as \"codex\").",
+  "wire": {
+    "ev": "card.added",
+    "data": {
+      "id": "card-01",
+      "wave_id": "wave-01",
+      "kind": "terminal",
+      "sort": 1.5,
+      "payload": {
+        "foo": "bar"
+      },
+      "runtime": {
+        "runtime_id": "rt-01",
+        "kind": "codex",
+        "status": "running",
+        "provider": "codex",
+        "terminal_id": "term-01",
+        "thread_id": "thread-01",
+        "session_id": "sess-01",
+        "source": "spawn",
+        "thread_status": "active"
+      },
+      "deletable": false,
+      "created_at": 1000,
+      "updated_at": 2000
+    }
+  }
+}

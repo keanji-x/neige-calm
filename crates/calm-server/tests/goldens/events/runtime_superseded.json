@@ -1,0 +1,11 @@
+{
+  "description": "runtime.superseded inline struct variant.",
+  "wire": {
+    "ev": "runtime.superseded",
+    "data": {
+      "old_runtime_id": "rt-01",
+      "new_runtime_id": "rt-02",
+      "card_id": "card-01"
+    }
+  }
+}

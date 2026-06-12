@@ -1,0 +1,12 @@
+{
+  "description": "runtime.status_changed; RunStatus is rename_all=snake_case (TurnPending → \"turn_pending\").",
+  "wire": {
+    "ev": "runtime.status_changed",
+    "data": {
+      "runtime_id": "rt-01",
+      "card_id": "card-01",
+      "old_status": "turn_pending",
+      "new_status": "running"
+    }
+  }
+}
