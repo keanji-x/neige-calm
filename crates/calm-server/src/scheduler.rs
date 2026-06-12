@@ -352,21 +352,16 @@ impl Scheduler {
         let Some(wave) = self.repo.wave_get(wave_id.as_str()).await? else {
             return Ok(());
         };
-        if !lifecycle_allows_scheduling(wave.lifecycle) {
-            tracing::debug!(
-                wave_id = %wave_id,
-                lifecycle = ?wave.lifecycle,
-                "scheduler: lifecycle holds scheduling; skipping pass"
-            );
-            return Ok(());
-        }
-        let budget = self.wave_budget(wave_id).await?;
         let tasks = self.repo.tasks_by_wave(wave_id.as_str()).await?;
         // §6.2 trigger 2 — the emit-tx flip already moved gated rows to
         // `verifying`; this pass (poked by the `task.completed`
         // envelope) drives each one's gate. Fire-and-forget: a gate can
         // run for minutes-to-hours and must never block the wave lock;
         // `drive_gate`'s single-flight guard collapses duplicates.
+        // Deliberately BEFORE the lifecycle gate (PR #685 F6): §5.2
+        // scopes lifecycle gating to NEW claims; a gate for a task that
+        // reported while the wave is Blocked is in-flight machinery and
+        // must not wait for the reconcile tick.
         for task in tasks
             .iter()
             .filter(|t| t.status == TaskStatus::Verifying)
@@ -377,6 +372,15 @@ impl Scheduler {
                 this.drive_gate(task).await;
             });
         }
+        if !lifecycle_allows_scheduling(wave.lifecycle) {
+            tracing::debug!(
+                wave_id = %wave_id,
+                lifecycle = ?wave.lifecycle,
+                "scheduler: lifecycle holds scheduling; skipping pass"
+            );
+            return Ok(());
+        }
+        let budget = self.wave_budget(wave_id).await?;
         let ready = compute_ready(&tasks, budget);
         for task in ready {
             self.dispatch_task(task, &wave).await;

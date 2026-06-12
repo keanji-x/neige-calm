@@ -3150,6 +3150,39 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// PR #685 review F6 — gates are in-flight machinery, not new claims:
+/// §5.2 scopes lifecycle gating to claims, so a gated task that
+/// reported while the wave is Blocked must have its gate driven by the
+/// very pass the report poked — not sit `verifying` until the slow
+/// reconcile tick.
+#[tokio::test]
+async fn blocked_wave_still_drives_verifying_gate() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Blocked).await;
+    let dir = unique_gate_dir("blocked");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "ok", "cmd": "true" } ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "blocked", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "blocked", 30).await;
+    assert_eq!(row.status, TaskStatus::Done, "{row:?}");
+    // Lifecycle promotion is still guarded on Working → Reviewing: a
+    // Blocked wave stays Blocked (the user gets unblocked explicitly).
+    assert_eq!(wave_lifecycle(&boot).await, WaveLifecycle::Blocked);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// PR #685 review F4 — a `prepare_tx` client error BEFORE the guarded
 /// bump terminal-fails op `#g1` while the row stays `verifying@0`.
 /// Pre-fix this looped forever (every drive deduped onto the dead op
