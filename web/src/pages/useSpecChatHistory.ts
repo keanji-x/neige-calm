@@ -21,11 +21,26 @@ export interface SpecChatHistorySnapshot {
   /**
    * Append a FE-local system row (#668 — e.g. "Turn stopped" after a user
    * stop; interrupted turns never emit `item/completed`, so without it the
-   * stop would be visually silent). Shares the echo lifecycle: cleared on
-   * card change and transcript-clear, never persisted server-side.
+   * stop would be visually silent). Anchored to the newest server entry at
+   * creation time so later-arriving rows render below it, not above it.
+   * Shares the echo lifecycle: cleared on card change and transcript-clear,
+   * never persisted server-side.
    */
   addSystemNote(text: string): void;
 }
+
+/**
+ * FE-local system note (#668), anchored in transcript order.
+ * `afterEntryId` is the id of the newest server entry when the note was
+ * created (null when the transcript was empty), so the note stays between
+ * the entries it was created between even after newer rows arrive.
+ */
+type SystemNote = {
+  id: number;
+  text: string;
+  atMs: number;
+  afterEntryId: number | null;
+};
 
 function isCompletedMessageItem(
   method: string,
@@ -95,6 +110,7 @@ export function useSpecChatHistory(
 
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [echoes, setEchoes] = useState<VisibleChatEntry[]>([]);
+  const [systemNotes, setSystemNotes] = useState<SystemNote[]>([]);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadEarlierPending, setLoadEarlierPending] = useState(false);
   const entriesRef = useRef<ChatEntry[]>([]);
@@ -108,10 +124,6 @@ export function useSpecChatHistory(
     setEchoes((current) => {
       const matchedUserIndexes = new Set<number>();
       const next = current.filter((echo) => {
-        // System notes (#668) live in the same FE-local list for lifecycle
-        // (clear on card change / transcript-clear) but never reconcile
-        // against landed user rows.
-        if (echo.kind !== 'user') return true;
         const matchedIndex = userTexts.findIndex(
           (userText, index) =>
             !matchedUserIndexes.has(index) &&
@@ -146,6 +158,7 @@ export function useSpecChatHistory(
     entriesRef.current = [];
     setEntries([]);
     setEchoes([]);
+    setSystemNotes([]);
     setHasEarlier(false);
     setLoadEarlierPending(false);
   }, []);
@@ -358,22 +371,64 @@ export function useSpecChatHistory(
   const addSystemNote = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    const loaded = entriesRef.current;
+    const afterEntryId =
+      loaded.length > 0 ? loaded[loaded.length - 1].id : null;
     echoIdRef.current -= 1;
-    setEchoes((current) => [
+    setSystemNotes((current) => [
       ...current,
       {
         id: echoIdRef.current,
-        kind: 'system',
         text: trimmed,
         atMs: Date.now(),
+        afterEntryId,
       },
     ]);
   }, []);
 
-  const visibleEntries = useMemo<VisibleChatEntry[]>(
-    () => [...entries, ...echoes],
-    [entries, echoes],
-  );
+  const visibleEntries = useMemo<VisibleChatEntry[]>(() => {
+    if (systemNotes.length === 0) return [...entries, ...echoes];
+
+    // Insert each note right after its anchor entry so later-arriving rows
+    // render below it (#668 review P2). Slot k means "after entries[k-1]";
+    // slot 0 renders before all loaded entries — used for null anchors and
+    // anchors older than the loaded window (paged out). An anchor id that is
+    // in range but no longer loaded falls back to id order: after the last
+    // loaded entry whose id <= anchor.
+    const slots = new Map<number, VisibleChatEntry[]>();
+    for (const note of systemNotes) {
+      let slot = 0;
+      if (note.afterEntryId != null) {
+        for (let i = entries.length - 1; i >= 0; i -= 1) {
+          if (entries[i].id <= note.afterEntryId) {
+            slot = i + 1;
+            break;
+          }
+        }
+      }
+      const row: VisibleChatEntry = {
+        id: note.id,
+        kind: 'system',
+        text: note.text,
+        atMs: note.atMs,
+      };
+      const bucket = slots.get(slot);
+      if (bucket) {
+        bucket.push(row);
+      } else {
+        slots.set(slot, [row]);
+      }
+    }
+
+    const merged: VisibleChatEntry[] = [...(slots.get(0) ?? [])];
+    entries.forEach((entry, index) => {
+      merged.push(entry);
+      const bucket = slots.get(index + 1);
+      if (bucket) merged.push(...bucket);
+    });
+    // Echo bubbles keep their end-of-list behavior.
+    return [...merged, ...echoes];
+  }, [entries, echoes, systemNotes]);
 
   return {
     entries: visibleEntries,

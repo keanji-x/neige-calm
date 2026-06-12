@@ -220,6 +220,14 @@ function draftBox() {
   return screen.getByLabelText('Ask the Spec Agent');
 }
 
+/** Transcript blocks (entries + system notes) in DOM order. */
+function transcriptBlocks() {
+  const convo = screen.getByLabelText('Conversation');
+  return Array.from(
+    convo.querySelectorAll('.report-convo-entry, .report-convo-system'),
+  ).map((node) => node.textContent ?? '');
+}
+
 describe('SpecConversation', () => {
   beforeEach(() => {
     mocks.submit.mockReset();
@@ -666,6 +674,74 @@ describe('SpecConversation', () => {
       expect(mocks.stop).toHaveBeenCalledTimes(1);
     });
     expect(screen.queryByText(/Turn stopped/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the stop note anchored in place when newer rows arrive', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessUserRow(1, 'Before stop'),
+    ]);
+
+    render(<Harness />);
+    expect(await screen.findByText('Before stop')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessAgentRow(2, 'After stop'),
+    ]);
+    await emitHarnessItemAdded({
+      item_db_id: 2,
+      item_uuid: 'msg_2',
+      item_type: 'agentMessage',
+    });
+    expect(await screen.findByText('After stop')).toBeInTheDocument();
+
+    const blocks = transcriptBlocks();
+    const beforeIndex = blocks.findIndex((t) => t.includes('Before stop'));
+    const noteIndex = blocks.findIndex((t) => t.includes('Turn stopped'));
+    const afterIndex = blocks.findIndex((t) => t.includes('After stop'));
+    expect(beforeIndex).toBeGreaterThanOrEqual(0);
+    expect(beforeIndex).toBeLessThan(noteIndex);
+    expect(noteIndex).toBeLessThan(afterIndex);
+  });
+
+  it('orders multiple notes by their anchors, not creation recency', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+
+    render(<Harness />);
+    await waitFor(() => {
+      expect(mocks.listHarnessItems).toHaveBeenCalled();
+    });
+
+    // First stop on an empty transcript: null anchor renders at the top.
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessAgentRow(5, 'Mid row'),
+    ]);
+    await emitHarnessItemAdded({
+      item_db_id: 5,
+      item_uuid: 'msg_5',
+      item_type: 'agentMessage',
+    });
+    expect(await screen.findByText('Mid row')).toBeInTheDocument();
+
+    // Second stop: anchored after the newest loaded entry.
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    await waitFor(() => {
+      expect(screen.getAllByText(/Turn stopped/)).toHaveLength(2);
+    });
+
+    expect(
+      transcriptBlocks().map((t) =>
+        t.includes('Turn stopped') ? 'note' : 'row',
+      ),
+    ).toEqual(['note', 'row', 'note']);
   });
 
   it('continues fetching the tail after a full asc page with no messages', async () => {
