@@ -52,6 +52,10 @@ trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
 trap cleanup EXIT
 dotenv_get() {
   local key=$1 line value
+  if [[ -n "${!key:-}" ]]; then
+    printf '%s\n' "${!key}"
+    return 0
+  fi
   line="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 || true)"
   [[ -n "$line" ]] || return 1
   value="${line#*=}"
