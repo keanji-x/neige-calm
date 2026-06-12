@@ -33,10 +33,15 @@
  *   `codex.job_requested` / `terminal.job_requested` are renamed to
  *   `*.worker_requested`. Old frontends' zod schemas reject the new
  *   kinds and would silently drop invalidation frames, so bump here.
+ * * `4` — scheduler wire kinds (issue #644). Adds `plan.updated` and
+ *   `task.dispatched` to the WS event union (backend
+ *   `SYNC_EVENT_VERSION` bumped 2 → 3 in lockstep). Older frontends'
+ *   zod schemas don't know the new discriminators and would silently
+ *   drop plan/dispatch invalidation frames, so bump here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 3;
+export const WEB_COMPAT_VERSION = 4;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

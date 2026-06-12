@@ -340,7 +340,17 @@ const BUS_CAPACITY: usize = 1024;
 ///   at 1, those tabs would silently fail zod and advance past
 ///   invalidation frames. Old rows backfill to `1` via the migration
 ///   0006 column default.
-pub const SYNC_EVENT_VERSION: u32 = 2;
+/// * `3` — scheduler wire kinds (issue #644). Adds `plan.updated`
+///   (PR-A) and `task.dispatched` (PR-B) to the event union. A v2 tab
+///   whose per-frame gate cached `syncEventVersion=2` at mount would
+///   treat `eventVersion=2` frames carrying the new kinds as in-range,
+///   advance its replay cursor, then silently fail zod on the unknown
+///   discriminator — permanently skipping the plan/dispatch
+///   invalidation. Bumping to `3` makes those tabs drop the frames
+///   WITHOUT advancing the cursor. Migration 0043 re-stamps any
+///   `plan.updated` / `task.dispatched` rows persisted at version 2
+///   before this bump shipped.
+pub const SYNC_EVENT_VERSION: u32 = 3;
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///

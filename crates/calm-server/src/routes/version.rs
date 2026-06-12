@@ -86,7 +86,13 @@ pub const API_VERSION: &str = "1";
 ///   silently fail discriminator validation and skip
 ///   `wave-files`/`overlays` invalidation. The compat modal forces a
 ///   hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 3;
+/// * `4` — scheduler wire kinds (issue #644). Adds `plan.updated` and
+///   `task.dispatched` to the WS event union (with
+///   `SYNC_EVENT_VERSION` bumped 2 → 3 in lockstep). A v3 frontend's
+///   zod `WireEvent` union doesn't know the new discriminators, so its
+///   plan/dispatch invalidation would silently drop. The compat modal
+///   forces a hard refresh.
+pub const WEB_COMPAT_VERSION: u32 = 4;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,
