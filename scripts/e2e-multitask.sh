@@ -236,10 +236,21 @@ poll_wave() {
 }
 
 main() {
+  local auth_probe_status
   cd "$REPO_ROOT" || exit 1
   preflight
   PORT="$(pick_port)"
-  start_stack; wait_for_health; init_workspace; login
+  start_stack; wait_for_health
+  api GET /api/coves - || fail "curl failed for GET /api/coves auth probe"
+  auth_probe_status="$API_STATUS"
+  [[ "$auth_probe_status" == 2* || "$auth_probe_status" == "401" ]] \
+    || fail "GET /api/coves auth probe returned HTTP $auth_probe_status: $(body_preview "$API_BODY")"
+  init_workspace
+  if [[ "$auth_probe_status" == 2* ]]; then
+    printf 'Auth probe: cookie-less requests accepted; skipping login\n'
+  else
+    login
+  fi
   local cove_id wave_id
   cove_id="$(create_cove)"
   wave_id="$(create_wave "$cove_id")"
