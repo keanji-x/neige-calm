@@ -81,6 +81,16 @@ const PARKED_DEADLINE_SLACK_SECS: i64 = 120;
 /// Trailing log bytes copied into `gate_result_json` and the event.
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
 
+/// Extra margin read beyond the tail for the `::gate-step` sentinel
+/// scan (PR #685 F9): verdict derivation reads only the last
+/// `LOG_TAIL_BYTES + LOG_SENTINEL_MARGIN_BYTES` of the log instead of
+/// the whole file. The LAST sentinel is what attributes the failing
+/// step, and the wrapper stops at the first failure, so it sits near
+/// EOF; a step that alone prints >64KiB after its sentinel loses
+/// attribution (`failing_step: None`) — acceptable for an advisory
+/// field (§6.3: logs are not verdict inputs).
+const LOG_SENTINEL_MARGIN_BYTES: u64 = 64 * 1024;
+
 /// Reattach-observer liveness poll cadence (#653 §6.3 — a non-child
 /// cannot be `waitpid`ed; polling + exit-file is the only
 /// cross-restart observation).
@@ -349,9 +359,19 @@ fn last_gate_step_sentinel(log_text: &str) -> Option<String> {
 }
 
 fn read_log_tail(log_path: &Path) -> (String, Option<String>) {
-    let Ok(bytes) = std::fs::read(log_path) else {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(log_path) else {
         return (String::new(), None);
     };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let window_start = len.saturating_sub(LOG_TAIL_BYTES + LOG_SENTINEL_MARGIN_BYTES);
+    if file.seek(SeekFrom::Start(window_start)).is_err() {
+        return (String::new(), None);
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return (String::new(), None);
+    }
     let text = String::from_utf8_lossy(&bytes);
     let sentinel = last_gate_step_sentinel(&text);
     let tail_start = bytes.len().saturating_sub(LOG_TAIL_BYTES as usize);
@@ -1312,6 +1332,18 @@ mod tests {
         assert!(tail.len() <= LOG_TAIL_BYTES as usize);
         assert!(tail.ends_with("tail-end\n"));
         assert_eq!(sentinel.as_deref(), Some("last"));
+
+        // PR #685 F9 — a log larger than the bounded read window
+        // (tail + sentinel margin) still yields the right tail and the
+        // last sentinel; only the window is read, not the whole file.
+        let mut content = String::from("::gate-step ancient\n");
+        content.push_str(&"y".repeat(200 * 1024));
+        content.push_str("\n::gate-step recent\nbig-tail-end\n");
+        std::fs::write(&log, &content).unwrap();
+        let (tail, sentinel) = read_log_tail(&log);
+        assert!(tail.len() <= LOG_TAIL_BYTES as usize);
+        assert!(tail.ends_with("big-tail-end\n"));
+        assert_eq!(sentinel.as_deref(), Some("recent"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
