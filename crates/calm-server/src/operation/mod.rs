@@ -1499,10 +1499,14 @@ impl OperationRuntime {
                 .apply_parked_past_deadline_with_claim(&op.id, claim_mode)
                 .await;
         }
-        self.apply_parked_pre_deadline_probe(op).await
+        self.apply_parked_pre_deadline_probe(op, claim_mode).await
     }
 
-    async fn apply_parked_pre_deadline_probe(&self, op: Operation) -> Result<()> {
+    async fn apply_parked_pre_deadline_probe(
+        &self,
+        op: Operation,
+        claim_mode: ParkedClaimMode,
+    ) -> Result<()> {
         let Some(artifacts) = op.spawn_artifacts.clone() else {
             return Ok(());
         };
@@ -1523,7 +1527,34 @@ impl OperationRuntime {
             ParkedRecovery::Complete(outcome) => {
                 self.complete_parked_and_publish(&op.id, &outcome).await?;
             }
-            ParkedRecovery::Fail { .. } | ParkedRecovery::LeaveParked => {}
+            // Dead work with NO recoverable outcome fails now (PR #685
+            // round-2 F2): leaving it parked would sit until
+            // `parked_deadline_ms` and then be misclassified as a
+            // deadline failure (class `parked_deadline` — for the gate
+            // adapter, `gate-timeout` instead of the true
+            // `gate-infra`). Class `parked_dead` matches the boot-arm
+            // semantics for the same state. Racing a live observer's
+            // in-flight completion is interlocked exactly like the
+            // past-deadline arm (#653 §4.4 orderings): a verdict that
+            // commits first makes this claim miss; once the claim
+            // lands, the lease-fenced `mark_failed` wins and the
+            // observer's completion rolls back on `AlreadyResolved`.
+            ParkedRecovery::Fail { reason } => {
+                let Some(claimed) = self.claim_parked_with_mode(&op.id, claim_mode).await? else {
+                    return Ok(());
+                };
+                let alive = parked_artifacts_alive(&artifacts);
+                self.kill_recheck_then_fail_parked(
+                    claimed,
+                    adapter.as_ref(),
+                    artifacts,
+                    alive,
+                    reason,
+                    Some("parked_dead".into()),
+                )
+                .await?;
+            }
+            ParkedRecovery::LeaveParked => {}
         }
         Ok(())
     }

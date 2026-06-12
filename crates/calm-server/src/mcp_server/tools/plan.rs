@@ -588,11 +588,15 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
              Batch is whole-batch atomic: every task validates or nothing lands. \
              Tasks are editable while `pending`; re-sending an identical task is an \
              idempotent `unchanged`. `depends_on` names sibling task keys; the kernel \
-             schedules ready tasks once the scheduler slice lands. `message` is \
-             required and persisted as `agent_message` on the `plan.updated` event. \
-             Optional `lifecycle` drives the wave state machine in the same atomic \
-             write. NOTE: `gate` is not yet accepted (verification lands with the \
-             task-verify slice)."
+             schedules ready tasks itself. Declare a `gate` on every codex task: the \
+             kernel runs its steps after the worker finishes and the verdict \
+             (`task.gate_result`) is a machine fact, not a worker claim. Waves with \
+             `require_task_gates` (the default for new waves) reject an ungated codex \
+             task unless it carries `no_gate_reason`; terminal tasks are exempt. \
+             Gates may run more than once (kernel restarts re-run them) — declare \
+             only re-runnable commands. `message` is required and persisted as \
+             `agent_message` on the `plan.updated` event. Optional `lifecycle` \
+             drives the wave state machine in the same atomic write."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -614,11 +618,31 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                             "goal": { "type": "string", "minLength": 1, "description": "codex: goal text; terminal: the command" },
                             "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
                             "acceptance_criteria": { "type": ["string", "null"] },
-                            "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + future gate default cwd." },
+                            "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },
                             "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Sibling task keys that must be done first." },
                             "priority": { "type": "integer", "description": "Higher schedules first; default 0." },
-                            "gate": { "type": "object", "description": "NOT yet accepted — gates land with the task-verify slice." },
-                            "no_gate_reason": { "type": "string", "description": "Audit note for an ungated codex task; recorded into context." }
+                            "gate": {
+                                "type": "object",
+                                "required": ["steps"],
+                                "description": "Verification the kernel runs after the worker reports done; declare one for every codex task. Steps run in order, first non-zero exit fails the gate, and steps must be re-runnable (kernel restarts re-run the gate).",
+                                "properties": {
+                                    "steps": {
+                                        "type": "array",
+                                        "minItems": 1,
+                                        "items": {
+                                            "type": "object",
+                                            "required": ["name", "cmd"],
+                                            "properties": {
+                                                "name": { "type": "string", "minLength": 1, "description": "Step label; the failing step is attributed in the gate result." },
+                                                "cmd": { "type": "string", "minLength": 1, "description": "Shell command; must be re-runnable. Non-zero exit fails the gate." }
+                                            }
+                                        }
+                                    },
+                                    "cwd": { "type": ["string", "null"], "description": "Absolute path; defaults to task.cwd, else the wave cwd." },
+                                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": GATE_TIMEOUT_MAX_SECS, "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate." }
+                                }
+                            },
+                            "no_gate_reason": { "type": "string", "description": "Escape hatch: justifies an ungated codex task on a wave with `require_task_gates`; recorded into context for audit." }
                         }
                     }
                 },
@@ -1069,8 +1093,10 @@ fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_LIST.into(),
         description: "Spec-only: read the wave's full task plan with per-task status. \
-             Gate commands are not echoed (only step names); read the worker output \
-             for a finished task via the runs views. No event is emitted."
+             Gate commands are not echoed (only step names); each entry carries the \
+             latest machine gate verdict as `gate_result` (on failure `status_detail` \
+             is gate-red / gate-timeout / gate-infra). Read the worker output for a \
+             finished task via the runs views. No event is emitted."
             .into(),
         input_schema: json!({
             "type": "object",

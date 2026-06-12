@@ -1093,9 +1093,10 @@ Per task status:
      submit, or first attempt) → submit `#g{row.gate_attempt + 1}` — first
      attempt or next, same path.
   4. **Parked op, provably-dead process, no recorded outcome** → handled by
-     `sweep_parked`/boot per #653 semantics (pre-deadline dead-probe only
-     acts on a recoverable verdict; the deadline arm / boot fails the op
-     `parked_dead`), then arm 2 copies the failure to the row as
+     `sweep_parked`/boot per #653 semantics (the pre-deadline dead-probe
+     lands a recoverable verdict or fails the op `parked_dead` immediately —
+     PR #685 round-2 F2; the deadline arm / boot are the backstops, same
+     class), then arm 2 copies the failure to the row as
      `gate-infra`. No automatic re-attempt — the spec re-plans (§6.3
      invariant: gate didn't prove green ⇒ `failed`).
   Crash-window walk for one attempt: before `prepare_tx` commit → op

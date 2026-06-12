@@ -792,8 +792,48 @@ impl ProviderAdapter for TaskVerifyAdapter {
             // `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (the gate cannot
             // write kernel state) and no incidental kernel secrets.
             .env_clear()
-            .env("NEIGE_GATE_EXIT_PATH", &exit_path)
-            .kill_on_drop(true);
+            .env("NEIGE_GATE_EXIT_PATH", &exit_path);
+        // Deliberately NO `kill_on_drop` (PR #685 round-2 F1): dropping
+        // the observer — a graceful kernel shutdown drops every spawned
+        // task — must leave the gate RUNNING so boot recovery can
+        // reattach (#653 §6.3). `kill_on_drop` would SIGKILL only the
+        // `/bin/sh` wrapper, never its group, manufacturing exactly the
+        // half-dead state recovery cannot handle: boot probes the dead
+        // wrapper pid, must skip the now-unverifiable group kill, and
+        // flips the row gate-infra while orphaned steps keep mutating
+        // the checkout. Every kernel-side kill instead targets the
+        // recorded process GROUP (`signal_process_group` gated on the
+        // leader's `verify_owned_pid` triple), never the bare child
+        // handle.
+        //
+        // Observer-drop state walk — every path that drops the observer
+        // (and with it the `Child` handle), and why none can end
+        // "wrapper dead, group alive, row flipped":
+        // * Graceful shutdown / kernel restart: nothing is killed; the
+        //   whole group survives intact. Boot `recover_parked`
+        //   reattaches (alive) or recovers the exit file (dead); the
+        //   row flips only when a verdict lands.
+        // * `set_parked` lost (artifact fence / lost lease): the
+        //   observer is dropped UN-spawned and
+        //   `fail_with_compensation` runs `kill_gate_group`, which
+        //   group-kills via the op artifacts AND the tasks-row triple
+        //   (both recorded before release), then flips the row
+        //   gate-infra — group dead before the flip.
+        // * Superseded attempt: the next attempt's kill-prior
+        //   group-kills via the recorded artifacts; the prior observer
+        //   (if still running) merely reaps the wrapper and its
+        //   verdict misses the row guard (the bump moved
+        //   `gate_attempt` on). No row write.
+        // * Past-deadline / pre-deadline enforcement: the sweep
+        //   group-kills a live group (verified leader) BEFORE failing
+        //   the op; the reconcile flips the row after.
+        // * External wrapper-only death (e.g. the OOM killer takes
+        //   just `sh`): the leader triple is the only ownership proof,
+        //   so the group can no longer be verified-killed; recovery
+        //   fails the op gate-infra and surviving step children are
+        //   outside kernel control. That is the pre-existing
+        //   best-effort boundary of pid-triple ownership — an external
+        //   actor's doing, not a state this code can create.
         for key in ["PATH", "HOME", "LANG", "LC_ALL", "TERM"] {
             if let Some(v) = std::env::var_os(key) {
                 cmd.env(key, v);

@@ -273,14 +273,18 @@ async fn sweep_deadline_uses_recoverable_verdict_instead_of_deadline_failure() {
     ));
 }
 
+/// PR #685 round-2 F2: the pre-deadline dead-probe lands a recovered
+/// verdict as a completion AND fails dead work with no recoverable
+/// outcome NOW (class `parked_dead`), instead of leaving it parked to
+/// be misclassified as a deadline failure later.
 #[tokio::test]
-async fn sweep_pre_deadline_dead_probe_completes_only_on_recovered_verdict() {
+async fn sweep_pre_deadline_dead_probe_completes_verdict_and_fails_dead_work() {
     let adapter = Arc::new(QueuedRecoveryAdapter::new(vec![
         ParkedRecovery::Complete(ParkedOutcome::Succeeded {
             result: json!({ "first": "complete" }),
         }),
         ParkedRecovery::Fail {
-            reason: "ignored before deadline".into(),
+            reason: "dead before deadline".into(),
         },
     ]));
     let boot = TestBoot::new(vec![adapter]).await;
@@ -304,13 +308,24 @@ async fn sweep_pre_deadline_dead_probe_completes_only_on_recovered_verdict() {
         OperationOutcome::Succeeded { ref result }
             if result == &json!({ "first": "complete" })
     ));
-    let second_stored = boot
+    let second_result = boot
         .operation_repo
-        .get_operation(&second.id)
+        .operation_result(&second.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(second_stored.phase, Phase::Parked);
+    assert!(
+        matches!(
+            second_result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error == "dead before deadline" && class == "parked_dead"
+        ),
+        "{:?}",
+        second_result.outcome
+    );
 }
 
 #[tokio::test]
