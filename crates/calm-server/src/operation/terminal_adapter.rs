@@ -834,7 +834,7 @@ fn output_wave_id(output: &TxOutput) -> Result<&str> {
         .ok_or_else(|| CalmError::Internal("terminal tx_output missing wave_id".into()))
 }
 
-async fn terminal_worker_env(repo: &dyn crate::db::RouteRepo) -> Result<Value> {
+pub(crate) async fn terminal_worker_env(repo: &dyn crate::db::RouteRepo) -> Result<Value> {
     let settings = load_settings(repo).await?;
     let mut env_map = serde_json::Map::new();
     if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {

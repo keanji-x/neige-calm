@@ -7,6 +7,7 @@ pub mod codex_adapter;
 pub mod spec_harness_interrupt_adapter;
 pub mod spec_harness_shutdown_adapter;
 pub mod spec_harness_start_adapter;
+pub mod task_verify_adapter;
 pub mod terminal_adapter;
 pub(crate) mod worker_cleanup;
 

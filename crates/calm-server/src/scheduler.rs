@@ -49,8 +49,8 @@ use tokio::sync::Semaphore;
 
 use crate::db::sqlite::{
     SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
-    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, task_report_success_from_worker_tx,
-    tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
+    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
+    task_report_success_from_worker_tx, tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -1155,7 +1155,11 @@ pub async fn complete_terminal_task(
                     suppress_promotion = true;
                 }
                 (
-                    if flip == SuccessReportFlip::None { 0 } else { 1 },
+                    if flip == SuccessReportFlip::None {
+                        0
+                    } else {
+                        1
+                    },
                     Event::TaskCompleted {
                         idempotency_key: task_id.clone(),
                         result: json!({ "exit_code": 0, "source": "terminal-exit" }),

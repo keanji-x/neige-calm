@@ -238,6 +238,11 @@ fn dispatcher_operation_runtime(
         shared_codex_appserver,
         repo,
     ));
+    let task_verify_adapter = Arc::new(
+        crate::operation::task_verify_adapter::TaskVerifyAdapter::new(
+            crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
+        ),
+    );
     let completion = OperationCompletionBus::new();
     Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -251,6 +256,7 @@ fn dispatcher_operation_runtime(
             spec_harness_start_adapter,
             spec_harness_interrupt_adapter,
             spec_harness_shutdown_adapter,
+            task_verify_adapter,
         ],
         events.clone(),
         completion.clone(),
