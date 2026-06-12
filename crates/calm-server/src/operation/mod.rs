@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod parked_fence_model;
+
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
