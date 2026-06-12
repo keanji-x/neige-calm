@@ -519,7 +519,7 @@ exclusion. The allowlists that **do** change:
   issue's "excluded from the boot-recovery re-drive scan" is implemented as
   *included in the scan, never planned as `Recover`* (mismatch M2).
 - New repo method `claim_parked(op_id)` — a **dedicated** claim for the
-  enforcement paths (sweep §4.4, cancel §5, boot `Fail` §4.2):
+  steady-state enforcement paths (sweep §4.4, cancel §5):
 
   ```sql
   UPDATE operations SET lease_owner = ?, lease_until_ms = ?, updated_at_ms = ?
@@ -539,6 +539,14 @@ exclusion. The allowlists that **do** change:
   `claim_operation_for_boot_recovery` itself is unchanged — `parked` is never
   planned as `Recover`/`Compensate`, so its allowlist never needs the
   variant.
+- Boot recovery uses sibling `claim_parked_for_boot(op_id)` for `VerifyParked`
+  `Fail`, expired-at-boot deadline enforcement, and the boot-end sweep. Its
+  predicate is only `WHERE id = ? AND phase = 'parked'`: any parked lease
+  observed at boot was stamped by the previous process, which is dead before
+  `recover_on_boot` serves traffic. Single-winner safety still comes from the
+  phase fence plus the fetch-back rule (`id` + new `lease_owner` +
+  `phase='parked'`), so a completion that already flipped the phase makes the
+  boot claim miss.
 
 ### 4.2 Boot recovery for `parked`
 
@@ -628,7 +636,7 @@ async fn recover_parked(
    kill the recorded group first if `alive` (`verify_owned_pid` re-check then
    `signal_process_group(pgid, SIGKILL)`, mirroring §4.4), then own tx:
    `complete_parked_tx` + commit + `publish_completion`. `Fail` →
-   `claim_parked` (§4.1), kill the recorded group if alive
+   `claim_parked_for_boot` (§4.1), kill the recorded group if alive
    (`verify_owned_pid` re-check then `signal_process_group(pgid, SIGKILL)` —
    double-kill-safe, §5; if the group **was** alive, follow the kill with
    the same post-kill `recover_parked(alive = false, PastDeadline, …)`

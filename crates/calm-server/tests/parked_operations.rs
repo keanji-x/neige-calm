@@ -200,6 +200,53 @@ async fn sweep_past_deadline_live_default_kills_and_fails_deadline() {
 }
 
 #[tokio::test]
+async fn boot_recovery_past_deadline_ignores_abandoned_parked_lease() {
+    let boot = TestBoot::new(vec![Arc::new(DefaultParkedAdapter)]).await;
+    let op = boot
+        .insert_parked("park-default", dead_artifacts(), now_ms() - 1)
+        .await;
+    let future_lease = now_ms() + 3_600_000;
+    sqlx::query(
+        r#"UPDATE operations
+           SET lease_owner = 'abandoned-enforcer',
+               lease_until_ms = ?1
+           WHERE id = ?2"#,
+    )
+    .bind(future_lease)
+    .bind(&op.id)
+    .execute(boot.route_repo.pool())
+    .await
+    .unwrap();
+
+    assert!(
+        boot.operation_repo
+            .claim_parked(&op.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "steady-state claim must still respect future parked leases"
+    );
+
+    let plan = boot.runtime.recover_on_boot().await.unwrap();
+    boot.runtime.apply_recovery(plan).await.unwrap();
+
+    let result = boot
+        .operation_repo
+        .operation_result(&op.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        result.outcome,
+        OperationOutcome::Failed {
+            from_phase: PhaseTag::Parked,
+            last_error_class: Some(ref class),
+            ..
+        } if class == "parked_deadline"
+    ));
+}
+
+#[tokio::test]
 async fn sweep_deadline_uses_recoverable_verdict_instead_of_deadline_failure() {
     let adapter = Arc::new(QueuedRecoveryAdapter::new(vec![ParkedRecovery::Complete(
         ParkedOutcome::Succeeded {

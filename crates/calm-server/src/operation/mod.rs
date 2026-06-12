@@ -34,6 +34,12 @@ pub type TimestampMs = i64;
 pub type Tx<'tx> = Transaction<'tx, Sqlite>;
 const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
+#[derive(Clone, Copy)]
+enum ParkedClaimMode {
+    SteadyState,
+    Boot,
+}
+
 #[derive(Clone, Debug)]
 pub struct OperationKey {
     pub operation_key: String,
@@ -644,6 +650,31 @@ pub trait OperationRepo: Send + Sync {
         fetch_claimed_parked(&pool, op_id, &lease_owner).await
     }
 
+    async fn claim_parked_for_boot(&self, op_id: &str) -> Result<Option<Operation>> {
+        let now = now_ms();
+        let lease_owner = new_id();
+        let lease_until = now + OPERATION_LEASE_MS;
+        let pool = self.sqlite_pool();
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET lease_owner = ?1,
+                   lease_until_ms = ?2,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND phase = 'parked'"#,
+        )
+        .bind(&lease_owner)
+        .bind(lease_until)
+        .bind(now)
+        .bind(op_id)
+        .execute(&pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        fetch_claimed_parked(&pool, op_id, &lease_owner).await
+    }
+
     async fn parked_operations(&self) -> Result<Vec<Operation>> {
         let pool = self.sqlite_pool();
         let rows = sqlx::query(
@@ -901,17 +932,8 @@ impl OperationRuntime {
     }
 
     pub async fn sweep_parked(&self) -> Result<()> {
-        let rows = self.repo.parked_operations().await?;
-        for op in rows {
-            if let Err(e) = self.apply_parked_sweep(op.clone()).await {
-                tracing::error!(
-                    op_id = %op.id,
-                    error = %e,
-                    "parked operation sweep failed; continuing"
-                );
-            }
-        }
-        Ok(())
+        self.sweep_parked_with_claim(ParkedClaimMode::SteadyState)
+            .await
     }
 
     async fn enforce_parked_deadline(&self, op_id: &OperationId) -> Result<()> {
@@ -980,7 +1002,7 @@ impl OperationRuntime {
                 }
             }
         }
-        self.sweep_parked().await?;
+        self.sweep_parked_for_boot().await?;
         Ok(())
     }
 
@@ -1353,11 +1375,52 @@ impl OperationRuntime {
     }
 
     async fn apply_parked_sweep(&self, op: Operation) -> Result<()> {
+        self.apply_parked_sweep_with_claim(op, ParkedClaimMode::SteadyState)
+            .await
+    }
+
+    async fn sweep_parked_for_boot(&self) -> Result<()> {
+        self.sweep_parked_with_claim(ParkedClaimMode::Boot).await
+    }
+
+    async fn sweep_parked_with_claim(&self, claim_mode: ParkedClaimMode) -> Result<()> {
+        let rows = self.repo.parked_operations().await?;
+        for op in rows {
+            if let Err(e) = self
+                .apply_parked_sweep_with_claim(op.clone(), claim_mode)
+                .await
+            {
+                tracing::error!(
+                    op_id = %op.id,
+                    error = %e,
+                    "parked operation sweep failed; continuing"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn claim_parked_with_mode(
+        &self,
+        op_id: &str,
+        claim_mode: ParkedClaimMode,
+    ) -> Result<Option<Operation>> {
+        match claim_mode {
+            ParkedClaimMode::SteadyState => self.repo.claim_parked(op_id).await,
+            ParkedClaimMode::Boot => self.repo.claim_parked_for_boot(op_id).await,
+        }
+    }
+
+    async fn apply_parked_sweep_with_claim(
+        &self,
+        op: Operation,
+        claim_mode: ParkedClaimMode,
+    ) -> Result<()> {
         if !matches!(op.phase, Phase::Parked) {
             return Ok(());
         }
         let Some(deadline_ms) = op.parked_deadline_ms else {
-            if let Some(claimed) = self.repo.claim_parked(&op.id).await? {
+            if let Some(claimed) = self.claim_parked_with_mode(&op.id, claim_mode).await? {
                 self.fail_claimed_parked(
                     claimed,
                     "parked operation missing deadline".into(),
@@ -1368,7 +1431,9 @@ impl OperationRuntime {
             return Ok(());
         };
         if now_ms() > deadline_ms {
-            return self.apply_parked_past_deadline(&op.id).await;
+            return self
+                .apply_parked_past_deadline_with_claim(&op.id, claim_mode)
+                .await;
         }
         self.apply_parked_pre_deadline_probe(op).await
     }
@@ -1399,8 +1464,12 @@ impl OperationRuntime {
         Ok(())
     }
 
-    async fn apply_parked_past_deadline(&self, op_id: &str) -> Result<()> {
-        let Some(op) = self.repo.claim_parked(op_id).await? else {
+    async fn apply_parked_past_deadline_with_claim(
+        &self,
+        op_id: &str,
+        claim_mode: ParkedClaimMode,
+    ) -> Result<()> {
+        let Some(op) = self.claim_parked_with_mode(op_id, claim_mode).await? else {
             return Ok(());
         };
         let Some(artifacts) = op.spawn_artifacts.clone() else {
@@ -1632,11 +1701,15 @@ impl OperationRuntime {
                     .parked_deadline_ms
                     .is_some_and(|deadline| now_ms() > deadline)
                 {
-                    self.apply_parked_past_deadline(&op_id).await?;
+                    self.apply_parked_past_deadline_with_claim(&op_id, ParkedClaimMode::Boot)
+                        .await?;
                     return Ok(());
                 }
                 let Some(artifacts) = op.spawn_artifacts.clone() else {
-                    if let Some(claimed) = self.repo.claim_parked(&op_id).await? {
+                    if let Some(claimed) = self
+                        .claim_parked_with_mode(&op_id, ParkedClaimMode::Boot)
+                        .await?
+                    {
                         self.fail_claimed_parked(
                             claimed,
                             "parked operation missing spawn artifacts".into(),
@@ -1658,7 +1731,10 @@ impl OperationRuntime {
                         self.complete_parked_and_publish(&op_id, &outcome).await?;
                     }
                     ParkedRecovery::Fail { reason } => {
-                        let Some(claimed) = self.repo.claim_parked(&op_id).await? else {
+                        let Some(claimed) = self
+                            .claim_parked_with_mode(&op_id, ParkedClaimMode::Boot)
+                            .await?
+                        else {
                             return Ok(());
                         };
                         let alive = parked_artifacts_alive(&artifacts);
