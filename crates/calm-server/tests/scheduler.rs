@@ -2531,6 +2531,58 @@ async fn legacy_report_without_task_row_still_emits() {
 }
 
 // ---------------------------------------------------------------------------
+// Review round 6 — a legacy `calm.task.dispatch` key colliding with a
+// still-`pending` plan row: the guarded flip could never have matched
+// (`status IN ('dispatched','running')`), so the 0-row outcome carries
+// no ownership signal — the legacy report must keep emitting and the
+// pending row must stay untouched (no Forbidden, no stamp)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn legacy_report_with_pending_task_row_still_emits() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    // Pending plan row under the key; legacy-style worker — no
+    // worker-spawn op target, no payload binding (owns_key = false).
+    let task = plan_task(&boot.wave_id, "pending-collide", TaskKind::Codex, &[]);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("legacy complete report against a pending row must keep succeeding");
+    assert_eq!(
+        event_rows(&boot, "task.completed").await.len(),
+        1,
+        "task.completed persisted exactly as before"
+    );
+
+    call_tool(
+        &boot,
+        TOOL_TASK_FAIL,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "reason": "legacy retry" }),
+    )
+    .await
+    .expect("legacy fail report against a pending row must keep succeeding");
+    assert_eq!(
+        event_rows(&boot, "task.failed").await.len(),
+        1,
+        "task.failed persisted exactly as before"
+    );
+
+    let row = task_row(&boot, "pending-collide").await;
+    assert_eq!(row.status, TaskStatus::Pending, "plan row never flips");
+    assert_eq!(row.worker_card_id, None, "no ownership stamp");
+    assert_eq!(row.finished_at_ms, None, "no terminal timestamps");
+}
+
+// ---------------------------------------------------------------------------
 // Review round 3 — F1: a foreign operation owning the task's idempotency
 // key with a DIFFERENT payload is a PERMANENT spawn error — fail the
 // task and free the wave budget instead of retrying forever

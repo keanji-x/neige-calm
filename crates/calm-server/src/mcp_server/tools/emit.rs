@@ -532,17 +532,27 @@ async fn emit_task_report_for_identity(
                     //         duplicate task events per key, design §1.3 —
                     //         verdict emissions and report-retry
                     //         idempotency depend on it);
-                    //   (iv)  row NON-terminal and the ownership guard
-                    //         rejected the reporter → refuse the whole
-                    //         write: no event, no Working → Reviewing
-                    //         transition; the caller is told it does not
-                    //         own the task.
-                    // Any other non-terminal 0-row cause (the defensive
-                    // gate_json skip, a not-yet-dispatched row) keeps
-                    // today's emit behavior.
+                    //   (iv)  row ACTIVE (`dispatched`/`running` — the
+                    //         only states the guarded flip targets) and
+                    //         the ownership guard rejected the reporter
+                    //         → refuse the whole write: no event, no
+                    //         Working → Reviewing transition; the
+                    //         caller is told it does not own the task.
+                    // Any other 0-row cause keeps today's emit behavior:
+                    // the defensive gate_json skip on an owned row, and
+                    // (round-6 review) statuses the guarded UPDATE could
+                    // never have matched — a legacy `calm.task.dispatch`
+                    // key colliding with a still-`pending` plan row (or
+                    // a future non-flip state like `verifying`) carries
+                    // no ownership signal, so the legacy event must keep
+                    // persisting with the row left untouched.
                     if rows == 0
                         && let Some(row) = crate::db::sqlite::task_get_tx(tx, &task_id).await?
-                        && !row.status.is_terminal()
+                        && matches!(
+                            row.status,
+                            crate::model::TaskStatus::Dispatched
+                                | crate::model::TaskStatus::Running
+                        )
                     {
                         let owns = match &row.worker_card_id {
                             Some(owner) => *owner == worker_card_id,
