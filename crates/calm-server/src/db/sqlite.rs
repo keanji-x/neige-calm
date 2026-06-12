@@ -1176,10 +1176,10 @@ impl<'a> TaskReporter<'a> {
 /// paths) so there is no event-persisted-but-row-stale crash window.
 ///
 /// `dispatched` is included because a fast worker can report before the
-/// scheduler's `wait()` returns. `gate_json IS NULL` is the defensive
-/// PR-C guard: a gated row must go to `verifying`, never straight to
-/// `done` — no gated row can exist yet (PR-A rule 8), but if one did,
-/// this flip leaves it alone rather than mis-flipping it.
+/// scheduler's `wait()` returns. `gate_json IS NULL` is load-bearing
+/// since PR-C: a gated row goes to `verifying` (see
+/// [`task_start_verifying_from_worker_tx`]), never straight to `done` —
+/// the worker's self-report is a claim, not evidence (§3/§6).
 ///
 /// `wave_id` is part of the guard so a caller can never flip another
 /// wave's row even if it echoes a foreign task id.
@@ -1219,6 +1219,144 @@ pub async fn task_complete_from_worker_tx(
     .bind(id)
     .bind(wave_id)
     .bind(owns_key)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Which row flip a successful worker report performed (issue #644
+/// PR-C). `Done` = ungated row terminalized; `Verifying` = gated row
+/// handed to the gate runner (lifecycle promotion is suppressed — the
+/// gate-result tx promotes instead, §3); `None` = the guarded UPDATEs
+/// matched nothing (no row / already moved on / ownership miss — the
+/// caller disambiguates).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuccessReportFlip {
+    Done,
+    Verifying,
+    None,
+}
+
+/// Issue #644 PR-C — worker-reported success flip for GATED rows
+/// (`dispatched/running → verifying`, design §3): the same write that
+/// persists the worker's `task.completed` hands the row to the gate
+/// runner instead of terminalizing it. Identical guards to
+/// [`task_complete_from_worker_tx`] except the gate condition is
+/// inverted (`gate_json IS NOT NULL`). `gate_result_json` from any
+/// prior wave of the plan is untouched (rows can only re-enter
+/// `verifying` via a fresh report on a non-terminal row, which the
+/// status guard already excludes).
+pub async fn task_start_verifying_from_worker_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_id: &str,
+    reporter: TaskReporter<'_>,
+    now: i64,
+) -> Result<u64> {
+    let (worker_card_id, owns_key) = reporter.binds();
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'verifying',
+               status_detail = NULL,
+               worker_card_id = COALESCE(worker_card_id, ?1),
+               updated_at_ms = ?2
+           WHERE id = ?3 AND wave_id = ?4
+             AND status IN ('dispatched', 'running')
+             AND gate_json IS NOT NULL
+             AND (?1 IS NULL OR worker_card_id = ?1
+                  OR (worker_card_id IS NULL AND ?5))"#,
+    )
+    .bind(worker_card_id)
+    .bind(now)
+    .bind(id)
+    .bind(wave_id)
+    .bind(owns_key)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Issue #644 PR-C — the ONE success-report flip both report paths
+/// (`calm.task.complete` emit tx, terminal-exit completion) run:
+/// ungated rows terminalize (`done`), gated rows enter `verifying`.
+/// The two guarded UPDATEs are mutually exclusive on `gate_json`, so
+/// at most one matches.
+pub async fn task_report_success_from_worker_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_id: &str,
+    reporter: TaskReporter<'_>,
+    now: i64,
+) -> Result<SuccessReportFlip> {
+    if task_complete_from_worker_tx(tx, id, wave_id, reporter, now).await? > 0 {
+        return Ok(SuccessReportFlip::Done);
+    }
+    if task_start_verifying_from_worker_tx(tx, id, wave_id, reporter, now).await? > 0 {
+        return Ok(SuccessReportFlip::Verifying);
+    }
+    Ok(SuccessReportFlip::None)
+}
+
+/// Issue #644 PR-C — the gate adapter's guarded attempt bump (design
+/// §6.2 `prepare_tx`): exactly one `task-verify` operation may prepare
+/// attempt `N`, and only while the row is still `verifying`. 0 rows =
+/// a different attempt won or the task moved on; the caller fails the
+/// op benignly.
+pub async fn task_gate_attempt_bump_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    attempt: i64,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET gate_attempt = ?1, updated_at_ms = ?2
+           WHERE id = ?3 AND gate_attempt = ?4 AND status = 'verifying'"#,
+    )
+    .bind(attempt)
+    .bind(now)
+    .bind(id)
+    .bind(attempt - 1)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Issue #644 PR-C — the gate-result flip
+/// (`verifying → done|failed`, design §3/§6.2): records the verdict,
+/// clears the gate-process bookkeeping triple, and stamps
+/// `finished_at_ms`, guarded on `status = 'verifying'` AND the attempt
+/// number so a superseded attempt's late observer writes nothing.
+/// Callers append `Event::TaskGateResult` + the lifecycle promotion in
+/// the SAME tx only when this returns 1.
+pub async fn task_apply_gate_result_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    attempt: i64,
+    passed: bool,
+    status_detail: Option<&str>,
+    gate_result_json: &str,
+    now: i64,
+) -> Result<u64> {
+    let status = if passed { "done" } else { "failed" };
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = ?1,
+               status_detail = ?2,
+               gate_result_json = ?3,
+               gate_pid = NULL,
+               gate_pid_starttime = NULL,
+               gate_pid_boot_id = NULL,
+               updated_at_ms = ?4,
+               finished_at_ms = ?4
+           WHERE id = ?5 AND status = 'verifying' AND gate_attempt = ?6"#,
+    )
+    .bind(status)
+    .bind(status_detail)
+    .bind(gate_result_json)
+    .bind(now)
+    .bind(id)
+    .bind(attempt)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())

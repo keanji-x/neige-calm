@@ -482,6 +482,14 @@ async fn emit_task_report_for_identity(
                     } => Some((idempotency_key.clone(), false)),
                     _ => None,
                 };
+                // Issue #644 PR-C (§3): the `Working → Reviewing`
+                // auto-promotion is SUPPRESSED for a gated task's
+                // success report — the self-report is a claim, not
+                // evidence; the gate-result tx performs the promotion
+                // instead, on ANY gate verdict. Worker `task.failed`
+                // promotes as today (no gate runs on failure), and
+                // legacy keys with no tasks row keep today's behavior.
+                let mut suppress_promotion = false;
                 if let Some((task_id, success)) = flip {
                     // Round-4 review F1 — unstamped-row ownership proof:
                     // the REPORTING card must be the card the task's
@@ -503,7 +511,7 @@ async fn emit_task_report_for_identity(
                         .await?,
                     };
                     let rows = if success {
-                        crate::db::sqlite::task_complete_from_worker_tx(
+                        match crate::db::sqlite::task_report_success_from_worker_tx(
                             tx,
                             &task_id,
                             wave_id.as_str(),
@@ -511,6 +519,16 @@ async fn emit_task_report_for_identity(
                             now,
                         )
                         .await?
+                        {
+                            crate::db::sqlite::SuccessReportFlip::Done => 1,
+                            crate::db::sqlite::SuccessReportFlip::Verifying => {
+                                // Gated row handed to the gate runner —
+                                // the gate-result tx promotes (§3).
+                                suppress_promotion = true;
+                                1
+                            }
+                            crate::db::sqlite::SuccessReportFlip::None => 0,
+                        }
                     } else {
                         crate::db::sqlite::task_fail_from_worker_tx(
                             tx,
@@ -539,47 +557,57 @@ async fn emit_task_report_for_identity(
                     //         Working → Reviewing transition; the
                     //         caller is told it does not own the task.
                     // Any other 0-row cause keeps today's emit behavior:
-                    // the defensive gate_json skip on an owned row, and
                     // (round-6 review) statuses the guarded UPDATE could
                     // never have matched — a legacy `calm.task.dispatch`
                     // key colliding with a still-`pending` plan row (or
-                    // a future non-flip state like `verifying`) carries
+                    // a `verifying` row whose gate is in flight) carries
                     // no ownership signal, so the legacy event must keep
                     // persisting with the row left untouched.
                     if rows == 0
                         && let Some(row) = crate::db::sqlite::task_get_tx(tx, &task_id).await?
-                        && matches!(
+                    {
+                        // Issue #644 PR-C (§3): a duplicate / retried
+                        // success report for a GATED row (already
+                        // `verifying`, or already terminal via a gate
+                        // verdict) must not promote — exactly one
+                        // promotion per gated task, in the gate-result
+                        // tx.
+                        if success && row.gate_json.is_some() {
+                            suppress_promotion = true;
+                        }
+                        if matches!(
                             row.status,
                             crate::model::TaskStatus::Dispatched
                                 | crate::model::TaskStatus::Running
-                        )
-                    {
-                        let owns = match &row.worker_card_id {
-                            Some(owner) => *owner == worker_card_id,
-                            None => matches!(
-                                reporter,
-                                crate::db::sqlite::TaskReporter::Card { owns_key: true, .. }
-                            ),
-                        };
-                        if !owns {
-                            return Err(CalmError::Forbidden(format!(
-                                "task {task_id} is not owned by reporting card \
-                                 {worker_card_id}; report rejected"
-                            )));
+                        ) {
+                            let owns = match &row.worker_card_id {
+                                Some(owner) => *owner == worker_card_id,
+                                None => matches!(
+                                    reporter,
+                                    crate::db::sqlite::TaskReporter::Card { owns_key: true, .. }
+                                ),
+                            };
+                            if !owns {
+                                return Err(CalmError::Forbidden(format!(
+                                    "task {task_id} is not owned by reporting card \
+                                     {worker_card_id}; report rejected"
+                                )));
+                            }
                         }
                     }
                 }
 
                 let mut events = vec![(actor, scope, event)];
-                if let Some(auto_events) = auto_transition_if_current_in_tx(
-                    tx,
-                    &wave_id,
-                    crate::model::WaveLifecycle::Working,
-                    crate::model::WaveLifecycle::Reviewing,
-                    &ActorId::Kernel,
-                    Some("[auto] first task report".to_string()),
-                )
-                .await?
+                if !suppress_promotion
+                    && let Some(auto_events) = auto_transition_if_current_in_tx(
+                        tx,
+                        &wave_id,
+                        crate::model::WaveLifecycle::Working,
+                        crate::model::WaveLifecycle::Reviewing,
+                        &ActorId::Kernel,
+                        Some("[auto] first task report".to_string()),
+                    )
+                    .await?
                 {
                     events.extend(
                         auto_events

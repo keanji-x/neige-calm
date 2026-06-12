@@ -48,9 +48,9 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::db::sqlite::{
-    TaskReporter, begin_immediate_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, tasks_by_wave_tx,
-    wave_lifecycle_and_budget_tx,
+    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
+    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, task_report_success_from_worker_tx,
+    tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -1142,9 +1142,20 @@ pub async fn complete_terminal_task(
                 card_id: worker_card_id.as_str(),
                 owns_key,
             };
+            // Issue #644 PR-C (§3): a gated terminal task's clean exit
+            // is still a self-report — the row goes to `verifying` and
+            // the `Working → Reviewing` promotion is suppressed (the
+            // gate-result tx promotes instead).
+            let mut suppress_promotion = false;
             let (rows, event) = if success {
+                let flip =
+                    task_report_success_from_worker_tx(tx, &task_id, &wave_id_str, reporter, now)
+                        .await?;
+                if flip == SuccessReportFlip::Verifying {
+                    suppress_promotion = true;
+                }
                 (
-                    task_complete_from_worker_tx(tx, &task_id, &wave_id_str, reporter, now).await?,
+                    if flip == SuccessReportFlip::None { 0 } else { 1 },
                     Event::TaskCompleted {
                         idempotency_key: task_id.clone(),
                         result: json!({ "exit_code": 0, "source": "terminal-exit" }),
@@ -1189,15 +1200,16 @@ pub async fn complete_terminal_task(
                 return Err(race_lost_err());
             }
             let mut events = vec![(ActorId::KernelDispatcher, scope.clone(), event)];
-            if let Some(auto_events) = auto_transition_if_current_in_tx(
-                tx,
-                &wave_id_typed,
-                WaveLifecycle::Working,
-                WaveLifecycle::Reviewing,
-                &ActorId::KernelDispatcher,
-                Some("[auto] terminal task finished".to_string()),
-            )
-            .await?
+            if !suppress_promotion
+                && let Some(auto_events) = auto_transition_if_current_in_tx(
+                    tx,
+                    &wave_id_typed,
+                    WaveLifecycle::Working,
+                    WaveLifecycle::Reviewing,
+                    &ActorId::KernelDispatcher,
+                    Some("[auto] terminal task finished".to_string()),
+                )
+                .await?
             {
                 events.extend(
                     auto_events
