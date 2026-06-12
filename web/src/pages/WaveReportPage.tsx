@@ -353,23 +353,20 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         aria-label="Report context"
       >
         <header className="report-rail-head report-rail-head--top">
-          {!reportRailCollapsed && (
-            <>
-              <span>Files</span>
-              <div className="report-rail-actions">
-                <button
-                  type="button"
-                  className="report-rail-toggle report-rail-toggle--show-all"
-                  aria-pressed={showHiddenFiles}
-                  onClick={toggleHiddenFiles}
-                >
-                  Show all
-                </button>
-                {railCollapseButton}
-              </div>
-            </>
-          )}
-          {reportRailCollapsed && railCollapseButton}
+          {!reportRailCollapsed && <span>Files</span>}
+          <div className="report-rail-actions">
+            {!reportRailCollapsed && (
+              <button
+                type="button"
+                className="report-rail-toggle report-rail-toggle--show-all"
+                aria-pressed={showHiddenFiles}
+                onClick={toggleHiddenFiles}
+              >
+                Show all
+              </button>
+            )}
+            {railCollapseButton}
+          </div>
         </header>
         {!reportRailCollapsed && (
           <>

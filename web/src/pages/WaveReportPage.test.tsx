@@ -390,6 +390,37 @@ describe('WaveReportPage', () => {
       .toBe('false');
   });
 
+  it('keeps keyboard focus on the chevron while toggling the Files rail', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Files rail body')]}
+      />,
+    );
+
+    const toggle = screen.getByRole('button', {
+      name: 'Collapse report rail',
+    });
+    toggle.focus();
+    expect(toggle).toHaveFocus();
+
+    fireEvent.click(toggle);
+
+    const expandToggle = screen.getByRole('button', {
+      name: 'Expand report rail',
+    });
+    expect(expandToggle).toBe(toggle);
+    expect(document.activeElement).toBe(expandToggle);
+
+    fireEvent.click(expandToggle);
+
+    const collapseToggle = screen.getByRole('button', {
+      name: 'Collapse report rail',
+    });
+    expect(collapseToggle).toBe(toggle);
+    expect(document.activeElement).toBe(collapseToggle);
+  });
+
   it('persists the collapsed Files rail across remounts', () => {
     const props = {
       wave: makeWave(),

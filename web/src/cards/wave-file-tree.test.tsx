@@ -57,6 +57,18 @@ function ControlledWaveFileTree({
   );
 }
 
+function ToggleableHiddenWaveFileTree({ waveId }: { waveId: string }) {
+  const [showHidden, setShowHidden] = useState(true);
+  return (
+    <>
+      <button type="button" onClick={() => setShowHidden(false)}>
+        Hide dotfiles
+      </button>
+      <ControlledWaveFileTree waveId={waveId} showHidden={showHidden} />
+    </>
+  );
+}
+
 function installFetch(routes: Record<string, MockRoute>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost');
@@ -178,6 +190,30 @@ describe('WaveFileTree', () => {
     expect(await screen.findByRole('treeitem', { name: /\.meta\.json/ }))
       .toBeTruthy();
     expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
+  });
+
+  it('restores the root tab stop when the focused row becomes hidden', async () => {
+    installFetch({
+      '/api/waves/wave_1/files/ls': {
+        body: [
+          { name: '.internal', kind: 'file' },
+          { name: 'report.md', kind: 'file' },
+          { name: 'wave.json', kind: 'file' },
+        ],
+      },
+    });
+
+    renderWithClient(<ToggleableHiddenWaveFileTree waveId="wave_1" />);
+
+    const dotfile = await screen.findByRole('treeitem', { name: /\.internal/ });
+    dotfile.focus();
+    expect(dotfile).toHaveFocus();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide dotfiles' }));
+
+    expect(screen.queryByRole('treeitem', { name: /\.internal/ })).toBeNull();
+    expect(screen.getByRole('treeitem', { name: /report\.md/ }))
+      .toHaveAttribute('tabindex', '0');
   });
 
   it('expands and collapses directories while resolving card kind labels', async () => {
