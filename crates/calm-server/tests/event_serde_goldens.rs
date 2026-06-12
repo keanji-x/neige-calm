@@ -692,7 +692,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 27] = [
+const ALL_KIND_TAGS: [&str; 28] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -720,6 +720,7 @@ const ALL_KIND_TAGS: [&str; 27] = [
     "task.completed",
     "task.failed",
     "plan.updated",
+    "task.dispatched",
 ];
 
 /// Every golden file must parse, every canonical `ev` tag must be a known
@@ -754,7 +755,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 44,
+        files, 46,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -802,6 +803,7 @@ fn kind_tag_list_matches_enum() {
             Event::TaskCompleted { .. } => "task.completed",
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
+            Event::TaskDispatched { .. } => "task.dispatched",
         }
     }
     let sample = Event::CoveDeleted {
@@ -810,7 +812,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        27,
+        28,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }
