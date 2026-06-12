@@ -151,6 +151,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         daemon_token
             .as_deref()
             .map(calm_server::mcp_server::auth::hash_token),
+        std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await
     .expect("spawn McpServer");

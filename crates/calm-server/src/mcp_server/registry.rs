@@ -163,6 +163,12 @@ pub struct AppContext {
     /// initialize handshake accepts this as daemon trust without binding a
     /// legacy per-card identity.
     pub daemon_token_hash: Option<String>,
+    /// Issue #644 PR-C (PR #685 F3) — the CONFIGURED gate-logs dir
+    /// (`Config::data_dir_resolved()/gate-logs`), threaded from
+    /// `AppState::new` so the `plan/<key>/gate.log` view reads the same
+    /// directory the gate runner writes — a `--data-dir` flag without
+    /// `CALM_DATA_DIR` must not split the two.
+    pub gate_logs_dir: std::path::PathBuf,
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;
@@ -389,6 +395,7 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
             daemon_token_hash: None,
+            gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
         })
     }
 

@@ -109,6 +109,7 @@ async fn boot() -> Boot {
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
+        gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
     });
 
     let mut registry = ToolRegistry::new();

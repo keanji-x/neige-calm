@@ -140,6 +140,7 @@ async fn boot() -> Boot {
         events: events.clone(),
         write: write.clone(),
         daemon_token_hash: None,
+        gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

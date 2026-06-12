@@ -152,6 +152,7 @@ pub async fn boot() -> Boot {
         events: events.clone(),
         write,
         daemon_token_hash: None,
+        gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
     });
 
     let mut registry = ToolRegistry::new();

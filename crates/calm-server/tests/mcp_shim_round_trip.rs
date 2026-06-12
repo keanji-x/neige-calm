@@ -122,6 +122,7 @@ async fn boot() -> Boot {
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
         None,
+        std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await
     .expect("spawn McpServer");

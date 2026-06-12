@@ -107,11 +107,11 @@ async fn wave_cat(
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
     // Issue #644 PR-C — `plan/<key>/gate.log` is enabled only here (MCP
     // carries a card identity); the view enforces the spec-only role
-    // gate at read time (§6.5/§6.7).
-    let view = WaveFsView::new(ctx.repo.as_ref(), &ctx.write).with_gate_log_access(
-        identity.role,
-        crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
-    );
+    // gate at read time (§6.5/§6.7). The gate-logs dir is the
+    // CONFIGURED one threaded through `AppContext` (PR #685 F3), never
+    // recomputed from env.
+    let view = WaveFsView::new(ctx.repo.as_ref(), &ctx.write)
+        .with_gate_log_access(identity.role, ctx.gate_logs_dir.clone());
     let content = view
         .cat(&wave, path.as_str())
         .await

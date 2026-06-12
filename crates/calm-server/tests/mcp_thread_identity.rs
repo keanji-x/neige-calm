@@ -125,6 +125,7 @@ async fn boot_with_registry_and_daemon_hash(
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
         daemon_token_hash,
+        std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await
     .unwrap();

@@ -33,6 +33,10 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
+    /// The CONFIGURED gate-logs dir wired into `AppContext` (PR #685
+    /// F3) — `calm.wave.cat plan/<key>/gate.log` must read THIS dir,
+    /// never an env-recomputed default.
+    gate_logs_dir: std::path::PathBuf,
     cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
@@ -153,12 +157,18 @@ async fn boot() -> Boot {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let gate_logs_dir = std::env::temp_dir().join(format!(
+        "neige-wave-file-gate-logs-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         wave_vcs_pool: Some(sqlx_repo.pool().clone()),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
+        gate_logs_dir: gate_logs_dir.clone(),
     });
 
     let mut registry = ToolRegistry::new();
@@ -170,6 +180,7 @@ async fn boot() -> Boot {
         registry,
         sqlx_repo,
         repo,
+        gate_logs_dir,
         cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
@@ -2160,6 +2171,33 @@ async fn gate_log_view_is_spec_only_and_file_backed() {
     .await
     .expect_err("worker forbidden at the MCP surface");
     assert_eq!(err.code, -32403, "{err:?}");
+
+    // PR #685 F3 — the MCP read serves the CONFIGURED gate-logs dir
+    // threaded through `AppContext` (a stand-in for `--data-dir`
+    // without `CALM_DATA_DIR`), never an env-recomputed default: the
+    // log written into `boot.gate_logs_dir` is what the spec reads.
+    std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
+    std::fs::write(
+        boot.gate_logs_dir.join(format!("{task_id}-g2.log")),
+        "::gate-step t\nconfigured-dir-body\n",
+    )
+    .unwrap();
+    let content = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "plan/gated/gate.log" }),
+    )
+    .await
+    .expect("spec reads the gate log over MCP");
+    assert!(
+        content["content"]
+            .as_str()
+            .unwrap()
+            .contains("configured-dir-body"),
+        "MCP must serve the AppContext-configured dir: {content}"
+    );
+    std::fs::remove_dir_all(&boot.gate_logs_dir).ok();
 
     std::fs::remove_dir_all(&dir).ok();
 }

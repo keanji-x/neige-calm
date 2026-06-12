@@ -497,15 +497,15 @@ impl TaskVerifyAdapter {
         Self { gate_logs_dir }
     }
 
-    /// Resolve the gate-logs dir for call sites without a `Config`
-    /// (test `AppState::from_parts`, the dispatcher test runtime, the
-    /// MCP `plan/<key>/gate.log` view): `NEIGE_GATE_LOGS_DIR` env
-    /// override, else `$CALM_DATA_DIR/gate-logs` (the env spelling of
+    /// Resolve the gate-logs dir for the GENUINELY config-less call
+    /// sites only (test `AppState::from_parts`, the dispatcher test
+    /// runtime): `NEIGE_GATE_LOGS_DIR` env override, else
+    /// `$CALM_DATA_DIR/gate-logs` (the env spelling of
     /// `Config::data_dir`), else the same XDG chain
-    /// `Config::data_dir_resolved` uses, joined `gate-logs`. A
-    /// `--data-dir` CLI flag without the env var is the one divergence
-    /// (the config-ful `AppState::new` site passes the resolved dir
-    /// explicitly and is unaffected).
+    /// `Config::data_dir_resolved` uses, joined `gate-logs`. Every
+    /// config-ful site — `AppState::new`'s adapter AND the MCP
+    /// `plan/<key>/gate.log` view via `AppContext.gate_logs_dir`
+    /// (PR #685 F3) — passes the resolved dir explicitly instead.
     pub fn default_gate_logs_dir() -> PathBuf {
         if let Some(dir) = std::env::var_os("NEIGE_GATE_LOGS_DIR") {
             return PathBuf::from(dir);

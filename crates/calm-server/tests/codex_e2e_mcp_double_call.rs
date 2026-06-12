@@ -270,6 +270,7 @@ async fn codex_mcp_double_call_both_complete() {
         shim_bin,
         build_default_registry(),
         Some(daemon_token_hash),
+        std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await
     .expect("boot real McpServer");
