@@ -1233,6 +1233,48 @@ async fn send_spec_input_null_thread_snapshot_fallback_recovers() {
     }
 }
 
+/// #649 review round 2 — a blank/whitespace row `thread_id` must not defeat
+/// the snapshot `last_thread_id` fallback: `Some("  ")` would win the `.or()`
+/// chain in `spawn_recovered_harness` and the recovered harness would issue
+/// turns against an empty thread. The helper normalizes blanks to `None`.
+#[tokio::test]
+async fn send_spec_input_blank_thread_snapshot_fallback_recovers() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id = seed_active_spec_runtime_row(
+        &boot,
+        &card,
+        Some("  ".to_string()),
+        Some(idle_snapshot_value(&thread_id)),
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "blank-thread follow-up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    let handle = boot
+        .state
+        .harness
+        .get(&runtime_id)
+        .expect("blank row thread_id must fall back to the snapshot's last_thread_id");
+    assert_eq!(
+        handle.thread_id_for_test().await.as_deref(),
+        Some(thread_id.as_str()),
+        "recovered harness must use the snapshot thread, not the blank row value"
+    );
+
+    if let Some(handle) = boot.state.harness.remove(&runtime_id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
 /// #649 review round 1 (finding 3) — row-intrinsic dormancy outranks the
 /// daemon liveness probe: an unrecoverable row 409s (Reset is the answer)
 /// even while the daemon is down, instead of a misleading 503 "retry".
