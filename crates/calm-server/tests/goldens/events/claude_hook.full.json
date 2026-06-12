@@ -1,0 +1,14 @@
+{
+  "description": "claude.hook passthrough, same shape as codex.hook.",
+  "wire": {
+    "ev": "claude.hook",
+    "data": {
+      "card_id": "card-01",
+      "kind": "hook.claude.stop",
+      "hook_idempotency_key": "hook-key-02",
+      "payload": {
+        "hook_event_name": "Stop"
+      }
+    }
+  }
+}

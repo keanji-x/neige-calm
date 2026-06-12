@@ -1,0 +1,20 @@
+{
+  "description": "wave.updated: WaveUpdatedPayload flattens the Wave row to top level; agent_message rides adjacent (#597).",
+  "wire": {
+    "ev": "wave.updated",
+    "data": {
+      "id": "wave-01",
+      "cove_id": "cove-01",
+      "title": "Golden Wave",
+      "sort": 1.5,
+      "archived_at": 111,
+      "pinned_at": 222,
+      "lifecycle": "working",
+      "cwd": "/tmp/golden-wave",
+      "terminal_at": 333,
+      "created_at": 1000,
+      "updated_at": 2000,
+      "agent_message": "spec says hi"
+    }
+  }
+}

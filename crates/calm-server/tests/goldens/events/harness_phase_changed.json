@@ -1,0 +1,13 @@
+{
+  "description": "harness.phase.changed; HarnessPhaseTag is rename_all=snake_case (PendingThreadStart → \"pending_thread_start\").",
+  "wire": {
+    "ev": "harness.phase.changed",
+    "data": {
+      "runtime_id": "rt-01",
+      "card_id": "card-01",
+      "wave_id": "wave-01",
+      "old_phase": "pending_thread_start",
+      "new_phase": "turn_running"
+    }
+  }
+}

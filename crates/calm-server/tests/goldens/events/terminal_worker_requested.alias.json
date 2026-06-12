@@ -1,0 +1,17 @@
+{
+  "description": "Pre-#581 persisted rows use kind terminal.job_requested; the serde alias still deserializes them into TerminalWorkerRequested, and re-serialization emits the renamed terminal.worker_requested tag.",
+  "wire": {
+    "ev": "terminal.job_requested",
+    "data": {
+      "idempotency_key": "idem-02",
+      "cmd": "cargo test"
+    }
+  },
+  "canonical": {
+    "ev": "terminal.worker_requested",
+    "data": {
+      "idempotency_key": "idem-02",
+      "cmd": "cargo test"
+    }
+  }
+}

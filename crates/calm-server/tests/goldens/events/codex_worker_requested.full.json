@@ -1,0 +1,15 @@
+{
+  "description": "codex.worker_requested with both optional fields present.",
+  "wire": {
+    "ev": "codex.worker_requested",
+    "data": {
+      "idempotency_key": "idem-01",
+      "goal": "build the thing",
+      "context": {
+        "cwd": "/tmp/golden"
+      },
+      "acceptance_criteria": "tests pass",
+      "agent_message": "dispatching worker"
+    }
+  }
+}

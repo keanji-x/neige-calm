@@ -1,0 +1,19 @@
+{
+  "description": "Pre-#581 persisted rows use kind codex.job_requested; the serde alias still deserializes them into CodexWorkerRequested, and re-serialization emits the renamed codex.worker_requested tag.",
+  "wire": {
+    "ev": "codex.job_requested",
+    "data": {
+      "idempotency_key": "idem-01",
+      "goal": "build the thing",
+      "context": null
+    }
+  },
+  "canonical": {
+    "ev": "codex.worker_requested",
+    "data": {
+      "idempotency_key": "idem-01",
+      "goal": "build the thing",
+      "context": null
+    }
+  }
+}
