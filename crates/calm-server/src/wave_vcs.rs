@@ -1741,6 +1741,12 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         }
         | Event::TaskFailed {
             idempotency_key, ..
+        }
+        // Issue #644 PR-B — the scheduler's claim record is the
+        // requested-record fallback for the runs views (§5.6), so it
+        // dirties the same run paths a `*.worker_requested` would.
+        | Event::TaskDispatched {
+            idempotency_key, ..
         } => {
             delta.add_run_key(idempotency_key);
         }
@@ -2111,6 +2117,7 @@ async fn run_events_for_wave_tx(
              AND kind IN (
                'codex.worker_requested',
                'terminal.worker_requested',
+               'task.dispatched',
                'task.completed',
                'task.failed'
              )
@@ -2164,6 +2171,8 @@ async fn project_runs_tx(
 
     let mut requested = BTreeMap::<String, RunEventProjection>::new();
     let mut requested_kind = BTreeMap::<String, &'static str>::new();
+    let mut dispatched = BTreeMap::<String, RunEventProjection>::new();
+    let mut dispatched_kind = BTreeMap::<String, &'static str>::new();
     let mut completed = BTreeMap::<String, RunEventProjection>::new();
     let mut failed = BTreeMap::<String, RunEventProjection>::new();
     let mut verdict = BTreeMap::<String, RunEventProjection>::new();
@@ -2202,6 +2211,22 @@ async fn project_runs_tx(
                     ),
                 );
             }
+            // Issue #644 PR-B — scheduler claim record; merged below as
+            // the §5.6 requested-record fallback.
+            Event::TaskDispatched {
+                idempotency_key,
+                kind,
+                ..
+            } => {
+                keys.insert(idempotency_key.clone());
+                dispatched_kind
+                    .insert(idempotency_key.clone(), wave_fs_view::run_kind_static(kind));
+                record_earliest(
+                    &mut dispatched,
+                    idempotency_key,
+                    run_event(row.id, row.at, "task.dispatched", row.event.payload_value()),
+                );
+            }
             Event::TaskCompleted {
                 idempotency_key, ..
             } => {
@@ -2224,6 +2249,15 @@ async fn project_runs_tx(
             }
             _ => {}
         }
+    }
+
+    // §5.6 fallback: keys with a dispatch record but no
+    // `*.worker_requested` event use it as their requested-record.
+    for (key, event) in dispatched {
+        requested.entry(key).or_insert(event);
+    }
+    for (key, kind) in dispatched_kind {
+        requested_kind.entry(key).or_insert(kind);
     }
 
     Ok(keys
@@ -2288,12 +2322,26 @@ async fn project_run_by_key_tx(
 
     let mut requested_event = None;
     let mut requested_kind = None;
+    let mut dispatched_event: Option<RunEventProjection> = None;
+    let mut dispatched_kind = None;
     let mut completed_event = None;
     let mut failed_event = None;
     let mut verdict_event = None;
 
     for row in events {
         match &row.event {
+            // Issue #644 PR-B — scheduler claim record; §5.6 fallback
+            // applied after the loop when no `*.worker_requested` landed.
+            Event::TaskDispatched { kind, .. } => {
+                dispatched_kind = Some(wave_fs_view::run_kind_static(kind));
+                let event = run_event(row.id, row.at, "task.dispatched", row.event.payload_value());
+                if dispatched_event
+                    .as_ref()
+                    .is_none_or(|existing: &RunEventProjection| existing.event_id > event.event_id)
+                {
+                    dispatched_event = Some(event);
+                }
+            }
             Event::CodexWorkerRequested { .. } => {
                 requested_kind = Some("codex");
                 let event = run_event(
@@ -2362,6 +2410,15 @@ async fn project_run_by_key_tx(
             }
             _ => {}
         }
+    }
+
+    // §5.6 fallback: the dispatch record stands in for a missing
+    // `*.worker_requested` event.
+    if requested_event.is_none() {
+        requested_event = dispatched_event;
+    }
+    if requested_kind.is_none() {
+        requested_kind = dispatched_kind;
     }
 
     let verdict = verdict_event.as_ref().and_then(verdict_from_event);
@@ -2456,6 +2513,7 @@ async fn run_events_for_key_tx(
              AND kind IN (
                'codex.worker_requested',
                'terminal.worker_requested',
+               'task.dispatched',
                'task.completed',
                'task.failed'
              )

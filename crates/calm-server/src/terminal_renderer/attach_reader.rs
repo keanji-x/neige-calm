@@ -23,6 +23,7 @@ pub fn spawn_supervisor_attach_reader(
     exited_tx: oneshot::Sender<Option<i32>>,
     repo: Option<Arc<dyn RouteRepo>>,
     terminal_id: String,
+    task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut exited_tx = Some(exited_tx);
@@ -95,6 +96,17 @@ pub fn spawn_supervisor_attach_reader(
                                 "failed to complete runtime from supervisor terminal exit"
                             );
                         }
+                    }
+                    // Issue #644 M2 (live path) — if this terminal backs
+                    // a plan task, run the shared guarded completion tx
+                    // (row flip + kernel task.completed/failed). Runs
+                    // AFTER terminal_set_exit so a concurrent sweep that
+                    // loses the row-flip race still observed a persisted
+                    // exit. Errors are contained inside the hook; the
+                    // sweep's running-terminal arm is the retry.
+                    if let Some(hook) = task_hook.as_ref() {
+                        hook.on_terminal_exit(&terminal_id, exit_code, signalled)
+                            .await;
                     }
                     break;
                 }

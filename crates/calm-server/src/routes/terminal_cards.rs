@@ -182,7 +182,10 @@ pub(crate) fn calm_error_from_operation_failure(
     }
 }
 
-pub(crate) fn stable_payload_hash<T: Serialize>(value: &T) -> Result<String> {
+// `pub` (not `pub(crate)`) so the scheduler integration tests can
+// construct idempotency-matched worker operations (issue #644 PR-B
+// review F8 fixtures).
+pub fn stable_payload_hash<T: Serialize>(value: &T) -> Result<String> {
     let value = canonical_json(serde_json::to_value(value)?);
     let bytes = serde_json::to_vec(&value)?;
     let mut hasher = Sha256::new();

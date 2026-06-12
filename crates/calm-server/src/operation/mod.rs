@@ -50,6 +50,33 @@ pub struct OperationKey {
     pub payload_hash: String,
 }
 
+/// Fragment shared by every `(kind, idempotency_key)` payload-hash
+/// conflict message — kept in one place so
+/// [`is_idempotency_payload_conflict`] can match reliably.
+const IDEMPOTENCY_PAYLOAD_CONFLICT_MSG: &str = "already used with different payload";
+
+/// The submit/insert idempotency conflict: the `(kind, idempotency_key)`
+/// pair already exists with a DIFFERENT payload hash. Built in one place
+/// (used by both [`OperationRuntime::submit`] and the repo's
+/// `insert_operation`) so callers can classify it via
+/// [`is_idempotency_payload_conflict`].
+fn idempotency_payload_conflict(idempotency_key: Option<&str>) -> CalmError {
+    let key = idempotency_key.unwrap_or("<missing idempotency key>");
+    CalmError::Conflict(format!(
+        "operation idempotency key {key} {IDEMPOTENCY_PAYLOAD_CONFLICT_MSG}"
+    ))
+}
+
+/// True iff `e` is the [`idempotency_payload_conflict`] error — the key
+/// is already bound to an operation with a different payload hash. The
+/// scheduler classifies this as a PERMANENT spawn error (round-3 review
+/// F1): its payloads are pure functions of the frozen task row, so the
+/// mismatch can only be a foreign/legacy operation owning the key, and
+/// retrying can never self-heal.
+pub fn is_idempotency_payload_conflict(e: &CalmError) -> bool {
+    matches!(e, CalmError::Conflict(msg) if msg.contains(IDEMPOTENCY_PAYLOAD_CONFLICT_MSG))
+}
+
 #[derive(Clone, Debug)]
 pub struct Operation {
     pub id: OperationId,
@@ -879,13 +906,7 @@ impl OperationRuntime {
                 self.drive().await?;
                 return Ok(op_id);
             }
-            let idempotency_key = key
-                .idempotency_key
-                .as_deref()
-                .unwrap_or("<missing idempotency key>");
-            return Err(CalmError::Conflict(format!(
-                "operation idempotency key {idempotency_key} already used with different payload"
-            )));
+            return Err(idempotency_payload_conflict(key.idempotency_key.as_deref()));
         }
         adapter.validate(&payload).await?;
         let op_id = self.repo.insert_operation(kind, key, payload).await?;
@@ -900,6 +921,28 @@ impl OperationRuntime {
         payload: Value,
     ) -> Result<OperationId> {
         self.submit(kind, key, payload).await
+    }
+
+    /// Issue #644 PR-B — look up an operation row by
+    /// `(kind, idempotency_key)`. Used by the scheduler's sweep to
+    /// correlate a `dispatched`/`running` task row with its worker-spawn
+    /// operation (the task-to-operation relation is the idempotency-key
+    /// convention, design §2.2; no `spawn_op_id` column exists).
+    pub async fn find_by_kind_and_idempotency(
+        &self,
+        kind: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<Operation>> {
+        self.repo
+            .find_by_idempotency_key(
+                kind,
+                &OperationKey {
+                    operation_key: String::new(),
+                    idempotency_key: Some(idempotency_key.to_string()),
+                    payload_hash: String::new(),
+                },
+            )
+            .await
     }
 
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {
@@ -1809,9 +1852,7 @@ impl OperationRepo for SqlxOperationRepo {
             if existing.payload_hash == key.payload_hash {
                 return Ok(existing.id);
             }
-            return Err(CalmError::Conflict(format!(
-                "operation idempotency key {idempotency_key} already used with different payload"
-            )));
+            return Err(idempotency_payload_conflict(Some(idempotency_key)));
         }
 
         let id = new_id();
@@ -1850,9 +1891,7 @@ impl OperationRepo for SqlxOperationRepo {
                     if existing.payload_hash == key.payload_hash {
                         return Ok(existing.id);
                     }
-                    return Err(CalmError::Conflict(format!(
-                        "operation idempotency key {idempotency_key} already used with different payload"
-                    )));
+                    return Err(idempotency_payload_conflict(Some(idempotency_key)));
                 }
                 Err(CalmError::Conflict(format!(
                     "operation key {} already exists",

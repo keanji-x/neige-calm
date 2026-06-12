@@ -258,6 +258,7 @@ impl<'a> WaveFsView<'a> {
                 &[
                     "codex.worker_requested",
                     "terminal.worker_requested",
+                    "task.dispatched",
                     "task.completed",
                     "task.failed",
                 ],
@@ -474,6 +475,8 @@ fn project_runs(
 
     let mut requested = BTreeMap::<String, RunEventProjection>::new();
     let mut requested_kind = BTreeMap::<String, &'static str>::new();
+    let mut dispatched = BTreeMap::<String, RunEventProjection>::new();
+    let mut dispatched_kind = BTreeMap::<String, &'static str>::new();
     let mut completed = BTreeMap::<String, RunEventProjection>::new();
     let mut failed = BTreeMap::<String, RunEventProjection>::new();
     let mut verdict = BTreeMap::<String, RunEventProjection>::new();
@@ -512,6 +515,23 @@ fn project_runs(
                     ),
                 );
             }
+            // Issue #644 PR-B — the scheduler's claim record (§5.6).
+            // Collected separately and merged below as the fallback
+            // requested-record for keys with no `*.worker_requested`
+            // event (scheduler-dispatched tasks emit none).
+            Event::TaskDispatched {
+                idempotency_key,
+                kind,
+                ..
+            } => {
+                keys.insert(idempotency_key.clone());
+                dispatched_kind.insert(idempotency_key.clone(), run_kind_static(kind));
+                record_earliest(
+                    &mut dispatched,
+                    idempotency_key,
+                    run_event(row.id, row.at, "task.dispatched", row.event.payload_value()),
+                );
+            }
             Event::TaskCompleted {
                 idempotency_key, ..
             } => {
@@ -538,6 +558,16 @@ fn project_runs(
             }
             _ => {}
         }
+    }
+
+    // §5.6 fallback: a key with a `task.dispatched` record but no
+    // `*.worker_requested` event treats the dispatch record as its
+    // requested-record (`requested_at`, kind, requested/running status).
+    for (key, event) in dispatched {
+        requested.entry(key).or_insert(event);
+    }
+    for (key, kind) in dispatched_kind {
+        requested_kind.entry(key).or_insert(kind);
     }
 
     keys.into_iter()
@@ -591,6 +621,17 @@ fn project_runs(
             }
         })
         .collect()
+}
+
+/// Map a `task.dispatched` event's worker-kind field onto the static
+/// run-kind vocabulary the projection uses. Unknown values degrade to
+/// `"unknown"` (same convention as a key with no kind source at all).
+pub(crate) fn run_kind_static(kind: &str) -> &'static str {
+    match kind {
+        "codex" => "codex",
+        "terminal" => "terminal",
+        _ => "unknown",
+    }
 }
 
 fn run_event(event_id: i64, at: i64, kind: &'static str, payload: Value) -> RunEventProjection {
@@ -1309,6 +1350,151 @@ mod tests {
         assert!(empty_value["events"]["completed"].is_null());
         assert!(empty_value["events"]["failed"].is_null());
         assert!(empty_value["events"]["verdict"].is_null());
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #644 PR-B — §5.6 requested-record fallback: a key with a
+    // `task.dispatched` claim record but no `*.worker_requested` event
+    // projects from the dispatch record (requested_at, kind, the
+    // requested/running/terminal statuses).
+    // ------------------------------------------------------------------
+
+    fn fallback_write() -> WriteContext {
+        WriteContext::new(
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        )
+    }
+
+    fn wave_scoped(id: i64, at: i64, actor: ActorId, event: Event) -> WaveEvent {
+        WaveEvent {
+            id,
+            at,
+            actor,
+            scope: EventScope::Wave {
+                wave: WaveId::from("wave-test"),
+                cove: crate::ids::CoveId::from("cove-test"),
+            },
+            event,
+        }
+    }
+
+    fn dispatched_event(id: i64, at: i64, key: &str, kind: &str) -> WaveEvent {
+        wave_scoped(
+            id,
+            at,
+            ActorId::KernelDispatcher,
+            Event::TaskDispatched {
+                idempotency_key: key.into(),
+                kind: kind.into(),
+                agent_message: None,
+            },
+        )
+    }
+
+    #[test]
+    fn project_runs_uses_task_dispatched_as_requested_record_fallback() {
+        let write = fallback_write();
+        let runs = project_runs(
+            &write,
+            vec![],
+            vec![dispatched_event(5, 500, "w:k", "codex")],
+        );
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.idempotency_key, "w:k");
+        assert_eq!(
+            run.status,
+            WaveFsRunStatus::Requested,
+            "dispatch record alone (no worker card visible) → requested"
+        );
+        assert_eq!(
+            run.requested_at,
+            Some(500),
+            "requested_at from the claim record"
+        );
+        assert_eq!(run.kind, "codex", "kind from the claim record");
+        assert_eq!(
+            run.requested_event.as_ref().map(|e| e.kind),
+            Some("task.dispatched"),
+            "the dispatch record IS the requested-record"
+        );
+    }
+
+    #[test]
+    fn project_runs_dispatched_then_completed_resolves_terminal_status() {
+        let write = fallback_write();
+        let completed = wave_scoped(
+            6,
+            600,
+            // Kernel-emitted completion (terminal-exit path) — actor
+            // KernelDispatcher means NOT a spec verdict.
+            ActorId::KernelDispatcher,
+            Event::TaskCompleted {
+                idempotency_key: "w:k".into(),
+                result: json!({"exit_code": 0}),
+                artifacts: vec![],
+                agent_message: None,
+            },
+        );
+        let runs = project_runs(
+            &write,
+            vec![],
+            vec![dispatched_event(5, 500, "w:k", "terminal"), completed],
+        );
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.status, WaveFsRunStatus::Completed);
+        assert_eq!(run.requested_at, Some(500));
+        assert_eq!(run.finished_at, Some(600));
+        assert_eq!(run.kind, "terminal");
+        assert!(
+            run.verdict.is_none(),
+            "KernelDispatcher completion must never classify as a spec verdict"
+        );
+    }
+
+    #[test]
+    fn project_runs_real_requested_event_wins_over_dispatch_record() {
+        // Legacy `calm.task.dispatch` keys keep their `*.worker_requested`
+        // record even if a dispatch record ever coexisted; the fallback
+        // is fallback-only.
+        let write = fallback_write();
+        let requested = wave_scoped(
+            2,
+            200,
+            ActorId::User,
+            Event::TerminalWorkerRequested {
+                idempotency_key: "w:k".into(),
+                cmd: "ls".into(),
+                cwd: None,
+                agent_message: None,
+            },
+        );
+        let runs = project_runs(
+            &write,
+            vec![],
+            vec![requested, dispatched_event(5, 500, "w:k", "codex")],
+        );
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(
+            run.requested_event.as_ref().map(|e| e.kind),
+            Some("terminal.worker_requested"),
+            "real requested event wins"
+        );
+        assert_eq!(run.requested_at, Some(200));
+        assert_eq!(
+            run.kind, "terminal",
+            "requested kind wins over dispatch-record kind"
+        );
+    }
+
+    #[test]
+    fn run_kind_static_vocabulary() {
+        assert_eq!(run_kind_static("codex"), "codex");
+        assert_eq!(run_kind_static("terminal"), "terminal");
+        assert_eq!(run_kind_static("claude"), "unknown");
     }
 
     #[test]

@@ -1899,3 +1899,255 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         "signal_killed must be false for a clean fast-exit; got true",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #644 round-2 review F4 — `wave.updated` is a scheduler trigger.
+// ---------------------------------------------------------------------------
+
+const CARD_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
+
+/// Successful worker-spawn stub (mirror of the scheduler suite's):
+/// `prepare_tx` returns a card-shaped result — the scheduler reads
+/// `result["id"]` for the running stamp — and the spawn is a no-op.
+struct CardSpawnAdapter {
+    kind: &'static str,
+    card_id: String,
+}
+
+#[async_trait]
+impl ProviderAdapter for CardSpawnAdapter {
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        CARD_SPAWN_ADAPTER_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        Ok(TxOutput::new(
+            "card",
+            Some(self.card_id.clone()),
+            serde_json::json!({ "id": self.card_id }),
+        ))
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
+    }
+
+    async fn plan_compensation(
+        &self,
+        _from_phase: PhaseTag,
+        _reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Err(CalmError::Internal(
+            "card-spawn test fixture unexpected plan_compensation".into(),
+        ))
+    }
+
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(CalmError::Internal(
+            "card-spawn test fixture unexpected compensate_step".into(),
+        ))
+    }
+}
+
+/// Round-2 review F4: a Working wave held at `task_budget = 0` with a
+/// pending plan task must dispatch when `PATCH /api/waves` raises the
+/// budget — that PATCH emits ONLY `wave.updated` (no lifecycle event,
+/// no plan.updated), so the dispatcher's subscriber must treat
+/// `wave.updated` as a scheduler poke instead of waiting for the
+/// periodic reconcile tick (300s default — far beyond this test).
+#[tokio::test]
+async fn wave_updated_budget_raise_pokes_scheduler() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Working),
+            task_budget: Some(Some(0)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("hold wave at budget 0");
+    let worker_card = repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .expect("worker card for the spawn stub");
+    cache.insert(worker_card.id.clone(), CardRole::Worker, wave_id.clone());
+
+    let task_id = format!("{}:budget-held", wave_id.as_str());
+    let now = now_ms();
+    let task = calm_server::model::Task {
+        id: task_id.clone(),
+        wave_id: wave_id.as_str().to_string(),
+        key: "budget-held".into(),
+        kind: calm_server::model::TaskKind::Codex,
+        goal: "do budget-held".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: None,
+        status: calm_server::model::TaskStatus::Pending,
+        status_detail: None,
+        worker_card_id: None,
+        gate_result_json: None,
+        gate_attempt: 0,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        finished_at_ms: None,
+    };
+    calm_server::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            calm_server::db::sqlite::task_insert_tx(tx, &task).await?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed pending plan task");
+
+    let operation_repo = Arc::new(SqlxOperationRepo::new(
+        repo.sqlite_pool()
+            .expect("dispatcher test uses sqlite repo"),
+    ));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let completion = OperationCompletionBus::new();
+    let spawn_ctx = SpawnCtx::new(
+        route_repo,
+        operation_repo.clone(),
+        stub_daemon(),
+        terminal_renderer,
+        events.clone(),
+        completion.clone(),
+    );
+    let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: worker_card.id.to_string(),
+        })],
+        events.clone(),
+        completion,
+        spawn_ctx,
+    ));
+    let _dispatcher = Dispatcher::spawn_with_operation_runtime(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+        stub_codex(),
+        stub_daemon(),
+        None,
+        stub_shared(&repo),
+        operation_runtime,
+        4,
+    );
+
+    // A wave.updated while the budget is still 0 pokes the scheduler
+    // but the §5.2 budget gate holds the task.
+    let wave = repo.wave_get(wave_id.as_str()).await.unwrap().unwrap();
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(wave, None)),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        repo.task_get(&task_id).await.unwrap().unwrap().status,
+        calm_server::model::TaskStatus::Pending,
+        "budget 0 must keep holding the task"
+    );
+
+    // The budget-raise PATCH shape: row update + ONLY a wave.updated
+    // event (mirror of routes/waves.rs `update_wave` with no lifecycle
+    // change).
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            task_budget: Some(Some(1)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("raise budget");
+    let wave = repo.wave_get(wave_id.as_str()).await.unwrap().unwrap();
+    repo.log_pure_event(
+        ActorId::User,
+        wave_scope(&wave_id, &cove_id),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(wave, None)),
+    )
+    .await
+    .unwrap();
+
+    let status = wait_for(Duration::from_secs(5), || {
+        let repo = repo.clone();
+        let task_id = task_id.clone();
+        async move {
+            let row = repo.task_get(&task_id).await.unwrap()?;
+            (row.status != calm_server::model::TaskStatus::Pending).then_some(row.status)
+        }
+    })
+    .await
+    .expect("wave.updated must poke the scheduler — task stayed pending until the tick");
+    assert!(
+        matches!(
+            status,
+            calm_server::model::TaskStatus::Dispatched | calm_server::model::TaskStatus::Running
+        ),
+        "raised budget must dispatch the held task; got {status:?}"
+    );
+}

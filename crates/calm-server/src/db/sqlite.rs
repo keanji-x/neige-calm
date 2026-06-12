@@ -1014,6 +1014,260 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
+/// Issue #644 PR-B — in-tx read of one wave's lifecycle plus its raw
+/// `task_budget` override. The scheduler's claim tx re-checks
+/// schedulability against this (not the pre-claim snapshot) so a wave
+/// moved to Blocked/Canceled/Done between the ready-set pass and the
+/// claim can never have new work claimed (review F4), and the budget is
+/// revalidated in the same tx so a PATCH that shrank it mid-window
+/// cannot over-fill the wave (round-2 review F1). `None` = the wave row
+/// is gone (concurrent delete); the inner `Option<i64>` is the nullable
+/// `task_budget` column (NULL = kernel default).
+pub async fn wave_lifecycle_and_budget_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &str,
+) -> Result<Option<(WaveLifecycle, Option<i64>)>> {
+    let row: Option<(WaveLifecycle, Option<i64>)> =
+        sqlx::query_as("SELECT lifecycle, task_budget FROM waves WHERE id = ?1")
+            .bind(wave_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(row)
+}
+
+/// Issue #644 PR-B — the scheduler's single-winner claim
+/// (`pending → dispatched`, design §5.4). Returns rows moved (`0` =
+/// someone else won the claim; the caller skips silently). Runs inside
+/// the same tx that appends `Event::TaskDispatched` and the
+/// `Dispatching → Working` promotion so projections never observe a
+/// claimed row without its dispatch record.
+pub async fn task_claim_pending_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'dispatched', updated_at_ms = ?1
+           WHERE id = ?2 AND status = 'pending'"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Issue #644 PR-B — the scheduler's post-spawn running stamp (design
+/// §3/§5.4). Guarded `WHERE status = 'dispatched'`: a fast worker that
+/// already reported (`done`/`failed`, or `verifying` once gates land)
+/// makes this a no-op so the late scheduler write can never regress the
+/// row. `worker_card_id` is `COALESCE`-stamped — whichever side (this
+/// stamp or the report tx) lands first wins; neither overwrites.
+pub async fn task_mark_running_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    worker_card_id: Option<&str>,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'running',
+               worker_card_id = COALESCE(worker_card_id, ?1),
+               updated_at_ms = ?2
+           WHERE id = ?3 AND status = 'dispatched'"#,
+    )
+    .bind(worker_card_id)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Round-4 review F1/F2 — durable ownership proof for the
+/// unstamped-row window: is `card_id` the card the worker-spawn
+/// operation for `task_id` actually created?
+///
+/// The worker-spawn op (`kind 'codex-worker' | 'terminal-worker'`,
+/// `idempotency_key = task id`) records its created card as the
+/// operation target: `prepare_tx_and_advance` stamps
+/// `target_type = 'card'` / `target_id` in the SAME tx in which the
+/// adapter's `prepare_tx` creates the card, and the operations table
+/// has no client-reachable write path. Card payloads, by contrast,
+/// stay patchable via `PATCH /api/cards/{id}` (the kind validators
+/// allow extra fields), so a payload `idempotency_key` echo proves
+/// nothing.
+///
+/// Round-5 review F2: the op must additionally be SCHEDULER-created —
+/// its persisted `payload_json` actor is `ActorId::KernelDispatcher`
+/// (`build_worker_payload` stamps it; serde shape
+/// `{"actor":{"kind":"KernelDispatcher"}}`). A legacy
+/// `calm.task.dispatch` operation carries the requesting envelope's
+/// actor (the spec card, `{"kind":"AiSpec",...}`) and could otherwise
+/// collide on the same idempotency key — that foreign op's worker card
+/// must NOT be able to flip the plan task during the unstamped
+/// `dispatched` window (the scheduler classifies the payload-hash
+/// conflict as a permanent spawn failure instead).
+///
+/// Returns `false` when no scheduler worker op row targets the card —
+/// including the crash window between the claim and the op insert,
+/// where NO ownership is provable: unstamped reports are rejected
+/// there, the sweep's dispatched arm resubmits the op, and the real
+/// worker spawned by that resubmit can report.
+pub async fn worker_op_targets_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: &str,
+    card_id: &str,
+) -> Result<bool> {
+    let owns: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM operations
+               WHERE kind IN ('codex-worker', 'terminal-worker')
+                 AND idempotency_key = ?1
+                 AND target_type = 'card'
+                 AND target_id = ?2
+                 AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'
+           )"#,
+    )
+    .bind(task_id)
+    .bind(card_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(owns)
+}
+
+/// Who is asserting a worker-report flip (round-2 review F2).
+///
+/// The two-sided `worker_card_id` guard from round 1 only protects
+/// rows that already carry a stamp; an UNSTAMPED `dispatched` row (the
+/// report-beat-the-running-stamp window) would otherwise accept any
+/// same-wave worker that echoes the task id. The ownership proof for
+/// that window is the worker-spawn operation's immutable target card
+/// ([`worker_op_targets_card_tx`], round-4 review F1/F2) — NOT the
+/// reporting card's payload, which is mutable via
+/// `PATCH /api/cards/{id}` and therefore forgeable.
+#[derive(Clone, Copy, Debug)]
+pub enum TaskReporter<'a> {
+    /// Kernel-internal caller that owns the row by construction (the
+    /// scheduler's spawn-failure reconcile). Bypasses the card guard
+    /// and leaves `worker_card_id` untouched (NULL COALESCE arm).
+    Kernel,
+    /// A worker card's report. `owns_key` must be the result of
+    /// [`worker_op_targets_card_tx`] for the REPORTING card — `true`
+    /// is the unstamped-row ownership proof; stamped rows are still
+    /// guarded by `worker_card_id = card_id`.
+    Card { card_id: &'a str, owns_key: bool },
+}
+
+impl<'a> TaskReporter<'a> {
+    /// `(card_id bind, owns_key bind)` for the shared SQL guard shape.
+    fn binds(self) -> (Option<&'a str>, bool) {
+        match self {
+            TaskReporter::Kernel => (None, true),
+            TaskReporter::Card { card_id, owns_key } => (Some(card_id), owns_key),
+        }
+    }
+}
+
+/// Issue #644 PR-B — worker-reported success flip
+/// (`dispatched/running → done`, design §3), run **inside** the
+/// `calm.task.complete` emit tx (and by the terminal-exit completion
+/// paths) so there is no event-persisted-but-row-stale crash window.
+///
+/// `dispatched` is included because a fast worker can report before the
+/// scheduler's `wait()` returns. `gate_json IS NULL` is the defensive
+/// PR-C guard: a gated row must go to `verifying`, never straight to
+/// `done` — no gated row can exist yet (PR-A rule 8), but if one did,
+/// this flip leaves it alone rather than mis-flipping it.
+///
+/// `wave_id` is part of the guard so a caller can never flip another
+/// wave's row even if it echoes a foreign task id.
+///
+/// The card guard is two-sided (review F3 + round-2 F2 + round-4 F1):
+/// besides the COALESCE stamp, a [`TaskReporter::Card`] caller only
+/// flips a row whose `worker_card_id` matches it, or an unstamped row
+/// when the reporting card proves op-target ownership (`owns_key`,
+/// [`worker_op_targets_card_tx`]). A sibling worker echoing another
+/// task's idempotency key — even via a forged card payload — can
+/// therefore never terminalize that row, stamped or not.
+/// [`TaskReporter::Kernel`] bypasses — reserved for kernel callers
+/// that own the row.
+pub async fn task_complete_from_worker_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_id: &str,
+    reporter: TaskReporter<'_>,
+    now: i64,
+) -> Result<u64> {
+    let (worker_card_id, owns_key) = reporter.binds();
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'done',
+               status_detail = NULL,
+               worker_card_id = COALESCE(worker_card_id, ?1),
+               updated_at_ms = ?2,
+               finished_at_ms = ?2
+           WHERE id = ?3 AND wave_id = ?4
+             AND status IN ('dispatched', 'running')
+             AND gate_json IS NULL
+             AND (?1 IS NULL OR worker_card_id = ?1
+                  OR (worker_card_id IS NULL AND ?5))"#,
+    )
+    .bind(worker_card_id)
+    .bind(now)
+    .bind(id)
+    .bind(wave_id)
+    .bind(owns_key)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Issue #644 PR-B — worker-reported / kernel-observed failure flip
+/// (`dispatched/running → failed`, design §3). Same guards as the
+/// success flip except the gate condition: a worker failure never runs
+/// a gate (§3), so gated rows fail the same way. `status_detail`
+/// distinguishes `'worker-reported'` (the worker said so, or its
+/// terminal exited non-zero) from `'spawn-failed'` (the scheduler could
+/// not start it).
+///
+/// `reporter` carries the same two-sided guard as the success flip
+/// (review F3 + round-2 F2 + round-4 F1): a card only flips a
+/// matching-stamp row or an unstamped row it proves op-target
+/// ownership of; `Kernel` bypasses.
+pub async fn task_fail_from_worker_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_id: &str,
+    reporter: TaskReporter<'_>,
+    status_detail: &str,
+    now: i64,
+) -> Result<u64> {
+    let (worker_card_id, owns_key) = reporter.binds();
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'failed',
+               status_detail = ?1,
+               worker_card_id = COALESCE(worker_card_id, ?2),
+               updated_at_ms = ?3,
+               finished_at_ms = ?3
+           WHERE id = ?4 AND wave_id = ?5
+             AND status IN ('dispatched', 'running')
+             AND (?2 IS NULL OR worker_card_id = ?2
+                  OR (worker_card_id IS NULL AND ?6))"#,
+    )
+    .bind(status_detail)
+    .bind(worker_card_id)
+    .bind(now)
+    .bind(id)
+    .bind(wave_id)
+    .bind(owns_key)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 pub async fn wave_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -2802,6 +3056,18 @@ impl RepoRead for SqlxRepo {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row)
+    }
+
+    async fn tasks_nonterminal(&self) -> Result<Vec<Task>> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE status IN ('pending', 'dispatched', 'running', 'verifying') \
+             ORDER BY wave_id ASC, priority DESC, created_at_ms ASC, key ASC"
+        );
+        let rows = sqlx::query_as::<_, Task>(&sql)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
     }
 
     // ---------------------------------------------------------------- cards

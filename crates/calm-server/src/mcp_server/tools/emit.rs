@@ -458,7 +458,118 @@ async fn emit_task_report_for_identity(
             let scope = scope.clone();
             let wave_scope = wave_scope.clone();
             let wave_id = wave_id.clone();
+            let worker_card_id = card_id_str.clone();
             Box::pin(async move {
+                // Issue #644 PR-B — flip the matching plan-task row INSIDE
+                // the same tx that persists the worker's report event
+                // (design §3): one tx, no event-persisted-but-row-stale
+                // crash window. The flips are guarded
+                // (`status IN ('dispatched','running')`, wave-pinned, and
+                // the done-flip skips gated rows), so a legacy
+                // `calm.task.dispatch` key with no tasks row, an already
+                // terminal row, or a foreign-wave id all no-op. This hook
+                // lives ONLY in the worker-role-gated
+                // `calm.task.complete` / `calm.task.fail` handlers — spec
+                // verdict emissions (`calm.task.verdict`, wave_state.rs)
+                // never run it, so verdicts can never flip rows.
+                let now = crate::model::now_ms();
+                let flip = match &event {
+                    Event::TaskCompleted {
+                        idempotency_key, ..
+                    } => Some((idempotency_key.clone(), true)),
+                    Event::TaskFailed {
+                        idempotency_key, ..
+                    } => Some((idempotency_key.clone(), false)),
+                    _ => None,
+                };
+                if let Some((task_id, success)) = flip {
+                    // Round-4 review F1 — unstamped-row ownership proof:
+                    // the REPORTING card must be the card the task's
+                    // worker-spawn operation created (immutable op
+                    // target, stamped in the same tx as the card). The
+                    // card payload's `idempotency_key` is NOT proof —
+                    // payloads are patchable via `PATCH /api/cards/{id}`,
+                    // so a forged sibling payload could otherwise steal
+                    // the report-beats-running-stamp window. For rows
+                    // already stamped, the `worker_card_id = card` guard
+                    // inside the flip implies the same binding.
+                    let reporter = crate::db::sqlite::TaskReporter::Card {
+                        card_id: worker_card_id.as_str(),
+                        owns_key: crate::db::sqlite::worker_op_targets_card_tx(
+                            tx,
+                            &task_id,
+                            &worker_card_id,
+                        )
+                        .await?,
+                    };
+                    let rows = if success {
+                        crate::db::sqlite::task_complete_from_worker_tx(
+                            tx,
+                            &task_id,
+                            wave_id.as_str(),
+                            reporter,
+                            now,
+                        )
+                        .await?
+                    } else {
+                        crate::db::sqlite::task_fail_from_worker_tx(
+                            tx,
+                            &task_id,
+                            wave_id.as_str(),
+                            reporter,
+                            "worker-reported",
+                            now,
+                        )
+                        .await?
+                    };
+                    // Round-2 review F3 — disambiguate a 0-row flip before
+                    // emitting terminal side effects:
+                    //   (i)   no tasks row for the key (legacy
+                    //         `calm.task.dispatch` worker) → emit exactly
+                    //         as before;
+                    //   (iii) row already TERMINAL → duplicate/retried
+                    //         report; keep emitting (consumers tolerate
+                    //         duplicate task events per key, design §1.3 —
+                    //         verdict emissions and report-retry
+                    //         idempotency depend on it);
+                    //   (iv)  row ACTIVE (`dispatched`/`running` — the
+                    //         only states the guarded flip targets) and
+                    //         the ownership guard rejected the reporter
+                    //         → refuse the whole write: no event, no
+                    //         Working → Reviewing transition; the
+                    //         caller is told it does not own the task.
+                    // Any other 0-row cause keeps today's emit behavior:
+                    // the defensive gate_json skip on an owned row, and
+                    // (round-6 review) statuses the guarded UPDATE could
+                    // never have matched — a legacy `calm.task.dispatch`
+                    // key colliding with a still-`pending` plan row (or
+                    // a future non-flip state like `verifying`) carries
+                    // no ownership signal, so the legacy event must keep
+                    // persisting with the row left untouched.
+                    if rows == 0
+                        && let Some(row) = crate::db::sqlite::task_get_tx(tx, &task_id).await?
+                        && matches!(
+                            row.status,
+                            crate::model::TaskStatus::Dispatched
+                                | crate::model::TaskStatus::Running
+                        )
+                    {
+                        let owns = match &row.worker_card_id {
+                            Some(owner) => *owner == worker_card_id,
+                            None => matches!(
+                                reporter,
+                                crate::db::sqlite::TaskReporter::Card { owns_key: true, .. }
+                            ),
+                        };
+                        if !owns {
+                            return Err(CalmError::Forbidden(format!(
+                                "task {task_id} is not owned by reporting card \
+                                 {worker_card_id}; report rejected"
+                            )));
+                        }
+                    }
+                }
+
                 let mut events = vec![(actor, scope, event)];
                 if let Some(auto_events) = auto_transition_if_current_in_tx(
                     tx,

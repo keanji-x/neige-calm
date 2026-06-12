@@ -148,6 +148,12 @@ pub struct RendererSpawnError(#[from] anyhow::Error);
 pub struct TerminalRendererRegistry {
     entries: StdMutex<HashMap<String, Arc<RendererEntry>>>,
     repo: Option<Arc<dyn RouteRepo>>,
+    /// Issue #644 M2 — terminal-exit completion bundle, installed by the
+    /// dispatcher construction site (it owns the EventBus + role caches
+    /// the hook needs; the registry is built earlier in boot). `None`
+    /// until installed; entries spawned before installation simply skip
+    /// the task hook (boot spawns nothing before `AppState` completes).
+    task_hook: StdMutex<Option<Arc<crate::scheduler::TerminalTaskHook>>>,
 }
 
 impl TerminalRendererRegistry {
@@ -155,6 +161,7 @@ impl TerminalRendererRegistry {
         Arc::new(Self {
             entries: StdMutex::new(HashMap::new()),
             repo: None,
+            task_hook: StdMutex::new(None),
         })
     }
 
@@ -162,7 +169,21 @@ impl TerminalRendererRegistry {
         Arc::new(Self {
             entries: StdMutex::new(HashMap::new()),
             repo: Some(repo),
+            task_hook: StdMutex::new(None),
         })
+    }
+
+    /// Install the issue #644 M2 terminal-exit completion bundle. Called
+    /// by the dispatcher construction funnel; idempotent (last write
+    /// wins — every production caller passes an equivalent bundle).
+    pub fn set_task_hook(&self, hook: Arc<crate::scheduler::TerminalTaskHook>) {
+        if let Ok(mut guard) = self.task_hook.lock() {
+            *guard = Some(hook);
+        }
+    }
+
+    fn task_hook(&self) -> Option<Arc<crate::scheduler::TerminalTaskHook>> {
+        self.task_hook.lock().ok().and_then(|guard| guard.clone())
     }
 
     /// Spawn a PTY proc on the supervisor and stand up the in-process
@@ -175,7 +196,7 @@ impl TerminalRendererRegistry {
             return Ok(existing);
         }
 
-        let entry = Arc::new(ensure_entry(cfg, self.repo.clone()).await?);
+        let entry = Arc::new(ensure_entry(cfg, self.repo.clone(), self.task_hook()).await?);
         let mut entries = self
             .entries
             .lock()
@@ -274,6 +295,7 @@ impl TerminalRendererRegistry {
 async fn ensure_entry(
     cfg: RendererConfig,
     repo: Option<Arc<dyn RouteRepo>>,
+    task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
 ) -> anyhow::Result<RendererEntry> {
     let proc_id = format!("term:{}", cfg.terminal_id);
     let mut control_conn = UnixStream::connect(&cfg.supervisor_sock)
@@ -386,6 +408,7 @@ async fn ensure_entry(
         exited_tx,
         repo,
         cfg.terminal_id.clone(),
+        task_hook,
     );
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 
