@@ -675,6 +675,23 @@ pub trait OperationRepo: Send + Sync {
         fetch_claimed_parked(&pool, op_id, &lease_owner).await
     }
 
+    async fn clear_parked_lease_for_boot(&self, op_id: &str) -> Result<()> {
+        let pool = self.sqlite_pool();
+        sqlx::query(
+            r#"UPDATE operations
+               SET lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   updated_at_ms = ?1
+               WHERE id = ?2
+                 AND phase = 'parked'"#,
+        )
+        .bind(now_ms())
+        .bind(op_id)
+        .execute(&pool)
+        .await?;
+        Ok(())
+    }
+
     async fn parked_operations(&self) -> Result<Vec<Operation>> {
         let pool = self.sqlite_pool();
         let rows = sqlx::query(
@@ -1725,7 +1742,9 @@ impl OperationRuntime {
                     .recover_parked(&op, &artifacts, alive, RecoveryMode::Boot, &self.spawn_ctx)
                     .await?
                 {
-                    ParkedRecovery::LeaveParked => {}
+                    ParkedRecovery::LeaveParked => {
+                        self.repo.clear_parked_lease_for_boot(&op_id).await?;
+                    }
                     ParkedRecovery::Complete(outcome) => {
                         kill_parked_group_if_alive(&artifacts, alive);
                         self.complete_parked_and_publish(&op_id, &outcome).await?;
@@ -3326,6 +3345,62 @@ mod tests {
         }));
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn boot_leave_parked_clears_abandoned_future_lease() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let pool = sqlx_repo.pool().clone();
+        let repo = Arc::new(SqlxOperationRepo::new(pool));
+        let parked = parked_operation(repo.as_ref(), now_ms() + 10_000).await;
+        let (_child, artifacts) = live_child_spawn_artifacts();
+        let artifacts_json = serde_json::to_string(&artifacts).unwrap();
+        let now = now_ms();
+        sqlx::query(
+            r#"UPDATE operations
+               SET spawn_artifacts_json = ?1,
+                   lease_owner = 'abandoned-boot-lease',
+                   lease_until_ms = ?2,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND phase = 'parked'"#,
+        )
+        .bind(artifacts_json)
+        .bind(now + OPERATION_LEASE_MS)
+        .bind(now)
+        .bind(&parked.id)
+        .execute(sqlx_repo.pool())
+        .await
+        .unwrap();
+
+        let before = repo.get_operation(&parked.id).await.unwrap().unwrap();
+        assert_eq!(before.lease_owner.as_deref(), Some("abandoned-boot-lease"));
+        assert!(before.lease_until_ms.is_some_and(|lease| lease > now_ms()));
+
+        let observer_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = Arc::new(TestParkingAdapter {
+            observer_runs,
+            record_artifacts: true,
+            steal_lease_after_artifacts: false,
+        });
+        let runtime = test_runtime(sqlx_repo, repo.clone(), vec![adapter]);
+        let plan = runtime.recover_on_boot().await.unwrap();
+
+        runtime.apply_recovery(plan).await.unwrap();
+
+        let stored = repo.get_operation(&parked.id).await.unwrap().unwrap();
+        assert_eq!(stored.phase, Phase::Parked);
+        assert!(stored.lease_owner.is_none());
+        assert!(stored.lease_until_ms.is_none());
+
+        let claimed = repo.claim_parked(&parked.id).await.unwrap();
+        assert!(
+            claimed.is_some(),
+            "steady-state claim must not wait for the abandoned boot lease"
+        );
+    }
+
     #[tokio::test]
     async fn parked_return_without_artifacts_fails_and_drops_observer() {
         let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
@@ -3484,6 +3559,38 @@ mod tests {
             log_path: None,
             extra: Value::Null,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct ChildGuard(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn live_child_spawn_artifacts() -> (ChildGuard, SpawnArtifacts) {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn live child");
+        let pid = i32::try_from(child.id()).expect("child pid fits i32");
+        let start_time = crate::proc_identity::read_proc_start_time(pid).expect("child start time");
+        let boot_id = crate::proc_identity::read_boot_id().expect("current boot id");
+        let artifacts = SpawnArtifacts {
+            pid,
+            pgid: pid,
+            start_time,
+            boot_id,
+            log_path: None,
+            extra: Value::Null,
+        };
+        assert!(parked_artifacts_alive(&artifacts));
+        (ChildGuard(child), artifacts)
     }
 
     fn test_runtime(

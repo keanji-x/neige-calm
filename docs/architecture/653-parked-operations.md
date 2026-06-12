@@ -632,7 +632,11 @@ async fn recover_parked(
    past-deadline arm directly** (mode `PastDeadline`): a `Boot`-mode call
    would spawn a reattach observer that the boot-end `sweep_parked` (§4.4
    call site b) kills moments later.
-4. Apply: `LeaveParked` → nothing (no claim, no write). `Complete(outcome)` →
+4. Apply: `LeaveParked` → no claim, but clear any abandoned boot lease with a
+   phase-fenced `UPDATE operations SET lease_owner = NULL, lease_until_ms =
+   NULL, updated_at_ms = ? WHERE id = ? AND phase = 'parked'`; this preserves
+   the "parked holds no lease" invariant (§1.2/§3.1), and a racing completion
+   that already moved the row terminal makes the clear a no-op. `Complete(outcome)` →
    kill the recorded group first if `alive` (`verify_owned_pid` re-check then
    `signal_process_group(pgid, SIGKILL)`, mirroring §4.4), then own tx:
    `complete_parked_tx` + commit + `publish_completion`. `Fail` →
