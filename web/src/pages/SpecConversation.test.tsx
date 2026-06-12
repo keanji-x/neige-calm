@@ -1,3 +1,11 @@
+// SpecConversation tests (#654/#668) — drive the run state through the
+// REAL `useSpecCurrentRun` hook and the real wire signals it consumes:
+// `GET /spec/run` seeds (mocked `getSpecRun`) and `harness.phase.changed`
+// events with snake_case `HarnessPhaseTag` values. Production publishes NO
+// status overlay for spec cards (the overlay mock answers null, like a
+// live stack), so any test that opened the stop/typing gates by faking
+// overlay states would pass while the feature is dead in production —
+// exactly the #668 regression this file must catch.
 import {
   act,
   fireEvent,
@@ -14,12 +22,10 @@ import {
   resolveScrollTarget,
   type ReportView,
 } from './SpecConversation';
-import type { SpecRunSnapshot } from './useSpecCurrentRun';
 
 const PAGE_LIMIT = 300;
 
 const mocks = vi.hoisted(() => {
-  const state: { currentRun: unknown } = { currentRun: null };
   const streamListeners = new Set<(ev: unknown) => void>();
   const stream = {
     addTopic: vi.fn(),
@@ -31,10 +37,10 @@ const mocks = vi.hoisted(() => {
     }),
   };
   return {
-    state,
-    submit: vi.fn(),
-    reset: vi.fn(),
-    useSpecCurrentRun: vi.fn(() => state.currentRun),
+    getSpecRun: vi.fn(),
+    sendSpecInput: vi.fn(),
+    interruptSpecCard: vi.fn(),
+    resetSpecCard: vi.fn(),
     listHarnessItems: vi.fn(),
     sharedEventStream: vi.fn(() => stream),
     stream,
@@ -42,39 +48,28 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('../api/calm', () => ({
-  listHarnessItems: mocks.listHarnessItems,
-}));
+vi.mock('../api/calm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/calm')>();
+  return {
+    ...actual,
+    getSpecRun: mocks.getSpecRun,
+    sendSpecInput: mocks.sendSpecInput,
+    interruptSpecCard: mocks.interruptSpecCard,
+    resetSpecCard: mocks.resetSpecCard,
+    listHarnessItems: mocks.listHarnessItems,
+  };
+});
 
 vi.mock('../api/events', () => ({
   sharedEventStream: mocks.sharedEventStream,
 }));
 
-vi.mock('./useSpecCurrentRun', () => ({
-  useSpecCurrentRun: mocks.useSpecCurrentRun,
-  humanizeToken: (token: string) =>
-    token.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+// Production-accurate: no status overlay is ever published for spec cards.
+vi.mock('../cards/overlayRegistry', () => ({
+  useCardStatusOverlay: vi.fn(() => null),
 }));
 
-function makeRun(
-  overrides: Partial<SpecRunSnapshot> = {},
-): SpecRunSnapshot {
-  return {
-    cardId: 'card_spec_1',
-    rawState: 'running',
-    fsm: 'Working',
-    phase: 'turn_running',
-    latestTool: { toolLabel: null, toolStatus: null },
-    resetPending: false,
-    resetError: null,
-    reset: mocks.reset,
-    submitPending: false,
-    submitError: null,
-    submitDormant: false,
-    submit: mocks.submit,
-    ...overrides,
-  };
-}
+import { CalmApiError } from '../api/calm';
 
 function deferredVoid(): { promise: Promise<void>; resolve: () => void } {
   let resolve: () => void = () => {};
@@ -82,6 +77,48 @@ function deferredVoid(): { promise: Promise<void>; resolve: () => void } {
     resolve = res;
   });
   return { promise, resolve };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+function specRunBody(phase: string | null, cardId = 'card_spec_1') {
+  return {
+    card_id: cardId,
+    runtime_id: phase == null ? null : 'runtime',
+    phase,
+  };
+}
+
+/** Emit a `harness.phase.changed` event in its real wire shape. */
+async function emitPhase(
+  newPhase: string,
+  { cardId = 'card_spec_1', oldPhase = 'idle' } = {},
+) {
+  await act(async () => {
+    for (const listener of mocks.streamListeners) {
+      listener({
+        ev: 'harness.phase.changed',
+        data: {
+          runtime_id: 'runtime',
+          card_id: cardId,
+          wave_id: 'wave',
+          old_phase: oldPhase,
+          new_phase: newPhase,
+        },
+      });
+    }
+  });
+}
+
+/** Production wire sequence for "a turn is now running". */
+async function startTurn() {
+  await emitPhase('turn_running', { oldPhase: 'issuing_turn' });
 }
 
 function harnessUserRow(id: number, text: string) {
@@ -212,29 +249,60 @@ function Harness({
   );
 }
 
+/** Render and flush the `GET /spec/run` phase seed fetch. */
+async function renderHarness(
+  props: { specCardId?: string | null; initialView?: ReportView } = {},
+) {
+  const view = render(<Harness {...props} />);
+  await act(async () => {});
+  return view;
+}
+
 function draftBox() {
   return screen.getByLabelText('Ask the Spec Agent');
 }
 
+/** Transcript blocks (entries + system notes) in DOM order. */
+function transcriptBlocks() {
+  const convo = screen.getByLabelText('Conversation');
+  return Array.from(
+    convo.querySelectorAll('.report-convo-entry, .report-convo-system'),
+  ).map((node) => node.textContent ?? '');
+}
+
 describe('SpecConversation', () => {
   beforeEach(() => {
-    mocks.submit.mockReset();
-    mocks.submit.mockResolvedValue(undefined);
-    mocks.reset.mockReset();
-    mocks.reset.mockResolvedValue(undefined);
-    mocks.useSpecCurrentRun.mockClear();
+    mocks.getSpecRun.mockReset();
+    // Default seed: a live-but-idle harness — every stop gate closed.
+    mocks.getSpecRun.mockResolvedValue(specRunBody('idle'));
+    mocks.sendSpecInput.mockReset();
+    mocks.sendSpecInput.mockResolvedValue({
+      card_id: 'card_spec_1',
+      runtime_id: 'runtime',
+    });
+    mocks.interruptSpecCard.mockReset();
+    mocks.interruptSpecCard.mockResolvedValue({
+      card_id: 'card_spec_1',
+      runtime_id: 'runtime',
+      stopped: true,
+    });
+    mocks.resetSpecCard.mockReset();
+    mocks.resetSpecCard.mockResolvedValue({
+      card_id: 'card_spec_1',
+      terminal_id: 'terminal',
+      new_thread_id: 'thread_2',
+    });
     mocks.listHarnessItems.mockReset();
     mocks.listHarnessItems.mockResolvedValue([]);
     mocks.sharedEventStream.mockClear();
     mocks.stream.addTopic.mockClear();
     mocks.stream.on.mockClear();
     mocks.streamListeners.clear();
-    mocks.state.currentRun = makeRun();
   });
 
   it('switches between report and conversation documents via tabs', async () => {
     const user = userEvent.setup();
-    render(<Harness initialView="report" />);
+    await renderHarness({ initialView: 'report' });
 
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
     expect(
@@ -260,26 +328,49 @@ describe('SpecConversation', () => {
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
   });
 
-  it('shows the status chips and Reset only in conversation mode', async () => {
+  it('shows the status chip and Reset only in conversation mode', async () => {
     const user = userEvent.setup();
-    render(<Harness initialView="report" />);
+    await renderHarness({ initialView: 'report' });
 
-    expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    expect(screen.queryByText('Idle')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Reset spec session' }),
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Conversation' }));
 
-    expect(screen.getByText('Running')).toBeInTheDocument();
-    expect(screen.getByText('Turn Running')).toBeInTheDocument();
+    // The chip shows the seeded harness phase — the status overlay never
+    // publishes for spec cards (#668 fix).
+    expect(screen.getByText('Idle')).toBeInTheDocument();
     const reset = screen.getByRole('button', { name: 'Reset spec session' });
     expect(reset.closest('.report-convo-status')).not.toBeNull();
   });
 
+  it('reflects live phase transitions in the status chip', async () => {
+    await renderHarness();
+
+    const chip = screen.getByText('Idle');
+    expect(chip).toHaveClass('report-convo-state');
+    expect(chip).toHaveAttribute('data-fsm', 'Idle');
+
+    await startTurn();
+    const workingChip = screen.getByText('Turn Running');
+    expect(workingChip).toHaveClass('report-convo-state');
+    expect(workingChip).toHaveAttribute('data-fsm', 'Working');
+  });
+
+  it('falls back to the overlay rawState on the chip when no phase is known', async () => {
+    mocks.getSpecRun.mockResolvedValue(specRunBody(null));
+    await renderHarness();
+
+    // No phase signal and no overlay → the 'Starting' default.
+    const chip = screen.getByText('Starting');
+    expect(chip).toHaveClass('report-convo-state');
+  });
+
   it('focuses the input when entering conversation mode', async () => {
     const user = userEvent.setup();
-    render(<Harness initialView="report" />);
+    await renderHarness({ initialView: 'report' });
 
     await user.click(screen.getByRole('button', { name: 'Conversation' }));
 
@@ -297,7 +388,7 @@ describe('SpecConversation', () => {
 
   it('keeps the draft when toggling between report and conversation', async () => {
     const user = userEvent.setup();
-    render(<Harness initialView="report" />);
+    await renderHarness({ initialView: 'report' });
 
     await user.type(draftBox(), 'Persistent draft');
     await user.click(screen.getByRole('button', { name: 'Conversation' }));
@@ -309,13 +400,16 @@ describe('SpecConversation', () => {
 
   it('sends from report mode and auto-switches to conversation', async () => {
     const user = userEvent.setup();
-    render(<Harness initialView="report" />);
+    await renderHarness({ initialView: 'report' });
 
     await user.type(draftBox(), 'From the report');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
-      expect(mocks.submit).toHaveBeenCalledWith('From the report');
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith(
+        'card_spec_1',
+        'From the report',
+      );
     });
     expect(
       screen.getByLabelText('Conversation'),
@@ -325,20 +419,25 @@ describe('SpecConversation', () => {
 
   it('submits textarea input with Enter and clears the draft', async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    await renderHarness();
 
     await user.type(draftBox(), 'What changed?');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
-      expect(mocks.submit).toHaveBeenCalledWith('What changed?');
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith(
+        'card_spec_1',
+        'What changed?',
+      );
     });
     expect(draftBox()).toHaveValue('');
   });
 
   it('shows a send button only when the draft is non-empty and sends on click', async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    // Idle: while a turn runs the glyph slot holds the ■ stop affordance
+    // (#668), so this needs the gates closed.
+    await renderHarness();
 
     expect(
       screen.queryByRole('button', { name: 'Send' }),
@@ -348,7 +447,10 @@ describe('SpecConversation', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => {
-      expect(mocks.submit).toHaveBeenCalledWith('Click to send');
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith(
+        'card_spec_1',
+        'Click to send',
+      );
     });
     expect(
       screen.queryByRole('button', { name: 'Send' }),
@@ -357,40 +459,52 @@ describe('SpecConversation', () => {
 
   it('does not submit empty textarea with plain Enter', async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    await renderHarness();
 
     await user.click(draftBox());
     await user.keyboard('{Enter}');
 
-    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(mocks.sendSpecInput).not.toHaveBeenCalled();
   });
 
   it('blocks submit while reset is pending', async () => {
     const user = userEvent.setup();
-    const submit = vi.fn();
-    mocks.state.currentRun = makeRun({ resetPending: false, submit });
-    const { rerender } = render(<Harness />);
+    const reset = deferredVoid();
+    mocks.resetSpecCard.mockReturnValue(reset.promise);
+    await renderHarness();
 
     await user.type(draftBox(), 'Race window');
 
-    mocks.state.currentRun = makeRun({ resetPending: true, submit });
-    rerender(<Harness />);
+    await user.click(screen.getByRole('button', { name: 'Reset spec session' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reset spec session?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Reset session' }));
 
     const textarea = draftBox();
     expect(textarea).toBeDisabled();
     fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(submit).not.toHaveBeenCalled();
+    expect(mocks.sendSpecInput).not.toHaveBeenCalled();
+
+    await act(async () => {
+      reset.resolve();
+      await reset.promise;
+    });
   });
 
-  it('renders the dormant alert and highlights Reset on spec_harness_dormant', () => {
-    mocks.state.currentRun = makeRun({
-      submitDormant: true,
-      submitError:
-        "Spec Agent isn't running for this wave — Reset to start a session",
-    });
-    render(<Harness />);
+  it('renders the dormant alert and highlights Reset on spec_harness_dormant', async () => {
+    const user = userEvent.setup();
+    mocks.sendSpecInput.mockRejectedValue(
+      new CalmApiError(
+        409,
+        'spec_harness_dormant',
+        'no recoverable spec harness session for card card_spec_1',
+      ),
+    );
+    await renderHarness();
 
-    const alert = screen.getByRole('alert');
+    await user.type(draftBox(), 'Anyone home?');
+    await user.keyboard('{Enter}');
+
+    const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(
       "Spec Agent isn't running for this wave — Reset to start a session",
     );
@@ -400,9 +514,14 @@ describe('SpecConversation', () => {
     ).toHaveAttribute('data-dormant', 'true');
   });
 
-  it('marks and disables the input while submit is pending', () => {
-    mocks.state.currentRun = makeRun({ submitPending: true });
-    render(<Harness />);
+  it('marks and disables the input while submit is pending', async () => {
+    const user = userEvent.setup();
+    const submit = deferredVoid();
+    mocks.sendSpecInput.mockReturnValue(submit.promise);
+    await renderHarness();
+
+    await user.type(draftBox(), 'Slow send');
+    await user.keyboard('{Enter}');
 
     const textarea = draftBox();
     const inputline = textarea.closest('.report-convo-inputline');
@@ -410,21 +529,25 @@ describe('SpecConversation', () => {
 
     expect(inputline).toHaveClass('report-convo-inputline--pending');
     expect(textarea).toBeDisabled();
+
+    await act(async () => {
+      submit.resolve();
+      await submit.promise;
+    });
   });
 
   it('does not clear a new card draft when a previous card submit completes', async () => {
     const user = userEvent.setup();
     const submitA = deferredVoid();
-    const submit = vi.fn(() => submitA.promise);
-    mocks.state.currentRun = makeRun({ cardId: 'A', submit });
-    const { rerender } = render(<Harness specCardId="A" />);
+    mocks.sendSpecInput.mockReturnValue(submitA.promise);
+    const { rerender } = await renderHarness({ specCardId: 'A' });
 
     await user.type(draftBox(), 'hello A');
     await user.keyboard('{Enter}');
-    expect(submit).toHaveBeenCalledWith('hello A');
+    expect(mocks.sendSpecInput).toHaveBeenCalledWith('A', 'hello A');
 
-    mocks.state.currentRun = makeRun({ cardId: 'B' });
     rerender(<Harness specCardId="B" />);
+    await act(async () => {});
     await user.clear(draftBox());
     await user.type(draftBox(), 'hello B');
 
@@ -436,8 +559,8 @@ describe('SpecConversation', () => {
     expect(draftBox()).toHaveValue('hello B');
   });
 
-  it('disables the Conversation tab and hides the input when no spec card exists', () => {
-    render(<Harness specCardId={null} initialView="report" />);
+  it('disables the Conversation tab and hides the input when no spec card exists', async () => {
+    await renderHarness({ specCardId: null, initialView: 'report' });
 
     expect(screen.getByRole('button', { name: 'Conversation' })).toBeDisabled();
     expect(
@@ -446,8 +569,8 @@ describe('SpecConversation', () => {
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
   });
 
-  it('falls back to the report document when view is conversation without a spec card', () => {
-    render(<Harness specCardId={null} initialView="conversation" />);
+  it('falls back to the report document when view is conversation without a spec card', async () => {
+    await renderHarness({ specCardId: null, initialView: 'conversation' });
 
     expect(screen.getByTestId('report-body')).toBeInTheDocument();
     expect(
@@ -457,31 +580,31 @@ describe('SpecConversation', () => {
 
   it('submits trimmed textarea input with plain Enter', async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    await renderHarness();
 
     await user.type(draftBox(), '  Ship it  ');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
-      expect(mocks.submit).toHaveBeenCalledWith('Ship it');
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith('card_spec_1', 'Ship it');
     });
   });
 
   it('keeps Shift+Enter as a textarea newline without submitting', async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    await renderHarness();
 
     const textarea = draftBox();
     await user.type(textarea, 'abc');
     await user.keyboard('{Shift>}{Enter}{/Shift}');
 
-    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(mocks.sendSpecInput).not.toHaveBeenCalled();
     expect(textarea).toHaveValue('abc\n');
   });
 
   it('does not submit Enter during IME composition', async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    await renderHarness();
 
     const textarea = draftBox();
     await user.type(textarea, 'zhong');
@@ -489,12 +612,12 @@ describe('SpecConversation', () => {
     fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
     fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 });
 
-    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(mocks.sendSpecInput).not.toHaveBeenCalled();
   });
 
   it('confirms reset session through ConfirmDialog', async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    await renderHarness();
 
     await user.click(screen.getByRole('button', { name: 'Reset spec session' }));
 
@@ -502,7 +625,7 @@ describe('SpecConversation', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Reset session' }));
 
     await waitFor(() => {
-      expect(mocks.reset).toHaveBeenCalledTimes(1);
+      expect(mocks.resetSpecCard).toHaveBeenCalledTimes(1);
     });
     expect(
       screen.queryByRole('dialog', { name: 'Reset spec session?' }),
@@ -510,13 +633,12 @@ describe('SpecConversation', () => {
   });
 
   it('renders fetched history as labelled document blocks', async () => {
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValue([
       harnessUserRow(1, 'What changed?'),
       harnessAgentRow(2, '**Done**'),
     ]);
 
-    render(<Harness />);
+    await renderHarness();
 
     const userText = await screen.findByText('What changed?');
     const userEntry = userText.closest('.report-convo-entry--user');
@@ -532,23 +654,370 @@ describe('SpecConversation', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows a typing indicator while the agent is working', () => {
-    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
-    render(<Harness />);
+  it('shows the typing indicator only while a turn is live on the wire', async () => {
+    await renderHarness();
 
+    // Gates closed: idle seed, no phase event yet.
+    expect(
+      screen.queryByRole('status', { name: 'Spec Agent is working' }),
+    ).not.toBeInTheDocument();
+
+    await startTurn();
+    expect(
+      screen.getByRole('status', { name: 'Spec Agent is working' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Esc to stop')).toBeInTheDocument();
+
+    await emitPhase('turn_completed', { oldPhase: 'turn_running' });
+    expect(
+      screen.queryByRole('status', { name: 'Spec Agent is working' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps every stop gate closed when the seed reports a dormant harness', async () => {
+    mocks.getSpecRun.mockResolvedValue(specRunBody(null));
+    await renderHarness();
+
+    expect(
+      screen.queryByRole('button', { name: 'Stop spec turn' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Stop turn' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('status', { name: 'Spec Agent is working' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape' });
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
+  });
+
+  it('opens the stop gates when the seed reports a mid-turn page load', async () => {
+    // A page opened mid-turn sees no phase event — only the seed.
+    mocks.getSpecRun.mockResolvedValue(specRunBody('turn_running'));
+    await renderHarness();
+
+    expect(
+      await screen.findByRole('button', { name: 'Stop spec turn' }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('status', { name: 'Spec Agent is working' }),
     ).toBeInTheDocument();
   });
 
+  it('shows the Stop chip only while a turn is running and stops on click', async () => {
+    const user = userEvent.setup();
+    await renderHarness();
+
+    expect(
+      screen.queryByRole('button', { name: 'Stop spec turn' }),
+    ).not.toBeInTheDocument();
+
+    await startTurn();
+
+    const stopChip = screen.getByRole('button', { name: 'Stop spec turn' });
+    expect(stopChip.closest('.report-convo-status')).not.toBeNull();
+    await user.click(stopChip);
+
+    await waitFor(() => {
+      expect(mocks.interruptSpecCard).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.interruptSpecCard).toHaveBeenCalledWith('card_spec_1');
+  });
+
+  it('hides the Stop chip again once the turn completes', async () => {
+    await renderHarness();
+    await startTurn();
+    expect(
+      screen.getByRole('button', { name: 'Stop spec turn' }),
+    ).toBeInTheDocument();
+
+    await emitPhase('turn_completed', { oldPhase: 'turn_running' });
+    expect(
+      screen.queryByRole('button', { name: 'Stop spec turn' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('disables the Stop chip while a stop is pending', async () => {
+    const user = userEvent.setup();
+    const interrupt = deferred<unknown>();
+    mocks.interruptSpecCard.mockReturnValue(interrupt.promise);
+    await renderHarness();
+    await startTurn();
+
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+
+    expect(
+      screen.getByRole('button', { name: 'Stop spec turn' }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      interrupt.resolve({
+        card_id: 'card_spec_1',
+        runtime_id: 'runtime',
+        stopped: true,
+      });
+      await interrupt.promise;
+    });
+  });
+
+  it('keeps the stop affordances visible but inert while an interrupt is in flight', async () => {
+    await renderHarness();
+    await startTurn();
+    await emitPhase('issuing_interrupt', { oldPhase: 'turn_running' });
+
+    // The chip reuses the Working styling for the interrupt window.
+    const chip = screen.getByText('Issuing Interrupt');
+    expect(chip).toHaveAttribute('data-fsm', 'Working');
+
+    expect(
+      screen.getByRole('button', { name: 'Stop spec turn' }),
+    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop turn' })).toBeDisabled();
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
+  });
+
+  it('replaces the send glyph with a stop square while a turn is running', async () => {
+    const user = userEvent.setup();
+    await renderHarness();
+    await startTurn();
+
+    // ■ is present even with an empty draft, and wins over ↵ with one.
+    expect(
+      screen.getByRole('button', { name: 'Stop turn' }),
+    ).toBeInTheDocument();
+    await user.type(draftBox(), 'queued follow-up');
+    expect(
+      screen.queryByRole('button', { name: 'Send' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Stop turn' }));
+    await waitFor(() => {
+      expect(mocks.interruptSpecCard).toHaveBeenCalledTimes(1);
+    });
+    // Enter still queues the draft while a turn is running.
+    await user.type(draftBox(), '{Enter}');
+    await waitFor(() => {
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith(
+        'card_spec_1',
+        'queued follow-up',
+      );
+    });
+  });
+
+  it('stops the running turn on Esc', async () => {
+    await renderHarness();
+    await startTurn();
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(mocks.interruptSpecCard).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('stops on Esc when no widget has focus (body target)', async () => {
+    await renderHarness();
+    await startTurn();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(mocks.interruptSpecCard).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('does not stop on Esc from outside the conversation region', async () => {
+    render(
+      <>
+        <button type="button" data-testid="sibling-widget">
+          Sibling widget
+        </button>
+        <Harness />
+      </>,
+    );
+    await act(async () => {});
+    await startTurn();
+
+    const sibling = screen.getByTestId('sibling-widget');
+    sibling.focus();
+    fireEvent.keyDown(sibling, { key: 'Escape' });
+
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
+  });
+
+  it('does not stop on Esc a closer listener already consumed', async () => {
+    await renderHarness();
+    await startTurn();
+
+    const textarea = draftBox();
+    const consume = (e: Event) => e.preventDefault();
+    textarea.addEventListener('keydown', consume);
+    try {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    } finally {
+      textarea.removeEventListener('keydown', consume);
+    }
+
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
+  });
+
+  it('does not stop on Esc while idle, mid-IME, or with the reset dialog open', async () => {
+    const user = userEvent.setup();
+    await renderHarness();
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape' });
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
+
+    await startTurn();
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(draftBox(), { key: 'Escape', keyCode: 229 });
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Reset spec session' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reset spec session?' });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
+  });
+
+  it('appends a local system note after a successful stop', async () => {
+    const user = userEvent.setup();
+    await renderHarness();
+    await startTurn();
+
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Turn stopped/).closest('.report-convo-system'),
+    ).not.toBeNull();
+  });
+
+  it('does not add a system note when the stop was an idle no-op', async () => {
+    const user = userEvent.setup();
+    mocks.interruptSpecCard.mockResolvedValue({
+      card_id: 'card_spec_1',
+      runtime_id: 'runtime',
+      stopped: false,
+    });
+    await renderHarness();
+    await startTurn();
+
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+
+    await waitFor(() => {
+      expect(mocks.interruptSpecCard).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText(/Turn stopped/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the stop note anchored in place when newer rows arrive', async () => {
+    const user = userEvent.setup();
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessUserRow(1, 'Before stop'),
+    ]);
+
+    await renderHarness();
+    await startTurn();
+    expect(await screen.findByText('Before stop')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessAgentRow(2, 'After stop'),
+    ]);
+    await emitHarnessItemAdded({
+      item_db_id: 2,
+      item_uuid: 'msg_2',
+      item_type: 'agentMessage',
+    });
+    expect(await screen.findByText('After stop')).toBeInTheDocument();
+
+    const blocks = transcriptBlocks();
+    const beforeIndex = blocks.findIndex((t) => t.includes('Before stop'));
+    const noteIndex = blocks.findIndex((t) => t.includes('Turn stopped'));
+    const afterIndex = blocks.findIndex((t) => t.includes('After stop'));
+    expect(beforeIndex).toBeGreaterThanOrEqual(0);
+    expect(beforeIndex).toBeLessThan(noteIndex);
+    expect(noteIndex).toBeLessThan(afterIndex);
+  });
+
+  it('orders multiple notes by their anchors, not creation recency', async () => {
+    const user = userEvent.setup();
+
+    await renderHarness();
+    await startTurn();
+    await waitFor(() => {
+      expect(mocks.listHarnessItems).toHaveBeenCalled();
+    });
+
+    // First stop on an empty transcript: null anchor renders at the top.
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+
+    mocks.listHarnessItems.mockResolvedValueOnce([
+      harnessAgentRow(5, 'Mid row'),
+    ]);
+    await emitHarnessItemAdded({
+      item_db_id: 5,
+      item_uuid: 'msg_5',
+      item_type: 'agentMessage',
+    });
+    expect(await screen.findByText('Mid row')).toBeInTheDocument();
+
+    // Second stop: anchored after the newest loaded entry.
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    await waitFor(() => {
+      expect(screen.getAllByText(/Turn stopped/)).toHaveLength(2);
+    });
+
+    expect(
+      transcriptBlocks().map((t) =>
+        t.includes('Turn stopped') ? 'note' : 'row',
+      ),
+    ).toEqual(['note', 'row', 'note']);
+  });
+
+  it('anchors a stop note created before the initial load to the transcript end', async () => {
+    const user = userEvent.setup();
+    const initialPage = deferred<unknown[]>();
+    mocks.listHarnessItems.mockReturnValueOnce(initialPage.promise);
+
+    await renderHarness();
+    await startTurn();
+
+    // Stop while the initial history fetch is still in flight: the anchor
+    // is unknowable, so it must resolve to the end of the page, not null.
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+
+    await act(async () => {
+      initialPage.resolve([
+        harnessUserRow(1, 'Earlier question'),
+        harnessAgentRow(2, 'Earlier answer'),
+      ]);
+    });
+    expect(await screen.findByText('Earlier answer')).toBeInTheDocument();
+
+    expect(
+      transcriptBlocks().map((t) =>
+        t.includes('Turn stopped') ? 'note' : 'row',
+      ),
+    ).toEqual(['row', 'row', 'note']);
+  });
+
   it('continues fetching the tail after a full asc page with no messages', async () => {
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems
       .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
       .mockResolvedValueOnce(fullCommandPage(2))
       .mockResolvedValueOnce([harnessUserRow(302, 'Triggering message')]);
 
-    render(<Harness />);
+    await renderHarness();
 
     expect(await screen.findByText('Initial')).toBeInTheDocument();
 
@@ -566,9 +1035,7 @@ describe('SpecConversation', () => {
   });
 
   it('shows an empty history state', async () => {
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
-
-    render(<Harness />);
+    await renderHarness();
 
     expect(
       await screen.findByText('No messages yet — ask the Spec Agent below.'),
@@ -576,10 +1043,9 @@ describe('SpecConversation', () => {
   });
 
   it('does not show the empty state while earlier history is available', async () => {
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValue(fullCommandPage(1));
 
-    render(<Harness />);
+    await renderHarness();
 
     expect(
       await screen.findByRole('button', { name: 'Load earlier' }),
@@ -591,15 +1057,17 @@ describe('SpecConversation', () => {
 
   it('renders a queued local echo after submit resolves', async () => {
     const user = userEvent.setup();
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
 
-    render(<Harness />);
+    await renderHarness();
 
     await user.type(draftBox(), 'Queue this');
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
-      expect(mocks.submit).toHaveBeenCalledWith('Queue this');
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith(
+        'card_spec_1',
+        'Queue this',
+      );
     });
     expect(await screen.findByText('Queue this')).toBeInTheDocument();
     expect(screen.getByText('You · queued')).toBeInTheDocument();
@@ -607,10 +1075,9 @@ describe('SpecConversation', () => {
 
   it('drops only one queued echo when a real user row adds newline observations', async () => {
     const user = userEvent.setup();
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValueOnce([]);
 
-    render(<Harness />);
+    await renderHarness();
 
     expect(
       await screen.findByText('No messages yet — ask the Spec Agent below.'),
@@ -645,10 +1112,9 @@ describe('SpecConversation', () => {
 
   it('keeps a queued echo when a real user row only shares its prefix', async () => {
     const user = userEvent.setup();
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValueOnce([]);
 
-    render(<Harness />);
+    await renderHarness();
 
     expect(
       await screen.findByText('No messages yet — ask the Spec Agent below.'),
@@ -674,12 +1140,11 @@ describe('SpecConversation', () => {
 
   it('adds an echo when a landed real user entry only shares its prefix', async () => {
     const user = userEvent.setup();
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValueOnce([
       harnessUserRow(1, 'ok, sounds good'),
     ]);
 
-    render(<Harness />);
+    await renderHarness();
 
     expect(await screen.findByText('ok, sounds good')).toBeInTheDocument();
 
@@ -687,7 +1152,7 @@ describe('SpecConversation', () => {
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
-      expect(mocks.submit).toHaveBeenCalledWith('ok');
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith('card_spec_1', 'ok');
       expect(screen.getByText('You · queued')).toBeInTheDocument();
     });
   });
@@ -695,23 +1160,18 @@ describe('SpecConversation', () => {
   it('does not add an echo when the real user entry already landed', async () => {
     const user = userEvent.setup();
     const submitA = deferredVoid();
-    const submit = vi.fn(() => submitA.promise);
-    mocks.state.currentRun = makeRun({
-      fsm: 'Idle',
-      rawState: 'idle',
-      submit,
-    });
+    mocks.sendSpecInput.mockReturnValue(submitA.promise);
     mocks.listHarnessItems
       .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
       .mockResolvedValueOnce([harnessUserRow(2, 'Race')]);
 
-    render(<Harness />);
+    await renderHarness();
 
     expect(await screen.findByText('Initial')).toBeInTheDocument();
 
     await user.type(draftBox(), 'Race');
     await user.keyboard('{Enter}');
-    expect(submit).toHaveBeenCalledWith('Race');
+    expect(mocks.sendSpecInput).toHaveBeenCalledWith('card_spec_1', 'Race');
 
     await emitHarnessItemAdded({
       item_db_id: 2,
@@ -732,9 +1192,8 @@ describe('SpecConversation', () => {
 
   it('scrolls to the bottom after a successful send even when scrolled up', async () => {
     const user = userEvent.setup();
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
 
-    render(<Harness />);
+    await renderHarness();
 
     // Make the column its own scroll container (wide layout).
     const column = screen.getByLabelText('Conversation');
@@ -768,7 +1227,10 @@ describe('SpecConversation', () => {
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
-      expect(mocks.submit).toHaveBeenCalledWith('Follow me down');
+      expect(mocks.sendSpecInput).toHaveBeenCalledWith(
+        'card_spec_1',
+        'Follow me down',
+      );
     });
     await waitFor(() => {
       expect(column.scrollTop).toBe(3000);
@@ -776,13 +1238,12 @@ describe('SpecConversation', () => {
   });
 
   it('survives a tail-fetch failure and retries on the next event', async () => {
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems
       .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValueOnce([harnessAgentRow(2, 'Recovered')]);
 
-    render(<Harness />);
+    await renderHarness();
     expect(await screen.findByText('Initial')).toBeInTheDocument();
 
     // First event: the tail fetch fails. The rejection must be swallowed —
@@ -805,7 +1266,7 @@ describe('SpecConversation', () => {
 
   it('restores the report reading position after a round-trip through the conversation', async () => {
     const user = userEvent.setup();
-    render(<Harness initialView="report" />);
+    await renderHarness({ initialView: 'report' });
 
     // Make the column its own scroll container (wide layout).
     const column = screen.getByLabelText('Report document');
@@ -843,7 +1304,6 @@ describe('SpecConversation', () => {
   });
 
   it('follows new messages via the window scroll fallback when the column cannot scroll', async () => {
-    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     mocks.listHarnessItems.mockResolvedValueOnce([
       harnessAgentRow(1, 'Initial'),
     ]);
@@ -870,7 +1330,7 @@ describe('SpecConversation', () => {
     });
 
     try {
-      render(<Harness />);
+      await renderHarness();
 
       expect(await screen.findByText('Initial')).toBeInTheDocument();
       await waitFor(() => {

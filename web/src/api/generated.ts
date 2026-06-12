@@ -89,6 +89,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cards/{id}/spec/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue #668 — stop the running spec turn.
+         * @description Guard chain mirrors `/spec/input` (card → role → kind), but deliberately
+         *     WITHOUT the lazy-recovery path and its per-card lock: a harness that
+         *     needs recovering has, by construction, no running turn to stop, so a
+         *     registry miss (or no active runtime row) is the same typed 409
+         *     `spec_harness_dormant` the input route uses — the client steers the user
+         *     to Reset.
+         *
+         *     Idle is a graceful no-op, not an error: the harness's own
+         *     `issue_interrupt` ignores interrupts when no turn is active, so the route
+         *     reports `stopped: false` (decided from the harness phase just before
+         *     dispatch) and skips the operation entirely. The phase read and the
+         *     dispatch are not atomic — a turn could start in between — but the failure
+         *     mode is benign (the user presses Stop again). `IssuingInterrupt` also
+         *     reports `stopped: false`: an interrupt is already in flight and
+         *     re-dispatching would be ignored by the FSM anyway.
+         *
+         *     `IssuingTurn` is a best-effort window, so it reports `stopped: false`
+         *     too: while the `turn/start` RPC is in flight the shared app-server may
+         *     not have populated `active_turn_id_for_thread` yet, so the harness's
+         *     `issue_interrupt` can resolve no target and no-op — the turn would then
+         *     keep running despite a `stopped: true` answer. The route still dispatches
+         *     the interrupt (it lands when the app-server already knows the turn), but
+         *     only `TurnRunning` — where an interrupt target is guaranteed — earns
+         *     `stopped: true`. The user can press Stop again once the turn is running.
+         *     Non-goal: teaching the run loop to remember a pending interrupt across
+         *     the Issuing window and fire it on `turn/start` completion.
+         */
+        post: operations["interrupt_spec_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/spec/reset": {
         parameters: {
             query?: never;
@@ -99,6 +144,29 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["reset_spec_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cards/{id}/spec/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Issue #668 fix — read the current spec-harness phase for a card.
+         * @description Guard chain mirrors `/spec/interrupt` (card → role → kind), but unlike
+         *     the write routes a dormant harness is a normal answer for a read: no
+         *     active runtime row, or an active row with no registered harness, is
+         *     `200 {runtime_id: null, phase: null}` rather than a 409.
+         */
+        get: operations["get_spec_run"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1052,6 +1120,21 @@ export interface components {
          * @enum {string}
          */
         FolderConflictKind: "equal" | "ancestor" | "descendant";
+        /**
+         * @description Issue #668 fix — current spec-harness run snapshot for a card.
+         *
+         *     `harness.phase.changed` is the only live phase signal, so a page opened
+         *     mid-turn would otherwise sit on `phase: null` until the next transition.
+         *     This read endpoint lets the client seed its initial phase. Dormancy (no
+         *     active runtime row, or no registered harness) is NOT an error here —
+         *     it's the `{runtime_id: null, phase: null}` answer.
+         */
+        GetSpecRunResponse: {
+            card_id: string;
+            phase?: null | components["schemas"]["HarnessPhaseTag"];
+            /** @description Active runtime id, or null when the harness is dormant. */
+            runtime_id?: string | null;
+        };
         GitChangedFile: {
             /** @description Previous path for renamed files, relative to the repository root. */
             old_path?: string | null;
@@ -1104,6 +1187,8 @@ export interface components {
              */
             limit?: number | null;
         };
+        /** @enum {string} */
+        HarnessPhaseTag: "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
         InstallBody: {
             source: components["schemas"]["InstallSource"];
         };
@@ -1114,6 +1199,20 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "other";
+        };
+        InterruptSpecCardResponse: {
+            card_id: string;
+            runtime_id: string;
+            /**
+             * @description True when a turn was actually running and an interrupt was
+             *     dispatched at it; false when the harness was idle (graceful no-op)
+             *     or a `turn/start` was still in flight (interrupt dispatched
+             *     best-effort, but not guaranteed to land — press Stop again once the
+             *     turn is running). "stopped: true" means the interrupt was *issued* —
+             *     completion is asynchronous (`turn/aborted` lands via the harness
+             *     FSM, with an interrupt-timeout watchdog as backstop).
+             */
+            stopped: boolean;
         };
         ListdirResponse: {
             /**
@@ -2281,6 +2380,65 @@ export interface operations {
             };
         };
     };
+    interrupt_spec_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Spec card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterruptSpecCardResponse"];
+                };
+            };
+            /** @description Card is not a spec codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     reset_spec_card: {
         parameters: {
             query?: never;
@@ -2300,6 +2458,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResetSpecCardResponse"];
+                };
+            };
+            /** @description Card is not a spec codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_spec_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Spec card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetSpecRunResponse"];
                 };
             };
             /** @description Card is not a spec codex card */

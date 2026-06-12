@@ -96,6 +96,7 @@ function ConvoTypingIndicator() {
       <span className="report-convo-typing-dot" aria-hidden="true" />
       <span className="report-convo-typing-dot" aria-hidden="true" />
       <span className="report-convo-typing-dot" aria-hidden="true" />
+      <span className="report-convo-typing-hint">Esc to stop</span>
     </div>
   );
 }
@@ -198,6 +199,7 @@ export function SpecConversation({
   );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputbarRef = useRef<HTMLElement>(null);
   const stickToBottomRef = useRef(true);
   // Per-view reading position (#654 finding 4): the report and conversation
   // documents share one scroll container, and the conversation forces the
@@ -298,6 +300,61 @@ export function SpecConversation({
     }
   };
 
+  const onStop = async () => {
+    if (run.stopPending) return;
+    const cardIdAtStop = specCardId;
+    try {
+      const stopped = await run.stop();
+      if (cardIdAtStop !== latestSpecCardIdRef.current) return;
+      // Interrupted turns never emit `item/completed`, so without this
+      // FE-local row the stop would be visually silent (#668). Skipped on
+      // the graceful idle no-op — nothing was actually stopped.
+      if (stopped) chatHistory.addSystemNote('Turn stopped');
+    } catch {
+      // stopError is captured by useSpecCurrentRun and rendered below.
+    }
+  };
+  const onStopRef = useRef(onStop);
+  onStopRef.current = onStop;
+
+  // #668 fix — gate on the harness phase, not `fsm === 'Working'`: no
+  // status overlay is ever published for spec cards, so the overlay-derived
+  // fsm never reaches 'Working' in production and every stop affordance
+  // stayed dead. `working` comes straight from the phase wire signal.
+  const isWorking = run.working;
+  // While an interrupt is in flight the stop affordances stay visible but
+  // inert — pressing Stop twice can't dispatch a second interrupt.
+  const stopVisible = run.working || run.stopping;
+  const stopDisabled = run.stopPending || run.stopping;
+
+  // Esc stops the running turn (#668). A document-level listener (instead
+  // of per-element onKeyDown) covers focus anywhere in the conversation
+  // region — the scroll area and the inputbar — plus document.body (a
+  // keyboard user with no focused widget). Esc from a sibling widget
+  // (report rail, menus) is left alone, as is an Esc a closer listener
+  // already consumed (defaultPrevented). Gated on conversation mode + a
+  // live turn (`run.working`; an in-flight interrupt leaves Esc inert),
+  // skipped while the reset ConfirmDialog is open (its own Esc-to-cancel
+  // wins) and during IME composition; preventDefault only when handled.
+  useEffect(() => {
+    if (!inConversation || !isWorking || resetOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (e.defaultPrevented) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      const target = e.target;
+      const inConversationRegion =
+        target instanceof Node &&
+        (scrollRef.current?.contains(target) === true ||
+          inputbarRef.current?.contains(target) === true);
+      if (!inConversationRegion && target !== document.body) return;
+      e.preventDefault();
+      void onStopRef.current();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [inConversation, isWorking, resetOpen]);
+
   const onConfirmReset = async () => {
     const cardIdAtReset = specCardId;
     setResetAttempted(true);
@@ -323,7 +380,6 @@ export function SpecConversation({
     });
   };
 
-  const isWorking = run.fsm === 'Working';
   const historyIsEmpty =
     chatHistory.entries.length === 0 && !isWorking && !chatHistory.hasEarlier;
 
@@ -356,17 +412,28 @@ export function SpecConversation({
           </div>
           {inConversation && (
             <span className="report-convo-status" aria-label="Spec agent status">
+              {/* #668 fix — the chip reflects the harness phase when one is
+                  known; the overlay-derived rawState (which never publishes
+                  for spec cards) is only the fallback. */}
               <span
                 className="report-convo-state"
                 data-fsm={run.fsm}
-                title={run.rawState}
+                title={run.phase ?? run.rawState}
               >
-                {humanizeToken(run.rawState)}
+                {humanizeToken(run.phase ?? run.rawState)}
               </span>
-              {run.phase && (
-                <span className="report-convo-phase">
-                  {humanizeToken(run.phase)}
-                </span>
+              {stopVisible && (
+                <button
+                  type="button"
+                  className="report-convo-stop"
+                  aria-label="Stop spec turn"
+                  disabled={stopDisabled}
+                  onClick={() => {
+                    void onStop();
+                  }}
+                >
+                  Stop
+                </button>
               )}
               <button
                 type="button"
@@ -432,15 +499,17 @@ export function SpecConversation({
       </div>
 
       {specCardId != null && (
-        <footer className="report-convo-inputbar">
+        <footer ref={inputbarRef} className="report-convo-inputbar">
           <div className="report-convo-inputbar-inner">
-            {run.submitError && (
+            {(run.submitError ?? run.stopError) != null && (
               <p
                 className="report-convo-error"
-                data-dormant={run.submitDormant || undefined}
+                data-dormant={
+                  (run.submitError != null && run.submitDormant) || undefined
+                }
                 role="alert"
               >
-                {run.submitError}
+                {run.submitError ?? run.stopError}
               </p>
             )}
             <div
@@ -473,18 +542,38 @@ export function SpecConversation({
               <span id="report-convo-hint" className="sr-only">
                 Press Enter to send; Shift+Enter inserts a newline.
               </span>
-              {draft.trim() !== '' && (
+              {/* While a turn is Working the send-glyph position becomes a
+                  stop affordance (#668) — even with a non-empty draft, ■
+                  wins (Enter still queues the draft; queueing while running
+                  is supported). Conversation mode only: in report mode the
+                  running turn isn't visible, so the input keeps its plain
+                  send affordance. */}
+              {inConversation && stopVisible ? (
                 <button
                   type="button"
                   className="report-convo-send"
-                  aria-label="Send"
-                  disabled={run.submitPending || run.resetPending}
+                  aria-label="Stop turn"
+                  disabled={stopDisabled}
                   onClick={() => {
-                    void onSubmit();
+                    void onStop();
                   }}
                 >
-                  &#8629;
+                  &#9632;
                 </button>
+              ) : (
+                draft.trim() !== '' && (
+                  <button
+                    type="button"
+                    className="report-convo-send"
+                    aria-label="Send"
+                    disabled={run.submitPending || run.resetPending}
+                    onClick={() => {
+                      void onSubmit();
+                    }}
+                  >
+                    &#8629;
+                  </button>
+                )
               )}
             </div>
           </div>

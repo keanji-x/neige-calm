@@ -2488,6 +2488,7 @@ select:-webkit-autofill {
 .report-convo-tab:focus-visible,
 .report-convo-send:focus-visible,
 .report-convo-reset:focus-visible,
+.report-convo-stop:focus-visible,
 .report-convo-load-earlier:focus-visible,
 .report-convo-expand:focus-visible {
   outline: 2px solid var(--accent);
@@ -2500,8 +2501,7 @@ select:-webkit-autofill {
   align-items: center;
   min-width: 0;
 }
-.report-convo-state,
-.report-convo-phase {
+.report-convo-state {
   display: inline-flex;
   align-items: center;
   min-height: 20px;
@@ -2529,8 +2529,29 @@ select:-webkit-autofill {
   border-color: var(--warn-border);
   background: var(--warn-soft);
 }
-.report-convo-phase {
-  color: var(--text-3);
+/* #668 — Stop chip: Reset's chip metrics, neutral palette (stopping a turn
+   is routine, not destructive). */
+.report-convo-stop {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: var(--space-0) var(--space-3);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-none);
+  white-space: nowrap;
+  transition: background-color var(--motion-quick);
+}
+.report-convo-stop:not(:disabled):hover {
+  background: var(--surface-chip);
+}
+.report-convo-stop:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .report-convo-reset {
   display: inline-flex;
@@ -2682,6 +2703,11 @@ select:-webkit-autofill {
   border-radius: var(--radius-pill);
   background: var(--text-4);
   animation: report-convo-dot-pulse 900ms ease-in-out infinite;
+}
+.report-convo-typing-hint {
+  margin-left: var(--space-2);
+  color: var(--text-4);
+  font-size: var(--text-xs);
 }
 .report-convo-typing-dot:nth-child(2) {
   animation-delay: 120ms;

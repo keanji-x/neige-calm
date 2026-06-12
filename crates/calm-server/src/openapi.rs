@@ -11,14 +11,15 @@
 //! internal types.
 
 use crate::error::ErrorBody;
+use crate::harness::HarnessPhaseTag;
 use crate::model::{
     Card, CardPatch, CardRuntimeView, Cove, CoveFolder, CoveKind, CovePatch, CoveResolve,
     FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay,
     NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
 };
 use crate::routes::cards::{
-    CreateCardBody, HarnessItemsQuery, ResetSpecCardResponse, SendSpecInputRequest,
-    SendSpecInputResponse, ViaToolCall,
+    CreateCardBody, GetSpecRunResponse, HarnessItemsQuery, InterruptSpecCardResponse,
+    ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, ViaToolCall,
 };
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
@@ -79,6 +80,8 @@ use utoipa::OpenApi;
         crate::routes::cards::update_card,
         crate::routes::cards::get_harness_items,
         crate::routes::cards::send_spec_input,
+        crate::routes::cards::interrupt_spec_card,
+        crate::routes::cards::get_spec_run,
         crate::routes::cards::reset_spec_card,
         crate::routes::cards::delete_card,
         // ---- overlays ----
@@ -160,6 +163,9 @@ use utoipa::OpenApi;
         HarnessItemsQuery,
         SendSpecInputRequest,
         SendSpecInputResponse,
+        InterruptSpecCardResponse,
+        GetSpecRunResponse,
+        HarnessPhaseTag,
         ResetSpecCardResponse,
         // Issue #229 PR B — wave-report card payload shape (kernel-owned;
         // surfaced in the OpenAPI doc so frontend codegen + external
