@@ -23,7 +23,7 @@ use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::per_card_lock::lock_card;
+use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::runtime_lookup::{
@@ -642,7 +642,12 @@ pub(crate) async fn send_spec_input(
         )));
     }
 
-    let (runtime, harness) = ensure_live_spec_harness(&s, &w, &cs, &card.id).await?;
+    // `_recovery_guard` (Some only on the lazy-recovery path) holds the
+    // per-card recovery lock until end of handler scope, so a concurrent
+    // `/spec/reset` can't supersede the just-recovered runtime between
+    // recovery and the observe/audit below.
+    let (runtime, harness, _recovery_guard) =
+        ensure_live_spec_harness(&s, &w, &cs, &card.id).await?;
     let wave = s
         .repo
         .wave_get(card.wave_id.as_str())
@@ -715,9 +720,12 @@ pub(crate) async fn send_spec_input(
 ///    `last_thread_id` — the same fallback boot recovery applies), else a
 ///    recovered harness would queue messages forever;
 /// 4. `/spec/reset` takes the SAME per-card lock (see
-///    [`reset_spec_card_shared`]), so a reset can't supersede the runtime
-///    between the in-lock refetch here and harness registration —
-///    eliminating the resurrect-stale-session race;
+///    [`reset_spec_card_shared`]), and the recovery path RETURNS its guard
+///    to the caller (`send_spec_input` holds it through enqueue/audit), so
+///    a reset can't supersede the runtime between the in-lock refetch here
+///    and harness registration — nor in the gap between recovery and the
+///    caller's `observe` enqueue — eliminating the resurrect-stale-session
+///    race;
 /// 5. row-intrinsic dormancy (409) is checked before daemon liveness
 ///    (503), so an unrecoverable row tells the user to Reset rather than
 ///    to retry.
@@ -727,7 +735,11 @@ async fn ensure_live_spec_harness(
     w: &WorkerState,
     cs: &CodexShellState,
     card_id: &CardId,
-) -> Result<(CardRuntime, crate::harness::SpecHarness)> {
+) -> Result<(
+    CardRuntime,
+    crate::harness::SpecHarness,
+    Option<PerCardLockGuard>,
+)> {
     let dormant = || {
         CalmError::SpecHarnessDormant(format!(
             "no recoverable spec harness session for card {card_id}; reset to start a session",
@@ -739,10 +751,10 @@ async fn ensure_live_spec_harness(
         .await?
         .ok_or_else(dormant)?;
     if let Some(harness) = s.harness.get(&runtime.id) {
-        return Ok((runtime, harness));
+        return Ok((runtime, harness, None));
     }
 
-    let _guard = lock_card(&s.spec_recovery_locks, card_id.as_str()).await;
+    let guard = lock_card(&s.spec_recovery_locks, card_id.as_str()).await;
     // Re-fetch under the lock and use only this row: `/spec/reset` may have
     // superseded the pre-lock runtime, and a racing Send may have already
     // recovered the harness.
@@ -752,7 +764,7 @@ async fn ensure_live_spec_harness(
         .await?
         .ok_or_else(dormant)?;
     if let Some(harness) = s.harness.get(&runtime.id) {
-        return Ok((runtime, harness));
+        return Ok((runtime, harness, Some(guard)));
     }
     // #649 review round 3 — a `starting` row means `spec-harness-start` is
     // still in flight: the adapter writes the row (and, in the deferred
@@ -814,7 +826,11 @@ async fn ensure_live_spec_harness(
         runtime_id = %runtime_id,
         "spec harness lazily recovered on /spec/input registry miss"
     );
-    Ok((runtime, harness))
+    // #649 review round 4 — return the guard so the caller keeps the
+    // per-card lock alive through `harness.observe` and the audit event;
+    // dropping it here would let a concurrent `/spec/reset` supersede the
+    // recovered runtime before the message is enqueued.
+    Ok((runtime, harness, Some(guard)))
 }
 
 #[utoipa::path(
