@@ -11,6 +11,8 @@ export interface WaveFileTreeProps {
   ariaLabel?: string;
   /** Whether to show file suffixes and directory count meta tags. */
   showCounts?: boolean;
+  /** Whether to show dot-prefixed entries. Defaults to false. */
+  showHidden?: boolean;
   /** Optional fallback UI when the root query is loading or empty. */
   fallback?: ReactNode;
 }
@@ -21,6 +23,7 @@ export function WaveFileTree({
   onSelectedPathChange,
   ariaLabel = 'Wave files',
   showCounts = false,
+  showHidden = false,
   fallback,
 }: WaveFileTreeProps) {
   return (
@@ -31,6 +34,7 @@ export function WaveFileTree({
       onSelectedPathChange={onSelectedPathChange}
       ariaLabel={ariaLabel}
       showCounts={showCounts}
+      showHidden={showHidden}
       fallback={fallback}
     />
   );
@@ -42,9 +46,10 @@ function WaveFileTreeState({
   onSelectedPathChange,
   ariaLabel,
   showCounts,
+  showHidden,
   fallback,
-}: Required<Pick<WaveFileTreeProps, 'ariaLabel' | 'showCounts'>> &
-  Omit<WaveFileTreeProps, 'ariaLabel' | 'showCounts'>) {
+}: Required<Pick<WaveFileTreeProps, 'ariaLabel' | 'showCounts' | 'showHidden'>> &
+  Omit<WaveFileTreeProps, 'ariaLabel' | 'showCounts' | 'showHidden'>) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const treeRef = useRef<HTMLUListElement>(null);
@@ -56,6 +61,10 @@ function WaveFileTreeState({
     () => parseCardKinds(cardIndexQ.data?.content),
     [cardIndexQ.data?.content],
   );
+  const visibleRootEntries = useMemo(
+    () => filterVisibleEntries(rootQ.data, showHidden),
+    [rootQ.data, showHidden],
+  );
 
   const toggleDir = (path: string) => {
     setExpandedDirs((prev) => {
@@ -65,9 +74,13 @@ function WaveFileTreeState({
       return next;
     });
   };
-  const defaultFocusedPath = rootQ.data?.[0]
-    ? joinPath('', rootQ.data[0].name)
+  const defaultFocusedPath = visibleRootEntries?.[0]
+    ? joinPath('', visibleRootEntries[0].name)
     : null;
+  const visibleFocusedPath =
+    !showHidden && focusedPath && pathHasHiddenSegment(focusedPath)
+      ? null
+      : focusedPath;
 
   const focusItem = (path: string) => {
     const item = visibleTreeItems(treeRef.current).find(
@@ -158,10 +171,11 @@ function WaveFileTreeState({
         depth={0}
         expandedDirs={expandedDirs}
         selectedPath={selectedPath}
-        focusedPath={focusedPath}
+        focusedPath={visibleFocusedPath}
         defaultFocusedPath={defaultFocusedPath}
         cardKinds={cardKinds}
         showCounts={showCounts}
+        showHidden={showHidden}
         rootFallback={fallback}
         onToggleDir={toggleDir}
         onSelectFile={onSelectedPathChange}
@@ -186,6 +200,7 @@ interface DirectoryBodyProps {
   defaultFocusedPath: string | null;
   cardKinds: Map<string, string>;
   showCounts: boolean;
+  showHidden: boolean;
   rootFallback?: ReactNode;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
@@ -207,12 +222,18 @@ function DirectoryBody({
   defaultFocusedPath,
   cardKinds,
   showCounts,
+  showHidden,
   rootFallback,
   onToggleDir,
   onSelectFile,
   onFocusItem,
   onItemKeyDown,
 }: DirectoryBodyProps) {
+  const visibleEntries = useMemo(
+    () => filterVisibleEntries(entries, showHidden),
+    [entries, showHidden],
+  );
+
   if (loading) {
     return rootFallback && depth === 0 ? (
       <TreeFallback depth={depth}>{rootFallback}</TreeFallback>
@@ -223,7 +244,7 @@ function DirectoryBody({
   if (error) {
     return <TreeError error={error} depth={depth} />;
   }
-  if (!entries || entries.length === 0) {
+  if (!visibleEntries || visibleEntries.length === 0) {
     return rootFallback && depth === 0 ? (
       <TreeFallback depth={depth}>{rootFallback}</TreeFallback>
     ) : (
@@ -232,7 +253,7 @@ function DirectoryBody({
   }
   return (
     <>
-      {entries.map((entry) => {
+      {visibleEntries.map((entry) => {
         const entryPath = joinPath(path, entry.name);
         return (
           <TreeEntry
@@ -248,6 +269,7 @@ function DirectoryBody({
             defaultFocusedPath={defaultFocusedPath}
             cardKinds={cardKinds}
             showCounts={showCounts}
+            showHidden={showHidden}
             onToggleDir={onToggleDir}
             onSelectFile={onSelectFile}
             onFocusItem={onFocusItem}
@@ -271,6 +293,7 @@ interface TreeEntryProps {
   defaultFocusedPath: string | null;
   cardKinds: Map<string, string>;
   showCounts: boolean;
+  showHidden: boolean;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
   onFocusItem: (path: string) => void;
@@ -289,6 +312,7 @@ function TreeEntry({
   defaultFocusedPath,
   cardKinds,
   showCounts,
+  showHidden,
   onToggleDir,
   onSelectFile,
   onFocusItem,
@@ -359,6 +383,7 @@ function TreeEntry({
             defaultFocusedPath={defaultFocusedPath}
             cardKinds={cardKinds}
             showCounts={showCounts}
+            showHidden={showHidden}
             onToggleDir={onToggleDir}
             onSelectFile={onSelectFile}
             onFocusItem={onFocusItem}
@@ -461,6 +486,24 @@ function formatApiError(error: Error): string {
 
 function isDirectory(entry: WaveFsEntry): boolean {
   return entry.kind === 'dir' || entry.name.endsWith('/');
+}
+
+function filterVisibleEntries(
+  entries: WaveFsEntry[] | undefined,
+  showHidden: boolean,
+): WaveFsEntry[] | undefined {
+  if (!entries || showHidden) return entries;
+  return entries.filter((entry) => !isHiddenEntry(entry));
+}
+
+function isHiddenEntry(entry: WaveFsEntry): boolean {
+  // Dotfile convention per #664: wave fs names internal lenses with a "."
+  // prefix; UI hides them like ls.
+  return entry.name.replace(/^\/+/, '').startsWith('.');
+}
+
+function pathHasHiddenSegment(path: string): boolean {
+  return path.split('/').some((segment) => segment.startsWith('.'));
 }
 
 function joinPath(parent: string, name: string): string {

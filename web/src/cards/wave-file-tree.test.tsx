@@ -30,11 +30,13 @@ function ControlledWaveFileTree({
   waveId,
   ariaLabel,
   fallback,
+  showHidden,
   onChange,
 }: {
   waveId: string;
   ariaLabel?: string;
   fallback?: ReactNode;
+  showHidden?: boolean;
   onChange?: (path: string | null) => void;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -49,6 +51,7 @@ function ControlledWaveFileTree({
       selectedPath={selectedPath}
       onSelectedPathChange={handleSelectedPathChange}
       ariaLabel={ariaLabel}
+      showHidden={showHidden}
       fallback={fallback}
     />
   );
@@ -99,6 +102,82 @@ describe('WaveFileTree', () => {
     expect(screen.getByRole('tree', { name: 'Files' })).toBeInTheDocument();
     expect(await screen.findByRole('treeitem', { name: /report\.md/ })).toBeTruthy();
     expect(screen.getByRole('treeitem', { name: /wave\.json/ })).toBeTruthy();
+  });
+
+  it('hides dot-prefixed entries by default at each directory level', async () => {
+    installFetch({
+      '/api/waves/wave_1/files/ls': {
+        body: [
+          { name: '.internal/', kind: 'dir' },
+          { name: 'cards/', kind: 'dir', size: 2 },
+          { name: 'report.md', kind: 'file' },
+        ],
+      },
+      '/api/waves/wave_1/files/ls?path=cards': {
+        body: [
+          { name: '.meta.json', kind: 'file' },
+          { name: 'events.json', kind: 'file' },
+        ],
+      },
+      '/api/waves/wave_1/files/cat?path=cards/index.json': {
+        body: {
+          content: '[]',
+          content_type: 'application/json',
+        },
+      },
+    });
+
+    renderWithClient(<ControlledWaveFileTree waveId="wave_1" />);
+
+    const cards = await screen.findByRole('treeitem', { name: /cards\// });
+    expect(screen.queryByRole('treeitem', { name: /\.internal\// })).toBeNull();
+    expect(screen.getByRole('treeitem', { name: /report\.md/ })).toBeTruthy();
+
+    fireEvent.click(cards);
+
+    expect(
+      await screen.findByRole('treeitem', { name: /events\.json/ }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('treeitem', { name: /\.meta\.json/ })).toBeNull();
+  });
+
+  it('shows dot-prefixed entries when showHidden is true', async () => {
+    installFetch({
+      '/api/waves/wave_1/files/ls': {
+        body: [
+          { name: '.internal/', kind: 'dir' },
+          { name: 'cards/', kind: 'dir', size: 2 },
+          { name: 'report.md', kind: 'file' },
+        ],
+      },
+      '/api/waves/wave_1/files/ls?path=cards': {
+        body: [
+          { name: '.meta.json', kind: 'file' },
+          { name: 'events.json', kind: 'file' },
+        ],
+      },
+      '/api/waves/wave_1/files/cat?path=cards/index.json': {
+        body: {
+          content: '[]',
+          content_type: 'application/json',
+        },
+      },
+    });
+
+    renderWithClient(
+      <ControlledWaveFileTree waveId="wave_1" showHidden={true} />,
+    );
+
+    expect(await screen.findByRole('treeitem', { name: /\.internal\// }))
+      .toBeTruthy();
+    const cards = screen.getByRole('treeitem', { name: /cards\// });
+    expect(screen.getByRole('treeitem', { name: /report\.md/ })).toBeTruthy();
+
+    fireEvent.click(cards);
+
+    expect(await screen.findByRole('treeitem', { name: /\.meta\.json/ }))
+      .toBeTruthy();
+    expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
   });
 
   it('expands and collapses directories while resolving card kind labels', async () => {

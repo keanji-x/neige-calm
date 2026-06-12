@@ -288,6 +288,70 @@ describe('WaveReportPage', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('toggles dotfile rows in the Files rail without hiding siblings', async () => {
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'card_hidden/', kind: 'dir' }],
+      'cards/card_hidden': [
+        { name: '.meta.json', kind: 'file' },
+        { name: '.payload.json', kind: 'file' },
+        { name: 'events.json', kind: 'file' },
+      ],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: '[{"id":"card_hidden","kind":"codex"}]',
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /codex card_hid/ }),
+    );
+
+    expect(screen.queryByRole('treeitem', { name: /\.meta\.json/ })).toBeNull();
+    expect(
+      screen.queryByRole('treeitem', { name: /\.payload\.json/ }),
+    ).toBeNull();
+    expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
+
+    const showAll = screen.getByRole('button', { name: 'Show all' });
+    expect(showAll).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(showAll);
+
+    expect(showAll).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('treeitem', { name: /\.meta\.json/ }))
+      .toBeTruthy();
+    expect(screen.getByRole('treeitem', { name: /\.payload\.json/ }))
+      .toBeTruthy();
+    expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
+
+    fireEvent.click(showAll);
+
+    expect(showAll).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByRole('treeitem', { name: /\.meta\.json/ })).toBeNull();
+    expect(
+      screen.queryByRole('treeitem', { name: /\.payload\.json/ }),
+    ).toBeNull();
+    expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
+  });
+
   it('collapses and expands the Files rail from the rail toggle', () => {
     render(
       <WaveReportPage
@@ -553,7 +617,7 @@ describe('WaveReportPage', () => {
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
-  it('renders the cards/<id>/meta.json wave fs viewer', async () => {
+  it('renders the cards/<id>/.meta.json wave fs viewer', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(
       new Date('2026-06-10T12:00:00Z').getTime(),
     );
@@ -563,7 +627,7 @@ describe('WaveReportPage', () => {
         { name: 'report.md', kind: 'file' },
       ],
       cards: [{ name: 'card_meta/', kind: 'dir' }],
-      'cards/card_meta': [{ name: 'meta.json', kind: 'file' }],
+      'cards/card_meta': [{ name: '.meta.json', kind: 'file' }],
     });
     mockWaveFileContents({
       'report.md': {
@@ -574,7 +638,7 @@ describe('WaveReportPage', () => {
         content_type: 'application/json',
         content: '[{"id":"card_meta","kind":"codex"}]',
       },
-      'cards/card_meta/meta.json': {
+      'cards/card_meta/.meta.json': {
         content_type: 'application/json',
         content: JSON.stringify({
           id: 'card_meta',
@@ -595,11 +659,14 @@ describe('WaveReportPage', () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
     fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
     fireEvent.click(
       await screen.findByRole('treeitem', { name: /codex card_met/ }),
     );
-    fireEvent.click(await screen.findByRole('treeitem', { name: /meta\.json/ }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /\.meta\.json/ }),
+    );
 
     expect(await screen.findByRole('heading', { name: 'codex' })).toHaveClass(
       'wave-fs-viewer-primary',
@@ -892,7 +959,7 @@ describe('WaveReportPage', () => {
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
-  it('falls back to raw JSON when a cards/<id>/payload.json path has no registered viewer', async () => {
+  it('falls back to raw JSON when a cards/<id>/.payload.json path has no registered viewer', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const rawPayload = JSON.stringify({
       opaque: true,
@@ -905,7 +972,7 @@ describe('WaveReportPage', () => {
         { name: 'report.md', kind: 'file' },
       ],
       cards: [{ name: 'card_payload/', kind: 'dir' }],
-      'cards/card_payload': [{ name: 'payload.json', kind: 'file' }],
+      'cards/card_payload': [{ name: '.payload.json', kind: 'file' }],
     });
     mockWaveFileContents({
       'report.md': {
@@ -916,7 +983,7 @@ describe('WaveReportPage', () => {
         content_type: 'application/json',
         content: '[{"id":"card_payload","kind":"codex"}]',
       },
-      'cards/card_payload/payload.json': {
+      'cards/card_payload/.payload.json': {
         content_type: 'application/json',
         content: rawPayload,
       },
@@ -929,17 +996,24 @@ describe('WaveReportPage', () => {
       />,
     );
 
+    const showAll = screen.getByRole('button', { name: 'Show all' });
+    fireEvent.click(showAll);
     fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
     fireEvent.click(
       await screen.findByRole('treeitem', { name: /codex card_pay/ }),
     );
     fireEvent.click(
-      await screen.findByRole('treeitem', { name: /payload\.json/ }),
+      await screen.findByRole('treeitem', { name: /\.payload\.json/ }),
     );
 
     expect(await screen.findByTestId('code-pane')).toHaveTextContent(
       rawPayload,
     );
+    fireEvent.click(showAll);
+    expect(
+      screen.queryByRole('treeitem', { name: /\.payload\.json/ }),
+    ).toBeNull();
+    expect(screen.getByTestId('code-pane')).toHaveTextContent(rawPayload);
     expect(consoleError).not.toHaveBeenCalled();
   });
 

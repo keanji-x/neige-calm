@@ -9,6 +9,11 @@ afterEach(() => {
 });
 
 describe('CardMetaViewer', () => {
+  it('matches renamed dotfile card metadata paths', () => {
+    expect(CardMetaViewer.match('cards/card_1/.meta.json')).toBe(true);
+    expect(CardMetaViewer.match('cards/card_1/meta.json')).toBe(false);
+  });
+
   it('renders kind, id, role, sort, timestamps, and deletable state', () => {
     vi.spyOn(Date, 'now').mockReturnValue(
       new Date('2026-06-10T12:00:00Z').getTime(),
@@ -16,7 +21,7 @@ describe('CardMetaViewer', () => {
 
     render(
       <Component
-        path="cards/card_1/meta.json"
+        path="cards/card_1/.meta.json"
         raw="{}"
         data={{
           id: 'card_1',
@@ -44,7 +49,7 @@ describe('CardMetaViewer', () => {
   it('renders truthy generated fields', () => {
     render(
       <Component
-        path="cards/card_1/meta.json"
+        path="cards/card_1/.meta.json"
         raw="{}"
         data={{
           id: 'card_1',

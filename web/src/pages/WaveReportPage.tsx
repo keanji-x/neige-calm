@@ -271,6 +271,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
+  const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const eventEntries = useEventLineEntries(wave.id, cards);
   const live = useAnyRuntimeLive(wave.id, cards);
 
@@ -296,6 +297,24 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
       return next;
     });
   };
+  const toggleHiddenFiles = () => {
+    setShowHiddenFiles((current) => !current);
+  };
+
+  const railCollapseButton = (
+    <button
+      type="button"
+      className="report-rail-toggle"
+      onClick={toggleReportRailCollapsed}
+      aria-expanded={!reportRailCollapsed}
+      aria-label={
+        reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'
+      }
+      title={reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'}
+    >
+      <ChevronIcon />
+    </button>
+  );
 
   return (
     <div
@@ -335,20 +354,22 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
       >
         <header className="report-rail-head report-rail-head--top">
           {!reportRailCollapsed && (
-            <span>Files</span>
+            <>
+              <span>Files</span>
+              <div className="report-rail-actions">
+                <button
+                  type="button"
+                  className="report-rail-toggle report-rail-toggle--show-all"
+                  aria-pressed={showHiddenFiles}
+                  onClick={toggleHiddenFiles}
+                >
+                  Show all
+                </button>
+                {railCollapseButton}
+              </div>
+            </>
           )}
-          <button
-            type="button"
-            className="report-rail-toggle"
-            onClick={toggleReportRailCollapsed}
-            aria-expanded={!reportRailCollapsed}
-            aria-label={
-              reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'
-            }
-            title={reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'}
-          >
-            <ChevronIcon />
-          </button>
+          {reportRailCollapsed && railCollapseButton}
         </header>
         {!reportRailCollapsed && (
           <>
@@ -363,6 +384,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
                     setView('report');
                   }}
                   ariaLabel="Wave files"
+                  showHidden={showHiddenFiles}
                   fallback={
                     <div className="report-rail-placeholder">No files yet.</div>
                   }
