@@ -95,6 +95,32 @@ test.describe('spec chat interrupt UI', () => {
     await expectInterruptOutcome(page);
   });
 
+  test('input-line ■ Stop turn click fires /spec/interrupt and the UI settles on the stopped state', async ({
+    page,
+    request,
+  }) => {
+    await forceSpecPhase(request, specCardId, 'turn_running');
+    await openRunningConversation(page);
+
+    const stopButton = page.getByRole('button', { name: 'Stop turn' });
+    await expect(stopButton).toBeVisible();
+    await expect(stopButton).toBeEnabled();
+
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (res) =>
+          res.url().includes(`/api/cards/${specCardId}/spec/interrupt`) &&
+          res.request().method() === 'POST',
+      ),
+      stopButton.click(),
+    ]);
+    expect(response.status()).toBe(200);
+    const body = (await response.json()) as { stopped: boolean };
+    expect(body.stopped).toBe(true);
+
+    await expectInterruptOutcome(page);
+  });
+
   test('Esc from the conversation input fires /spec/interrupt (keyboard parity)', async ({
     page,
     request,
