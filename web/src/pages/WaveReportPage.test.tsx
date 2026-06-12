@@ -609,6 +609,157 @@ describe('WaveReportPage', () => {
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
+  it('renders the cards/<id>/events.json wave fs viewer', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-10T12:00:00Z').getTime(),
+    );
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'card_events/', kind: 'dir' }],
+      'cards/card_events': [{ name: 'events.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: '[{"id":"card_events","kind":"codex"}]',
+      },
+      'cards/card_events/events.json': {
+        content_type: 'application/json',
+        content: JSON.stringify([
+          {
+            created_at: new Date('2026-06-10T11:40:00Z').getTime(),
+            event_id: 2,
+            kind: 'claude.hook',
+            hook_kind: 'PostToolUse',
+            payload: { tool: 'Read', ok: true },
+          },
+          {
+            created_at: new Date('2026-06-10T11:00:00Z').getTime(),
+            event_id: 1,
+            kind: 'codex.hook',
+            hook_kind: 'PreToolUse',
+            payload: { tool: 'Bash' },
+          },
+        ]),
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /codex card_eve/ }),
+    );
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /events\.json/ }),
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: 'Hook events (2)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('PreToolUse')).toHaveClass(
+      'wave-fs-viewer-primary',
+    );
+    expect(screen.getByText('codex.hook')).toHaveAttribute(
+      'data-tone',
+      'accent',
+    );
+    expect(screen.getByText('Created 1h ago')).toBeInTheDocument();
+    expect(screen.getAllByText('Payload')[0].closest('details'))
+      .not.toHaveAttribute('open');
+    expect(screen.getByText(/"tool": "Bash"/)).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('renders the cards/<id>/runtime.json wave fs viewer', async () => {
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'card_runtime/', kind: 'dir' }],
+      'cards/card_runtime': [{ name: 'runtime.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: '[{"id":"card_runtime","kind":"claude"}]',
+      },
+      'cards/card_runtime/runtime.json': {
+        content_type: 'application/json',
+        content: JSON.stringify({
+          runtime_id: 'runtime_page_1',
+          kind: 'claude',
+          status: 'turn_pending',
+          provider: 'claude',
+          terminal_id: 'terminal_page_1',
+          thread_id: 'thread_page_1',
+          session_id: 'session_page_1',
+          source: 'wave-dispatcher',
+          thread_status: 'queued',
+        }),
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /claude card_run/ }),
+    );
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /runtime\.json/ }),
+    );
+
+    expect(await screen.findByRole('heading', { name: 'claude' })).toHaveClass(
+      'wave-fs-viewer-primary',
+    );
+    expect(screen.getByText('runtime_page_1')).toHaveClass(
+      'wave-fs-viewer-mono',
+    );
+    expect(screen.getByText('turn_pending')).toHaveAttribute(
+      'data-tone',
+      'warning',
+    );
+    expect(screen.getByText('claude', { selector: '.wave-fs-viewer-chip' }))
+      .toBeInTheDocument();
+    expect(screen.getByText('terminal_page_1')).toHaveClass(
+      'wave-fs-viewer-mono',
+    );
+    expect(screen.getByText('thread_page_1')).toHaveClass(
+      'wave-fs-viewer-mono',
+    );
+    expect(screen.getByText('session_page_1')).toHaveClass(
+      'wave-fs-viewer-mono',
+    );
+    expect(screen.getByText('wave-dispatcher')).toHaveClass(
+      'wave-fs-viewer-mono',
+    );
+    expect(screen.getByText('queued')).toHaveClass('wave-fs-viewer-mono');
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
   it('renders the runs/index.json wave fs viewer', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(
       new Date('2026-06-10T12:00:00Z').getTime(),
@@ -861,7 +1012,9 @@ describe('WaveReportPage', () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it('falls back to raw JSON for unknown JSON paths', async () => {
+  it('falls back to raw JSON when cards/<id>/runtime.json is malformed', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
     mockWaveFileLists({
       '': [
         { name: 'cards/', kind: 'dir', size: 1 },
@@ -905,8 +1058,9 @@ describe('WaveReportPage', () => {
       '{"status":"running"}',
     );
     expect(
-      screen.queryByRole('heading', { name: /Cards in this wave/ }),
+      screen.queryByText('No runtime attached.'),
     ).not.toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it('resets the selected file to report.md when the wave id changes', async () => {

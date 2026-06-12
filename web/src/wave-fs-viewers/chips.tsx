@@ -1,4 +1,5 @@
 import type {
+  RunStatus,
   CardRole,
   WaveFsRunStatus,
   WaveLifecycle,
@@ -32,6 +33,16 @@ export const runStatusTones = {
   requested: 'accent',
   unknown: 'neutral',
 } satisfies Record<WaveFsRunStatus, ViewerChipTone>;
+
+export const runtimeStatusTones = {
+  starting: 'accent',
+  running: 'accent',
+  idle: 'neutral',
+  turn_pending: 'warning',
+  failed: 'danger',
+  exited: 'success',
+  superseded: 'neutral',
+} satisfies Record<RunStatus, ViewerChipTone>;
 
 export const waveLifecycleTones = {
   draft: 'neutral',

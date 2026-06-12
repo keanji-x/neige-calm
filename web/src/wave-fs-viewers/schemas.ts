@@ -20,6 +20,25 @@ export const waveFsRunStatusSchema = z.enum([
   'unknown',
 ]);
 
+export const agentProviderSchema = z.enum(['codex', 'claude']);
+
+export const runStatusSchema = z.enum([
+  'starting',
+  'running',
+  'idle',
+  'turn_pending',
+  'failed',
+  'exited',
+  'superseded',
+]);
+
+export const runtimeKindSchema = z.enum([
+  'terminal',
+  'codex',
+  'claude',
+  'shared-spec',
+]);
+
 export const waveFsCardRoleSchema = z.enum(['worker', 'spec', 'reportcard']);
 
 export const waveFsCardMetaSchema = z.object({
@@ -87,8 +106,22 @@ export const waveFsHookEventSchema = z.object({
   payload: z.unknown(),
 });
 
+export const cardRuntimeViewSchema = z.object({
+  runtime_id: z.string(),
+  kind: runtimeKindSchema,
+  status: runStatusSchema,
+  provider: agentProviderSchema.optional(),
+  terminal_id: z.string().optional(),
+  thread_id: z.string().optional(),
+  session_id: z.string().optional(),
+  source: z.string().optional(),
+  thread_status: z.string().optional(),
+});
+
 export const waveFsCardsIndexSchema = z.array(waveFsCardMetaSchema);
+export const waveFsHookEventsSchema = z.array(waveFsHookEventSchema);
 export const waveFsRunsIndexSchema = z.array(waveFsRunIndexEntrySchema);
+export const cardRuntimeSchema = z.union([cardRuntimeViewSchema, z.null()]);
 export const waveFsWaveSchema = z.object({
   id: z.string(),
   cove_id: z.string(),
