@@ -207,12 +207,18 @@ pub fn enforce_role(
     // authority: a spec forging it could fabricate "the kernel claimed
     // this task" records that desynchronize the runs projection from
     // the tasks table, and a worker forging it is the #583 recursive
-    // hole again. Every card-derived actor (AiSpec included) is refused;
-    // User / Kernel / KernelDispatcher / Plugin keep their unrestricted
-    // access, matching the other kernel-internal sections.
+    // hole again. Every card-derived actor (AiSpec included) AND
+    // plugins are refused — unlike sections (2)/(2.5), a plugin has no
+    // business writing the scheduler's claim record, so this gate is
+    // narrower: only User / Kernel / KernelDispatcher pass.
     if matches!(event, Event::TaskDispatched { .. }) {
         match actor {
-            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher | ActorId::Plugin(_) => {}
+            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Plugin(name) => {
+                return Err(RoleViolation::NotKernelForTaskDispatched {
+                    actor: format!("Plugin({name})"),
+                });
+            }
             ActorId::AiSpec(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskDispatched {
                     actor: format!("AiSpec({card_id})"),
@@ -1140,6 +1146,7 @@ mod tests {
             (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (ActorId::Plugin("p".into()), "Plugin(p)"),
         ] {
             let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
                 .expect_err(&format!("{label} must be refused task.dispatched"));
@@ -1149,12 +1156,7 @@ mod tests {
             );
         }
 
-        for actor in [
-            ActorId::User,
-            ActorId::Kernel,
-            ActorId::KernelDispatcher,
-            ActorId::Plugin("p".into()),
-        ] {
+        for actor in [ActorId::User, ActorId::Kernel, ActorId::KernelDispatcher] {
             let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
             assert!(res.is_ok(), "{actor:?} emitting task.dispatched: {res:?}");
         }

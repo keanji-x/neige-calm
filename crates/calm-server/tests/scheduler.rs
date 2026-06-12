@@ -32,19 +32,21 @@ use calm_server::event::EventBus;
 use calm_server::ids::{CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
+use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
     CardRole, NewCard, NewCove, NewTerminal, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
-    WavePatch, now_ms,
+    WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
-    OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome,
-    SqlxOperationRepo, Tx, TxOutput,
+    OperationKey, OperationOutcome, OperationRepo, OperationRuntime, PhaseTag, ProviderAdapter,
+    SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::plugin_host::mcp::RpcError;
-use calm_server::scheduler::{Scheduler, TerminalTaskHook};
+use calm_server::routes::terminal_cards::stable_payload_hash;
+use calm_server::scheduler::{Scheduler, TerminalTaskHook, build_worker_payload};
 use calm_server::state::{DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -147,6 +149,18 @@ fn build_scheduler(
     boot: &Boot,
     adapters: Vec<Arc<dyn ProviderAdapter>>,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
+    build_scheduler_with_semaphore(boot, adapters, Arc::new(tokio::sync::Semaphore::new(8)))
+}
+
+/// `build_scheduler` with a caller-owned dispatch semaphore — the F2/F4
+/// race tests hold its only permit to park a scheduling pass inside
+/// `dispatch_task`, deterministically widening the snapshot → claim
+/// window.
+fn build_scheduler_with_semaphore(
+    boot: &Boot,
+    adapters: Vec<Arc<dyn ProviderAdapter>>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         boot.repo
             .sqlite_pool()
@@ -179,7 +193,7 @@ fn build_scheduler(
         boot.events.clone(),
         boot.write.clone(),
         Arc::downgrade(&runtime),
-        Arc::new(tokio::sync::Semaphore::new(8)),
+        semaphore,
     );
     (runtime, scheduler)
 }
@@ -672,7 +686,7 @@ async fn draft_wave_is_not_scheduled() {
 // §5.5 — claim race: two concurrent schedulers, one winner
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn claim_race_two_schedulers_single_winner() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
@@ -698,9 +712,30 @@ async fn claim_race_two_schedulers_single_winner() {
         })],
     );
 
-    let w1 = boot.wave_id.clone();
-    let w2 = boot.wave_id.clone();
-    tokio::join!(s1.schedule_wave(w1), s2.schedule_wave(w2));
+    // Real race (review F8d): a multi_thread runtime + barrier release
+    // both passes simultaneously on separate workers, instead of the
+    // cooperative interleaving a current_thread `join!` produces.
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let h1 = tokio::spawn({
+        let barrier = Arc::clone(&barrier);
+        let s1 = Arc::clone(&s1);
+        let w1 = boot.wave_id.clone();
+        async move {
+            barrier.wait().await;
+            s1.schedule_wave(w1).await;
+        }
+    });
+    let h2 = tokio::spawn({
+        let barrier = Arc::clone(&barrier);
+        let s2 = Arc::clone(&s2);
+        let w2 = boot.wave_id.clone();
+        async move {
+            barrier.wait().await;
+            s2.schedule_wave(w2).await;
+        }
+    });
+    h1.await.expect("scheduler 1 task");
+    h2.await.expect("scheduler 2 task");
 
     assert_eq!(task_row(&boot, "race").await.status, TaskStatus::Running);
     assert_eq!(
@@ -1191,4 +1226,564 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
     // Idempotency: another sweep dedupes on (kind, idempotency_key).
     scheduler.sweep_all().await;
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F1: PTY exits never complete codex-kind tasks
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn codex_task_pty_exit_does_not_complete_task() {
+    // Codex worker cards are terminal-row-backed too and carry the task
+    // id in their payload `idempotency_key`. A codex PTY exiting 0 says
+    // nothing about the task outcome — only `calm.task.complete` may
+    // finish it; the live hook must kind-gate exactly like the sweep's
+    // running-terminal arm.
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "cx", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let (_card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+
+    let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+    assert_eq!(
+        task_row(&boot, "cx").await.status,
+        TaskStatus::Running,
+        "codex task must stay running after its backing PTY exits 0"
+    );
+    assert!(event_rows(&boot, "task.completed").await.is_empty());
+
+    // Non-zero exits are equally not the hook's business for codex.
+    hook.on_terminal_exit(&terminal_id, Some(2), false).await;
+    assert_eq!(task_row(&boot, "cx").await.status, TaskStatus::Running);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F2: the dispatched payload is built from the frozen
+// post-claim row, never the pre-claim snapshot
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn claim_payload_frozen_against_pre_claim_revision() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "revise", TaskKind::Terminal, &[]);
+    task.goal = "echo old".into();
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Hold the dispatcher semaphore's only permit: the scheduling pass
+    // snapshots the plan rows in `schedule_pass`, then parks inside
+    // `dispatch_task` awaiting the permit — exactly the unbounded
+    // snapshot → claim window the review flagged.
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = Arc::clone(&semaphore)
+        .acquire_owned()
+        .await
+        .expect("test holds the only permit");
+    let (runtime, scheduler) = build_scheduler_with_semaphore(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+        semaphore,
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        let wave_id = boot.wave_id.clone();
+        async move { scheduler.schedule_wave(wave_id).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Revise the still-pending row mid-window (pending rows are
+    // mutable; post-claim they are frozen).
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let revised =
+        sqlx::query("UPDATE tasks SET goal = 'echo new' WHERE id = ?1 AND status = 'pending'")
+            .bind(&task_id)
+            .execute(&pool)
+            .await
+            .expect("revise pending row");
+    assert_eq!(
+        revised.rows_affected(),
+        1,
+        "revision landed while the pass was parked pre-claim"
+    );
+
+    drop(permit);
+    handle.await.expect("schedule_wave task");
+
+    let op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("worker op row");
+    assert_eq!(
+        op.payload["cmd"],
+        json!("echo new"),
+        "payload must reflect the claimed (frozen) row, not the pre-claim snapshot"
+    );
+    assert_eq!(task_row(&boot, "revise").await.status, TaskStatus::Running);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F3: a sibling card's report can never flip another
+// task's row
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sibling_card_report_cannot_flip_other_tasks_row() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "owned", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    // Stamped: the scheduler recorded which card owns this task.
+    task.worker_card_id = Some(boot.worker_card_id.as_str().to_string());
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Mint a sibling worker card in the SAME wave — wave-pinning alone
+    // would let it terminalize the row.
+    let sibling = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .expect("sibling worker card");
+    boot.card_role_cache
+        .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    let sibling_identity = ToolCallIdentity {
+        card_id: sibling.id.as_str().to_string(),
+        role: CardRole::Worker,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "sibling-thread".into(),
+    };
+
+    // Sibling completes "someone else's" task → guarded flip no-ops.
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        sibling_identity.clone(),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("sibling complete report (event persists, flip no-ops)");
+    let row = task_row(&boot, "owned").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Running,
+        "sibling card must not complete a row stamped to another card"
+    );
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str()),
+        "stamp untouched"
+    );
+
+    // Same guard on the failure flip.
+    call_tool(
+        &boot,
+        TOOL_TASK_FAIL,
+        sibling_identity,
+        json!({ "idempotency_key": task_id, "reason": "not mine" }),
+    )
+    .await
+    .expect("sibling fail report");
+    assert_eq!(task_row(&boot, "owned").await.status, TaskStatus::Running);
+
+    // The stamped owner still flips normally.
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("owner complete report");
+    assert_eq!(task_row(&boot, "owned").await.status, TaskStatus::Done);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F4: the claim tx re-checks the wave lifecycle
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn claim_aborts_when_lifecycle_leaves_schedulable_set() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "held", TaskKind::Codex, &[]),
+    )
+    .await;
+
+    // Park the pass between the (passing) pre-claim lifecycle read and
+    // the claim tx, then move the wave out of the schedulable set.
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = Arc::clone(&semaphore)
+        .acquire_owned()
+        .await
+        .expect("test holds the only permit");
+    let (_runtime, scheduler) = build_scheduler_with_semaphore(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+        semaphore,
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        let wave_id = boot.wave_id.clone();
+        async move { scheduler.schedule_wave(wave_id).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    set_lifecycle(&boot, WaveLifecycle::Canceled).await;
+    drop(permit);
+    handle.await.expect("schedule_wave task");
+
+    assert_eq!(
+        task_row(&boot, "held").await.status,
+        TaskStatus::Pending,
+        "in-tx lifecycle guard must abort the claim (race-lost, silent)"
+    );
+    assert!(
+        event_rows(&boot, "task.dispatched").await.is_empty(),
+        "a lost claim persists no dispatch record"
+    );
+    assert_eq!(operation_count(&boot, "codex-worker").await, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F5: claiming from a Planning wave promotes it along
+// Planning → Dispatching → Working in the claim tx
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn planning_wave_promotes_to_working_on_claim() {
+    let boot = boot().await; // wave is Draft (create default)
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    // `calm.plan.upsert` WITHOUT a lifecycle arg: draft auto-promotes
+    // to Planning and stays there — the F5 scenario.
+    call_tool(
+        &boot,
+        TOOL_PLAN_UPSERT,
+        spec_identity(&boot),
+        json!({
+            "tasks": [{ "key": "p1", "kind": "codex", "goal": "do p1" }],
+            "message": "plan ready"
+        }),
+    )
+    .await
+    .expect("plan upsert");
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Planning,
+        "upsert with no lifecycle arg leaves the wave Planning"
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = task_row(&boot, "p1").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Running,
+        "Planning waves schedule (§5.2)"
+    );
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "claim tx chains Planning → Dispatching → Working"
+    );
+
+    // A later worker report then drives Working → Reviewing as usual.
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": row.id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("worker report");
+    assert_eq!(task_row(&boot, "p1").await.status, TaskStatus::Done);
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F6: resuming a dispatched terminal task immediately
+// reconciles a recorded exit (one boot sweep, no second pass)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "crashed", TaskKind::Terminal, &[]);
+    // Claimed before the crash; the PTY exited while the kernel was
+    // down and the supervisor reconcile persisted the synthetic -1.
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    boot.repo
+        .terminal_set_exit(&terminal_id, Some(-1), false)
+        .await
+        .expect("persist synthetic exit");
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: card_id.as_str().to_string(),
+        })],
+    );
+    // ONE sweep: dispatched arm resumes the op → running stamp → the
+    // immediate recorded-exit reconcile lands the terminal state.
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "crashed").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Failed,
+        "a single boot sweep must reach the terminal state"
+    );
+    assert_eq!(row.status_detail.as_deref(), Some("worker-reported"));
+    assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F7: the boot sweep's pending arm dispatches via the
+// async poke path instead of blocking
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sweep_boot_dispatches_pending_without_blocking() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(&boot, plan_task(&boot.wave_id, "bg", TaskKind::Codex, &[])).await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    // Returns after the reconcile arms; pending dispatch is poked onto
+    // a background task.
+    scheduler.sweep_boot().await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if task_row(&boot, "bg").await.status == TaskStatus::Running {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "poked schedule pass never dispatched the pending task"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(event_rows(&boot, "task.dispatched").await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — F8: sweep dispatched-arm sub-cases
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sweep_marks_running_when_op_succeeded_before_crash() {
+    // Crash window: the worker op ran to success but the kernel died
+    // before the running stamp — the sweep must stamp, not respawn.
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stamped", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    seed_task(&boot, task.clone()).await;
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    let (op_kind, payload) = build_worker_payload(&task).expect("payload");
+    let payload_hash = stable_payload_hash(&payload).expect("hash");
+    let op_id = runtime
+        .submit(
+            op_kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash,
+            },
+            payload,
+        )
+        .await
+        .expect("submit");
+    let result = runtime.wait(&op_id).await.expect("wait");
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "fixture op must succeed, got {:?}",
+        result.outcome
+    );
+    assert_eq!(
+        task_row(&boot, "stamped").await.status,
+        TaskStatus::Dispatched,
+        "running stamp lost in the crash window"
+    );
+
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "stamped").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str()),
+        "stamp recovered from the op result"
+    );
+    assert_eq!(
+        operation_count(&boot, "codex-worker").await,
+        1,
+        "no respawn — submit deduped on the idempotency key"
+    );
+}
+
+#[tokio::test]
+async fn sweep_redrives_half_driven_operation() {
+    // The op row exists but was never driven to a terminal phase
+    // (crash right after insert, or a lease-stuck driver). The sweep's
+    // `wait()` is the steady-state re-drive.
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stalled", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    seed_task(&boot, task.clone()).await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    // Insert WITHOUT driving (bypasses `submit`'s inline drive).
+    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"));
+    let (op_kind, payload) = build_worker_payload(&task).expect("payload");
+    let payload_hash = stable_payload_hash(&payload).expect("hash");
+    op_repo
+        .insert_operation(
+            op_kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash,
+            },
+            payload,
+        )
+        .await
+        .expect("insert non-terminal op");
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+    assert_eq!(
+        task_row(&boot, "stalled").await.status,
+        TaskStatus::Dispatched
+    );
+
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "stalled").await;
+    assert_eq!(row.status, TaskStatus::Running, "wait() re-drove the op");
+    assert_eq!(
+        operation_count(&boot, "codex-worker").await,
+        1,
+        "re-drive, not a second op"
+    );
+}
+
+#[tokio::test]
+async fn sweep_fails_task_when_preexisting_op_failed() {
+    // The worker op already terminated `failed` (e.g. spawn failure
+    // whose task reconcile was lost to a crash) — the sweep must mark
+    // the row failed('spawn-failed'), not leave it dispatched forever.
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "wedged", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    seed_task(&boot, task.clone()).await;
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(FailingSpawnAdapter {
+            kind: "codex-worker",
+        })],
+    );
+
+    let (op_kind, payload) = build_worker_payload(&task).expect("payload");
+    let payload_hash = stable_payload_hash(&payload).expect("hash");
+    let op_id = runtime
+        .submit(
+            op_kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash,
+            },
+            payload,
+        )
+        .await
+        .expect("submit");
+    let result = runtime.wait(&op_id).await.expect("wait");
+    assert!(
+        matches!(result.outcome, OperationOutcome::Failed { .. }),
+        "fixture op must fail, got {:?}",
+        result.outcome
+    );
+    assert_eq!(
+        task_row(&boot, "wedged").await.status,
+        TaskStatus::Dispatched,
+        "task reconcile lost in the crash window"
+    );
+
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "wedged").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("spawn-failed"));
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].0.contains("KernelDispatcher"));
 }

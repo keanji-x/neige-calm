@@ -46,7 +46,7 @@ use tokio::sync::Semaphore;
 
 use crate::db::sqlite::{
     begin_immediate_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_mark_running_tx,
+    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, wave_lifecycle_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -378,9 +378,15 @@ impl Scheduler {
                 return;
             }
         };
-        match self.claim_task(&task, wave).await {
-            Ok(true) => {}
-            Ok(false) => return, // someone else won the claim
+        // The spawn is driven off the row the claim tx itself re-read
+        // AFTER winning (review F2): the semaphore wait above leaves an
+        // unbounded window in which a still-pending row can be revised
+        // or re-kinded, so the pre-claim snapshot must never feed the
+        // payload. Post-claim the row is frozen — every plan mutation
+        // path is `WHERE status = 'pending'`.
+        let frozen = match self.claim_task(&task, wave).await {
+            Ok(Some(frozen)) => frozen,
+            Ok(None) => return, // someone else won the claim
             Err(e) => {
                 tracing::warn!(
                     task_id = %task.id,
@@ -389,8 +395,8 @@ impl Scheduler {
                 );
                 return;
             }
-        }
-        if let Err(e) = self.drive_spawn(&task, wave).await {
+        };
+        if let Err(e) = self.drive_spawn(&frozen, wave).await {
             tracing::warn!(
                 task_id = %task.id,
                 error = %e,
@@ -399,68 +405,104 @@ impl Scheduler {
         }
     }
 
-    /// The claim tx (§5.4 step 1, one eventized write): single-winner
-    /// `pending → dispatched` UPDATE + `Event::TaskDispatched` (§5.6) +
-    /// the `Dispatching → Working` auto-promotion, all in one tx.
+    /// The claim tx (§5.4 step 1, one eventized write): in-tx lifecycle
+    /// re-check, single-winner `pending → dispatched` UPDATE,
+    /// `Event::TaskDispatched` (§5.6), and the lifecycle auto-promotion
+    /// to `Working`, all in one tx.
     ///
-    /// Returns `Ok(false)` when the guarded UPDATE hit 0 rows.
-    async fn claim_task(&self, task: &Task, wave: &Wave) -> Result<bool> {
+    /// Returns the post-claim re-read of the row — the **frozen** task
+    /// (review F2): pending rows are mutable right up to the claim, so
+    /// the dispatch payload must be built from what was actually
+    /// claimed, never from the caller's pre-claim snapshot. Post-claim
+    /// the row cannot change shape (all plan mutation paths are
+    /// `WHERE status = 'pending'`), so a post-crash sweep resubmit
+    /// rebuilds the byte-identical payload.
+    ///
+    /// `Ok(None)` = race lost: another claimer won, the wave's
+    /// lifecycle left the schedulable set since the ready-set pass
+    /// (review F4), or the wave row was deleted. No event is persisted.
+    async fn claim_task(&self, task: &Task, wave: &Wave) -> Result<Option<Task>> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
             cove: wave.cove_id.clone(),
         };
         let task_id = task.id.clone();
-        let task_key = task.key.clone();
-        let kind = task_kind_str(task.kind);
         let wave_id = wave.id.clone();
-        let result = write_with_actor_events_typed::<(), _>(
-            self.repo.as_ref(),
-            None,
-            &self.events,
-            &self.write,
-            move |tx| {
-                Box::pin(async move {
-                    let rows = task_claim_pending_tx(tx, &task_id, now_ms()).await?;
-                    if rows == 0 {
-                        return Err(race_lost_err());
-                    }
-                    let mut events = vec![(
-                        ActorId::KernelDispatcher,
-                        scope.clone(),
-                        Event::TaskDispatched {
-                            idempotency_key: task_id.clone(),
-                            kind: kind.to_string(),
-                            agent_message: Some(format!("[scheduler] dispatching task {task_key}")),
-                        },
-                    )];
-                    // Same pre-spawn ordering rationale as the legacy
-                    // dispatch path: promote before the worker exists so
-                    // a fast report's Working → Reviewing promotion can
-                    // never race ahead of this one.
-                    if let Some(auto_events) = auto_transition_if_current_in_tx(
-                        tx,
-                        &wave_id,
-                        WaveLifecycle::Dispatching,
-                        WaveLifecycle::Working,
-                        &ActorId::KernelDispatcher,
-                        Some("[auto] scheduler claimed a task".to_string()),
-                    )
-                    .await?
-                    {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
-                        );
-                    }
-                    Ok(((), events))
-                })
-            },
-        )
-        .await;
+        let result =
+            write_with_actor_events_typed::<Task, _>(
+                self.repo.as_ref(),
+                None,
+                &self.events,
+                &self.write,
+                move |tx| {
+                    Box::pin(async move {
+                        // §5.2 lifecycle gate, re-checked IN the claim tx
+                        // (review F4): the pass's pre-claim read can go
+                        // stale across the semaphore wait, and a wave moved
+                        // to Blocked/Canceled/Done must not have new work
+                        // claimed. Loss is silent (race-lost, no event).
+                        let lifecycle = wave_lifecycle_tx(tx, wave_id.as_str())
+                            .await?
+                            .ok_or_else(race_lost_err)?;
+                        if !lifecycle_allows_scheduling(lifecycle) {
+                            return Err(race_lost_err());
+                        }
+                        let rows = task_claim_pending_tx(tx, &task_id, now_ms()).await?;
+                        if rows == 0 {
+                            return Err(race_lost_err());
+                        }
+                        // Post-claim re-read = the frozen row (review F2).
+                        // Gone row = concurrent wave delete; treat as lost.
+                        let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
+                        let mut events = vec![(
+                            ActorId::KernelDispatcher,
+                            scope.clone(),
+                            Event::TaskDispatched {
+                                idempotency_key: task_id.clone(),
+                                kind: task_kind_str(frozen.kind).to_string(),
+                                agent_message: Some(format!(
+                                    "[scheduler] dispatching task {}",
+                                    frozen.key
+                                )),
+                            },
+                        )];
+                        // Same pre-spawn ordering rationale as the legacy
+                        // dispatch path: promote before the worker exists so
+                        // a fast report's Working → Reviewing promotion can
+                        // never race ahead of this one. §5.2 deliberately
+                        // schedules Planning waves (review F5) — a wave the
+                        // spec never moved past Planning is promoted along
+                        // the legal kernel chain Planning → Dispatching →
+                        // Working here, so a successful claim always leaves
+                        // the wave `Working` and the later Working →
+                        // Reviewing auto-transition can fire.
+                        for (from, to) in [
+                            (WaveLifecycle::Planning, WaveLifecycle::Dispatching),
+                            (WaveLifecycle::Dispatching, WaveLifecycle::Working),
+                        ] {
+                            if let Some(auto_events) = auto_transition_if_current_in_tx(
+                                tx,
+                                &wave_id,
+                                from,
+                                to,
+                                &ActorId::KernelDispatcher,
+                                Some("[auto] scheduler claimed a task".to_string()),
+                            )
+                            .await?
+                            {
+                                events.extend(auto_events.into_iter().map(|event| {
+                                    (ActorId::KernelDispatcher, scope.clone(), event)
+                                }));
+                            }
+                        }
+                        Ok((frozen, events))
+                    })
+                },
+            )
+            .await;
         match result {
-            Ok(_) => Ok(true),
-            Err(e) if is_race_lost(&e) => Ok(false),
+            Ok((frozen, _)) => Ok(Some(frozen)),
+            Err(e) if is_race_lost(&e) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -509,6 +551,29 @@ impl Scheduler {
                 let worker_card_id = result.get("id").and_then(Value::as_str).map(str::to_string);
                 self.mark_running(&task.id, worker_card_id.as_deref())
                     .await?;
+                // Review F6: a terminal task resumed by the boot sweep
+                // may already carry a recorded exit (the PTY died while
+                // the kernel was down and the supervisor reconcile
+                // persisted it). Reconcile right now instead of leaving
+                // the row `running` until the next periodic sweep. The
+                // live spawn path shares this check harmlessly — a
+                // just-spawned terminal has no exit record, so it
+                // no-ops.
+                if task.kind == TaskKind::Terminal {
+                    match self.repo.task_get(&task.id).await {
+                        Ok(Some(row)) if row.status == TaskStatus::Running => {
+                            self.reconcile_running_terminal(row).await;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %task.id,
+                                error = %e,
+                                "scheduler: post-stamp terminal re-read failed; sweep will reconcile"
+                            );
+                        }
+                    }
+                }
             }
             OperationOutcome::Failed { last_error, .. } => {
                 self.fail_spawn(task, wave, &last_error).await?;
@@ -628,14 +693,39 @@ impl Scheduler {
     /// - `running` + codex kind: left alone (policy-free; risk R4).
     /// - `verifying`: PR-C.
     pub async fn sweep_all(self: &Arc<Self>) {
+        let pending_waves = self.sweep_reconcile().await;
+        for wave_id in pending_waves {
+            self.schedule_wave(WaveId::from(wave_id)).await;
+        }
+    }
+
+    /// Boot-time sweep (§8 + review F7): the reconcile arms
+    /// (`dispatched` re-drive, `running`-terminal recorded-exit) run
+    /// synchronously — they must complete in boot order, after
+    /// operation recovery — but pending-arm dispatching goes through
+    /// the normal async [`Scheduler::poke`] path so boot never blocks
+    /// the HTTP server behind full schedule passes (claim + spawn
+    /// `wait()` per wave).
+    pub async fn sweep_boot(self: &Arc<Self>) {
+        let pending_waves = self.sweep_reconcile().await;
+        for wave_id in pending_waves {
+            self.poke(WaveId::from(wave_id));
+        }
+    }
+
+    /// Shared sweep body: runs the reconcile arms inline and returns
+    /// the set of waves holding `pending` rows for the caller to
+    /// dispatch (blocking in [`Scheduler::sweep_all`], fire-and-forget
+    /// in [`Scheduler::sweep_boot`]).
+    async fn sweep_reconcile(self: &Arc<Self>) -> BTreeSet<String> {
+        let mut pending_waves: BTreeSet<String> = BTreeSet::new();
         let tasks = match self.repo.tasks_nonterminal().await {
             Ok(tasks) => tasks,
             Err(e) => {
                 tracing::warn!(error = %e, "scheduler sweep: task scan failed; skipping");
-                return;
+                return pending_waves;
             }
         };
-        let mut pending_waves: BTreeSet<String> = BTreeSet::new();
         for task in tasks {
             match task.status {
                 TaskStatus::Pending => {
@@ -657,9 +747,7 @@ impl Scheduler {
                 TaskStatus::Done | TaskStatus::Failed | TaskStatus::Canceled => {}
             }
         }
-        for wave_id in pending_waves {
-            self.schedule_wave(WaveId::from(wave_id)).await;
-        }
+        pending_waves
     }
 
     /// Sweep `dispatched` arm (§5.5/§8): the claim landed but the spawn
@@ -702,7 +790,7 @@ impl Scheduler {
     /// terminal task whose terminal row has a recorded exit gets the
     /// SAME guarded completion tx as the live exit hook. First writer
     /// wins via the status guard; live/sweep duplication is impossible.
-    async fn reconcile_running_terminal(self: &Arc<Self>, task: Task) {
+    async fn reconcile_running_terminal(&self, task: Task) {
         let worker_card_id = match &task.worker_card_id {
             Some(id) => Some(id.clone()),
             // Crash between op success and the running stamp can leave
@@ -834,6 +922,16 @@ impl TerminalTaskHook {
             }
         };
         if task.status.is_terminal() {
+            return;
+        }
+        // Review F1: only TERMINAL-kind tasks are mechanically
+        // reconcilable from a PTY exit code. Codex worker cards are
+        // also terminal-row-backed and carry the task id in their
+        // payload `idempotency_key`, but a codex PTY exiting 0 says
+        // nothing about the task — completion must come from the
+        // worker's `calm.task.complete` report (mirrors the sweep's
+        // kind-gated running arm).
+        if task.kind != TaskKind::Terminal {
             return;
         }
         if let Err(e) = complete_terminal_task(

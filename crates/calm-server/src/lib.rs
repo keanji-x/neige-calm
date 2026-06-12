@@ -150,8 +150,12 @@ pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error
 /// reflects the recovered state (a `dispatched` task whose worker op
 /// recovery already completed reconciles immediately instead of
 /// re-driving). The boot order is asserted in `boot_order_tests`.
+///
+/// Uses `sweep_boot` (review F7): the reconcile arms stay synchronous
+/// in boot order, but pending-arm dispatching is poked onto background
+/// tasks so the HTTP server start never waits on full schedule passes.
 pub async fn scheduler_sweep_on_boot(state: &state::AppState) {
-    state.dispatcher.scheduler().sweep_all().await;
+    state.dispatcher.scheduler().sweep_boot().await;
 }
 
 #[derive(Clone, Copy, Debug)]

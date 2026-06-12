@@ -1014,6 +1014,22 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
+/// Issue #644 PR-B — in-tx read of one wave's lifecycle. The scheduler's
+/// claim tx re-checks schedulability against this (not the pre-claim
+/// snapshot) so a wave moved to Blocked/Canceled/Done between the
+/// ready-set pass and the claim can never have new work claimed
+/// (review F4). `None` = the wave row is gone (concurrent delete).
+pub async fn wave_lifecycle_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &str,
+) -> Result<Option<WaveLifecycle>> {
+    let row: Option<(WaveLifecycle,)> = sqlx::query_as("SELECT lifecycle FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.map(|(lifecycle,)| lifecycle))
+}
+
 /// Issue #644 PR-B — the scheduler's single-winner claim
 /// (`pending → dispatched`, design §5.4). Returns rows moved (`0` =
 /// someone else won the claim; the caller skips silently). Runs inside
@@ -1077,6 +1093,15 @@ pub async fn task_mark_running_tx(
 ///
 /// `wave_id` is part of the guard so a caller can never flip another
 /// wave's row even if it echoes a foreign task id.
+///
+/// `worker_card_id` is two-sided (review F3): besides the COALESCE
+/// stamp, a `Some(card)` caller is also *guarded* by it — the flip only
+/// lands when the row's `worker_card_id` is still NULL (report beat the
+/// running stamp) or matches the reporting card. A sibling worker in
+/// the same wave echoing another task's idempotency key can therefore
+/// never terminalize that row. `None` bypasses the guard — reserved
+/// for kernel callers that own the row (the scheduler's spawn-failure
+/// reconcile), never for card-derived reports.
 pub async fn task_complete_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -1093,7 +1118,8 @@ pub async fn task_complete_from_worker_tx(
                finished_at_ms = ?2
            WHERE id = ?3 AND wave_id = ?4
              AND status IN ('dispatched', 'running')
-             AND gate_json IS NULL"#,
+             AND gate_json IS NULL
+             AND (?1 IS NULL OR worker_card_id IS NULL OR worker_card_id = ?1)"#,
     )
     .bind(worker_card_id)
     .bind(now)
@@ -1111,6 +1137,10 @@ pub async fn task_complete_from_worker_tx(
 /// distinguishes `'worker-reported'` (the worker said so, or its
 /// terminal exited non-zero) from `'spawn-failed'` (the scheduler could
 /// not start it).
+///
+/// `worker_card_id` carries the same two-sided guard as the success
+/// flip (review F3): `Some(card)` only flips an unstamped or matching
+/// row; `None` (kernel spawn-failure path) bypasses.
 pub async fn task_fail_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -1127,7 +1157,8 @@ pub async fn task_fail_from_worker_tx(
                updated_at_ms = ?3,
                finished_at_ms = ?3
            WHERE id = ?4 AND wave_id = ?5
-             AND status IN ('dispatched', 'running')"#,
+             AND status IN ('dispatched', 'running')
+             AND (?2 IS NULL OR worker_card_id IS NULL OR worker_card_id = ?2)"#,
     )
     .bind(status_detail)
     .bind(worker_card_id)
