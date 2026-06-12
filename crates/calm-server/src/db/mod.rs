@@ -100,6 +100,7 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
+pub mod rows;
 pub mod sqlite;
 
 /// Closure shape accepted by `Repo::write_with_event`. The closure receives

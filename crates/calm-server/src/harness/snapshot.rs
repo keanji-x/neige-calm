@@ -8,11 +8,15 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
-use utoipa::ToSchema;
 
 use crate::harness::Observation;
 use crate::harness::state::{HarnessState, IssuingKind};
+
+// #679 PR1 — `HarnessPhaseTag` moved to `calm_types::harness` (TS-exported,
+// referenced by `Event::HarnessPhaseChanged`). Re-exported so the
+// `crate::harness::snapshot::HarnessPhaseTag` path is unchanged. The
+// `From<&HarnessState>` impl below stays here — `HarnessState` is local.
+pub use calm_types::harness::HarnessPhaseTag;
 
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
@@ -40,20 +44,6 @@ pub struct HarnessSnapshot {
     pub issued_turn_head: Option<String>,
     #[serde(default)]
     pub wedged_reason: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub enum HarnessPhaseTag {
-    PendingThreadStart,
-    Idle,
-    IssuingTurn,
-    IssuingInterrupt,
-    TurnRunning,
-    TurnCompleted,
-    Resumed,
-    Wedged,
 }
 
 impl HarnessSnapshot {

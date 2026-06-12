@@ -5,49 +5,17 @@ use sqlx::{Sqlite, Transaction};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use ts_rs::TS;
-use utoipa::ToSchema;
+
+// #679 PR1 — moved vocabulary (TS-exported runtime projection types),
+// re-exported at the old paths. Source definitions live in calm-types;
+// do NOT re-declare them here.
+pub use calm_types::runtime::{
+    AgentProvider, CardRuntime, RunStatus, RuntimeId, RuntimeKind, TerminalRunRef, TimestampMs,
+};
 
 pub type CardId = String;
-pub type RuntimeId = String;
-pub type TimestampMs = i64;
 pub type Tx<'a> = Transaction<'a, Sqlite>;
 pub type Result<T> = std::result::Result<T, RuntimeRepoError>;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub enum RuntimeKind {
-    #[serde(rename = "terminal")]
-    Terminal,
-    #[serde(rename = "codex")]
-    CodexCard,
-    #[serde(rename = "claude")]
-    ClaudeCard,
-    #[serde(rename = "shared-spec")]
-    SharedSpec,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub enum AgentProvider {
-    #[serde(rename = "codex")]
-    Codex,
-    #[serde(rename = "claude")]
-    Claude,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub enum RunStatus {
-    Starting,
-    Running,
-    Idle,
-    TurnPending,
-    Failed,
-    Exited,
-    Superseded,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeRepoError {
@@ -71,17 +39,6 @@ impl fmt::Display for RuntimeRepoError {
 
 impl Error for RuntimeRepoError {}
 
-/// Returned by `runtime_get_active_for_card` when caller requests joined view;
-/// schema only stores `terminal_run_id`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub struct TerminalRunRef {
-    pub terminal_id: String,
-    pub program: String,
-    pub cwd: Option<String>,
-    pub pid: Option<i64>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadAttribution {
     pub runtime_id: RuntimeId,
@@ -89,29 +46,6 @@ pub struct ThreadAttribution {
     pub thread_id: Option<String>,
     pub session_id: Option<String>,
     pub active_turn_id: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub struct CardRuntime {
-    pub id: RuntimeId,
-    pub card_id: CardId,
-    pub kind: RuntimeKind,
-    pub agent_provider: Option<AgentProvider>,
-    pub status: RunStatus,
-    pub terminal_run_id: Option<String>,
-    /// Lazy-joined view; not a schema column.
-    pub terminal_ref: Option<TerminalRunRef>,
-    pub thread_id: Option<String>,
-    pub session_id: Option<String>,
-    pub active_turn_id: Option<String>,
-    #[ts(type = "unknown | null")]
-    pub handle_state_json: Option<Value>,
-    pub lease_owner: Option<String>,
-    pub lease_until_ms: Option<TimestampMs>,
-    pub created_at_ms: TimestampMs,
-    pub updated_at_ms: TimestampMs,
-    pub completed_at_ms: Option<TimestampMs>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

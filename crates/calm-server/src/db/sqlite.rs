@@ -478,7 +478,7 @@ pub async fn cove_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCove) -> Res
     .bind(&p.name)
     .bind(&p.color)
     .bind(sort)
-    .bind(CoveKind::User)
+    .bind(CoveKind::User.as_db_str())
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -527,7 +527,7 @@ pub async fn cove_create_system_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<C
     .bind("system")
     .bind("#000")
     .bind(sort)
-    .bind(CoveKind::System)
+    .bind(CoveKind::System.as_db_str())
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -548,13 +548,14 @@ pub async fn cove_update_tx(
     id: &str,
     p: CovePatch,
 ) -> Result<Cove> {
-    let mut c = sqlx::query_as::<_, Cove>(
+    let mut c = sqlx::query_as::<_, crate::db::rows::CoveRow>(
         r#"SELECT id, name, color, sort, kind, created_at, updated_at
            FROM coves WHERE id = ?1"#,
     )
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?
+    .map(Cove::from)
     .ok_or_else(|| CalmError::NotFound(format!("cove {id}")))?;
 
     if let Some(v) = p.name {
@@ -580,7 +581,7 @@ pub async fn cove_update_tx(
     .bind(&c.color)
     .bind(c.sort)
     .bind(c.updated_at)
-    .bind(&c.id)
+    .bind(c.id.as_str())
     .execute(&mut **tx)
     .await?;
     Ok(c)
@@ -668,13 +669,13 @@ pub async fn cove_folder_create_tx(
 /// writers anyway, but routing through the same tx future-proofs the
 /// path against per-connection isolation surprises.
 pub async fn cove_folders_list_all_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<Vec<CoveFolder>> {
-    let rows = sqlx::query_as::<_, CoveFolder>(
+    let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
         r#"SELECT id, cove_id, path, created_at
            FROM cove_folders ORDER BY path ASC"#,
     )
     .fetch_all(&mut **tx)
     .await?;
-    Ok(rows)
+    Ok(rows.into_iter().map(CoveFolder::from).collect())
 }
 
 pub async fn wave_create_tx(
@@ -683,7 +684,7 @@ pub async fn wave_create_tx(
     wave_cove_cache: &WaveCoveCache,
 ) -> Result<Wave> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
-        .bind(&p.cove_id)
+        .bind(p.cove_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
     if exists.is_none() {
@@ -717,10 +718,10 @@ pub async fn wave_create_tx(
            VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, NULL, ?7, ?8)"#,
     )
     .bind(&id)
-    .bind(&p.cove_id)
+    .bind(p.cove_id.as_str())
     .bind(&p.title)
     .bind(sort)
-    .bind(lifecycle)
+    .bind(lifecycle.as_db_str())
     .bind(&p.cwd)
     .bind(now)
     .bind(now)
@@ -752,13 +753,14 @@ pub async fn wave_update_tx(
     id: &str,
     p: WavePatch,
 ) -> Result<Wave> {
-    let mut w = sqlx::query_as::<_, Wave>(
+    let mut w = sqlx::query_as::<_, crate::db::rows::WaveRow>(
         r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?
+    .map(Wave::from)
     .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
 
     if let Some(v) = p.title {
@@ -819,10 +821,10 @@ pub async fn wave_update_tx(
     .bind(w.sort)
     .bind(w.archived_at)
     .bind(w.pinned_at)
-    .bind(w.lifecycle)
+    .bind(w.lifecycle.as_db_str())
     .bind(w.terminal_at)
     .bind(w.updated_at)
-    .bind(&w.id)
+    .bind(w.id.as_str())
     .execute(&mut **tx)
     .await?;
 
@@ -835,14 +837,14 @@ pub async fn wave_update_tx(
     if let Some(budget) = p.task_budget {
         sqlx::query("UPDATE waves SET task_budget = ?1 WHERE id = ?2")
             .bind(budget)
-            .bind(&w.id)
+            .bind(w.id.as_str())
             .execute(&mut **tx)
             .await?;
     }
     if let Some(require_gates) = p.require_task_gates {
         sqlx::query("UPDATE waves SET require_task_gates = ?1 WHERE id = ?2")
             .bind(require_gates)
-            .bind(&w.id)
+            .bind(w.id.as_str())
             .execute(&mut **tx)
             .await?;
     }
@@ -1027,12 +1029,19 @@ pub async fn wave_lifecycle_and_budget_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &str,
 ) -> Result<Option<(WaveLifecycle, Option<i64>)>> {
-    let row: Option<(WaveLifecycle, Option<i64>)> =
+    // #679 PR1 — `WaveLifecycle` lost its `sqlx::Type` derive when it
+    // moved to calm-types; decode TEXT and parse via `TryFrom<String>`.
+    let row: Option<(String, Option<i64>)> =
         sqlx::query_as("SELECT lifecycle, task_budget FROM waves WHERE id = ?1")
             .bind(wave_id)
             .fetch_optional(&mut **tx)
             .await?;
-    Ok(row)
+    row.map(|(lifecycle, budget)| {
+        WaveLifecycle::try_from(lifecycle)
+            .map(|lifecycle| (lifecycle, budget))
+            .map_err(|e| CalmError::Internal(format!("waves.lifecycle decode: {e}")))
+    })
+    .transpose()
 }
 
 /// Issue #644 PR-C — the wave-level gate policy flag
@@ -1480,7 +1489,7 @@ pub async fn card_create_with_id_tx(
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
-        .bind(&p.wave_id)
+        .bind(p.wave_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
     if exists.is_none() {
@@ -1510,11 +1519,11 @@ pub async fn card_create_with_id_tx(
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
     )
     .bind(&id)
-    .bind(&p.wave_id)
+    .bind(p.wave_id.as_str())
     .bind(&p.kind)
     .bind(sort)
     .bind(&payload_text)
-    .bind(role)
+    .bind(role.as_db_str())
     .bind(deletable)
     .bind(now)
     .bind(now)
@@ -1560,13 +1569,14 @@ pub async fn card_update_tx(
     id: &str,
     p: CardPatch,
 ) -> Result<Card> {
-    let mut c = sqlx::query_as::<_, Card>(
+    let mut c = sqlx::query_as::<_, crate::db::rows::CardRow>(
         r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
            FROM cards WHERE id = ?1"#,
     )
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?
+    .map(Card::from)
     .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
 
     if let Some(v) = p.kind {
@@ -1595,7 +1605,7 @@ pub async fn card_update_tx(
     .bind(c.sort)
     .bind(&payload_text)
     .bind(c.updated_at)
-    .bind(&c.id)
+    .bind(c.id.as_str())
     .execute(&mut **tx)
     .await?;
     Ok(c)
@@ -1634,7 +1644,7 @@ pub async fn card_update_with_crdt_tx(
     // event-emit work.
     sqlx::query(r#"UPDATE cards SET body_crdt = ?1 WHERE id = ?2"#)
         .bind(&body_crdt)
-        .bind(&card.id)
+        .bind(card.id.as_str())
         .execute(&mut **tx)
         .await?;
     Ok(card)
@@ -1721,7 +1731,7 @@ pub async fn terminal_create_tx(
 ) -> Result<Terminal> {
     // Parent card must exist; surface as NotFound to mirror MockRepo.
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
-        .bind(&p.card_id)
+        .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
     if exists.is_none() {
@@ -1730,7 +1740,7 @@ pub async fn terminal_create_tx(
     // Per-card uniqueness — surface as Conflict to mirror MockRepo
     // (the schema also enforces this via UNIQUE on terminals.card_id).
     let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
-        .bind(&p.card_id)
+        .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
     if dup.is_some() {
@@ -1755,7 +1765,7 @@ pub async fn terminal_create_tx(
            VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
     )
     .bind(&id)
-    .bind(&p.card_id)
+    .bind(p.card_id.as_str())
     .bind(&p.program)
     .bind(&p.cwd)
     .bind(&env_text)
@@ -2864,7 +2874,7 @@ pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) 
     let now = now_ms();
     let new_id_str = new_id();
     let payload_text = serde_json::to_string(&p.payload)?;
-    let row = sqlx::query_as::<_, Overlay>(
+    let row = sqlx::query_as::<_, crate::db::rows::OverlayRow>(
         r#"INSERT INTO overlays
                (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -2882,7 +2892,7 @@ pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) 
     .bind(now)
     .fetch_one(&mut **tx)
     .await?;
-    Ok(row)
+    Ok(Overlay::from(row))
 }
 
 pub async fn overlay_delete_tx(
@@ -2994,13 +3004,13 @@ pub async fn overlay_delete_subtree_by_cove_tx(
 impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- coves
     async fn coves_list(&self) -> Result<Vec<Cove>> {
-        let rows = sqlx::query_as::<_, Cove>(
+        let rows = sqlx::query_as::<_, crate::db::rows::CoveRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
                FROM coves ORDER BY sort ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(Cove::from).collect())
     }
 
     async fn coves_list_user_visible(&self) -> Result<Vec<Cove>> {
@@ -3009,24 +3019,24 @@ impl RepoRead for SqlxRepo {
         // terminal's wave + card. Pre-#175 callers that want every row
         // (debug surfaces, integration tests asserting on the system
         // cove's existence) use `coves_list` directly.
-        let rows = sqlx::query_as::<_, Cove>(
+        let rows = sqlx::query_as::<_, crate::db::rows::CoveRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
                FROM coves WHERE kind = 'user' ORDER BY sort ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(Cove::from).collect())
     }
 
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>> {
-        let row = sqlx::query_as::<_, Cove>(
+        let row = sqlx::query_as::<_, crate::db::rows::CoveRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
                FROM coves WHERE id = ?1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        Ok(row.map(Cove::from))
     }
 
     async fn cove_get_system(&self) -> Result<Option<Cove>> {
@@ -3035,69 +3045,69 @@ impl RepoRead for SqlxRepo {
         // upsert endpoint. Backed by the partial unique index on
         // `coves(kind) WHERE kind = 'system'` from migration 0009 —
         // there is at most one such row.
-        let row = sqlx::query_as::<_, Cove>(
+        let row = sqlx::query_as::<_, crate::db::rows::CoveRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
                FROM coves WHERE kind = 'system' LIMIT 1"#,
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        Ok(row.map(Cove::from))
     }
 
     // -------------------------------------------------------- cove_folders
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>> {
-        let rows = sqlx::query_as::<_, CoveFolder>(
+        let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
             r#"SELECT id, cove_id, path, created_at
                FROM cove_folders WHERE cove_id = ?1 ORDER BY path ASC"#,
         )
         .bind(cove_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(CoveFolder::from).collect())
     }
 
     async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>> {
-        let rows = sqlx::query_as::<_, CoveFolder>(
+        let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
             r#"SELECT id, cove_id, path, created_at
                FROM cove_folders ORDER BY path ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(CoveFolder::from).collect())
     }
 
     async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>> {
-        let row = sqlx::query_as::<_, CoveFolder>(
+        let row = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
             r#"SELECT id, cove_id, path, created_at
                FROM cove_folders WHERE id = ?1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        Ok(row.map(CoveFolder::from))
     }
 
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
-        let rows = sqlx::query_as::<_, Wave>(
+        let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(
             r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(Wave::from).collect())
     }
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
-        let row = sqlx::query_as::<_, Wave>(
+        let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
             r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        Ok(row.map(Wave::from))
     }
 
     async fn waves_window(
@@ -3133,7 +3143,7 @@ impl RepoRead for SqlxRepo {
         }
         sql.push_str(" ORDER BY created_at ASC, id ASC");
 
-        let mut q = sqlx::query_as::<_, Wave>(&sql);
+        let mut q = sqlx::query_as::<_, crate::db::rows::WaveRow>(&sql);
         if let Some(c) = cove_id {
             q = q.bind(c);
         }
@@ -3143,12 +3153,16 @@ impl RepoRead for SqlxRepo {
         if let Some(s) = since {
             q = q.bind(s);
         }
-        Ok(q.fetch_all(&self.pool).await?)
+        Ok(q.fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(Wave::from)
+            .collect())
     }
 
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
         let mut tx = self.pool.begin().await?;
-        let wave = sqlx::query_as::<_, Wave>(
+        let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
             r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
@@ -3159,7 +3173,7 @@ impl RepoRead for SqlxRepo {
             return Ok(None);
         };
 
-        let cards = sqlx::query_as::<_, Card>(
+        let cards = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
         )
@@ -3170,7 +3184,7 @@ impl RepoRead for SqlxRepo {
         // Overlays scoped to this wave or any of its cards. One query: a
         // wave-scoped row plus an IN-list on card ids built at the SQL level
         // using a `cards` subquery so we avoid a parameter explosion.
-        let overlays = sqlx::query_as::<_, Overlay>(
+        let overlays = sqlx::query_as::<_, crate::db::rows::OverlayRow>(
             r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
                FROM overlays
                WHERE (entity_kind = 'wave' AND entity_id = ?1)
@@ -3183,9 +3197,9 @@ impl RepoRead for SqlxRepo {
 
         tx.commit().await?;
         Ok(Some(WaveDetail {
-            wave,
-            cards,
-            overlays,
+            wave: Wave::from(wave),
+            cards: cards.into_iter().map(Card::from).collect(),
+            overlays: overlays.into_iter().map(Overlay::from).collect(),
         }))
     }
 
@@ -3227,33 +3241,39 @@ impl RepoRead for SqlxRepo {
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
         // Keep this ORDER BY aligned with wave_vcs::cards_for_wave_tx; tests pin
         // the sort ASC, id ASC tie-break for duplicate worker run keys.
-        let rows = sqlx::query_as::<_, Card>(
+        let rows = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC, id ASC"#,
         )
         .bind(wave_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(Card::from).collect())
     }
 
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {
-        let row = sqlx::query_as::<_, Card>(
+        let row = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                FROM cards WHERE id = ?1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        Ok(row.map(Card::from))
     }
 
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>> {
-        let row: Option<(CardRole,)> = sqlx::query_as("SELECT role FROM cards WHERE id = ?1")
+        // #679 PR1 — `CardRole` lost its `sqlx::Type` derive when it moved
+        // to calm-types; decode TEXT and parse via `TryFrom<String>`.
+        let row: Option<(String,)> = sqlx::query_as("SELECT role FROM cards WHERE id = ?1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.map(|(role,)| role))
+        row.map(|(role,)| {
+            CardRole::try_from(role)
+                .map_err(|e| CalmError::Internal(format!("cards.role decode: {e}")))
+        })
+        .transpose()
     }
 
     async fn harness_item_list_by_card(
@@ -3284,7 +3304,7 @@ impl RepoRead for SqlxRepo {
                 after_id,
             )
         };
-        let mut rows = sqlx::query_as::<_, HarnessItem>(sql)
+        let mut rows = sqlx::query_as::<_, crate::db::rows::HarnessItemRow>(sql)
             .bind(card_id)
             .bind(cursor)
             .bind(limit)
@@ -3293,7 +3313,7 @@ impl RepoRead for SqlxRepo {
         if descending {
             rows.reverse();
         }
-        Ok(rows)
+        Ok(rows.into_iter().map(HarnessItem::from).collect())
     }
 
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
@@ -3340,7 +3360,7 @@ impl RepoRead for SqlxRepo {
 
     // -------------------------------------------------------------- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {
-        let rows = sqlx::query_as::<_, Overlay>(
+        let rows = sqlx::query_as::<_, crate::db::rows::OverlayRow>(
             r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
                FROM overlays WHERE entity_kind = ?1 AND entity_id = ?2"#,
         )
@@ -3348,18 +3368,18 @@ impl RepoRead for SqlxRepo {
         .bind(entity_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(Overlay::from).collect())
     }
 
     async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>> {
-        let rows = sqlx::query_as::<_, Overlay>(
+        let rows = sqlx::query_as::<_, crate::db::rows::OverlayRow>(
             r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
                FROM overlays WHERE entity_kind = ?1"#,
         )
         .bind(entity_kind)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.into_iter().map(Overlay::from).collect())
     }
 
     // ------------------------------------------------------------- terminals
@@ -3967,7 +3987,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         // Parent card must exist; surface as NotFound to mirror MockRepo.
         let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
-            .bind(&p.card_id)
+            .bind(p.card_id.as_str())
             .fetch_optional(&self.pool)
             .await?;
         if exists.is_none() {
@@ -3976,7 +3996,7 @@ impl RepoOutOfDomain for SqlxRepo {
         // Per-card uniqueness — surface as Conflict to mirror MockRepo
         // (the schema also enforces this via UNIQUE on terminals.card_id).
         let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
-            .bind(&p.card_id)
+            .bind(p.card_id.as_str())
             .fetch_optional(&self.pool)
             .await?;
         if dup.is_some() {
@@ -4000,7 +4020,7 @@ impl RepoOutOfDomain for SqlxRepo {
                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
         )
         .bind(&id)
-        .bind(&p.card_id)
+        .bind(p.card_id.as_str())
         .bind(&p.program)
         .bind(&p.cwd)
         .bind(&env_text)

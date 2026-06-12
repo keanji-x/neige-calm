@@ -1,0 +1,35 @@
+# calm-types — the shared vocabulary crate (issue #679, PR1).
+#
+# Bottom of the crate DAG: ids, entities/DTOs, the Event wire enum, the
+# wave-lifecycle edge table, and the new WorkerSession/Principal vocabulary.
+# Everything — old calm-server code and the new greenfield crates — speaks
+# these types.
+#
+# HARD RULE (issue #679 §"Crate decomposition"): NO sqlx, NO axum, NO tokio.
+# This crate is a compile firewall — IO concerns (row mapping, HTTP
+# responses, broadcast buses) live above it. Row mapping for the entities
+# declared here is calm-server's `db::rows` module today and calm-truth's
+# job from PR2 on.
+[package]
+name = "calm-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Serde + JSON — wire shapes only, no IO.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors
+thiserror = "1"
+
+# WS event TS bindings — same pin + features as calm-server had before the
+# move; the export tests (`cargo test -p calm-types export_bindings_`) write
+# `web/src/api/generated-events.ts` via the workspace-root TS_RS_EXPORT_DIR
+# (.cargo/config.toml).
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+
+# OpenAPI schema derives (`ToSchema`) for the entity types calm-server's
+# `openapi.rs` document references. Plain feature set — `axum_extras` stays
+# in calm-server with the handlers.
+utoipa = "5"

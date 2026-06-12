@@ -196,4 +196,62 @@ impl IntoResponse for CalmError {
     }
 }
 
+/// #679 PR1 — bridge from the IO-free core error (calm-types/calm-exec
+/// layers) into the HTTP-mapped `CalmError`. This is the "two-stage enum"
+/// half of the issue's CalmError split: `CalmError` itself stays a local
+/// type (the orphan rule pins `Db(#[from] sqlx::Error)` and `IntoResponse`
+/// here), while signatures below the IO line speak
+/// [`calm_types::error::CoreError`] and convert losslessly at the boundary.
+/// Variant mapping is 1:1 — `code()` and `status()` are preserved for every
+/// shared arm (pinned by the test below).
+impl From<calm_types::error::CoreError> for CalmError {
+    fn from(err: calm_types::error::CoreError) -> Self {
+        use calm_types::error::CoreError as Core;
+        match err {
+            Core::NotFound(m) => CalmError::NotFound(m),
+            Core::Conflict(m) => CalmError::Conflict(m),
+            Core::IdempotencyCollision(m) => CalmError::IdempotencyCollision(m),
+            Core::BadRequest(m) => CalmError::BadRequest(m),
+            Core::Unauthorized => CalmError::Unauthorized,
+            Core::Forbidden(m) => CalmError::Forbidden(m),
+            Core::ServiceUnavailable(m) => CalmError::ServiceUnavailable(m),
+            Core::Io(e) => CalmError::Io(e),
+            Core::Serde(e) => CalmError::Serde(e),
+            Core::Internal(m) => CalmError::Internal(m),
+        }
+    }
+}
+
 pub type Result<T, E = CalmError> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod core_error_bridge_tests {
+    use super::CalmError;
+    use calm_types::error::CoreError;
+
+    #[test]
+    fn conversion_preserves_code_and_status() {
+        // The external error shape (`{error, code}` + HTTP status) must be
+        // unchanged by the #679 PR1 split: converting a CoreError into
+        // CalmError keeps the same machine-readable code for every arm.
+        let cases: Vec<CoreError> = vec![
+            CoreError::NotFound("x".into()),
+            CoreError::Conflict("x".into()),
+            CoreError::IdempotencyCollision("x".into()),
+            CoreError::BadRequest("x".into()),
+            CoreError::Unauthorized,
+            CoreError::Forbidden("x".into()),
+            CoreError::ServiceUnavailable("x".into()),
+            CoreError::Io(std::io::Error::other("x")),
+            CoreError::Serde(serde_json::from_str::<i32>("x").unwrap_err()),
+            CoreError::Internal("x".into()),
+        ];
+        for core in cases {
+            let code = core.code();
+            let message = core.to_string();
+            let mapped = CalmError::from(core);
+            assert_eq!(mapped.code(), code, "code drift for {mapped:?}");
+            assert_eq!(mapped.to_string(), message, "message drift for {mapped:?}");
+        }
+    }
+}

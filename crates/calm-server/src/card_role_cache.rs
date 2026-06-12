@@ -149,11 +149,15 @@ impl CardRoleCache {
     /// migrations first.
     pub async fn seed_from_db(&self, pool: &SqlitePool) -> Result<()> {
         self.0.clear();
-        let rows: Vec<(String, CardRole, String)> =
+        // #679 PR1 — `CardRole` lost its `sqlx::Type` derive when it moved
+        // to calm-types (zero-IO rule); decode the TEXT column and parse
+        // via the calm-types `TryFrom<String>` (same legal value set).
+        let rows: Vec<(String, String, String)> =
             sqlx::query_as(r#"SELECT id, role, wave_id FROM cards"#)
                 .fetch_all(pool)
                 .await?;
         for (id, role, wave_id) in rows {
+            let role = CardRole::try_from(role).map_err(|e| sqlx::Error::Decode(e.into()))?;
             self.0.insert(
                 CardId::from(id),
                 CardCacheEntry {
