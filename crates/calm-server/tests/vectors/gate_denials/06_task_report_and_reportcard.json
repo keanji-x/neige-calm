@@ -1,0 +1,40 @@
+[
+  {
+    "description": "AiSpec(spec card) emitting task.completed at the kernel write entry is ALLOWED today",
+    "note": "Characterization surprise: the in-tx role gate has no rule denying task.completed to AiSpec — sections 2/2.5 don't list it and section 3 only inspects AiCodex/AiClaude actors. The 'spec must not report task completion' rule lives ONLY in the MCP soft gate (mcp_server/tools/emit.rs task_complete -> require_role(Worker)). Pinned as allow; tightening the kernel gate is a conscious FROZEN-VECTOR-CHANGE.",
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-47", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiCodex(report card) emitting task.completed into ANOTHER card's scope is ALLOWED today",
+    "note": "Characterization surprise: the ReportCard arm of the gate (role_gate.rs section 3, Some(CardRole::ReportCard) => {}) performs NO self-scope cross-check, unlike the Worker arm — a report-card-bound actor can write into any card/wave/cove scope as long as the event isn't wave.updated or a dispatch-request. Pinned as allow; closing this is a conscious FROZEN-VECTOR-CHANGE.",
+    "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-48", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiCodex(report card) emitting a Wave-scoped task.completed is ALLOWED today",
+    "note": "Same ReportCard no-scope-check surprise as the previous vector, one scope level up.",
+    "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-49", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "AiCodex(report card) is still refused wave.updated — the wave-authority branch fires before the ReportCard arm",
+    "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
+    "event": { "ev": "wave.updated", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "title": "frozen-vector wave", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit wave.updated" }
+  },
+  {
+    "description": "AiCodex(report card) is still refused codex.worker_requested — the dispatch-authority branch fires before the ReportCard arm",
+    "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-r-51", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "may emit dispatch-request events" }
+  }
+]

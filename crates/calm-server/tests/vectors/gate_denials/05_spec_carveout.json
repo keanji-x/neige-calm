@@ -1,0 +1,80 @@
+[
+  {
+    "description": "Hook carveout: AiCodex(spec card) may emit codex.hook scoped to its own card home (bridge subprocess path)",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.codex.session_start", "hook_idempotency_key": "vec-c-36", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "Hook carveout: AiClaude(spec card) may emit claude.hook scoped to its own card home",
+    "actor": { "kind": "AiClaude", "id": "$SPEC_CARD" },
+    "event": { "ev": "claude.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.claude.pre_tool_use", "hook_idempotency_key": "vec-c-37", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "Hook carveout: AiCodex(spec card) may emit harness.user_message.enqueued scoped to its own card home",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "rt-vec-38", "card_id": "$SPEC_CARD", "wave_id": "$HOME_WAVE", "char_count": 3 } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "Hook carveout: AiClaude(spec card) may emit harness.user_message.enqueued scoped to its own card home",
+    "actor": { "kind": "AiClaude", "id": "$SPEC_CARD" },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "rt-vec-39", "card_id": "$SPEC_CARD", "wave_id": "$HOME_WAVE", "char_count": 3 } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  },
+  {
+    "description": "Hook carveout boundary: AiCodex(spec card) codex.hook with a forged scope.wave is refused — same self-scope cross-check as the Worker arm",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.codex.session_start", "hook_idempotency_key": "vec-c-40", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$OTHER_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "scope.wave mismatch" }
+  },
+  {
+    "description": "Hook carveout boundary: AiCodex(spec card) codex.hook with a forged scope.cove is refused",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.codex.session_start", "hook_idempotency_key": "vec-c-41", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$OTHER_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "scope.cove mismatch" }
+  },
+  {
+    "description": "Hook carveout boundary: AiCodex(spec card) codex.hook scoped to a DIFFERENT card is refused",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.codex.session_start", "hook_idempotency_key": "vec-c-42", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "is out of scope" }
+  },
+  {
+    "description": "Hook carveout boundary: AiCodex(spec card) emitting a NON-lifecycle event (task.completed) is refused, even in its own card scope — write authority for spec-roled cards lives with AiSpec",
+    "note": "Characterization surprise: the denial surfaces as the NotSpecForWave variant ('may emit wave.updated') even though the event is task.completed — the Spec arm reuses that error shape for any non-carveout event. Pinned as-is; do not 'fix' the message without a FROZEN-VECTOR-CHANGE.",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-c-43", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "card is Spec-roled but actor variant is not AiSpec" }
+  },
+  {
+    "description": "Hook carveout is actor-variant exact: AiClaude(spec card) emitting codex.hook (cross-variant) is refused",
+    "actor": { "kind": "AiClaude", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.codex.session_start", "hook_idempotency_key": "vec-c-44", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "card is Spec-roled but actor variant is not AiSpec" }
+  },
+  {
+    "description": "Hook carveout is actor-variant exact: AiCodex(spec card) emitting claude.hook (cross-variant) is refused",
+    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "event": { "ev": "claude.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.claude.pre_tool_use", "hook_idempotency_key": "vec-c-45", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "deny", "error_contains": "card is Spec-roled but actor variant is not AiSpec" }
+  },
+  {
+    "description": "Worker arm accepts hook events too: AiCodex(worker card) codex.hook in its own card scope is allowed",
+    "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$WORKER_CARD", "kind": "hook.codex.session_start", "hook_idempotency_key": "vec-c-46", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "expected": { "decision": "allow" }
+  }
+]

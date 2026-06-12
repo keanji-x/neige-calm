@@ -69,6 +69,55 @@ jobs:
         # Feature enabled for compile-check coverage; codex-e2e tests self-skip when no codex binary is discoverable, the default in GHA runners.
         run: cargo test --workspace --locked --features calm-server/codex-e2e
 
+  frozen-vectors:
+    name: frozen security vectors freeze gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the commit-range walk below can diff against the
+          # PR base / push predecessor.
+          fetch-depth: 0
+
+      # Issue #679 PR0-A — the gate-denial vector corpus under
+      # crates/calm-server/tests/vectors/ is FROZEN characterization data:
+      # it pins the role-gate decision matrix so a future gate rewrite
+      # (#679 PR7) must pass the same files unmodified instead of rewriting
+      # its own tests. Any commit that touches the dir must carry a
+      # `FROZEN-VECTOR-CHANGE:` rationale in its message — same spirit as
+      # the raw_repo grep gate above, but keyed on commit messages so the
+      # change is a conscious, auditable decision.
+      - name: vectors dir changes require FROZEN-VECTOR-CHANGE rationale
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          VEC_DIR='crates/calm-server/tests/vectors/'
+          # Resolve a usable base: PR base sha or push `before`; fall back to
+          # the first parent when unavailable (branch creation pushes report
+          # `before` as 40 zeros).
+          if [ -z "${BASE_SHA:-}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA=$(git rev-parse HEAD~1)
+          fi
+          if git diff --quiet "$BASE_SHA"...HEAD -- "$VEC_DIR"; then
+            echo "OK: frozen vectors untouched"
+            exit 0
+          fi
+          # Vectors changed — every commit in range whose diff touches the
+          # dir must carry the rationale marker in its full message.
+          bad=0
+          for sha in $(git log --format=%H "$BASE_SHA"..HEAD -- "$VEC_DIR"); do
+            if ! git log -1 --format=%B "$sha" | grep -q 'FROZEN-VECTOR-CHANGE:'; then
+              echo "::error::commit $sha touches $VEC_DIR without a 'FROZEN-VECTOR-CHANGE:' rationale in its message"
+              git log -1 --format='  %h %s' "$sha"
+              bad=1
+            fi
+          done
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: all vector-touching commits carry FROZEN-VECTOR-CHANGE:"
+
   web:
     name: web (build + test + a11y)
     runs-on: ubuntu-latest
