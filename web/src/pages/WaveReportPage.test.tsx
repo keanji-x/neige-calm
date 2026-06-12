@@ -892,6 +892,57 @@ describe('WaveReportPage', () => {
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
+  it('falls back to raw JSON when a cards/<id>/payload.json path has no registered viewer', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rawPayload = JSON.stringify({
+      opaque: true,
+      body: { message: 'viewer intentionally unregistered' },
+    });
+
+    mockWaveFileLists({
+      '': [
+        { name: 'cards/', kind: 'dir', size: 1 },
+        { name: 'report.md', kind: 'file' },
+      ],
+      cards: [{ name: 'card_payload/', kind: 'dir' }],
+      'cards/card_payload': [{ name: 'payload.json', kind: 'file' }],
+    });
+    mockWaveFileContents({
+      'report.md': {
+        content_type: 'text/markdown',
+        content: '# Hi',
+      },
+      'cards/index.json': {
+        content_type: 'application/json',
+        content: '[{"id":"card_payload","kind":"codex"}]',
+      },
+      'cards/card_payload/payload.json': {
+        content_type: 'application/json',
+        content: rawPayload,
+      },
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Fallback report body')]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('treeitem', { name: /cards\// }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /codex card_pay/ }),
+    );
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: /payload\.json/ }),
+    );
+
+    expect(await screen.findByTestId('code-pane')).toHaveTextContent(
+      rawPayload,
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
   it('falls back to raw JSON when runs/index.json is malformed', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 

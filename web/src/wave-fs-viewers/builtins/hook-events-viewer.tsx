@@ -18,18 +18,15 @@ function HookEventsViewerComponent({
   path: string;
   raw: string;
 }) {
-  const events = [...data].sort(
-    (a, b) => a.created_at - b.created_at || a.event_id - b.event_id,
-  );
-
   return (
     <section className="wave-fs-viewer-info-card">
       <h2 className="wave-fs-viewer-title">Hook events ({data.length})</h2>
-      {events.length === 0 ? (
+      {data.length === 0 ? (
         <p className="wave-fs-viewer-empty">No hook events yet.</p>
       ) : (
         <ul className="wave-fs-viewer-list">
-          {events.map((event) => (
+          {/* Backend emits event-log order (ORDER BY id ASC); do not re-sort. */}
+          {data.map((event) => (
             <li className="wave-fs-viewer-row" key={event.event_id}>
               <div className="wave-fs-viewer-main">
                 <span className="wave-fs-viewer-primary">

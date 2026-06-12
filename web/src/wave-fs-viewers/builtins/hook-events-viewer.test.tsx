@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HookEventsViewer } from './hook-events-viewer';
 
@@ -9,10 +9,9 @@ afterEach(() => {
 });
 
 describe('HookEventsViewer', () => {
-  it('renders hook events sorted by creation time with payload disclosures', () => {
-    vi.spyOn(Date, 'now').mockReturnValue(
-      new Date('2026-06-10T12:00:00Z').getTime(),
-    );
+  it('renders hook events in backend event-log order with payload disclosures', () => {
+    const base = new Date('2026-06-10T11:00:00Z').getTime();
+    vi.spyOn(Date, 'now').mockReturnValue(base + 3_600_000 + 1_000);
 
     render(
       <Component
@@ -20,35 +19,41 @@ describe('HookEventsViewer', () => {
         raw="[]"
         data={[
           {
-            created_at: new Date('2026-06-10T11:30:00Z').getTime(),
-            event_id: 2,
+            created_at: base + 300,
+            event_id: 1,
             kind: 'claude.hook',
             hook_kind: 'PostToolUse',
             payload: { tool: 'Read', ok: true },
           },
           {
-            created_at: new Date('2026-06-10T11:00:00Z').getTime(),
-            event_id: 1,
+            created_at: base + 100,
+            event_id: 2,
             kind: 'codex.hook',
             hook_kind: 'PreToolUse',
             payload: { tool: 'Bash' },
+          },
+          {
+            created_at: base + 200,
+            event_id: 3,
+            kind: 'codex.hook',
+            hook_kind: 'Stop',
+            payload: { transcript: 'done' },
           },
         ]}
       />,
     );
 
     expect(
-      screen.getByRole('heading', { name: 'Hook events (2)' }),
+      screen.getByRole('heading', { name: 'Hook events (3)' }),
     ).toBeInTheDocument();
 
     const rows = screen.getAllByRole('listitem');
-    expect(within(rows[0]).getByText('PreToolUse')).toHaveClass(
-      'wave-fs-viewer-primary',
-    );
-    expect(within(rows[1]).getByText('PostToolUse')).toHaveClass(
-      'wave-fs-viewer-primary',
-    );
-    expect(screen.getByText('codex.hook')).toHaveAttribute(
+    expect(
+      rows.map(
+        (row) => row.querySelector('.wave-fs-viewer-primary')?.textContent,
+      ),
+    ).toEqual(['PostToolUse', 'PreToolUse', 'Stop']);
+    expect(screen.getAllByText('codex.hook')[0]).toHaveAttribute(
       'data-tone',
       'accent',
     );
@@ -56,13 +61,12 @@ describe('HookEventsViewer', () => {
       'data-tone',
       'warning',
     );
-    expect(screen.getByText('Created 1h ago')).toBeInTheDocument();
-    expect(screen.getByText('Created 30m ago')).toBeInTheDocument();
+    expect(screen.getAllByText('Created 1h ago')).toHaveLength(3);
 
     const details = screen.getAllByText('Payload')[0].closest('details');
     expect(details).not.toHaveAttribute('open');
     expect(details?.querySelector('code')?.textContent).toBe(
-      JSON.stringify({ tool: 'Bash' }, null, 2),
+      JSON.stringify({ tool: 'Read', ok: true }, null, 2),
     );
   });
 
