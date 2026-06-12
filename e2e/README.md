@@ -67,6 +67,11 @@ done-only lifecycle gate, trailing-newline-safe JSON summaries, and fail-fast
 server log signatures. Tier 1 no-Codex cases that intentionally exercise an
 inert shared spec harness should declare `CASE_CHECK_SERVER_LOGS=0`.
 
+`.env` is optional for tier 1: helper lookups read the process environment
+first, then `.env` when present, then call-site defaults. Tier 2 selections
+require Codex credentials plus `CALM_CODEX_HOST_BIN` in `.env` or the
+environment because those cases can spawn real Codex work.
+
 ## Add A Case
 
 1. Pick the next numeric prefix for the tier.

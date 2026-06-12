@@ -288,6 +288,67 @@ jobs:
         if: always()
         run: make stop
 
+  stack-e2e-tier-1:
+    name: stack e2e (tier 1)
+    # Match the chromium stack job's runner pin so the host-built release
+    # binaries remain ABI-compatible with the bookworm-slim runtime image.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Same cache key as the chromium e2e job: debug/release targets differ,
+      # but the shared registry + git index still avoid a cold dependency run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # See note above on --legacy-peer-deps in the `web` job.
+      - name: npm ci
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      # Same release build as `chromium-e2e`: e2e/run.sh owns compose startup,
+      # but docker-compose.yml still bind-mounts these host-built binaries.
+      - name: cargo build --release (server + codex bridge + mcp-stdio shim + proc-supervisor)
+        run: cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
+
+      - name: npm run build (web bundle for nginx)
+        working-directory: web
+        run: npm run build
+
+      # No .env is created here. Tier-1 preflight treats it as optional, and
+      # compose tolerates a missing codex bind source because no tier-1 case
+      # asserts a live Codex spawn.
+      - name: stack e2e tier 1
+        env:
+          CALM_DEV_AUTOLOGIN: "true"
+          CALM_EXTRA_MOUNT: /tmp
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          NO_PROXY: "*"
+          http_proxy: ""
+          https_proxy: ""
+          no_proxy: "*"
+        run: ./e2e/run.sh --tier 1
+
+      - name: upload stack e2e artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stack-e2e-tier-1-artifacts
+          path: e2e-artifacts/
+          retention-days: 7
+          if-no-files-found: ignore
+
   openapi-drift:
     name: openapi drift (cargo emit-openapi == checked-in spec)
     runs-on: ubuntu-latest

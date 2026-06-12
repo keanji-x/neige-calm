@@ -122,11 +122,7 @@ run_one_case() (
 
   cd "$REPO_ROOT" || exit 1
   printf 'CASE START %s tier=%s timeout=%ss\n' "$name" "$tier" "$timeout_secs"
-  if (( tier >= 2 )); then
-    stack_preflight 1
-  else
-    stack_preflight 0
-  fi
+  stack_preflight "$NEED_CODEX_REQUIREMENTS"
   PORT="$(pick_port)"
   start_stack
   wait_for_health
@@ -182,6 +178,7 @@ selected=0
 passed=0
 skipped=0
 failed=0
+NEED_CODEX_REQUIREMENTS=0
 declare -a selected_files=()
 declare -a selected_names=()
 declare -a selected_tiers=()
@@ -205,6 +202,13 @@ done
 if (( LIST_ONLY )); then
   exit 0
 fi
+
+for tier in "${selected_tiers[@]}"; do
+  if (( tier >= 2 )); then
+    NEED_CODEX_REQUIREMENTS=1
+    break
+  fi
+done
 
 for i in "${!selected_files[@]}"; do
   selected=$((selected + 1))

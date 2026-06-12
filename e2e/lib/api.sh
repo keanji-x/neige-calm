@@ -15,6 +15,7 @@ dotenv_get() {
     return 0
   fi
 
+  [[ -f "$ENV_FILE" ]] || return 1
   line="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 || true)"
   [[ -n "$line" ]] || return 1
   value="${line#*=}"

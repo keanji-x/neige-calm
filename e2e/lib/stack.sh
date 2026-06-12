@@ -8,16 +8,27 @@ E2E_CONTAINER_STATE_DIR="${E2E_CONTAINER_STATE_DIR:-/var/lib/neige-calm}"
 
 stack_preflight() {
   local need_codex_auth=${1:-0}
-  local bin node_major
+  local bin node_major codex_host_bin
 
   for bin in docker make git curl ss cargo; do
     command -v "$bin" >/dev/null 2>&1 || fail "$bin is required on PATH"
   done
   docker info >/dev/null 2>&1 || fail "docker daemon is not reachable"
   docker compose version >/dev/null 2>&1 || fail "docker compose plugin is required"
-  [[ -f "$ENV_FILE" ]] || fail "missing $ENV_FILE; create/copy .env for this checkout"
+
+  if [[ -f "$ENV_FILE" ]]; then
+    :
+  elif (( need_codex_auth )); then
+    printf 'INFO: %s not found; checking environment for tier-2 Codex settings\n' "$ENV_FILE" >&2
+  else
+    printf 'INFO: %s not found; using environment/defaults for tier-1 run\n' "$ENV_FILE" >&2
+  fi
+
   if (( need_codex_auth )); then
     [[ -s "$HOME/.codex/auth.json" ]] || fail "missing Codex auth at $HOME/.codex/auth.json; run codex login"
+    codex_host_bin="$(dotenv_get CALM_CODEX_HOST_BIN || true)"
+    [[ -n "$codex_host_bin" ]] || fail "missing CALM_CODEX_HOST_BIN in $ENV_FILE or environment; set it to the host codex binary for tier-2 runs"
+    [[ -x "$codex_host_bin" ]] || fail "CALM_CODEX_HOST_BIN is not executable: $codex_host_bin"
   fi
 
   if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
