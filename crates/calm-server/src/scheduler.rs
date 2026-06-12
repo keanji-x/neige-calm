@@ -25,7 +25,10 @@
 //! operation recovery), on `RecvError::Lagged`, and on a slow periodic
 //! reconcile tick (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300).
 //! Every sweep arm is guarded and idempotent, so a sweep racing live
-//! handling is a no-op.
+//! handling is a no-op. The tick/Lagged backstops are boot-gated:
+//! [`Scheduler::sweep_all`] no-ops until the boot funnel's
+//! [`Scheduler::sweep_boot`] completes, preserving the documented
+//! recovery → scheduler-sweep boot order.
 //!
 //! ## Single-winner claim (§5.4/§5.5)
 //!
@@ -229,6 +232,15 @@ pub struct Scheduler {
     wave_dirty: DashMap<WaveId, Arc<AtomicBool>>,
     /// Per-task single-flight for submit/wait drives (live + sweep).
     inflight: Arc<DashMap<String, ()>>,
+    /// Round-3 review F2 — boot-order gate for the backstop sweeps.
+    /// The dispatcher spawns the reconcile tick (and the Lagged-arm
+    /// sweep) while `Dispatcher` is still being BUILT — before `main`
+    /// runs `recover_operations_on_boot` → `scheduler_sweep_on_boot` —
+    /// so an early tick/lag could run `sweep_all` against unrecovered
+    /// operation rows. Both backstops funnel through
+    /// [`Scheduler::sweep_all`], which no-ops until
+    /// [`Scheduler::sweep_boot`] completes and opens this gate.
+    boot_sweep_done: AtomicBool,
 }
 
 impl Scheduler {
@@ -249,6 +261,7 @@ impl Scheduler {
             wave_locks: DashMap::new(),
             wave_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
+            boot_sweep_done: AtomicBool::new(false),
         })
     }
 
@@ -575,7 +588,7 @@ impl Scheduler {
         };
         let (op_kind, payload) = build_worker_payload(task)?;
         let payload_hash = stable_payload_hash(&payload)?;
-        let op_id = runtime
+        let op_id = match runtime
             .submit(
                 op_kind,
                 OperationKey {
@@ -585,7 +598,32 @@ impl Scheduler {
                 },
                 payload,
             )
-            .await?;
+            .await
+        {
+            Ok(op_id) => op_id,
+            // Round-3 review F1 — error classification. The idempotency
+            // payload-hash conflict is PERMANENT: `build_worker_payload`
+            // is a pure function of the frozen post-claim row, so OUR
+            // resubmits always hash-match the original operation; a
+            // mismatch under this task's key can only be a foreign
+            // operation (e.g. a legacy `calm.task.dispatch` spawn that
+            // already used the task id) — it will never self-heal, and
+            // leaving the row `dispatched` would retry the same error
+            // every sweep while pinning the wave budget forever. Run the
+            // same spawn-failure path as an op Failed/Stuck outcome:
+            // guarded `failed('spawn-failed')` + kernel `task.failed`.
+            Err(e) if crate::operation::is_idempotency_payload_conflict(&e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "scheduler: task idempotency key owned by a foreign operation (permanent); failing task"
+                );
+                return self.fail_spawn(task, wave, &e.to_string()).await;
+            }
+            // Everything else stays TRANSIENT/unknown (policy-free: no
+            // retry counting) — log-and-leave for the next trigger/sweep.
+            Err(e) => return Err(e),
+        };
         let result = runtime.wait(&op_id).await?;
         match result.outcome {
             OperationOutcome::Succeeded { result }
@@ -738,7 +776,22 @@ impl Scheduler {
     ///   guarded completion tx as the live exit hook.
     /// - `running` + codex kind: left alone (policy-free; risk R4).
     /// - `verifying`: PR-C.
+    ///
+    /// Boot-gated (round-3 review F2): both backstop callers — the
+    /// reconcile tick and the Lagged arm — are spawned during
+    /// `Dispatcher` construction, BEFORE `main`'s
+    /// `recover_operations_on_boot` → `scheduler_sweep_on_boot` funnel,
+    /// so a sweep here before [`Scheduler::sweep_boot`] completes could
+    /// re-drive dispatched rows against unrecovered operation rows.
+    /// Until the gate opens this is a no-op; nothing is lost — the boot
+    /// sweep itself covers everything an early tick/lag would have.
     pub async fn sweep_all(self: &Arc<Self>) {
+        if !self.boot_sweep_done.load(Ordering::SeqCst) {
+            tracing::debug!(
+                "scheduler: backstop sweep skipped — boot recovery/sweep has not completed yet"
+            );
+            return;
+        }
         let pending_waves = self.sweep_reconcile().await;
         for wave_id in pending_waves {
             self.schedule_wave(WaveId::from(wave_id)).await;
@@ -752,11 +805,30 @@ impl Scheduler {
     /// the normal async [`Scheduler::poke`] path so boot never blocks
     /// the HTTP server behind full schedule passes (claim + spawn
     /// `wait()` per wave).
+    ///
+    /// Completing this sweep opens the boot gate (round-3 review F2):
+    /// from here on the periodic reconcile tick and Lagged-arm
+    /// [`Scheduler::sweep_all`] calls run for real.
     pub async fn sweep_boot(self: &Arc<Self>) {
         let pending_waves = self.sweep_reconcile().await;
         for wave_id in pending_waves {
             self.poke(WaveId::from(wave_id));
         }
+        self.boot_sweep_done.store(true, Ordering::SeqCst);
+    }
+
+    /// Round-3 review F2 — whether the boot gate is open (the boot
+    /// sweep completed). Exposed for test assertions.
+    pub fn boot_sweep_completed(&self) -> bool {
+        self.boot_sweep_done.load(Ordering::SeqCst)
+    }
+
+    /// TEST seam: open the boot gate without running a boot sweep, for
+    /// suites that drive [`Scheduler::sweep_all`] / scheduling passes
+    /// directly. Production only opens the gate via
+    /// [`Scheduler::sweep_boot`] (the `scheduler_sweep_on_boot` funnel).
+    pub fn mark_boot_sweep_complete(&self) {
+        self.boot_sweep_done.store(true, Ordering::SeqCst);
     }
 
     /// Shared sweep body: runs the reconcile arms inline and returns

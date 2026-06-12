@@ -161,6 +161,23 @@ fn build_scheduler_with_semaphore(
     adapters: Vec<Arc<dyn ProviderAdapter>>,
     semaphore: Arc<tokio::sync::Semaphore>,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
+    let (runtime, scheduler) = build_scheduler_unbooted(boot, adapters, semaphore);
+    // Production opens the boot gate via the `scheduler_sweep_on_boot`
+    // funnel; these tests model the post-boot steady state so backstop
+    // sweeps run for real (round-3 review F2).
+    scheduler.mark_boot_sweep_complete();
+    (runtime, scheduler)
+}
+
+/// `build_scheduler_with_semaphore` WITHOUT opening the boot gate —
+/// the dispatcher-built scheduler's state before `main` runs
+/// `recover_operations_on_boot` → `scheduler_sweep_on_boot` (round-3
+/// review F2).
+fn build_scheduler_unbooted(
+    boot: &Boot,
+    adapters: Vec<Arc<dyn ProviderAdapter>>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         boot.repo
             .sqlite_pool()
@@ -2087,4 +2104,131 @@ async fn legacy_report_without_task_row_still_emits() {
         .unwrap()
         .unwrap();
     assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 3 — F1: a foreign operation owning the task's idempotency
+// key with a DIFFERENT payload is a PERMANENT spawn error — fail the
+// task and free the wave budget instead of retrying forever
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let legacy = plan_task(&boot.wave_id, "legacy", TaskKind::Codex, &[]);
+    let legacy_id = legacy.id.clone();
+    seed_task(&boot, legacy).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "next", TaskKind::Codex, &[]),
+    )
+    .await;
+
+    // A legacy/foreign operation already holds (codex-worker, task id)
+    // with a payload the scheduler's deterministic payload can never
+    // hash-match — every submit returns the idempotency conflict.
+    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"));
+    op_repo
+        .insert_operation(
+            "codex-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(legacy_id.clone()),
+                payload_hash: "legacy-foreign-hash".into(),
+            },
+            json!({ "legacy": true }),
+        )
+        .await
+        .expect("pre-insert foreign op under the task id");
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    // PERMANENT classification: the same spawn-failure path as an op
+    // Failed/Stuck outcome — guarded failed('spawn-failed') + kernel
+    // task.failed — not the log-and-leave-for-sweep transient path.
+    let row = task_row(&boot, "legacy").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Failed,
+        "idempotency payload conflict must terminalize the row"
+    );
+    assert_eq!(row.status_detail.as_deref(), Some("spawn-failed"));
+    assert!(row.finished_at_ms.is_some());
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1, "kernel task.failed pushed for the spec");
+    assert!(failed[0].0.contains("KernelDispatcher"));
+    assert_eq!(failed[0].1["idempotency_key"], json!(legacy_id));
+    let reason = failed[0].1["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("already used with different payload"),
+        "reason carries the conflict, got {reason:?}"
+    );
+    // The foreign operation row itself is untouched.
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+
+    // Budget freed (kernel default 1): the second pending task now
+    // dispatches instead of the wave stalling behind the dead row.
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    assert_eq!(
+        task_row(&boot, "next").await.status,
+        TaskStatus::Running,
+        "freed budget admits the next pending task"
+    );
+    assert_eq!(operation_count(&boot, "codex-worker").await, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 3 — F2: backstop sweeps (reconcile tick / Lagged) no-op
+// until the boot sweep completes (recovery → scheduler boot order)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn backstop_sweep_noops_until_boot_sweep_completes() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    // Claimed pre-crash; the worker op was never inserted — exactly the
+    // row an early tick would re-drive against unrecovered op state.
+    let mut task = plan_task(&boot.wave_id, "early", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    seed_task(&boot, task).await;
+    let (_runtime, scheduler) = build_scheduler_unbooted(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+    );
+    assert!(!scheduler.boot_sweep_completed());
+
+    // A reconcile tick (or Lagged sweep) firing during boot must no-op.
+    scheduler.sweep_all().await;
+    assert_eq!(
+        operation_count(&boot, "codex-worker").await,
+        0,
+        "gated backstop sweep must not submit operations"
+    );
+    assert_eq!(
+        task_row(&boot, "early").await.status,
+        TaskStatus::Dispatched,
+        "gated backstop sweep must not move rows"
+    );
+
+    // The boot funnel's sweep reconciles and opens the gate.
+    scheduler.sweep_boot().await;
+    assert!(scheduler.boot_sweep_completed());
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+    assert_eq!(task_row(&boot, "early").await.status, TaskStatus::Running);
+
+    // Post-boot ticks sweep for real (and stay idempotent).
+    scheduler.sweep_all().await;
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 }

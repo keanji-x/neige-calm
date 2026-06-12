@@ -666,7 +666,9 @@ impl Dispatcher {
                         // pending tasks until the next reconcile tick —
                         // schedule a full sweep now. Every sweep arm is
                         // guarded + idempotent, so racing live handling
-                        // is a no-op.
+                        // is a no-op. `sweep_all` is boot-gated (round-3
+                        // review F2): a lag during boot no-ops here and
+                        // the boot sweep itself covers the missed events.
                         let scheduler = Arc::clone(&inner_for_task.scheduler);
                         tokio::spawn(async move {
                             scheduler.sweep_all().await;
@@ -688,7 +690,10 @@ impl Dispatcher {
             let mut interval = tokio::time::interval(period);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // The first tick fires immediately; skip it — boot runs its
-            // own sweep in the asserted boot order.
+            // own sweep in the asserted boot order. Later ticks that
+            // still beat the boot funnel (low reconcile period / slow
+            // recovery) are handled by `sweep_all`'s boot gate (round-3
+            // review F2): they no-op until `sweep_boot` completes.
             interval.tick().await;
             loop {
                 interval.tick().await;
