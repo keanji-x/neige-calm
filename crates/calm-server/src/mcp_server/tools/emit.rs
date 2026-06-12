@@ -458,7 +458,50 @@ async fn emit_task_report_for_identity(
             let scope = scope.clone();
             let wave_scope = wave_scope.clone();
             let wave_id = wave_id.clone();
+            let worker_card_id = card_id_str.clone();
             Box::pin(async move {
+                // Issue #644 PR-B — flip the matching plan-task row INSIDE
+                // the same tx that persists the worker's report event
+                // (design §3): one tx, no event-persisted-but-row-stale
+                // crash window. The flips are guarded
+                // (`status IN ('dispatched','running')`, wave-pinned, and
+                // the done-flip skips gated rows), so a legacy
+                // `calm.task.dispatch` key with no tasks row, an already
+                // terminal row, or a foreign-wave id all no-op. This hook
+                // lives ONLY in the worker-role-gated
+                // `calm.task.complete` / `calm.task.fail` handlers — spec
+                // verdict emissions (`calm.task.verdict`, wave_state.rs)
+                // never run it, so verdicts can never flip rows.
+                let now = crate::model::now_ms();
+                match &event {
+                    Event::TaskCompleted {
+                        idempotency_key, ..
+                    } => {
+                        crate::db::sqlite::task_complete_from_worker_tx(
+                            tx,
+                            idempotency_key,
+                            wave_id.as_str(),
+                            Some(worker_card_id.as_str()),
+                            now,
+                        )
+                        .await?;
+                    }
+                    Event::TaskFailed {
+                        idempotency_key, ..
+                    } => {
+                        crate::db::sqlite::task_fail_from_worker_tx(
+                            tx,
+                            idempotency_key,
+                            wave_id.as_str(),
+                            Some(worker_card_id.as_str()),
+                            "worker-reported",
+                            now,
+                        )
+                        .await?;
+                    }
+                    _ => {}
+                }
+
                 let mut events = vec![(actor, scope, event)];
                 if let Some(auto_events) = auto_transition_if_current_in_tx(
                     tx,

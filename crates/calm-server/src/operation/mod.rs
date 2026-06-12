@@ -902,6 +902,28 @@ impl OperationRuntime {
         self.submit(kind, key, payload).await
     }
 
+    /// Issue #644 PR-B — look up an operation row by
+    /// `(kind, idempotency_key)`. Used by the scheduler's sweep to
+    /// correlate a `dispatched`/`running` task row with its worker-spawn
+    /// operation (the task-to-operation relation is the idempotency-key
+    /// convention, design §2.2; no `spawn_op_id` column exists).
+    pub async fn find_by_kind_and_idempotency(
+        &self,
+        kind: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<Operation>> {
+        self.repo
+            .find_by_idempotency_key(
+                kind,
+                &OperationKey {
+                    operation_key: String::new(),
+                    idempotency_key: Some(idempotency_key.to_string()),
+                    payload_hash: String::new(),
+                },
+            )
+            .await
+    }
+
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {
         if let Some(result) = self.repo.operation_result(op_id).await? {
             return Ok(result);

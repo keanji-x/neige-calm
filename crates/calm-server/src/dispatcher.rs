@@ -57,6 +57,7 @@ use crate::operation::{
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::runtime_repo::RuntimeKind;
+use crate::scheduler::{DEFAULT_RECONCILE_SECS, Scheduler, TerminalTaskHook};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -294,6 +295,17 @@ pub struct Dispatcher {
     /// resources alive after shutdown.
     #[allow(dead_code)]
     operation_runtime: Arc<OperationRuntime>,
+    /// Issue #644 PR-B — the kernel task scheduler, owned here (the
+    /// dispatcher construction site owns the operation runtime + event
+    /// subscription loop, design §5). Exposed via
+    /// [`Dispatcher::scheduler`] for the boot sweep and tests.
+    scheduler: Arc<Scheduler>,
+    /// §5.1 liveness backstop — slow periodic reconcile sweep
+    /// (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300). Held so a future
+    /// shutdown can `abort()` it; runs for the process lifetime today,
+    /// like `handle`.
+    #[allow(dead_code)]
+    reconcile_handle: JoinHandle<()>,
 }
 
 impl Dispatcher {
@@ -355,6 +367,12 @@ impl Dispatcher {
     /// `available_permits()` to verify the cap.
     pub fn semaphore(&self) -> Arc<Semaphore> {
         Arc::clone(&self.semaphore)
+    }
+
+    /// Issue #644 PR-B — handle to the kernel task scheduler. Used by
+    /// the boot sweep (`lib.rs::scheduler_sweep_on_boot`) and tests.
+    pub fn scheduler(&self) -> Arc<Scheduler> {
+        Arc::clone(&self.scheduler)
     }
 
     /// Spawn the dispatcher background task.
@@ -534,7 +552,7 @@ impl Dispatcher {
         write: WriteContext,
         _codex: Arc<CodexClient>,
         _daemon: Arc<DaemonClient>,
-        _terminal_renderer: Arc<TerminalRendererRegistry>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
         _mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         harness: HarnessRegistry,
         _shared_codex_appserver: Arc<SharedCodexAppServer>,
@@ -547,12 +565,31 @@ impl Dispatcher {
             permits
         };
         let semaphore = Arc::new(Semaphore::new(permits));
+        // Issue #644 PR-B — the scheduler lives at the dispatcher
+        // construction site: same `Weak<OperationRuntime>` discipline,
+        // same global spawn semaphore (§5.3).
+        let scheduler = Scheduler::new(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            Arc::downgrade(&operation_runtime),
+            Arc::clone(&semaphore),
+        );
+        // Issue #644 M2 (live path) — install the terminal-exit
+        // completion bundle on the renderer registry so the
+        // attach-reader exit branch can flip plan-task rows.
+        terminal_renderer.set_task_hook(TerminalTaskHook::new(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+        ));
         let inner = Arc::new(Inner {
             repo,
             events: events.clone(),
             write,
             harness,
             operation_runtime: Arc::downgrade(&operation_runtime),
+            scheduler: Arc::clone(&scheduler),
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
             // a SEPARATE instance from anything else: keyed by the spec
             // `CardId`;
@@ -576,6 +613,11 @@ impl Dispatcher {
             "wave.report_edited".into(),
             "codex.hook".into(),
             "claude.hook".into(),
+            // Issue #644 PR-B — scheduler triggers (§5.1). These two
+            // only poke the scheduler; they never enter the push branch
+            // or the worker-spawn path.
+            "plan.updated".into(),
+            "wave.lifecycle_changed".into(),
         ];
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
@@ -616,9 +658,38 @@ impl Dispatcher {
                             skipped = n,
                             "dispatcher subscriber lagged; missed events may need a retry from the requester"
                         );
+                        // Issue #644 PR-B (§5.1 backstop a): a lagged
+                        // `plan.updated` / `task.completed` would strand
+                        // pending tasks until the next reconcile tick —
+                        // schedule a full sweep now. Every sweep arm is
+                        // guarded + idempotent, so racing live handling
+                        // is a no-op.
+                        let scheduler = Arc::clone(&inner_for_task.scheduler);
+                        tokio::spawn(async move {
+                            scheduler.sweep_all().await;
+                        });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
+            }
+        });
+
+        // §5.1 backstop b — slow reconcile tick running the same sweep
+        // as boot. Correctness never depends on it (every arm is
+        // guarded); it restores liveness after a lost envelope.
+        let tick_scheduler = Arc::clone(&scheduler);
+        let reconcile_handle = tokio::spawn(async move {
+            let period = std::time::Duration::from_secs(Scheduler::reconcile_secs_from_env(
+                DEFAULT_RECONCILE_SECS,
+            ));
+            let mut interval = tokio::time::interval(period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick fires immediately; skip it — boot runs its
+            // own sweep in the asserted boot order.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                tick_scheduler.sweep_all().await;
             }
         });
 
@@ -628,6 +699,8 @@ impl Dispatcher {
             handle,
             inner,
             operation_runtime,
+            scheduler,
+            reconcile_handle,
         }
     }
 }
@@ -640,6 +713,10 @@ struct Inner {
     /// through the active harness registry.
     harness: HarnessRegistry,
     operation_runtime: Weak<OperationRuntime>,
+    /// Issue #644 PR-B — scheduler poked by the subscription arms
+    /// (`plan.updated`, `wave.lifecycle_changed`, and the task report
+    /// kinds after their push handling).
+    scheduler: Arc<Scheduler>,
     /// #293 PR3b — DEDICATED push watermark cache keyed by the spec
     /// `CardId`. A push fires only when `envelope_id > cursor`, then bumps;
     /// this makes pushes idempotent under at-least-once broadcast delivery
@@ -695,6 +772,24 @@ impl Inner {
                         );
                     }
                 }
+                // Issue #644 PR-B (§5.1 trigger 2) — a task terminal
+                // event may free budget / satisfy deps; poke the
+                // scheduler AFTER the push branch. Fire-and-forget; the
+                // scheduler's guards make spurious pokes no-ops.
+                if let Some(wave_id) = envelope.scope.wave_id().cloned() {
+                    self.scheduler.poke(wave_id);
+                }
+                return;
+            }
+            // Issue #644 PR-B (§5.1 triggers 1 + 4) — scheduler-only
+            // arms. They never enter the push branch or the worker-spawn
+            // path below.
+            Event::PlanUpdated { wave_id, .. } => {
+                self.scheduler.poke(wave_id.clone());
+                return;
+            }
+            Event::WaveLifecycleChanged { id, .. } => {
+                self.scheduler.poke(id.clone());
                 return;
             }
             Event::WaveReportEdited {
@@ -1560,6 +1655,8 @@ mod tests {
                 "wave.report_edited".into(),
                 "codex.hook".into(),
                 "claude.hook".into(),
+                "plan.updated".into(),
+                "wave.lifecycle_changed".into(),
             ]),
         };
         let wave = WaveId::from("w");
@@ -1622,6 +1719,26 @@ mod tests {
             kind: "hook.claude.stop".into(),
             hook_idempotency_key: "hook-claude".into(),
             payload: serde_json::Value::Null,
+        })));
+        // Issue #644 PR-B — the scheduler trigger kinds match.
+        assert!(filter.matches(&env(Event::PlanUpdated {
+            wave_id: wave.clone(),
+            changed_keys: vec!["impl-parser".into()],
+            agent_message: None,
+        })));
+        assert!(filter.matches(&env(Event::WaveLifecycleChanged {
+            id: wave.clone(),
+            cove_id: cove.clone(),
+            from: crate::model::WaveLifecycle::Draft,
+            to: crate::model::WaveLifecycle::Planning,
+            agent_message: None,
+        })));
+        // `task.dispatched` is emitted BY the scheduler inside its claim
+        // tx and deliberately NOT subscribed (§5.1).
+        assert!(!filter.matches(&env(Event::TaskDispatched {
+            idempotency_key: "w:k".into(),
+            kind: "codex".into(),
+            agent_message: None,
         })));
         // A kind NOT in the list must not match — the filter is still a
         // closed allowlist.

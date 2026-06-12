@@ -144,6 +144,16 @@ pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error
     state.operation_runtime.apply_recovery(plan).await
 }
 
+/// Issue #644 PR-B — boot scheduler sweep (design §8). MUST run after
+/// `recover_operations_on_boot`: operation recovery is synchronous
+/// apply-then-drive, so by the time the sweep reads an operation row it
+/// reflects the recovered state (a `dispatched` task whose worker op
+/// recovery already completed reconciles immediately instead of
+/// re-driving). The boot order is asserted in `boot_order_tests`.
+pub async fn scheduler_sweep_on_boot(state: &state::AppState) {
+    state.dispatcher.scheduler().sweep_all().await;
+}
+
 #[derive(Clone, Copy, Debug)]
 enum HookReplayProvider {
     Codex,
@@ -470,6 +480,7 @@ pub mod routes;
 pub mod runtime_lookup;
 pub mod runtime_repo;
 pub(crate) mod runtime_row;
+pub mod scheduler;
 pub mod shared_codex_appserver;
 pub mod shared_codex_home;
 pub mod spec_appserver;
@@ -546,5 +557,23 @@ mod boot_order_tests {
             .expect("main boot calls recover_operations_on_boot");
         assert!(reconcile < runtimes);
         assert!(runtimes < recover);
+    }
+
+    /// Issue #644 PR-B — the scheduler's boot sweep runs AFTER operation
+    /// recovery (design §8: harness recovery → supervisor reconcile →
+    /// runtime orphans → operations → scheduler sweep). Operation
+    /// recovery is synchronous apply-then-drive, so the sweep's
+    /// `dispatched` arm reads already-recovered operation rows instead
+    /// of racing the recovery's re-drive.
+    #[test]
+    fn boot_order_scheduler_sweep_after_operation_recovery() {
+        let main_rs = include_str!("main.rs");
+        let recover = main_rs
+            .find("recover_operations_on_boot(&state).await")
+            .expect("main boot calls recover_operations_on_boot");
+        let sweep = main_rs
+            .find("scheduler_sweep_on_boot(&state).await")
+            .expect("main boot calls scheduler_sweep_on_boot");
+        assert!(recover < sweep);
     }
 }

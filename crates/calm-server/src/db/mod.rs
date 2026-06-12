@@ -325,6 +325,12 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn tasks_by_wave(&self, wave_id: &str) -> Result<Vec<Task>>;
     /// Single-row fetch by the composed `"{wave_id}:{key}"` id.
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
+    /// Issue #644 PR-B — every non-terminal task across every wave
+    /// (`pending` / `dispatched` / `running` / `verifying`), in stable
+    /// `(wave_id, priority DESC, created_at_ms ASC, key ASC)` order.
+    /// Backed by `tasks_wave_status_idx`. Used by the scheduler's sweep
+    /// (boot, periodic reconcile, post-`Lagged`) — design §8.
+    async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
 
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;

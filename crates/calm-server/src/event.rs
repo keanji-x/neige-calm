@@ -1613,6 +1613,13 @@ mod scope_tests {
         };
         assert_eq!(plan_updated.kind_tag(), "plan.updated");
 
+        let task_dispatched = Event::TaskDispatched {
+            idempotency_key: "wave-1:impl-parser".into(),
+            kind: "codex".into(),
+            agent_message: None,
+        };
+        assert_eq!(task_dispatched.kind_tag(), "task.dispatched");
+
         let claude_hook = Event::ClaudeHook {
             card_id: CardId::from("card-1"),
             kind: "hook.claude.stop".into(),
@@ -2287,6 +2294,11 @@ mod scope_tests {
             Event::PlanUpdated {
                 wave_id: WaveId::from("wave-1"),
                 changed_keys: vec!["impl-parser".into()],
+                agent_message: None,
+            },
+            Event::TaskDispatched {
+                idempotency_key: "wave-1:impl-parser".into(),
+                kind: "codex".into(),
                 agent_message: None,
             },
         ]

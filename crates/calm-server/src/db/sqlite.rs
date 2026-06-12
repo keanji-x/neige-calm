@@ -1014,6 +1014,131 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
+/// Issue #644 PR-B — the scheduler's single-winner claim
+/// (`pending → dispatched`, design §5.4). Returns rows moved (`0` =
+/// someone else won the claim; the caller skips silently). Runs inside
+/// the same tx that appends `Event::TaskDispatched` and the
+/// `Dispatching → Working` promotion so projections never observe a
+/// claimed row without its dispatch record.
+pub async fn task_claim_pending_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'dispatched', updated_at_ms = ?1
+           WHERE id = ?2 AND status = 'pending'"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Issue #644 PR-B — the scheduler's post-spawn running stamp (design
+/// §3/§5.4). Guarded `WHERE status = 'dispatched'`: a fast worker that
+/// already reported (`done`/`failed`, or `verifying` once gates land)
+/// makes this a no-op so the late scheduler write can never regress the
+/// row. `worker_card_id` is `COALESCE`-stamped — whichever side (this
+/// stamp or the report tx) lands first wins; neither overwrites.
+pub async fn task_mark_running_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    worker_card_id: Option<&str>,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'running',
+               worker_card_id = COALESCE(worker_card_id, ?1),
+               updated_at_ms = ?2
+           WHERE id = ?3 AND status = 'dispatched'"#,
+    )
+    .bind(worker_card_id)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Issue #644 PR-B — worker-reported success flip
+/// (`dispatched/running → done`, design §3), run **inside** the
+/// `calm.task.complete` emit tx (and by the terminal-exit completion
+/// paths) so there is no event-persisted-but-row-stale crash window.
+///
+/// `dispatched` is included because a fast worker can report before the
+/// scheduler's `wait()` returns. `gate_json IS NULL` is the defensive
+/// PR-C guard: a gated row must go to `verifying`, never straight to
+/// `done` — no gated row can exist yet (PR-A rule 8), but if one did,
+/// this flip leaves it alone rather than mis-flipping it.
+///
+/// `wave_id` is part of the guard so a caller can never flip another
+/// wave's row even if it echoes a foreign task id.
+pub async fn task_complete_from_worker_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_id: &str,
+    worker_card_id: Option<&str>,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'done',
+               status_detail = NULL,
+               worker_card_id = COALESCE(worker_card_id, ?1),
+               updated_at_ms = ?2,
+               finished_at_ms = ?2
+           WHERE id = ?3 AND wave_id = ?4
+             AND status IN ('dispatched', 'running')
+             AND gate_json IS NULL"#,
+    )
+    .bind(worker_card_id)
+    .bind(now)
+    .bind(id)
+    .bind(wave_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Issue #644 PR-B — worker-reported / kernel-observed failure flip
+/// (`dispatched/running → failed`, design §3). Same guards as the
+/// success flip except the gate condition: a worker failure never runs
+/// a gate (§3), so gated rows fail the same way. `status_detail`
+/// distinguishes `'worker-reported'` (the worker said so, or its
+/// terminal exited non-zero) from `'spawn-failed'` (the scheduler could
+/// not start it).
+pub async fn task_fail_from_worker_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_id: &str,
+    worker_card_id: Option<&str>,
+    status_detail: &str,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'failed',
+               status_detail = ?1,
+               worker_card_id = COALESCE(worker_card_id, ?2),
+               updated_at_ms = ?3,
+               finished_at_ms = ?3
+           WHERE id = ?4 AND wave_id = ?5
+             AND status IN ('dispatched', 'running')"#,
+    )
+    .bind(status_detail)
+    .bind(worker_card_id)
+    .bind(now)
+    .bind(id)
+    .bind(wave_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 pub async fn wave_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -2802,6 +2927,18 @@ impl RepoRead for SqlxRepo {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row)
+    }
+
+    async fn tasks_nonterminal(&self) -> Result<Vec<Task>> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE status IN ('pending', 'dispatched', 'running', 'verifying') \
+             ORDER BY wave_id ASC, priority DESC, created_at_ms ASC, key ASC"
+        );
+        let rows = sqlx::query_as::<_, Task>(&sql)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
     }
 
     // ---------------------------------------------------------------- cards
