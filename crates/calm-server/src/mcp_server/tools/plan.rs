@@ -21,15 +21,17 @@
 //!   see gate bodies, and the listing layer enforces that shape even
 //!   for spec callers so a future role widening can't leak them (§6.7).
 //!
-//! ## Slice guards (PR-A)
+//! ## Gate policy (PR-C, §4.1 rules 6-8 / §6.6)
 //!
-//! * Rule 8: any task declaring `gate` is rejected — a declared gate
-//!   must always be enforced, and the gate runner only lands in PR-C.
-//!   The `gate_json` column and the rule-7 shape validation still ship
-//!   here; only acceptance is deferred.
-//! * Rule 6 (`require_task_gates` / `no_gate_reason`) is NOT enforced
-//!   here (PR-C-only). `no_gate_reason` is accepted and recorded into
-//!   `context_json` for auditability, but drives nothing.
+//! * Rule 8 (the PR-A slice guard that rejected every declared gate) is
+//!   DELETED — the task-verify runner enforces declared gates now.
+//!   Gates are stored canonically in `gate_json` (rule-7 shape).
+//! * Rule 6 is enforced in the upsert tx: when
+//!   `waves.require_task_gates = 1`, a created/updated **codex** task
+//!   must declare a `gate` or record a `no_gate_reason` (terminal
+//!   tasks are exempt; `unchanged` rows pass through so idempotent
+//!   retries of pre-flag plans keep working). `no_gate_reason` is also
+//!   recorded into `context_json` for auditability, as before.
 //! * `kind = "claude"` is rejected ("not yet supported") — no claude
 //!   worker adapter exists and the column CHECK omits the value.
 //!
@@ -42,7 +44,7 @@
 
 use crate::db::sqlite::{
     require_wave_exists_tx, task_cancel_tx, task_get_tx, task_insert_tx, task_update_pending_tx,
-    tasks_by_wave_tx,
+    tasks_by_wave_tx, wave_require_task_gates_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -67,9 +69,9 @@ pub const TOOL_PLAN_UPSERT: &str = "calm.plan.upsert";
 pub const TOOL_PLAN_CANCEL: &str = "calm.plan.cancel";
 pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
 
-/// Gate timeout defaults/caps (design §4.1 rule 7). Validated here even
-/// though rule 8 rejects every declared gate until PR-C — the shape
-/// contract is part of this slice so PR-C only deletes the guard.
+/// Gate timeout defaults/caps (design §4.1 rule 7). The task-verify
+/// adapter re-clamps defensively at run time
+/// (`task_verify_adapter::GateSpec::timeout_secs_clamped`).
 const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
 const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 
@@ -149,10 +151,13 @@ struct NormalizedTask {
     /// Sorted + deduped — dependency order is set semantics.
     depends_on: Vec<String>,
     priority: i64,
-    /// Always `None` in PR-A: rule 8 rejects every declared gate before
-    /// normalization completes. The field exists so PR-C's guard
-    /// removal does not reshape this struct.
+    /// Canonical gate serialization (rule 7 shape, validated; wire
+    /// shape = `task_verify_adapter::GateSpec`). Deterministic per
+    /// input, so the rule-5 idempotency check covers gates too.
     gate_json: Option<String>,
+    /// Rule 6 escape hatch was supplied (the reason itself is folded
+    /// into `context_json` for the audit trail).
+    has_no_gate_reason: bool,
 }
 
 /// Rule 1 key shape: `^[a-z0-9][a-z0-9._-]{0,63}$` (1..=64 chars).
@@ -233,22 +238,20 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
         Some(raw) => Some(validate_abs_path("cwd", &key, raw)?),
     };
 
-    // Rule 7 — gate shape (validated even though rule 8 rejects below,
-    // so a malformed gate surfaces as the precise shape error).
-    if let Some(gate) = &input.gate {
-        validate_gate_shape(&key, gate)?;
-        // Rule 8 — slice guard (PR-A/PR-B window): a declared gate is
-        // always enforced, and enforcement lands with task-verify
-        // (PR-C). Until then, declaring one is refused outright.
-        return Err(format!(
-            "task {key}: gates are not yet enforced (lands with task-verify); \
-             resubmit without gate or wait for the gate slice"
-        ));
-    }
+    // Rule 7 — gate shape, normalized to the canonical `gate_json`
+    // the task-verify runner deserializes (rule 8's reject-all slice
+    // guard is deleted in the same change that activates rule 6 —
+    // design §6.6/§9).
+    let gate_json = match &input.gate {
+        None => None,
+        Some(gate) => Some(normalize_gate(&key, gate)?),
+    };
+    let has_no_gate_reason = input.no_gate_reason.is_some();
 
-    // Rule 6 escape-hatch bookkeeping (enforcement is PR-C-only):
-    // `no_gate_reason` is recorded into `context_json` so the audit
-    // trail carries it from day one.
+    // Rule 6 escape-hatch bookkeeping: `no_gate_reason` is recorded
+    // into `context_json` so the audit trail carries it (the policy
+    // check itself runs in the upsert tx, where the wave's
+    // `require_task_gates` flag is read).
     let context = input.context.unwrap_or(Value::Null);
     let context = match input.no_gate_reason {
         None => context,
@@ -283,8 +286,38 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
         cwd,
         depends_on,
         priority: input.priority.unwrap_or(0),
-        gate_json: None,
+        gate_json,
+        has_no_gate_reason,
     })
+}
+
+/// Rule 7 + canonicalization: validate the gate shape and render the
+/// canonical `gate_json` (a pure function of the input — `None` fields
+/// omitted, fixed key insertion order — so rule-5 byte-identical
+/// idempotency covers gates). The wire shape matches
+/// `task_verify_adapter::GateSpec`.
+fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
+    validate_gate_shape(key, gate)?;
+    let mut obj = serde_json::Map::new();
+    if let Some(raw) = gate.cwd.as_deref() {
+        obj.insert(
+            "cwd".into(),
+            Value::String(validate_abs_path("gate.cwd", key, raw)?),
+        );
+    }
+    if let Some(timeout) = gate.timeout_secs {
+        obj.insert("timeout_secs".into(), json!(timeout));
+    }
+    obj.insert(
+        "steps".into(),
+        Value::Array(
+            gate.steps
+                .iter()
+                .map(|s| json!({ "name": s.name, "cmd": s.cmd }))
+                .collect(),
+        ),
+    );
+    serde_json::to_string(&Value::Object(obj)).map_err(|e| format!("task {key}: gate: {e}"))
 }
 
 /// Rule 7 gate shape: non-empty `steps`, non-empty `name`/`cmd` with no
@@ -686,6 +719,30 @@ async fn plan_upsert(
                 let existing = tasks_by_wave_tx(tx, &wave_id_str).await?;
                 let outcomes =
                     resolve_plan_batch(&existing, &batch).map_err(CalmError::BadRequest)?;
+
+                // Rule 6 (§4.1/§6.6, PR-C): when the wave requires
+                // gates, every codex task this batch actually WRITES
+                // must declare one or record `no_gate_reason`.
+                // Terminal tasks are exempt (their exit code is the
+                // verdict); `unchanged` rows pass through so an
+                // idempotent retry of a pre-flag plan keeps working.
+                // In-tx read so the policy and the rows it admitted
+                // commit atomically.
+                if wave_require_task_gates_tx(tx, &wave_id_str).await? {
+                    for (t, outcome) in batch.iter().zip(&outcomes) {
+                        if matches!(outcome, PlanOutcome::Created | PlanOutcome::Updated)
+                            && t.kind == TaskKind::Codex
+                            && t.gate_json.is_none()
+                            && !t.has_no_gate_reason
+                        {
+                            return Err(CalmError::BadRequest(format!(
+                                "task {}: this wave requires verification gates for codex \
+                                 tasks (rule 6); declare `gate` or record `no_gate_reason`",
+                                t.key
+                            )));
+                        }
+                    }
+                }
 
                 let now = now_ms();
                 let mut changed_keys: Vec<String> = Vec::new();
@@ -1393,8 +1450,7 @@ mod tests {
             .expect_err("relative gate cwd");
         assert!(err.contains("absolute path"), "err = {err}");
 
-        // A well-shaped gate passes shape validation (rule 8 rejection
-        // happens at the normalize layer, not here).
+        // A well-shaped gate passes shape validation.
         validate_gate_shape(
             "a",
             &gate(vec![step("t", "cargo test")], Some(600), Some("/repo")),
@@ -1402,17 +1458,56 @@ mod tests {
         .expect("valid shape");
     }
 
-    // -------------------------------------------------------- rule 8: slice guard
+    // ------------------------------------- gate acceptance (rule 8 deleted, PR-C)
 
+    /// PR-C deleted the rule-8 slice guard: a well-shaped gate is now
+    /// ACCEPTED and stored canonically. The stored bytes must parse as
+    /// the task-verify runner's `GateSpec` wire shape, and the
+    /// canonicalization must be deterministic (rule-5 idempotency).
     #[test]
-    fn any_declared_gate_rejected_until_task_verify_lands() {
+    fn declared_gate_accepted_and_stored_canonically() {
         let mut t = raw_task("a");
-        t.gate = Some(gate(vec![step("test", "cargo test")], None, None));
-        let err = normalize_task_input(t).expect_err("rule 8");
+        t.gate = Some(gate(
+            vec![step("test", "cargo test"), step("fmt", "cargo fmt --check")],
+            Some(600),
+            Some("  /repo "),
+        ));
+        let n = normalize_task_input(t).expect("gate accepted in PR-C");
+        let gate_json = n.gate_json.expect("gate stored");
+        let spec: crate::operation::task_verify_adapter::GateSpec =
+            serde_json::from_str(&gate_json).expect("stored bytes parse as GateSpec");
+        assert_eq!(spec.cwd.as_deref(), Some("/repo"), "gate.cwd is trimmed");
+        assert_eq!(spec.timeout_secs, Some(600));
+        assert_eq!(spec.steps.len(), 2);
+        assert_eq!(spec.steps[0].name, "test");
+        assert_eq!(spec.steps[0].cmd, "cargo test");
+
+        // Deterministic: the same input normalizes to the same bytes.
+        let mut t2 = raw_task("a");
+        t2.gate = Some(gate(
+            vec![step("test", "cargo test"), step("fmt", "cargo fmt --check")],
+            Some(600),
+            Some("  /repo "),
+        ));
+        let n2 = normalize_task_input(t2).expect("normalize");
+        assert_eq!(n2.gate_json.as_deref(), Some(gate_json.as_str()));
+
+        // Optional fields stay off the canonical bytes when absent.
+        let mut t3 = raw_task("a");
+        t3.gate = Some(gate(vec![step("test", "cargo test")], None, None));
+        let n3 = normalize_task_input(t3).expect("normalize");
+        let bytes = n3.gate_json.expect("gate stored");
+        assert!(!bytes.contains("cwd"), "absent cwd omitted: {bytes}");
         assert!(
-            err.contains("gates are not yet enforced (lands with task-verify)"),
-            "err = {err}"
+            !bytes.contains("timeout_secs"),
+            "absent timeout omitted: {bytes}"
         );
+
+        // A malformed gate still fails loudly at the shape layer.
+        let mut t4 = raw_task("a");
+        t4.gate = Some(gate(vec![], None, None));
+        let err = normalize_task_input(t4).expect_err("empty steps");
+        assert!(err.contains("gate.steps must be non-empty"), "err = {err}");
     }
 
     // -------------------------------------------------------- no_gate_reason

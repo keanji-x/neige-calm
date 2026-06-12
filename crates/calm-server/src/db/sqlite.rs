@@ -1035,6 +1035,21 @@ pub async fn wave_lifecycle_and_budget_tx(
     Ok(row)
 }
 
+/// Issue #644 PR-C — the wave-level gate policy flag
+/// (`waves.require_task_gates`, §6.6), read inside `calm.plan.upsert`'s
+/// tx for the rule-6 check. A gone wave row reads as `false` — the
+/// caller's `require_wave_exists_tx` already errored that case loudly.
+pub async fn wave_require_task_gates_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &str,
+) -> Result<bool> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT require_task_gates FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.is_some_and(|(v,)| v != 0))
+}
+
 /// Issue #644 PR-B — the scheduler's single-winner claim
 /// (`pending → dispatched`, design §5.4). Returns rows moved (`0` =
 /// someone else won the claim; the caller skips silently). Runs inside
