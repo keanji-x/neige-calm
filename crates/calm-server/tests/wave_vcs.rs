@@ -759,6 +759,111 @@ async fn next_commit_after_legacy_card_lens_manifest_rewrites_dotfile_paths() {
     assert_eq!(legacy_manifest_after, legacy_manifest);
 }
 
+#[tokio::test]
+async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let spec = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "spec",
+        CardRole::Spec,
+        json!({"schemaVersion": 1}),
+    )
+    .await;
+    let legacy_head = seed_legacy_card_lens_manifest(&repo, &wave.id, &spec.id).await;
+
+    update_wave_title_with_actor(
+        &repo,
+        &bus,
+        &write,
+        &wave.id,
+        &cove.id,
+        "post cutover",
+        ActorId::User,
+    )
+    .await;
+
+    let block =
+        wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&legacy_head), Some(&spec.id))
+            .await
+            .expect("since-last-turn block")
+            .block
+            .expect("cutover diff block");
+    let legacy_payload_noise = format!("cards/{}/payload.json deleted", spec.id.as_str());
+    let payload_noise = format!("cards/{}/.payload.json new", spec.id.as_str());
+    assert!(
+        !block.contains(&legacy_payload_noise),
+        "legacy payload cutover noise leaked into spec observation: {block}"
+    );
+    assert!(
+        !block.contains(&payload_noise),
+        "payload cutover noise leaked into spec observation: {block}"
+    );
+    assert!(block.contains("wave.json edited"), "block = {block}");
+}
+
+#[tokio::test]
+async fn next_commit_after_legacy_eventless_card_lens_manifest_rewrites_dotfile_paths() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, _coves, write) = write_context();
+    let worker = insert_raw_card(
+        &repo,
+        &roles,
+        &wave.id,
+        "terminal",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "eventless-legacy-paths"}),
+    )
+    .await;
+    let backfilled = wave_vcs::backfill_existing_waves(repo.pool())
+        .await
+        .expect("backfill");
+    assert_eq!(backfilled, 1);
+    let legacy_head = seed_legacy_card_lens_manifest(&repo, &wave.id, &worker.id).await;
+    let legacy_manifest = wave_vcs::tree_at(repo.pool(), &legacy_head)
+        .await
+        .expect("legacy tree query")
+        .expect("legacy tree");
+
+    let legacy_meta_path = format!("cards/{}/meta.json", worker.id.as_str());
+    let legacy_payload_path = format!("cards/{}/payload.json", worker.id.as_str());
+    let meta_path = format!("cards/{}/.meta.json", worker.id.as_str());
+    let payload_path = format!("cards/{}/.payload.json", worker.id.as_str());
+    assert!(legacy_manifest.entries.contains_key(&legacy_meta_path));
+    assert!(legacy_manifest.entries.contains_key(&legacy_payload_path));
+    assert!(!legacy_manifest.entries.contains_key(&meta_path));
+    assert!(!legacy_manifest.entries.contains_key(&payload_path));
+
+    update_wave_title_with_actor(
+        &repo,
+        &bus,
+        &write,
+        &wave.id,
+        &cove.id,
+        "post eventless cutover",
+        ActorId::User,
+    )
+    .await;
+
+    let manifest = head_manifest(&repo, &wave.id).await;
+    assert!(manifest.entries.contains_key(&meta_path));
+    assert!(manifest.entries.contains_key(&payload_path));
+    assert!(!manifest.entries.contains_key(&legacy_meta_path));
+    assert!(!manifest.entries.contains_key(&legacy_payload_path));
+}
+
 #[test]
 fn canonical_json_sorts_keys_and_uses_integer_time_shape() {
     let bytes = wave_vcs::canonical_json_bytes(&json!({

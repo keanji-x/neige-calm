@@ -2681,7 +2681,10 @@ fn is_internal_observation_diff_path(path: &str, spec_card_id: Option<&CardId>) 
     let Some(spec_card_id) = spec_card_id else {
         return false;
     };
-    path == format!("cards/{}/.payload.json", spec_card_id.as_str())
+    let spec_card_id = spec_card_id.as_str();
+    // Legacy spellings appear once per wave in the post-rename healing commit.
+    path == format!("cards/{spec_card_id}/.payload.json")
+        || path == format!("cards/{spec_card_id}/payload.json")
 }
 
 fn card_runtime_json(card: &Card) -> Result<BlobContent> {
