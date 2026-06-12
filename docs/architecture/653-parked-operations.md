@@ -625,7 +625,9 @@ async fn recover_parked(
    would spawn a reattach observer that the boot-end `sweep_parked` (§4.4
    call site b) kills moments later.
 4. Apply: `LeaveParked` → nothing (no claim, no write). `Complete(outcome)` →
-   own tx: `complete_parked_tx` + commit + `publish_completion`. `Fail` →
+   kill the recorded group first if `alive` (`verify_owned_pid` re-check then
+   `signal_process_group(pgid, SIGKILL)`, mirroring §4.4), then own tx:
+   `complete_parked_tx` + commit + `publish_completion`. `Fail` →
    `claim_parked` (§4.1), kill the recorded group if alive
    (`verify_owned_pid` re-check then `signal_process_group(pgid, SIGKILL)` —
    double-kill-safe, §5; if the group **was** alive, follow the kill with
@@ -1113,8 +1115,9 @@ pattern — hook-injected spawn behavior, full `AppState` boot).
    foreign `boot_id` → op fails with `last_error_class="parked_dead"`;
    (c) deadline in the past + live child → `sweep_parked` kills (assert via
    `verify_owned_pid` flip) and fails with `parked_deadline`;
-   (d) adapter override returning `Complete` → op succeeds with recovered
-   result; (e) **deadline + recoverable verdict**: deadline in the past,
+   (d) live child + adapter override returning `Complete` during boot recovery
+   → op succeeds with recovered result and kills the child group; (e)
+   **deadline + recoverable verdict**: deadline in the past,
    child dead, adapter `recover_parked` returns `Complete` → op succeeds
    with the recovered result, not `parked_deadline` (§4.4); (f)
    **pre-deadline dead-probe**: deadline in the future, child dead, adapter
@@ -1417,4 +1420,3 @@ Round-3 verdicts: subagent APPROVE-WITH-NITS, codex APPROVE-WITH-NITS; nits
 folded — PR-C test obligations (§8), boot-Fail `RecoveryMode` (§4.2),
 SIGKILL-finality wording (§4.4), exit-file-over-signal preference
 (§4.4 ordering B / §6.3).
-

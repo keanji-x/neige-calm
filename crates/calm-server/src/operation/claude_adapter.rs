@@ -27,9 +27,11 @@ use crate::wave_cove_cache::WaveCoveCache;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
+    ProviderAdapter, SpawnCtx, SpawnOutcome, Tx, TxOutput,
 };
 
+#[cfg(feature = "fixtures")]
+use super::SpawnHandle;
 #[cfg(feature = "fixtures")]
 use futures::future::BoxFuture;
 

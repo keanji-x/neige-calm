@@ -19,7 +19,7 @@ use calm_server::operation::{
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_lookup::project_runtime_into_cards_payload;
-use calm_server::runtime_repo::RuntimeKind;
+use calm_server::runtime_repo::{RunStatus, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -379,6 +379,18 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
     assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
     assert_eq!(runtime.active_turn_id.as_deref(), Some("fake-turn-0001"));
     assert_eq!(state.shared_codex_appserver.turn_start_count_for_test(), 1);
+    // Let the first fast-exit fake TUI finish its cleanup before forcing the
+    // row back to spawn_started; otherwise the recovery write can hit SQLite
+    // writer contention in this test.
+    let _ = wait_for(Duration::from_secs(2), || {
+        let repo = repo.clone();
+        let runtime_id = runtime_id.clone();
+        async move {
+            let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+            (runtime.status != RunStatus::Running).then_some(())
+        }
+    })
+    .await;
 
     sqlx::query(
         r#"UPDATE operations

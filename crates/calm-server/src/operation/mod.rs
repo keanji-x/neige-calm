@@ -1654,6 +1654,7 @@ impl OperationRuntime {
                 {
                     ParkedRecovery::LeaveParked => {}
                     ParkedRecovery::Complete(outcome) => {
+                        kill_parked_group_if_alive(&artifacts, alive);
                         self.complete_parked_and_publish(&op_id, &outcome).await?;
                     }
                     ParkedRecovery::Fail { reason } => {

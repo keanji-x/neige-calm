@@ -133,6 +133,41 @@ async fn boot_recovery_dead_default_fails_parked_dead() {
 }
 
 #[tokio::test]
+async fn boot_recovery_live_complete_kills_group_and_succeeds() {
+    let adapter = Arc::new(QueuedRecoveryAdapter::new(vec![ParkedRecovery::Complete(
+        ParkedOutcome::Succeeded {
+            result: json!({ "boot": "recovered" }),
+        },
+    )]));
+    let boot = TestBoot::new(vec![adapter]).await;
+    let (mut child, artifacts) = spawn_sleep_child(5);
+    let op = boot
+        .insert_parked("park-recovery", artifacts.clone(), now_ms() + 10_000)
+        .await;
+
+    let plan = boot.runtime.recover_on_boot().await.unwrap();
+    boot.runtime.apply_recovery(plan).await.unwrap();
+    let _ = child.wait();
+
+    assert!(!verify_owned_pid(
+        artifacts.pid,
+        artifacts.start_time,
+        &artifacts.boot_id
+    ));
+    let result = boot
+        .operation_repo
+        .operation_result(&op.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        result.outcome,
+        OperationOutcome::Succeeded { ref result }
+            if result == &json!({ "boot": "recovered" })
+    ));
+}
+
+#[tokio::test]
 async fn sweep_past_deadline_live_default_kills_and_fails_deadline() {
     let boot = TestBoot::new(vec![Arc::new(DefaultParkedAdapter)]).await;
     let (mut child, artifacts) = spawn_sleep_child(5);
