@@ -110,6 +110,20 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
+    // PR-C activated rule 6 and new waves default `require_task_gates
+    // = 1` (migration 0041 DB DEFAULT) — this suite mostly plans
+    // ungated tasks, so the boot wave opts out; gate-specific tests
+    // declare real gates regardless of the flag.
+    repo.wave_update(
+        wave.id.as_str(),
+        WavePatch {
+            require_task_gates: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("boot wave opts out of rule 6");
+
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
@@ -1058,10 +1072,12 @@ async fn duplicate_report_is_idempotent() {
 }
 
 #[tokio::test]
-async fn gated_row_is_left_alone_on_complete() {
-    // Defensive PR-C guard: no gated row can exist yet (PR-A rule 8),
-    // but if one did, `calm.task.complete` must NOT flip it to done —
-    // gated completion belongs to the verify pipeline.
+async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
+    // §3 (PR-C): a gated row's success report is a claim, not
+    // evidence — the emit tx hands the row to the gate runner
+    // (`running → verifying`) and the `Working → Reviewing`
+    // auto-promotion is suppressed (the gate-result tx promotes
+    // instead, on ANY verdict).
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let mut task = plan_task(&boot.wave_id, "gated", TaskKind::Codex, &[]);
@@ -1086,14 +1102,28 @@ async fn gated_row_is_left_alone_on_complete() {
     )
     .await
     .expect("task complete");
+    let row = task_row(&boot, "gated").await;
     assert_eq!(
-        task_row(&boot, "gated").await.status,
-        TaskStatus::Running,
-        "gated rows must not be mis-flipped to done"
+        row.status,
+        TaskStatus::Verifying,
+        "gated success report flips running → verifying, never done"
+    );
+    assert_eq!(row.gate_attempt, 0, "no gate attempt prepared yet");
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "Working → Reviewing promotion is suppressed for gated tasks (§3)"
     );
 
-    // Worker failure flips regardless of gate (§3: no gate runs on
-    // failure).
+    // A worker `task.fail` against the now-`verifying` row is moot —
+    // the verify pipeline owns it (verifying → failed only via gate
+    // verdict). The legacy event persists; the row is untouched.
     call_tool(
         &boot,
         TOOL_TASK_FAIL,
@@ -1101,8 +1131,12 @@ async fn gated_row_is_left_alone_on_complete() {
         json!({ "idempotency_key": task_id, "reason": "boom" }),
     )
     .await
-    .expect("task fail");
-    assert_eq!(task_row(&boot, "gated").await.status, TaskStatus::Failed);
+    .expect("task fail persists as a non-flip report");
+    assert_eq!(
+        task_row(&boot, "gated").await.status,
+        TaskStatus::Verifying,
+        "a verifying row is owned by the gate; worker reports cannot flip it"
+    );
 }
 
 #[tokio::test]

@@ -81,6 +81,20 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
+    // PR-C activated rule 6 and new waves default `require_task_gates
+    // = 1` (migration 0041 DB DEFAULT) — most of this suite plans
+    // ungated codex tasks, so the boot wave opts out; the dedicated
+    // rule-6 matrix test flips the flag back on.
+    repo.wave_update(
+        wave.id.as_str(),
+        WavePatch {
+            require_task_gates: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("boot wave opts out of rule 6");
+
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
@@ -226,10 +240,24 @@ fn outcomes_of(resp: &Value) -> Vec<(String, String)> {
 #[tokio::test]
 async fn migration_0041_new_wave_defaults_gates_on_and_budget_null() {
     let boot = boot().await;
+    // The boot wave opts out of rule 6 for the rest of the suite —
+    // assert the DB DEFAULT on a FRESH wave instead.
+    let fresh = boot
+        .repo
+        .wave_create(calm_server::model::NewWave {
+            cove_id: boot.cove_id.clone(),
+            title: "defaults".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("fresh wave");
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let (require_gates, budget): (i64, Option<i64>) =
         sqlx::query_as("SELECT require_task_gates, task_budget FROM waves WHERE id = ?1")
-            .bind(boot.wave_id.as_str())
+            .bind(fresh.id.as_str())
             .fetch_one(&pool)
             .await
             .expect("read wave policy columns");
@@ -522,7 +550,7 @@ async fn upsert_validation_errors_surface_as_invalid_params() {
             json!([{ "key": "a", "kind": "terminal", "goal": "ls", "cwd": "rel/path" }]),
             "must be an absolute path",
         ),
-        // Rule 7 — control chars in gate cmd (shape error wins over rule 8).
+        // Rule 7 — control chars in gate cmd.
         (
             json!([{
                 "key": "a", "kind": "codex", "goal": "g",
@@ -530,13 +558,14 @@ async fn upsert_validation_errors_surface_as_invalid_params() {
             }]),
             "ASCII control",
         ),
-        // Rule 8 — well-formed gates still refused until task-verify.
+        // Rule 7 — empty gate steps (rule 8 was deleted in PR-C; the
+        // shape contract still rejects degenerate gates).
         (
             json!([{
                 "key": "a", "kind": "codex", "goal": "g",
-                "gate": { "steps": [ { "name": "t", "cmd": "cargo test" } ] }
+                "gate": { "steps": [] }
             }]),
-            "gates are not yet enforced (lands with task-verify)",
+            "gate.steps must be non-empty",
         ),
     ] {
         let err = call_tool(
@@ -1043,4 +1072,142 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
         .await
         .unwrap();
     assert!(tasks.is_empty(), "worker call wrote rows: {tasks:?}");
+}
+
+// ---------------------------------------------------------------------------
+// PR-C — rule 6 matrix (§4.1/§6.6) + gate acceptance (rule 8 deleted)
+// ---------------------------------------------------------------------------
+
+async fn set_require_gates(boot: &Boot, on: bool) {
+    boot.repo
+        .wave_update(
+            boot.wave_id.as_str(),
+            WavePatch {
+                require_task_gates: Some(on),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("set require_task_gates");
+}
+
+#[tokio::test]
+async fn rule6_matrix_require_task_gates() {
+    let boot = boot().await;
+
+    // Flag OFF — an ungated codex task is accepted (the suite default).
+    upsert_ok(
+        &boot,
+        json!([{ "key": "off-ok", "kind": "codex", "goal": "g" }]),
+    )
+    .await;
+
+    set_require_gates(&boot, true).await;
+
+    // Ungated codex task → rejected, whole batch atomic.
+    let err = call_tool(
+        &boot,
+        TOOL_PLAN_UPSERT,
+        spec_identity(&boot),
+        upsert_args(json!([
+            { "key": "gated", "kind": "codex", "goal": "g",
+              "gate": { "steps": [ { "name": "t", "cmd": "true" } ] } },
+            { "key": "naked", "kind": "codex", "goal": "g" }
+        ])),
+    )
+    .await
+    .expect_err("rule 6 rejects the ungated codex task");
+    assert!(err.message.contains("rule 6"), "{err:?}");
+    assert!(err.message.contains("naked"), "{err:?}");
+    let rows = boot
+        .repo
+        .tasks_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "rejected batch must not land its gated sibling either (atomic): {rows:?}"
+    );
+
+    // codex + gate → accepted, gate_json stored canonically.
+    upsert_ok(
+        &boot,
+        json!([{ "key": "gated", "kind": "codex", "goal": "g",
+                 "gate": { "steps": [ { "name": "t", "cmd": "true" } ] } }]),
+    )
+    .await;
+    let row = boot
+        .repo
+        .task_get(&format!("{}:gated", boot.wave_id.as_str()))
+        .await
+        .unwrap()
+        .expect("gated row");
+    let gate_json = row.gate_json.expect("gate stored (rule 8 deleted)");
+    assert!(gate_json.contains("\"cmd\":\"true\""), "{gate_json}");
+
+    // codex + no_gate_reason → accepted; the reason rides context_json.
+    upsert_ok(
+        &boot,
+        json!([{ "key": "excused", "kind": "codex", "goal": "g",
+                 "no_gate_reason": "docs only" }]),
+    )
+    .await;
+    let row = boot
+        .repo
+        .task_get(&format!("{}:excused", boot.wave_id.as_str()))
+        .await
+        .unwrap()
+        .expect("excused row");
+    assert!(
+        row.context_json.contains("docs only"),
+        "{}",
+        row.context_json
+    );
+
+    // terminal ungated → exempt.
+    upsert_ok(
+        &boot,
+        json!([{ "key": "term", "kind": "terminal", "goal": "true" }]),
+    )
+    .await;
+
+    // Unchanged passthrough: the pre-flag ungated codex row resubmitted
+    // byte-identically stays `unchanged` and is NOT re-policed —
+    // idempotent retries of older plans keep working.
+    let out = upsert_ok(
+        &boot,
+        json!([{ "key": "off-ok", "kind": "codex", "goal": "g" }]),
+    )
+    .await;
+    assert_eq!(out["results"][0]["outcome"], "unchanged", "{out}");
+}
+
+#[tokio::test]
+async fn plan_list_hides_gate_commands_but_shows_step_names() {
+    let boot = boot().await;
+    upsert_ok(
+        &boot,
+        json!([{ "key": "gated", "kind": "codex", "goal": "g",
+                 "gate": { "steps": [ { "name": "fmt", "cmd": "cargo fmt --check" },
+                                       { "name": "test", "cmd": "cargo test -p secret" } ] } }]),
+    )
+    .await;
+    let out = call_tool(&boot, TOOL_PLAN_LIST, spec_identity(&boot), json!({}))
+        .await
+        .expect("plan.list");
+    let listed = out["tasks"]
+        .as_array()
+        .expect("tasks array")
+        .iter()
+        .find(|t| t["key"] == "gated")
+        .expect("gated entry")
+        .clone();
+    assert_eq!(listed["gate"]["present"], true, "{listed}");
+    assert_eq!(listed["gate"]["steps"], json!(["fmt", "test"]), "{listed}");
+    let rendered = out.to_string();
+    assert!(
+        !rendered.contains("cargo test -p secret"),
+        "gate commands must never be echoed (§6.7): {rendered}"
+    );
 }
