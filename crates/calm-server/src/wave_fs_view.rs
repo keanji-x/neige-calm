@@ -1352,6 +1352,151 @@ mod tests {
         assert!(empty_value["events"]["verdict"].is_null());
     }
 
+    // ------------------------------------------------------------------
+    // Issue #644 PR-B — §5.6 requested-record fallback: a key with a
+    // `task.dispatched` claim record but no `*.worker_requested` event
+    // projects from the dispatch record (requested_at, kind, the
+    // requested/running/terminal statuses).
+    // ------------------------------------------------------------------
+
+    fn fallback_write() -> WriteContext {
+        WriteContext::new(
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        )
+    }
+
+    fn wave_scoped(id: i64, at: i64, actor: ActorId, event: Event) -> WaveEvent {
+        WaveEvent {
+            id,
+            at,
+            actor,
+            scope: EventScope::Wave {
+                wave: WaveId::from("wave-test"),
+                cove: crate::ids::CoveId::from("cove-test"),
+            },
+            event,
+        }
+    }
+
+    fn dispatched_event(id: i64, at: i64, key: &str, kind: &str) -> WaveEvent {
+        wave_scoped(
+            id,
+            at,
+            ActorId::KernelDispatcher,
+            Event::TaskDispatched {
+                idempotency_key: key.into(),
+                kind: kind.into(),
+                agent_message: None,
+            },
+        )
+    }
+
+    #[test]
+    fn project_runs_uses_task_dispatched_as_requested_record_fallback() {
+        let write = fallback_write();
+        let runs = project_runs(
+            &write,
+            vec![],
+            vec![dispatched_event(5, 500, "w:k", "codex")],
+        );
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.idempotency_key, "w:k");
+        assert_eq!(
+            run.status,
+            WaveFsRunStatus::Requested,
+            "dispatch record alone (no worker card visible) → requested"
+        );
+        assert_eq!(
+            run.requested_at,
+            Some(500),
+            "requested_at from the claim record"
+        );
+        assert_eq!(run.kind, "codex", "kind from the claim record");
+        assert_eq!(
+            run.requested_event.as_ref().map(|e| e.kind),
+            Some("task.dispatched"),
+            "the dispatch record IS the requested-record"
+        );
+    }
+
+    #[test]
+    fn project_runs_dispatched_then_completed_resolves_terminal_status() {
+        let write = fallback_write();
+        let completed = wave_scoped(
+            6,
+            600,
+            // Kernel-emitted completion (terminal-exit path) — actor
+            // KernelDispatcher means NOT a spec verdict.
+            ActorId::KernelDispatcher,
+            Event::TaskCompleted {
+                idempotency_key: "w:k".into(),
+                result: json!({"exit_code": 0}),
+                artifacts: vec![],
+                agent_message: None,
+            },
+        );
+        let runs = project_runs(
+            &write,
+            vec![],
+            vec![dispatched_event(5, 500, "w:k", "terminal"), completed],
+        );
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.status, WaveFsRunStatus::Completed);
+        assert_eq!(run.requested_at, Some(500));
+        assert_eq!(run.finished_at, Some(600));
+        assert_eq!(run.kind, "terminal");
+        assert!(
+            run.verdict.is_none(),
+            "KernelDispatcher completion must never classify as a spec verdict"
+        );
+    }
+
+    #[test]
+    fn project_runs_real_requested_event_wins_over_dispatch_record() {
+        // Legacy `calm.task.dispatch` keys keep their `*.worker_requested`
+        // record even if a dispatch record ever coexisted; the fallback
+        // is fallback-only.
+        let write = fallback_write();
+        let requested = wave_scoped(
+            2,
+            200,
+            ActorId::User,
+            Event::TerminalWorkerRequested {
+                idempotency_key: "w:k".into(),
+                cmd: "ls".into(),
+                cwd: None,
+                agent_message: None,
+            },
+        );
+        let runs = project_runs(
+            &write,
+            vec![],
+            vec![requested, dispatched_event(5, 500, "w:k", "codex")],
+        );
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(
+            run.requested_event.as_ref().map(|e| e.kind),
+            Some("terminal.worker_requested"),
+            "real requested event wins"
+        );
+        assert_eq!(run.requested_at, Some(200));
+        assert_eq!(
+            run.kind, "terminal",
+            "requested kind wins over dispatch-record kind"
+        );
+    }
+
+    #[test]
+    fn run_kind_static_vocabulary() {
+        assert_eq!(run_kind_static("codex"), "codex");
+        assert_eq!(run_kind_static("terminal"), "terminal");
+        assert_eq!(run_kind_static("claude"), "unknown");
+    }
+
     #[test]
     fn hook_events_dto_serializes_like_old_json_builder() {
         let events = vec![
