@@ -8,9 +8,14 @@ set -E
 # and may create/reuse the shared proxy-forwarder container. The no-host-writes
 # expectation applies only to test data/workspace; e2e-artifacts/ is written when
 # a run fails.
+#
+# To keep test state container-local even when .env/host env contains dev-state
+# overrides, make dev force-neutralizes: CALM_CONTAINER_STATE_DIR, CALM_DB_URL,
+# CALM_DATA_DIR, CALM_PLUGINS_DATA_DIR, RESET_DB, and FRESH.
 
 : "${HOME:?HOME must be set}"
 
+E2E_CONTAINER_STATE_DIR="/var/lib/neige-calm"
 RUN_ID="e2e-$(date +%s)-$RANDOM"
 DEV_ID="$RUN_ID"
 PROJECT="neige-calm-$DEV_ID"
@@ -105,8 +110,18 @@ init_workspace() {
   ' sh "$WORKSPACE"
 }
 start_stack() {
+  local -a state_neutralizers=(
+    # Empty is deliberate: compose uses ${VAR:-default} for these paths, and
+    # Makefile gates RESET_DB/FRESH on literal "1".
+    CALM_CONTAINER_STATE_DIR=
+    CALM_DB_URL=
+    CALM_DATA_DIR=
+    CALM_PLUGINS_DATA_DIR=
+    RESET_DB=
+    FRESH=
+  )
   printf 'Starting isolated stack: run_id=%s dev_id=%s port=%s\n' "$RUN_ID" "$DEV_ID" "$PORT"
-  (cd "$REPO_ROOT" && make dev DEV_ID="$DEV_ID" COMPOSE_PROJECT_NAME="$PROJECT" CALM_PORT="$PORT" RESET_DB= FRESH=)
+  (cd "$REPO_ROOT" && make dev DEV_ID="$DEV_ID" COMPOSE_PROJECT_NAME="$PROJECT" CALM_PORT="$PORT" "${state_neutralizers[@]}")
   SERVER_CID="$(cd "$REPO_ROOT" && docker compose -p "$PROJECT" ps -q server || true)"
   [[ -n "$SERVER_CID" ]] || fail "server container was not created for compose project $PROJECT"
 }
@@ -256,7 +271,7 @@ main() {
   local auth_probe_status
   cd "$REPO_ROOT" || exit 1
   preflight
-  WORKSPACE="$(dotenv_get CALM_CONTAINER_STATE_DIR || printf '/var/lib/neige-calm')/e2e-workspace"
+  WORKSPACE="$E2E_CONTAINER_STATE_DIR/e2e-workspace"
   PORT="$(pick_port)"
   start_stack; wait_for_health
   api GET /api/coves - || fail "curl failed for GET /api/coves auth probe"
