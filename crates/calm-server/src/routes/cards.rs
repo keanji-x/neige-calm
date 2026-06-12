@@ -29,7 +29,7 @@ use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_pa
 use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
-use crate::runtime_repo::CardRuntime;
+use crate::runtime_repo::{CardRuntime, RunStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
@@ -605,7 +605,7 @@ fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
         (status = 404, description = "Card or wave not found", body = ErrorBody),
         (status = 409, description = "Runtime is shutting down (code `conflict`), or the spec harness session is dormant and not recoverable — reset to start a session (code `spec_harness_dormant`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
-        (status = 503, description = "Observation queue saturated or shared codex app-server not running, retry shortly", body = ErrorBody),
+        (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
@@ -753,6 +753,20 @@ async fn ensure_live_spec_harness(
         .ok_or_else(dormant)?;
     if let Some(harness) = s.harness.get(&runtime.id) {
         return Ok((runtime, harness));
+    }
+    // #649 review round 3 — a `starting` row means `spec-harness-start` is
+    // still in flight: the adapter writes the row (and, in the deferred
+    // path, the thread id + snapshot) BEFORE `spawn_side_effect` registers
+    // the harness. Recovering here would spawn a harness the start op then
+    // shuts down and replaces, silently dropping any input queued on it.
+    // 503 so the client retries once the start lands (a failed start is
+    // compensated to `failed`/deleted, after which this 409s as dormant).
+    // Recovery below is only for statuses that imply a previously-live
+    // harness (running / idle / turn_pending).
+    if runtime.status == RunStatus::Starting {
+        return Err(CalmError::ServiceUnavailable(
+            "spec harness is starting; retry shortly".into(),
+        ));
     }
     // Row-intrinsic dormancy checks run BEFORE the daemon liveness probe:
     // an unrecoverable row must 409 (steering the user to Reset) even when

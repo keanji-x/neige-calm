@@ -1078,6 +1078,20 @@ async fn seed_active_spec_runtime_row(
     thread_id: Option<String>,
     handle_state_json: Option<Value>,
 ) -> String {
+    seed_spec_runtime_row_with_status(boot, card, thread_id, handle_state_json, RunStatus::Idle)
+        .await
+}
+
+/// Like [`seed_active_spec_runtime_row`] but with an explicit status — used
+/// to model an in-flight `spec-harness-start` (`starting` row, registry
+/// empty until `spawn_side_effect` lands).
+async fn seed_spec_runtime_row_with_status(
+    boot: &Boot,
+    card: &Card,
+    thread_id: Option<String>,
+    handle_state_json: Option<Value>,
+    status: RunStatus,
+) -> String {
     let runtime_id = new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
     runtime_start_tx(
@@ -1087,7 +1101,7 @@ async fn seed_active_spec_runtime_row(
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status,
             terminal_run_id: None,
             thread_id,
             session_id: None,
@@ -1199,6 +1213,39 @@ async fn send_spec_input_active_runtime_null_thread_409_dormant() {
     assert!(
         boot.state.harness.get(&runtime_id).is_none(),
         "thread-less row must not be recovered into the registry"
+    );
+}
+
+/// #649 review round 3 — a `starting` row means `spec-harness-start` is
+/// still in flight (row written before `spawn_side_effect` registers the
+/// harness): lazy recovery must NOT race it by spawning a harness the start
+/// op will shut down (dropping queued input). The route 503s with a retry
+/// hint and leaves the registry empty.
+#[tokio::test]
+async fn send_spec_input_starting_runtime_503_no_recovery() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id = seed_spec_runtime_row_with_status(
+        &boot,
+        &card,
+        Some(thread_id.clone()),
+        Some(idle_snapshot_value(&thread_id)),
+        RunStatus::Starting,
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "racing the in-flight start" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body={body}");
+    assert!(
+        boot.state.harness.get(&runtime_id).is_none(),
+        "in-flight start must not be raced by lazy recovery"
     );
 }
 

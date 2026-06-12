@@ -2270,7 +2270,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Observation queue saturated or shared codex app-server not running, retry shortly */
+            /** @description Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly */
             503: {
                 headers: {
                     [name: string]: unknown;
