@@ -103,8 +103,8 @@ impl<'a> WaveFsView<'a> {
                     .map(|runtime| runtime.updated_at_ms)
                     .unwrap_or(card.updated_at);
                 Ok(vec![
-                    entry_file("meta.json", None, Some(card.updated_at)),
-                    entry_file("payload.json", None, Some(card.updated_at)),
+                    entry_file(".meta.json", None, Some(card.updated_at)),
+                    entry_file(".payload.json", None, Some(card.updated_at)),
                     entry_file("runtime.json", None, Some(runtime_updated_at)),
                     entry_file("events.json", None, Some(hook_events_updated_at)),
                     entry_file("conversation.md", None, Some(hook_events_updated_at)),
@@ -143,8 +143,8 @@ impl<'a> WaveFsView<'a> {
                 }
                 let card = self.card_in_wave(wave, parts[1]).await?;
                 match parts[2] {
-                    "meta.json" => content_json(&self.card_meta(&card)),
-                    "payload.json" => content_json(&card.payload),
+                    ".meta.json" => content_json(&self.card_meta(&card)),
+                    ".payload.json" => content_json(&card.payload),
                     "runtime.json" => {
                         let runtime = self.runtime_for_card(&card).await?;
                         content_json(&runtime)
@@ -909,7 +909,7 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
         run.worker_card
             .as_ref()
             .map(|card| format!(
-                "[{}](../cards/{}/payload.json)",
+                "[{}](../cards/{}/.payload.json)",
                 card.id.as_str(),
                 card.id.as_str()
             ))

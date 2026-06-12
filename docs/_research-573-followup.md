@@ -6,7 +6,7 @@
 - In non-editing mode, a real wave renders `WaveReportSidebar` and passes `ReadOnlyView` only as its fallback. See `web/src/cards/builtins/wave-report.tsx:543`.
 - `WaveReportSidebarState` owns `selectedPath` internally. It starts as `null`, file click/Enter sets it, and the value is passed to `WaveFileViewer`. See `web/src/cards/builtins/wave-report-sidebar.tsx:24`, `web/src/cards/builtins/wave-report-sidebar.tsx:100`, `web/src/cards/builtins/wave-report-sidebar.tsx:270`, and `web/src/cards/builtins/wave-report-sidebar.tsx:131`.
 - When `selectedPath` is null, `WaveFileViewer` shows the fallback report view. When a file is selected, it fetches that file and renders read-only Markdown or a `CodePane`. See `web/src/cards/builtins/wave-report-sidebar.tsx:322`, `web/src/cards/builtins/wave-report-sidebar.tsx:324`, `web/src/cards/builtins/wave-report-sidebar.tsx:356`, and `web/src/cards/builtins/wave-report-sidebar.tsx:366`.
-- Result: after phase 2, selecting `payload.json`, `conversation.md`, `events.json`, `wave.json`, etc. replaces the right pane with a read-only projection, but the header pencil still opens the report editor. That affordance only makes sense for the default report view (`selectedPath === null`) and probably explicit `report.md`.
+- Result: after phase 2, selecting `.payload.json`, `conversation.md`, `events.json`, `wave.json`, etc. replaces the right pane with a read-only projection, but the header pencil still opens the report editor. That affordance only makes sense for the default report view (`selectedPath === null`) and probably explicit `report.md`.
 
 Fix shapes:
 

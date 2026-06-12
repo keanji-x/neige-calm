@@ -4,7 +4,7 @@ Both channels (subagent + `codex review`) agree on MUST-FIX. Subagent also raise
 
 ## MUST-FIX (both channels)
 
-1. **Invalidation gap.** `web/src/app/invalidationPolicies.ts:162-176` — six event policies are `noop()`'d but the wave-fs projection's `runs/*`, `cards/*/events.json`, `cards/*/conversation.md`, and runtime-projected `cards/*/payload.json` derive from them. With the sidebar open during a worker turn, the viewer silently goes stale.
+1. **Invalidation gap.** `web/src/app/invalidationPolicies.ts:162-176` — six event policies are `noop()`'d but the wave-fs projection's `runs/*`, `cards/*/events.json`, `cards/*/conversation.md`, and runtime-projected `cards/*/.payload.json` derive from them. With the sidebar open during a worker turn, the viewer silently goes stale.
 
    For each of these event kinds, ALSO invalidate `waveFilesKey(...)`:
    - `task.completed`, `task.failed`, `codex.job_requested`, `terminal.job_requested` — affect `runs/*`

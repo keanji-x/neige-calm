@@ -78,7 +78,7 @@ File: `crates/calm-server/tests/http_wave_file.rs:55-90`
 
 The "match MCP" loop only covers 3 ls paths (`/`, `cards`, `runs`) and 4 cat paths. It misses:
 - `cards/<id>` (per-card directory ls — exercises the 4-entry listing)
-- `cards/<id>/meta.json`, `events.json`, `conversation.md`
+- `cards/<id>/.meta.json`, `events.json`, `conversation.md`
 - `runs/<key>.md`, `runs/<key>.json`
 - `wave.json`, `index.md`
 

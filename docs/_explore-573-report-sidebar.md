@@ -101,7 +101,7 @@
   cases in the same file.
 - Equivalence assertion: for representative paths (`/`, `cards`, `runs`,
   `report.md`, `cards/index.json`, `runs/index.json`,
-  `cards/<id>/payload.json`), compare HTTP JSON bodies to MCP `call_tool`
+  `cards/<id>/.payload.json`), compare HTTP JSON bodies to MCP `call_tool`
   results byte-for-byte after parsing JSON.
 - Also cover HTTP 401 without session, 404 missing wave, 400 unknown path, and
   403 cross-wave card path.
@@ -114,6 +114,6 @@
 The main risk is auth-model mismatch: MCP exposes this tree only to Spec/Worker
 actors bound to one wave, while HTTP lets any authenticated web user request any
 wave id. That matches the current single-owner REST model, but in a future
-multi-user model the sensitive paths are `cards/*/payload.json`,
+multi-user model the sensitive paths are `cards/*/.payload.json`,
 `cards/*/events.json`, `cards/*/conversation.md`, and `runs/*`; those should be
 hidden or 403 unless the principal owns the wave or has explicit access.

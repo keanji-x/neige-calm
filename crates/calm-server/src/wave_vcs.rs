@@ -201,12 +201,30 @@ fn visible_card_ids_from_manifest(manifest: &TreeManifest) -> BTreeSet<String> {
         .entries
         .keys()
         .filter_map(|path| {
-            path.strip_prefix("cards/")
-                .and_then(|path| path.strip_suffix("/meta.json"))
-                .filter(|card_id| !card_id.contains('/'))
+            card_id_from_card_lens_path(path, ".meta.json")
+                .or_else(|| card_id_from_card_lens_path(path, "meta.json"))
                 .map(ToOwned::to_owned)
         })
         .collect()
+}
+
+fn card_id_from_card_lens_path<'a>(path: &'a str, leaf: &str) -> Option<&'a str> {
+    path.strip_prefix("cards/")
+        .and_then(|path| path.strip_suffix(leaf))
+        .and_then(|path| path.strip_suffix('/'))
+        .filter(|card_id| !card_id.contains('/'))
+}
+
+fn is_legacy_card_lens_path(path: &str) -> bool {
+    card_id_from_card_lens_path(path, "meta.json").is_some()
+        || card_id_from_card_lens_path(path, "payload.json").is_some()
+}
+
+fn has_legacy_card_lens_paths(manifest: &TreeManifest) -> bool {
+    manifest
+        .entries
+        .keys()
+        .any(|path| is_legacy_card_lens_path(path))
 }
 
 #[derive(Default)]
@@ -373,7 +391,7 @@ async fn snapshot_tree_at_tx(
         put_rendered_entry(
             tx,
             &mut entries,
-            format!("cards/{card_id}/meta.json"),
+            format!("cards/{card_id}/.meta.json"),
             card_meta_json(card)?,
             object_created_at,
         )
@@ -381,7 +399,7 @@ async fn snapshot_tree_at_tx(
         put_rendered_entry(
             tx,
             &mut entries,
-            format!("cards/{card_id}/payload.json"),
+            format!("cards/{card_id}/.payload.json"),
             card_payload_json(card)?,
             object_created_at,
         )
@@ -514,7 +532,7 @@ pub async fn commit_events_with_author_in_tx(
         for event in events {
             delta.merge(paths_changed_by_event(event, wave_id));
         }
-        if delta.full_snapshot {
+        if delta.full_snapshot || has_legacy_card_lens_paths(&parent_manifest) {
             snapshot_tree_at_tx(
                 tx,
                 wave_id,
@@ -1354,8 +1372,8 @@ async fn render_card_path_tx(
         return Ok(None);
     };
     match parts[2] {
-        "meta.json" => Ok(Some(card_meta_json(&card)?)),
-        "payload.json" => Ok(Some(card_payload_json(&card)?)),
+        ".meta.json" => Ok(Some(card_meta_json(&card)?)),
+        ".payload.json" => Ok(Some(card_payload_json(&card)?)),
         "runtime.json" => {
             let mut card = card;
             project_runtime_into_cards_tx(tx, std::slice::from_mut(&mut card)).await?;
@@ -1750,14 +1768,14 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
 }
 
 fn add_card_paths(delta: &mut PathDelta, card_id: &CardId) {
-    delta.add(format!("cards/{}/meta.json", card_id.as_str()));
-    delta.add(format!("cards/{}/payload.json", card_id.as_str()));
+    delta.add(format!("cards/{}/.meta.json", card_id.as_str()));
+    delta.add(format!("cards/{}/.payload.json", card_id.as_str()));
     delta.add(format!("cards/{}/runtime.json", card_id.as_str()));
     add_card_event_paths(delta, card_id);
 }
 
 fn add_card_payload_path(delta: &mut PathDelta, card_id: &str) {
-    delta.add(format!("cards/{card_id}/payload.json"));
+    delta.add(format!("cards/{card_id}/.payload.json"));
 }
 
 fn add_card_runtime_paths(delta: &mut PathDelta, card_id: &str) {
@@ -1766,7 +1784,7 @@ fn add_card_runtime_paths(delta: &mut PathDelta, card_id: &str) {
     // heals pre-#618 manifests whose HEAD payload blobs still contain
     // projected runtime fields: the first runtime event rewrites them to raw,
     // producing a one-time `edited` entry.
-    delta.add(format!("cards/{card_id}/payload.json"));
+    delta.add(format!("cards/{card_id}/.payload.json"));
     delta.add(format!("cards/{card_id}/runtime.json"));
 }
 
@@ -2663,7 +2681,10 @@ fn is_internal_observation_diff_path(path: &str, spec_card_id: Option<&CardId>) 
     let Some(spec_card_id) = spec_card_id else {
         return false;
     };
-    path == format!("cards/{}/payload.json", spec_card_id.as_str())
+    let spec_card_id = spec_card_id.as_str();
+    // Legacy spellings appear once per wave in the post-rename healing commit.
+    path == format!("cards/{spec_card_id}/.payload.json")
+        || path == format!("cards/{spec_card_id}/payload.json")
 }
 
 fn card_runtime_json(card: &Card) -> Result<BlobContent> {

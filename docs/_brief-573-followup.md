@@ -2,7 +2,7 @@
 
 User feedback on the PR #576 preview at http://192.168.5.20:4573/calm/:
 
-1. **Edit pencil is always visible**, but most files in the sidebar (`payload.json`, `conversation.md`, `events.json`, `wave.json`, etc.) are read-only projections. Only `report.md` (the default view) is editable. User suggests: hide the Edit button when the selected sidebar path is NOT `report.md` / null.
+1. **Edit pencil is always visible**, but most files in the sidebar (`.payload.json`, `conversation.md`, `events.json`, `wave.json`, etc.) are read-only projections. Only `report.md` (the default view) is editable. User suggests: hide the Edit button when the selected sidebar path is NOT `report.md` / null.
 
 2. **Cannot create a new codex card.** Server log snapshot in `docs/_server-log-pr573.txt` — relevant lines:
    - `ERROR shared codex app-server start/takeover failed; continuing boot error=codex app-server: spawn shared codex app-server: Permission denied (os error 13)` (boot)

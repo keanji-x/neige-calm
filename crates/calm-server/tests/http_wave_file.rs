@@ -79,9 +79,9 @@ async fn http_ls_and_cat_match_mcp_outputs() {
         assert_eq!(http, mcp, "HTTP ls {path} must match MCP");
     }
 
-    let initial_payload_path = format!("cards/{}/payload.json", boot.worker_card_id.as_str());
+    let initial_payload_path = format!("cards/{}/.payload.json", boot.worker_card_id.as_str());
     let initial_runtime_path = format!("cards/{}/runtime.json", boot.worker_card_id.as_str());
-    let payload_path = format!("cards/{}/payload.json", run_card_id.as_str());
+    let payload_path = format!("cards/{}/.payload.json", run_card_id.as_str());
     let runtime_path = format!("cards/{}/runtime.json", run_card_id.as_str());
     let conversation_path = format!("cards/{}/conversation.md", run_card_id.as_str());
     let cat_paths = vec![
@@ -155,7 +155,7 @@ async fn cross_wave_card_path_returns_403() {
     let boot = boot().await;
     let app = app(&boot);
     let cookie = login(&app).await;
-    let path = format!("cards/{}/payload.json", boot.other_wave_card_id.as_str());
+    let path = format!("cards/{}/.payload.json", boot.other_wave_card_id.as_str());
     let (status, body) = get_json(&app, cat_uri(boot.wave_id.as_str(), &path), Some(&cookie)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["code"], json!("forbidden"));

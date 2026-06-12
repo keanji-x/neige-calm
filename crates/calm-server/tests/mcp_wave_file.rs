@@ -745,12 +745,12 @@ async fn ls_card_directory_includes_hook_event_views() {
         .iter()
         .map(|entry| entry["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"meta.json"), "entries = {entries:?}");
-    assert!(names.contains(&"payload.json"), "entries = {entries:?}");
+    assert!(names.contains(&".meta.json"), "entries = {entries:?}");
+    assert!(names.contains(&".payload.json"), "entries = {entries:?}");
     assert!(names.contains(&"runtime.json"), "entries = {entries:?}");
     assert!(names.contains(&"events.json"), "entries = {entries:?}");
     assert!(names.contains(&"conversation.md"), "entries = {entries:?}");
-    for leaf in ["meta.json", "payload.json", "runtime.json"] {
+    for leaf in [".meta.json", ".payload.json", "runtime.json"] {
         let entry = entries
             .iter()
             .find(|entry| entry["name"] == leaf)
@@ -763,6 +763,28 @@ async fn ls_card_directory_includes_hook_event_views() {
             .find(|entry| entry["name"] == leaf)
             .unwrap_or_else(|| panic!("missing {leaf}: {entries:?}"));
         assert_eq!(entry["updated_at"], json!(900));
+    }
+}
+
+#[tokio::test]
+async fn old_card_lens_paths_are_not_available() {
+    let boot = boot().await;
+
+    for leaf in ["meta.json", "payload.json"] {
+        let path = format!("cards/{}/{leaf}", boot.worker_card_id.as_str());
+        let err = call_tool(
+            &boot,
+            TOOL_WAVE_CAT,
+            spec_identity(&boot),
+            json!({ "path": path }),
+        )
+        .await
+        .expect_err("legacy card lens path must be unavailable");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(
+            err.message.contains("path not available in this view"),
+            "err = {err:?}"
+        );
     }
 }
 
@@ -1700,7 +1722,7 @@ async fn unknown_run_key_matches_unknown_card_error_shape() {
         &boot,
         TOOL_WAVE_CAT,
         spec_identity(&boot),
-        json!({ "path": "cards/not-a-card/payload.json" }),
+        json!({ "path": "cards/not-a-card/.payload.json" }),
     )
     .await
     .expect_err("unknown card must be unavailable");
@@ -1783,7 +1805,7 @@ async fn empty_wave_has_empty_runs_projection() {
 #[tokio::test]
 async fn card_payload_from_other_wave_is_forbidden() {
     let boot = boot().await;
-    for leaf in ["payload.json", "meta.json"] {
+    for leaf in [".payload.json", ".meta.json"] {
         let path = format!("cards/{}/{leaf}", boot.other_wave_card_id.as_str());
         let err = call_tool(
             &boot,
@@ -1797,7 +1819,7 @@ async fn card_payload_from_other_wave_is_forbidden() {
         assert!(err.message.contains("forbidden"), "err = {err:?}");
     }
 
-    let worker_payload_path = format!("cards/{}/payload.json", boot.other_wave_card_id.as_str());
+    let worker_payload_path = format!("cards/{}/.payload.json", boot.other_wave_card_id.as_str());
     let err = call_tool(
         &boot,
         TOOL_WAVE_CAT,

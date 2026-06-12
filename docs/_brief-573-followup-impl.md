@@ -4,7 +4,7 @@ Two fixes; both informed by `docs/_research-573-followup.md`.
 
 ## Fix 1 — Edit pencil should hide when a non-report file is selected
 
-`web/src/cards/builtins/wave-report.tsx:486` currently gates Edit only on `waveId !== null`. After phase 2, picking `payload.json`/`conversation.md`/etc replaces the right pane with a read-only projection, but the header pencil still opens the report editor — confusing.
+`web/src/cards/builtins/wave-report.tsx:486` currently gates Edit only on `waveId !== null`. After phase 2, picking `.payload.json`/`conversation.md`/etc replaces the right pane with a read-only projection, but the header pencil still opens the report editor — confusing.
 
 Do:
 - Lift `selectedPath` into `WaveReportCardImpl`. Pass `selectedPath` + `onSelectedPathChange` props into `WaveReportSidebar` so the sidebar still drives the value but the report card sees it.
@@ -12,7 +12,7 @@ Do:
 - Reset `selectedPath` to `null` on `waveId` change (already handled by the `key={waveId}` remount on the sidebar; for the lifted state at the parent, use an effect or include waveId in the parent's existing reset path).
 - Make `WaveReportSidebar` accept the controlled `selectedPath` + setter; remove its internal `useState` for `selectedPath` (keep `expandedDirs` local).
 - Update `wave-report-sidebar.test.tsx`: it currently mounts the sidebar standalone, so add a controlled-mode wrapper to keep tests passing.
-- Add 2 wave-report tests: Edit pencil visible when `selectedPath === null`; Edit pencil hidden when `selectedPath === 'cards/<id>/payload.json'`.
+- Add 2 wave-report tests: Edit pencil visible when `selectedPath === null`; Edit pencil hidden when `selectedPath === 'cards/<id>/.payload.json'`.
 
 ## Fix 2 — Surface card-create errors instead of swallowing
 

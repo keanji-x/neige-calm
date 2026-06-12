@@ -40,7 +40,7 @@ fn ls_descriptor() -> ToolDescriptor {
         description: "Spec/Worker: list file-like read views for the current MCP-bound wave. \
              Accepts optional `{ path }`; `/` lists `index.md`, `wave.json`, \
              `report.md`, `cards/`, and `runs/`; `cards/<card_id>` lists \
-             `meta.json`, `payload.json`, `runtime.json`, `events.json`, and \
+             `.meta.json`, `.payload.json`, `runtime.json`, `events.json`, and \
              `conversation.md`. \
              The wave is derived from the bound \
              card identity, never from arguments."
@@ -61,7 +61,7 @@ fn cat_descriptor() -> ToolDescriptor {
         name: TOOL_WAVE_CAT.into(),
         description: "Spec/Worker: read one file-like view from the current MCP-bound wave. \
              Supports `index.md`, `wave.json`, `report.md`, `cards/index.json`, \
-             `cards/<card_id>/meta.json`, `cards/<card_id>/payload.json`, \
+             `cards/<card_id>/.meta.json`, `cards/<card_id>/.payload.json`, \
              `cards/<card_id>/runtime.json`, \
              `cards/<card_id>/events.json`, `cards/<card_id>/conversation.md`, \
              `runs/index.json`, `runs/<idempotency_key>.md`, and \
