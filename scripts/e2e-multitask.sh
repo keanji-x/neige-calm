@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Opt-in local E2E. Burns real Codex tokens; do not run from CI.
+# The host filesystem is only touched by e2e-artifacts/ when a run fails.
 
 : "${HOME:?HOME must be set}"
 
@@ -12,14 +13,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 ENV_FILE="$REPO_ROOT/.env"
 ARTIFACT_DIR="$REPO_ROOT/e2e-artifacts"
-WORKSPACE="$HOME/.cache/neige-e2e/$RUN_ID"
-TMP_PREFIX="${TMPDIR:-/tmp}/neige-$RUN_ID-"
-COOKIE_JAR=""; PORT=""; SERVER_CID=""
+WORKSPACE="/var/lib/neige-calm/e2e-workspace"
+SERVER_CONTAINER="neige-calm-$DEV_ID-server-1"
+COOKIE_HEADER=""; PORT=""; SERVER_CID=""
 
 export NO_PROXY="127.0.0.1,localhost"
 export no_proxy="$NO_PROXY"
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-tmpfile() { mktemp "${TMP_PREFIX}$1.XXXXXX"; }
 cleanup() {
   local status
   status=$?
@@ -32,9 +32,6 @@ cleanup() {
   fi
   command -v docker >/dev/null 2>&1 \
     && (cd "$REPO_ROOT" && docker compose -p "$PROJECT" down -v --remove-orphans) >/dev/null 2>&1
-  local workspace_prefix="$HOME/.cache/neige-e2e/"
-  [[ -n "${WORKSPACE:-}" && "$WORKSPACE" == "$workspace_prefix"* ]] && rm -rf -- "$WORKSPACE"
-  rm -f -- "$TMP_PREFIX"*
   trap - EXIT
   exit "$status"
 }
@@ -82,14 +79,13 @@ pick_port() {
   printf '%s\n' "$port"
 }
 init_workspace() {
-  mkdir -p "$(dirname "$WORKSPACE")"
-  mkdir "$WORKSPACE"
-  git -C "$WORKSPACE" init -q
-  git -C "$WORKSPACE" config user.name "neige e2e"
-  git -C "$WORKSPACE" config user.email "neige-e2e@example.invalid"
-  printf '# Neige E2E Workspace\n' >"$WORKSPACE/README.md"
-  git -C "$WORKSPACE" add README.md
-  git -C "$WORKSPACE" commit -q -m "initial e2e workspace"
+  docker exec "$SERVER_CONTAINER" sh -lc '
+    set -e
+    ws=$1
+    mkdir -p "$ws"
+    git -C "$ws" init -q
+    git -C "$ws" -c user.email=e2e@test -c user.name=e2e commit --allow-empty -q -m "initial e2e workspace"
+  ' sh "$WORKSPACE"
 }
 start_stack() {
   printf 'Starting isolated stack: run_id=%s dev_id=%s port=%s\n' "$RUN_ID" "$DEV_ID" "$PORT"
@@ -99,26 +95,27 @@ start_stack() {
 }
 api_url() { printf 'http://127.0.0.1:%s%s' "$PORT" "$1"; }
 api() {
-  local method=$1 path=$2 body_file=$3 out_file=$4
-  local -a args=(-sS -o "$out_file" -w '%{http_code}' -X "$method" -b "$COOKIE_JAR" -c "$COOKIE_JAR")
-  [[ "$body_file" == "-" ]] || args+=(-H 'content-type: application/json' --data-binary "@$body_file")
-  curl "${args[@]}" "$(api_url "$path")"
+  local method=$1 path=$2 body=$3 response
+  local -a args=(-sS -o - -w $'\n__NEIGE_HTTP_STATUS__:%{http_code}' -X "$method")
+  [[ -z "$COOKIE_HEADER" ]] || args+=(-H "Cookie: $COOKIE_HEADER")
+  [[ "$body" == "-" ]] || args+=(-H 'content-type: application/json' --data-binary "$body")
+  response="$(curl "${args[@]}" "$(api_url "$path")")" || return 1
+  API_STATUS="${response##*__NEIGE_HTTP_STATUS__:}"
+  API_BODY="${response%$'\n'__NEIGE_HTTP_STATUS__:*}"
 }
-body_preview() { if [[ -s "$1" ]]; then tr '\n' ' ' <"$1" | cut -c1-500; fi; }
+body_preview() { printf '%s' "$1" | tr '\n' ' ' | cut -c1-500; }
 expect_2xx() {
-  local method=$1 path=$2 body_file=$3 out_file=$4 status
-  status="$(api "$method" "$path" "$body_file" "$out_file")" || fail "curl failed for $method $path"
-  [[ "$status" == 2* ]] || fail "$method $path returned HTTP $status: $(body_preview "$out_file")"
+  local method=$1 path=$2 body=$3
+  api "$method" "$path" "$body" || fail "curl failed for $method $path"
+  [[ "$API_STATUS" == 2* ]] || fail "$method $path returned HTTP $API_STATUS: $(body_preview "$API_BODY")"
 }
 
-json_get_string() { node -e 'const fs=require("fs");let x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));for(const p of process.argv[2].split("."))x=x?.[p];if(typeof x!=="string"||!x)process.exit(2);process.stdout.write(x);' "$1" "$2"; }
+json_get_string() { printf '%s' "$1" | node -e 'const fs=require("fs");let x=JSON.parse(fs.readFileSync(0,"utf8"));for(const p of process.argv[1].split("."))x=x?.[p];if(typeof x!=="string"||!x)process.exit(2);process.stdout.write(x);' "$2"; }
 
 post_id() {
-  local path=$1 body_file=$2 out_file id
-  out_file="$(tmpfile post-out)"
-  expect_2xx POST "$path" "$body_file" "$out_file"
-  id="$(json_get_string "$out_file" id)" || fail "$path response did not contain id"
-  rm -f -- "$out_file"
+  local path=$1 body=$2 id
+  expect_2xx POST "$path" "$body"
+  id="$(json_get_string "$API_BODY" id)" || fail "$path response did not contain id"
   printf '%s\n' "$id"
 }
 
@@ -147,69 +144,72 @@ wait_for_health() {
 }
 
 login() {
-  COOKIE_JAR="$(tmpfile cookie)"
-  local body_file out_file auth_user auth_password
-  body_file="$(tmpfile login-body)"
-  out_file="$(tmpfile login-out)"
+  local body response headers status auth_user auth_password
   auth_user="$(dotenv_get CALM_AUTH_USERNAME || printf 'owner')"
   auth_password="$(dotenv_get CALM_AUTH_PASSWORD || printf 'dev')"
-  AUTH_USER="$auth_user" AUTH_PASSWORD="$auth_password" \
-    node -e 'process.stdout.write(JSON.stringify({username:process.env.AUTH_USER,password:process.env.AUTH_PASSWORD}))' >"$body_file"
-  expect_2xx POST /api/auth/login "$body_file" "$out_file"
-  rm -f -- "$body_file" "$out_file"
+  body="$(AUTH_USER="$auth_user" AUTH_PASSWORD="$auth_password" \
+    node -e 'process.stdout.write(JSON.stringify({username:process.env.AUTH_USER,password:process.env.AUTH_PASSWORD}))')"
+  response="$(curl -sS -D - -o /dev/null -w $'\n__NEIGE_HTTP_STATUS__:%{http_code}' \
+    -X POST -H 'content-type: application/json' --data-binary "$body" "$(api_url /api/auth/login)")" \
+    || fail "curl failed for POST /api/auth/login"
+  status="${response##*__NEIGE_HTTP_STATUS__:}"
+  headers="${response%$'\n'__NEIGE_HTTP_STATUS__:*}"
+  [[ "$status" == 2* ]] || fail "POST /api/auth/login returned HTTP $status"
+  COOKIE_HEADER="$(printf '%s\n' "$headers" | awk 'BEGIN{first=1} /^[Ss]et-[Cc]ookie:[[:space:]]*/ {sub(/\r$/,""); sub(/^[^:]*:[[:space:]]*/,""); split($0,a,";"); if(!first) printf "; "; printf "%s", a[1]; first=0}')"
+  [[ -n "$COOKIE_HEADER" ]] || fail "POST /api/auth/login did not set a cookie"
 }
 
 create_cove() {
-  local body_file cove_id
-  body_file="$(tmpfile cove-body)"
-  E2E_RUN_ID="$RUN_ID" \
-    node -e 'process.stdout.write(JSON.stringify({name:`e2e-${process.env.E2E_RUN_ID}`,color:"#4a90d9"}))' >"$body_file"
-  cove_id="$(post_id /api/coves "$body_file")"
-  rm -f -- "$body_file"
+  local body cove_id
+  body="$(E2E_RUN_ID="$RUN_ID" \
+    node -e 'process.stdout.write(JSON.stringify({name:`e2e-${process.env.E2E_RUN_ID}`,color:"#4a90d9"}))')"
+  cove_id="$(post_id /api/coves "$body")"
   printf '%s\n' "$cove_id"
 }
 
 create_wave() {
-  local cove_id=$1 body_file wave_id
-  body_file="$(tmpfile wave-body)"
-  COVE_ID="$cove_id" WORKSPACE="$WORKSPACE" node -e 'process.stdout.write(JSON.stringify({cove_id:process.env.COVE_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[220,220,220],bg:[30,30,30]},title:"Dispatch exactly 2 parallel codex workers: create src/greet.py greet(name) returning '\''Hello, {name}!'\''; create USAGE.md docs; then summarize report."}))' >"$body_file"
-  wave_id="$(post_id /api/waves "$body_file")"
-  rm -f -- "$body_file"
+  local cove_id=$1 body wave_id
+  body="$(COVE_ID="$cove_id" WORKSPACE="$WORKSPACE" node -e 'process.stdout.write(JSON.stringify({cove_id:process.env.COVE_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[220,220,220],bg:[30,30,30]},title:"Dispatch exactly 2 parallel codex workers: create src/greet.py greet(name) returning '\''Hello, {name}!'\''; create USAGE.md docs; then summarize report."}))')"
+  wave_id="$(post_id /api/waves "$body")"
   printf '%s\n' "$wave_id"
 }
 
 summarize_state() {
-  node - "$1" "$2" "$WORKSPACE" <<'NODE'
-const fs = require("fs"), p = require("path");
-const [cf, df, ws] = process.argv.slice(2);
-const cards = JSON.parse(fs.readFileSync(cf, "utf8"));
-const wave = JSON.parse(fs.readFileSync(df, "utf8")).wave ?? {};
+  local cards_json=$1 detail_json=$2 greet=$3 usage=$4
+  printf '%s\0%s' "$cards_json" "$detail_json" | GREET="$greet" USAGE="$usage" node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0);
+const sep = raw.indexOf(0);
+if (sep < 0) process.exit(2);
+const cards = JSON.parse(raw.subarray(0, sep).toString("utf8"));
+const wave = JSON.parse(raw.subarray(sep + 1).toString("utf8")).wave ?? {};
 const workers = cards.filter((c) => c.kind === "codex" && !(c.payload && c.payload.spec_harness === true));
 const report = cards.find((c) => c.kind === "wave-report");
 const body = typeof report?.payload?.body === "string" ? report.payload.body : "";
 const flags = [
-  fs.existsSync(p.join(ws, "src", "greet.py")) ? "yes" : "no",
-  fs.existsSync(p.join(ws, "USAGE.md")) ? "yes" : "no",
+  process.env.GREET,
+  process.env.USAGE,
   body && body !== "# Goal\n\n_The spec agent will fill this in._\n" ? "changed" : "placeholder",
   workers.length >= 2 && workers.every((c) => c.runtime && c.runtime.status !== "running") ? "yes" : "no",
   wave.lifecycle === "reviewing" || wave.lifecycle === "done" ? "yes" : "no",
 ];
 process.stdout.write([wave.lifecycle ?? "unknown", workers.length, workers.map((c) => c.runtime?.status ?? "none").join(",") || "-", ...flags].join("\t"));
-NODE
+'
 }
 
 poll_wave() {
   local wave_id=$1 start=$SECONDS total=1200 stage1=300 stage1_ok=0
   while (( SECONDS - start <= total )); do
     check_server_logs
-    local cards_file detail_file elapsed lifecycle worker_count worker_statuses greet usage report workers_done lifecycle_ready
-    cards_file="$(tmpfile cards)"
-    detail_file="$(tmpfile detail)"
-    expect_2xx GET "/api/waves/$wave_id/cards" - "$cards_file"
-    expect_2xx GET "/api/waves/$wave_id" - "$detail_file"
+    local cards_json detail_json elapsed lifecycle worker_count worker_statuses greet usage report workers_done lifecycle_ready
+    expect_2xx GET "/api/waves/$wave_id/cards" -
+    cards_json="$API_BODY"
+    expect_2xx GET "/api/waves/$wave_id" -
+    detail_json="$API_BODY"
+    if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/src/greet.py"; then greet=yes; else greet=no; fi
+    if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/USAGE.md"; then usage=yes; else usage=no; fi
     IFS=$'\t' read -r lifecycle worker_count worker_statuses greet usage report workers_done lifecycle_ready \
-      < <(summarize_state "$cards_file" "$detail_file")
-    rm -f -- "$cards_file" "$detail_file"
+      < <(summarize_state "$cards_json" "$detail_json" "$greet" "$usage")
 
     elapsed=$((SECONDS - start))
     printf 'poll +%04ds lifecycle=%s workers=%s statuses=%s files=greet:%s usage:%s report:%s\n' \
@@ -239,7 +239,7 @@ main() {
   cd "$REPO_ROOT" || exit 1
   preflight
   PORT="$(pick_port)"
-  init_workspace; start_stack; wait_for_health; login
+  start_stack; wait_for_health; init_workspace; login
   local cove_id wave_id
   cove_id="$(create_cove)"
   wave_id="$(create_wave "$cove_id")"
