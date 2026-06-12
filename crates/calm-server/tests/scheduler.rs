@@ -3348,3 +3348,236 @@ async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     assert_eq!(rows[0].1["passed"], false);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Craft the durable shape `spawn_side_effect` leaves behind: a parked
+/// `task-verify` op `#g1` with frozen tx_output and recorded spawn
+/// artifacts. Mirrors the bootdead test's inline crafting (PR #685 F8).
+async fn seed_parked_gate_op(
+    boot: &Boot,
+    task_id: &str,
+    key: &str,
+    dir: &std::path::Path,
+    artifacts: &calm_server::operation::SpawnArtifacts,
+) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
+    let op_id = operation_repo
+        .insert_operation(
+            "task-verify",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(format!("{task_id}#g1")),
+                payload_hash: "hash".into(),
+            },
+            json!({}),
+        )
+        .await
+        .unwrap();
+    let mut claimed = operation_repo.claim_drive_batch(1).await.unwrap();
+    assert_eq!(claimed.len(), 1, "exactly the crafted op");
+    claimed.pop();
+    let mut output = TxOutput::new("task", Some(task_id.to_string()), json!({}));
+    output.data = json!({
+        "task_id": task_id,
+        "wave_id": boot.wave_id.as_str(),
+        "cove_id": "cove-x",
+        "key": key,
+        "attempt": 1,
+        "cwd": dir.to_str().unwrap(),
+        "gate": { "steps": [ { "name": "ok", "cmd": "true" } ] }
+    });
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'spawn_started',
+               tx_output_json = ?1,
+               target_json = '{"type":"task","id":null}'
+           WHERE id = ?2"#,
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();
+    operation_repo
+        .record_spawn_artifacts(&op, artifacts)
+        .await
+        .unwrap();
+    operation_repo
+        .set_parked(&op, now_ms() + 600_000)
+        .await
+        .unwrap()
+        .unwrap();
+    op_id
+}
+
+/// PR #685 review F8(a) — boot reattach to a LIVE gate: a parked op
+/// whose recorded process survived the kernel restart is left parked
+/// by recovery, and the spawned reattach observer lands the verdict
+/// (one-tx flip + event) once the process exits.
+#[tokio::test]
+async fn boot_reattach_live_gate_lands_verdict_after_exit() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("reattach");
+
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "ok", "cmd": "true" } ]
+    })
+    .to_string();
+    let mut task = gate_task(&boot, "reattach", &gate);
+    task.gate_attempt = 1;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // The surviving wrapper stand-in: alive across "the restart",
+    // writes its exit file green (tmp + rename, like the real wrapper)
+    // and exits ~1s from now.
+    let exit_path = dir.join(format!("{task_id}-g1.exit"));
+    let log_path = dir.join(format!("{task_id}-g1.log"));
+    std::fs::write(&log_path, "::gate-step ok\nfine\n").unwrap();
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg(format!(
+        "sleep 1; printf '0\\n' > '{exit}.tmp'; mv -f -- '{exit}.tmp' '{exit}'",
+        exit = exit_path.display()
+    ));
+    // SAFETY: setsid() is async-signal-safe, called pre-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut survivor = cmd.spawn().expect("spawn surviving gate stand-in");
+    let pid = survivor.id().expect("pid") as i32;
+    let artifacts = calm_server::operation::SpawnArtifacts {
+        pid,
+        pgid: pid,
+        start_time: calm_server::proc_identity::read_proc_start_time(pid).expect("starttime"),
+        boot_id: calm_server::proc_identity::read_boot_id().expect("boot id"),
+        log_path: Some(log_path.display().to_string()),
+        extra: json!({ "exit_path": exit_path.display().to_string() }),
+    };
+    seed_parked_gate_op(&boot, &task_id, "reattach", &dir, &artifacts).await;
+
+    let (runtime, _scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    // Alive → LeaveParked: the op survives recovery unresolved.
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Parked),
+        "live gate stays parked at boot: {:?}",
+        op.phase.tag()
+    );
+    // Reap the stand-in in the test so the observer's liveness poll
+    // sees a dead pid, not a zombie.
+    survivor.wait().await.expect("stand-in exits");
+    // The reattach observer polls the identity until death, reads the
+    // exit file, and lands the one-tx completion: row done + event.
+    let row = wait_for_terminal_row(&boot, "reattach", 30).await;
+    assert_eq!(row.status, TaskStatus::Done, "{row:?}");
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], true, "{verdict}");
+    assert_eq!(verdict["exit_code"], 0);
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(matches!(op.phase.tag(), PhaseTag::Succeeded), "{:?}", op.phase.tag());
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1["passed"], true);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F8(b) — exit-file verdict recovery: a parked op
+/// whose process died while the kernel was down, leaving a valid exit
+/// file, recovers the REAL red verdict (gate-red, exit_code, failing
+/// step) — never gate-infra.
+#[tokio::test]
+async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("deadexit");
+
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "boom", "cmd": "false" } ]
+    })
+    .to_string();
+    let mut task = gate_task(&boot, "deadexit", &gate);
+    task.gate_attempt = 1;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Dead-process artifacts + the durable verdict the wrapper wrote
+    // before the whole stack went down.
+    let exit_path = dir.join(format!("{task_id}-g1.exit"));
+    let log_path = dir.join(format!("{task_id}-g1.log"));
+    std::fs::write(&log_path, "::gate-step boom\nboom-out\n").unwrap();
+    std::fs::write(&exit_path, "7\n").unwrap();
+    let artifacts = calm_server::operation::SpawnArtifacts {
+        pid: 999_999,
+        pgid: 999_999,
+        start_time: 1,
+        boot_id: calm_server::proc_identity::read_boot_id().unwrap_or_else(|| "boot".into()),
+        log_path: Some(log_path.display().to_string()),
+        extra: json!({ "exit_path": exit_path.display().to_string() }),
+    };
+    seed_parked_gate_op(&boot, &task_id, "deadexit", &dir, &artifacts).await;
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    // Dead + parseable exit file → the op completes with the recorded
+    // verdict (op-only write, #653 §4.2).
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Succeeded),
+        "dead gate WITH a verdict recovers it: {:?}",
+        op.phase.tag()
+    );
+    assert_eq!(
+        task_row(&boot, "deadexit").await.status,
+        TaskStatus::Verifying,
+        "boot recovery writes the op only"
+    );
+
+    // Sweep copies the REAL verdict to the row — red, not infra.
+    scheduler.sweep_all().await;
+    let row = wait_for_terminal_row(&boot, "deadexit", 30).await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["exit_code"], 7, "{verdict}");
+    assert_eq!(verdict["failing_step"], "boom");
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1["passed"], false);
+    std::fs::remove_dir_all(&dir).ok();
+}
