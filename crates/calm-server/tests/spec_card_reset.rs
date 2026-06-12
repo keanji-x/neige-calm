@@ -1026,8 +1026,12 @@ async fn send_spec_input_non_spec_card_403() {
     );
 }
 
+/// #649 i2 trigger B — no active runtime row at all (the fire-and-forget
+/// `spec-harness-start` failed at wave creation): typed 409 with the
+/// machine-readable `spec_harness_dormant` code, NOT a 404, so the client
+/// can steer the user to Reset.
 #[tokio::test]
-async fn send_spec_input_no_runtime_404() {
+async fn send_spec_input_no_active_runtime_409_dormant() {
     let boot = boot().await;
     let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
     seed_inactive_spec_runtime(&boot, &card).await;
@@ -1039,12 +1043,373 @@ async fn send_spec_input_no_runtime_404() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("spec_harness_dormant"), "body={body}");
     assert!(
         body["error"]
             .as_str()
-            .is_some_and(|error| error.contains("no active spec harness")),
-        "body={body}"
+            .is_some_and(|error| error.contains("reset")),
+        "dormant body should point at reset: body={body}"
+    );
+}
+
+/// Boot variant whose shared codex app-server reports `is_running() == true`
+/// (fixture fake), so the #649 i2 lazy-recovery path is reachable — the
+/// plain `boot()` stub daemon is Idle and would 503 before recovery.
+async fn boot_fake_running() -> Boot {
+    let mut boot = boot().await;
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None);
+    boot.state = boot.state.clone().with_shared_codex_appserver(shared);
+    boot.app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(boot.state.clone());
+    boot
+}
+
+/// Seed an *active* spec runtime row (status `idle`) with NO live harness
+/// task and NO registry entry — the post-restart shape #649 i2 recovers
+/// from (boot recovery skips done-lifecycle waves, leaving the row live
+/// and the registry empty).
+async fn seed_active_spec_runtime_row(
+    boot: &Boot,
+    card: &Card,
+    thread_id: Option<String>,
+    handle_state_json: Option<Value>,
+) -> String {
+    seed_spec_runtime_row_with_status(boot, card, thread_id, handle_state_json, RunStatus::Idle)
+        .await
+}
+
+/// Like [`seed_active_spec_runtime_row`] but with an explicit status — used
+/// to model an in-flight `spec-harness-start` (`starting` row, registry
+/// empty until `spawn_side_effect` lands).
+async fn seed_spec_runtime_row_with_status(
+    boot: &Boot,
+    card: &Card,
+    thread_id: Option<String>,
+    handle_state_json: Option<Value>,
+    status: RunStatus,
+) -> String {
+    let runtime_id = new_id();
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status,
+            terminal_run_id: None,
+            thread_id,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("seed active spec runtime row");
+    tx.commit().await.unwrap();
+    runtime_id
+}
+
+fn idle_snapshot_value(thread_id: &str) -> Value {
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.to_string());
+    serde_json::to_value(&snapshot).unwrap()
+}
+
+fn idle_snapshot_value_without_thread() -> Value {
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    serde_json::to_value(&snapshot).unwrap()
+}
+
+/// #649 i2 trigger A — registry miss with a recoverable active runtime row
+/// (durable thread_id + valid snapshot): the route transparently re-spawns
+/// the harness via `spawn_recovered_harness`, registers it, and enqueues
+/// the user message as normal.
+#[tokio::test]
+async fn send_spec_input_registry_miss_recovers_harness_and_enqueues() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id = seed_active_spec_runtime_row(
+        &boot,
+        &card,
+        Some(thread_id.clone()),
+        Some(idle_snapshot_value(&thread_id)),
+    )
+    .await;
+    assert!(
+        boot.state.harness.get(&runtime_id).is_none(),
+        "precondition: no registry entry before the send"
+    );
+
+    let text = "recovered follow-up";
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": text }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert!(
+        boot.state.harness.get(&runtime_id).is_some(),
+        "registry must hold the lazily recovered harness handle"
+    );
+    // The route only emits the audit event after `observe` succeeded, so
+    // this doubles as the "message actually enqueued" assertion without
+    // racing the recovered harness's 250ms debounce-issued turn.
+    let events = boot.repo.events_since(0, None).await.unwrap();
+    let found = events.iter().any(|(_id, _v, _scope, event)| {
+        matches!(
+            event,
+            calm_server::event::Event::HarnessUserMessageEnqueued { runtime_id: ev_rt, card_id: ev_card, .. }
+                if ev_rt == &runtime_id && ev_card == &card.id
+        )
+    });
+    assert!(found, "expected harness.user_message.enqueued: {events:?}");
+
+    if let Some(handle) = boot.state.harness.remove(&runtime_id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+/// #649 i2 hardening 3 — an active row with NO thread anywhere (NULL row
+/// `thread_id` AND no snapshot `last_thread_id`; half-failed start) must
+/// NOT be recovered into a zombie harness: typed 409 dormant, registry
+/// stays empty.
+#[tokio::test]
+async fn send_spec_input_active_runtime_null_thread_409_dormant() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let runtime_id = seed_active_spec_runtime_row(
+        &boot,
+        &card,
+        None,
+        Some(idle_snapshot_value_without_thread()),
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "wake up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("spec_harness_dormant"), "body={body}");
+    assert!(
+        boot.state.harness.get(&runtime_id).is_none(),
+        "thread-less row must not be recovered into the registry"
+    );
+}
+
+/// #649 review round 3 — a `starting` row means `spec-harness-start` is
+/// still in flight (row written before `spawn_side_effect` registers the
+/// harness): lazy recovery must NOT race it by spawning a harness the start
+/// op will shut down (dropping queued input). The route 503s with a retry
+/// hint and leaves the registry empty.
+#[tokio::test]
+async fn send_spec_input_starting_runtime_503_no_recovery() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id = seed_spec_runtime_row_with_status(
+        &boot,
+        &card,
+        Some(thread_id.clone()),
+        Some(idle_snapshot_value(&thread_id)),
+        RunStatus::Starting,
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "racing the in-flight start" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body={body}");
+    assert!(
+        boot.state.harness.get(&runtime_id).is_none(),
+        "in-flight start must not be raced by lazy recovery"
+    );
+}
+
+/// #649 review round 1 (finding 2) — a NULL row `thread_id` with a snapshot
+/// carrying `last_thread_id` is recoverable: the route mirrors boot
+/// recovery's snapshot fallback instead of 409ing rows boot would revive.
+#[tokio::test]
+async fn send_spec_input_null_thread_snapshot_fallback_recovers() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id =
+        seed_active_spec_runtime_row(&boot, &card, None, Some(idle_snapshot_value(&thread_id)))
+            .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "snapshot-thread follow-up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert!(
+        boot.state.harness.get(&runtime_id).is_some(),
+        "snapshot last_thread_id fallback must recover the harness"
+    );
+
+    if let Some(handle) = boot.state.harness.remove(&runtime_id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+/// #649 review round 2 — a blank/whitespace row `thread_id` must not defeat
+/// the snapshot `last_thread_id` fallback: `Some("  ")` would win the `.or()`
+/// chain in `spawn_recovered_harness` and the recovered harness would issue
+/// turns against an empty thread. The helper normalizes blanks to `None`.
+#[tokio::test]
+async fn send_spec_input_blank_thread_snapshot_fallback_recovers() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id = seed_active_spec_runtime_row(
+        &boot,
+        &card,
+        Some("  ".to_string()),
+        Some(idle_snapshot_value(&thread_id)),
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "blank-thread follow-up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    let handle = boot
+        .state
+        .harness
+        .get(&runtime_id)
+        .expect("blank row thread_id must fall back to the snapshot's last_thread_id");
+    assert_eq!(
+        handle.thread_id_for_test().await.as_deref(),
+        Some(thread_id.as_str()),
+        "recovered harness must use the snapshot thread, not the blank row value"
+    );
+
+    if let Some(handle) = boot.state.harness.remove(&runtime_id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+/// #649 review round 1 (finding 3) — row-intrinsic dormancy outranks the
+/// daemon liveness probe: an unrecoverable row 409s (Reset is the answer)
+/// even while the daemon is down, instead of a misleading 503 "retry".
+#[tokio::test]
+async fn send_spec_input_dormant_row_daemon_down_409_not_503() {
+    let boot = boot().await; // stub daemon: is_running() == false
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let runtime_id = seed_active_spec_runtime_row(
+        &boot,
+        &card,
+        None,
+        Some(idle_snapshot_value_without_thread()),
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "wake up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("spec_harness_dormant"), "body={body}");
+    assert!(
+        boot.state.harness.get(&runtime_id).is_none(),
+        "dormant row must not be recovered even when daemon is down"
+    );
+}
+
+/// #649 i2 hardening 2 — a corrupt/unknown snapshot shape degrades to the
+/// typed 409 dormant instead of panicking inside `from_value_strict`.
+#[tokio::test]
+async fn send_spec_input_corrupt_snapshot_409_dormant() {
+    let boot = boot_fake_running().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id = seed_active_spec_runtime_row(
+        &boot,
+        &card,
+        Some(thread_id),
+        Some(json!({ "mode": "harness", "schema_version": 999, "phase": "idle" })),
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "wake up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("spec_harness_dormant"), "body={body}");
+    assert!(
+        boot.state.harness.get(&runtime_id).is_none(),
+        "corrupt-snapshot row must not be recovered into the registry"
+    );
+}
+
+/// #649 i2 — recovery is gated on the shared codex app-server being up:
+/// a registry miss while the daemon is down is a 503 (retryable), not a
+/// silently-wedged recovered harness and not a dormant 409.
+#[tokio::test]
+async fn send_spec_input_registry_miss_daemon_down_503() {
+    let boot = boot().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    let thread_id = format!("thread-{}", new_id());
+    let runtime_id = seed_active_spec_runtime_row(
+        &boot,
+        &card,
+        Some(thread_id.clone()),
+        Some(idle_snapshot_value(&thread_id)),
+    )
+    .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", card.id),
+        json!({ "text": "wake up" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body={body}");
+    assert_eq!(body["code"], json!("service_unavailable"), "body={body}");
+    assert!(
+        boot.state.harness.get(&runtime_id).is_none(),
+        "daemon-down miss must not spawn a harness"
     );
 }
 

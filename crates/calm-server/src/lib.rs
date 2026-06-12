@@ -460,6 +460,7 @@ pub mod model;
 pub mod openapi;
 pub mod operation;
 pub mod pending_codex_threads;
+pub(crate) mod per_card_lock;
 pub mod plugin_host;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;

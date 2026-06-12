@@ -70,6 +70,7 @@ function makeRun(
     reset: mocks.reset,
     submitPending: false,
     submitError: null,
+    submitDormant: false,
     submit: mocks.submit,
     ...overrides,
   };
@@ -379,6 +380,24 @@ describe('SpecConversation', () => {
     expect(textarea).toBeDisabled();
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('renders the dormant alert and highlights Reset on spec_harness_dormant', () => {
+    mocks.state.currentRun = makeRun({
+      submitDormant: true,
+      submitError:
+        "Research agent isn't running for this wave — Reset to start a session",
+    });
+    render(<Harness />);
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(
+      "Research agent isn't running for this wave — Reset to start a session",
+    );
+    expect(alert).toHaveAttribute('data-dormant', 'true');
+    expect(
+      screen.getByRole('button', { name: 'Reset spec session' }),
+    ).toHaveAttribute('data-dormant', 'true');
   });
 
   it('marks and disables the input while submit is pending', () => {

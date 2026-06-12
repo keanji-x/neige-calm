@@ -60,10 +60,20 @@ pub async fn spawn_recovered_harness(
         runtime_id: runtime_id.clone(),
         wave_id: card.wave_id,
         card_id: CardId::from(runtime.card_id.clone()),
+        // Normalize blank/whitespace thread IDs to `None` before the
+        // fallback chain: a row with `thread_id = ''` would otherwise win as
+        // `Some("")` over the snapshot's valid `last_thread_id`, and the
+        // recovered harness would issue turns against an empty thread.
         thread_id: runtime
             .thread_id
             .clone()
-            .or(snapshot.last_thread_id.clone()),
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| {
+                snapshot
+                    .last_thread_id
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+            }),
         repo,
         events,
         card_role_cache,

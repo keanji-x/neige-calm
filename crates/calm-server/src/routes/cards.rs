@@ -17,18 +17,19 @@ use crate::db::write_with_event_typed;
 use crate::db::{RepoRead, RouteRepo};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::harness::Observation;
+use crate::harness::{Observation, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id};
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
+use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
-use crate::runtime_repo::CardRuntime;
+use crate::runtime_repo::{CardRuntime, RunStatus};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
@@ -601,15 +602,17 @@ fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
         (status = 200, description = "User text queued for next harness turn", body = SendSpecInputResponse),
         (status = 400, description = "Empty text", body = ErrorBody),
         (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
-        (status = 404, description = "Card, active runtime, or wave not found", body = ErrorBody),
-        (status = 409, description = "Runtime is shutting down (lifecycle race with shutdown)", body = ErrorBody),
+        (status = 404, description = "Card or wave not found", body = ErrorBody),
+        (status = 409, description = "Runtime is shutting down (code `conflict`), or the spec harness session is dormant and not recoverable — reset to start a session (code `spec_harness_dormant`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
-        (status = 503, description = "Observation queue saturated, retry shortly", body = ErrorBody),
+        (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
 pub(crate) async fn send_spec_input(
     State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     actor: Actor,
     Path(id): Path<String>,
     Json(body): Json<SendSpecInputRequest>,
@@ -639,16 +642,12 @@ pub(crate) async fn send_spec_input(
         )));
     }
 
-    let runtime = s
-        .repo
-        .runtime_get_active_for_card(&card.id.to_string())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("no active spec harness for card {id}")))?;
-    let Some(harness) = s.harness.get(&runtime.id) else {
-        return Err(CalmError::NotFound(format!(
-            "no active spec harness for card {id}",
-        )));
-    };
+    // `_recovery_guard` (Some only on the lazy-recovery path) holds the
+    // per-card recovery lock until end of handler scope, so a concurrent
+    // `/spec/reset` can't supersede the just-recovered runtime between
+    // recovery and the observe/audit below.
+    let (runtime, harness, _recovery_guard) =
+        ensure_live_spec_harness(&s, &w, &cs, &card.id).await?;
     let wave = s
         .repo
         .wave_get(card.wave_id.as_str())
@@ -695,6 +694,145 @@ pub(crate) async fn send_spec_input(
     }))
 }
 
+/// Issue #649 i2 — resolve a live [`SpecHarness`] handle for a spec card.
+///
+/// Fast path: active runtime row + registry hit (untouched behavior).
+///
+/// Registry miss with an active runtime row (e.g. server restart on a
+/// `done`-lifecycle wave, where boot recovery deliberately skips the wave)
+/// → lazily re-spawn the harness in place via
+/// [`crate::harness::spawn_recovered_harness`] — the exact function boot
+/// recovery uses (snapshot load, catch-up event replay, run, registry
+/// insert). Spawning does no Codex RPC, so recovery is cheap.
+///
+/// No active runtime row, or an active row that is unrecoverable
+/// (no thread anywhere — neither `runtime.thread_id` nor the snapshot's
+/// `last_thread_id` — from a half-failed start, or a corrupt snapshot)
+/// → typed 409 [`CalmError::SpecHarnessDormant`] so the client can steer
+/// the user to `/spec/reset` instead of retrying.
+///
+/// Hardenings (design review):
+/// 1. per-card async lock + re-fetch/re-probe under the lock, so racing
+///    Sends can't double-spawn (the second spawn shuts the first down);
+/// 2. snapshot pre-validated with [`is_harness_snapshot_value`] — the
+///    strict deserializer panics on unknown shapes;
+/// 3. a thread must exist (row `thread_id`, or the snapshot's
+///    `last_thread_id` — the same fallback boot recovery applies), else a
+///    recovered harness would queue messages forever;
+/// 4. `/spec/reset` takes the SAME per-card lock (see
+///    [`reset_spec_card_shared`]), and the recovery path RETURNS its guard
+///    to the caller (`send_spec_input` holds it through enqueue/audit), so
+///    a reset can't supersede the runtime between the in-lock refetch here
+///    and harness registration — nor in the gap between recovery and the
+///    caller's `observe` enqueue — eliminating the resurrect-stale-session
+///    race;
+/// 5. row-intrinsic dormancy (409) is checked before daemon liveness
+///    (503), so an unrecoverable row tells the user to Reset rather than
+///    to retry.
+#[allow(deprecated)]
+async fn ensure_live_spec_harness(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    card_id: &CardId,
+) -> Result<(
+    CardRuntime,
+    crate::harness::SpecHarness,
+    Option<PerCardLockGuard>,
+)> {
+    let dormant = || {
+        CalmError::SpecHarnessDormant(format!(
+            "no recoverable spec harness session for card {card_id}; reset to start a session",
+        ))
+    };
+    let runtime = s
+        .repo
+        .runtime_get_active_for_card(&card_id.to_string())
+        .await?
+        .ok_or_else(dormant)?;
+    if let Some(harness) = s.harness.get(&runtime.id) {
+        return Ok((runtime, harness, None));
+    }
+
+    let guard = lock_card(&s.spec_recovery_locks, card_id.as_str()).await;
+    // Re-fetch under the lock and use only this row: `/spec/reset` may have
+    // superseded the pre-lock runtime, and a racing Send may have already
+    // recovered the harness.
+    let runtime = s
+        .repo
+        .runtime_get_active_for_card(&card_id.to_string())
+        .await?
+        .ok_or_else(dormant)?;
+    if let Some(harness) = s.harness.get(&runtime.id) {
+        return Ok((runtime, harness, Some(guard)));
+    }
+    // #649 review round 3 — a `starting` row means `spec-harness-start` is
+    // still in flight: the adapter writes the row (and, in the deferred
+    // path, the thread id + snapshot) BEFORE `spawn_side_effect` registers
+    // the harness. Recovering here would spawn a harness the start op then
+    // shuts down and replaces, silently dropping any input queued on it.
+    // 503 so the client retries once the start lands (a failed start is
+    // compensated to `failed`/deleted, after which this 409s as dormant).
+    // Recovery below is only for statuses that imply a previously-live
+    // harness (running / idle / turn_pending).
+    if runtime.status == RunStatus::Starting {
+        return Err(CalmError::ServiceUnavailable(
+            "spec harness is starting; retry shortly".into(),
+        ));
+    }
+    // Row-intrinsic dormancy checks run BEFORE the daemon liveness probe:
+    // an unrecoverable row must 409 (steering the user to Reset) even when
+    // the daemon is down, instead of hiding behind a 503 "retry shortly".
+    //
+    // `HarnessSnapshot::from_value_strict` (inside recovery) panics on
+    // unknown shapes — pre-validate so a corrupt row degrades to the typed
+    // 409 instead of a 500-by-panic.
+    let snapshot_value = match runtime.handle_state_json.as_ref() {
+        Some(value) if is_harness_snapshot_value(value) => value,
+        _ => return Err(dormant()),
+    };
+    // A half-failed start can leave an active row without a thread; a
+    // harness recovered from it would queue messages forever. Mirror boot
+    // recovery (`spawn_recovered_harness`), which falls back to the
+    // snapshot's `last_thread_id` when the row's `thread_id` is NULL —
+    // only when BOTH are absent is the row truly unrecoverable.
+    let has_thread = |t: Option<&str>| t.map(str::trim).is_some_and(|trimmed| !trimmed.is_empty());
+    if !has_thread(runtime.thread_id.as_deref())
+        && !has_thread(snapshot_value.get("last_thread_id").and_then(Value::as_str))
+    {
+        return Err(dormant());
+    }
+    // A recovered harness can't issue turns without the shared app-server;
+    // surface backpressure instead of spawning a silently-wedged task.
+    if !cs.shared_codex_appserver.is_running() {
+        return Err(CalmError::ServiceUnavailable(
+            "shared codex app-server is not running; retry shortly".into(),
+        ));
+    }
+    let runtime_id = runtime.id.clone();
+    let harness = crate::harness::spawn_recovered_harness(
+        w.repo.clone(),
+        s.events.clone(),
+        s.write.role_cache().clone(),
+        s.write.cove_cache().clone(),
+        cs.shared_codex_appserver.clone(),
+        &s.harness,
+        runtime.clone(),
+    )
+    .await?
+    .ok_or_else(dormant)?;
+    tracing::info!(
+        card_id = %card_id,
+        runtime_id = %runtime_id,
+        "spec harness lazily recovered on /spec/input registry miss"
+    );
+    // #649 review round 4 — return the guard so the caller keeps the
+    // per-card lock alive through `harness.observe` and the audit event;
+    // dropping it here would let a concurrent `/spec/reset` supersede the
+    // recovered runtime before the message is enqueued.
+    Ok((runtime, harness, Some(guard)))
+}
+
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/spec/reset",
@@ -735,6 +873,17 @@ async fn reset_spec_card_shared(
     actor: Actor,
     card: Card,
 ) -> Result<ResetSpecCardResponse> {
+    // #649 review round 1 — reset takes the SAME per-card lock as the
+    // `/spec/input` lazy-recovery path (`ensure_live_spec_harness`).
+    // Without it, a reset racing a registry-miss Send could supersede the
+    // runtime after recovery's in-lock refetch but before harness
+    // registration, resurrecting the reset-away session (and routing the
+    // just-sent message to the dead thread). Holding the lock across the
+    // start+shutdown operations is deadlock-free: both adapters either
+    // take no locks (shutdown) or use their own private map
+    // (`per_card_mint_locks` in the start adapter) — neither can re-enter
+    // `spec_recovery_locks`.
+    let _recovery_guard = lock_card(&s.spec_recovery_locks, card.id.as_str()).await;
     let active_runtime = s
         .repo
         .runtime_get_active_for_card(&card.id.to_string())

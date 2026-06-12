@@ -1023,10 +1023,10 @@ export interface components {
              * @description Stable machine-readable code — one of `not_found`, `conflict`,
              *     `idempotency_collision`, `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
-             *     `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
-             *     `io_error`, `serde_error`, `codex_app_server`,
-             *     `service_unavailable`, `internal`, `forbidden_tool`,
-             *     `not_a_card_tool`, `tool_call_failed`.
+             *     `plugin_conflict`, `plugin_kernel_too_old`,
+             *     `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
+             *     `codex_app_server`, `service_unavailable`, `internal`,
+             *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
              */
             code: string;
             /** @description Human-readable error message. */
@@ -2243,7 +2243,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Card, active runtime, or wave not found */
+            /** @description Card or wave not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2252,7 +2252,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Runtime is shutting down (lifecycle race with shutdown) */
+            /** @description Runtime is shutting down (code `conflict`), or the spec harness session is dormant and not recoverable — reset to start a session (code `spec_harness_dormant`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2270,7 +2270,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Observation queue saturated, retry shortly */
+            /** @description Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly */
             503: {
                 headers: {
                     [name: string]: unknown;

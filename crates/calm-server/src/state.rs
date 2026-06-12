@@ -132,6 +132,11 @@ pub struct RouteState {
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
+    /// Issue #649 i2 — per-card serialization for `/spec/input` lazy harness
+    /// recovery. Concurrent Sends racing a registry miss must not both call
+    /// `spawn_recovered_harness` (the second spawn shuts the first down
+    /// mid-turn). Entries self-clean when the last guard drops.
+    pub(crate) spec_recovery_locks: crate::per_card_lock::PerCardLocks,
 }
 
 /// #480 PR1 worker-facing state slice for dispatcher/background flows.
@@ -200,6 +205,7 @@ impl BootState {
             operation_runtime: self.operation_runtime.clone(),
             harness: self.harness.clone(),
             hook_ingest_cache,
+            spec_recovery_locks: crate::per_card_lock::new_per_card_locks(),
         };
         let worker = WorkerState {
             repo: self.repo.clone(),

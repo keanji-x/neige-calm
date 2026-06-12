@@ -230,6 +230,10 @@ impl SpecHarness {
         self.inner.state.lock().await.clone()
     }
 
+    pub async fn thread_id_for_test(&self) -> Option<String> {
+        self.inner.thread_id.read().await.clone()
+    }
+
     pub async fn pending_len_for_test(&self) -> usize {
         self.inner.pending_queue.lock().await.len()
     }
