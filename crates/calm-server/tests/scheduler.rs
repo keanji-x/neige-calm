@@ -29,7 +29,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, task_insert_tx};
 use calm_server::error::Result as CalmResult;
 use calm_server::event::EventBus;
-use calm_server::ids::{CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
@@ -314,8 +314,35 @@ async fn bind_worker_card_payload(boot: &Boot, task_id: &str) {
 /// `(kind, idempotency_key = task id)`, then `target_type = 'card'` /
 /// `target_id` stamped in the same tx that creates the worker card).
 /// Round-4 review F1/F2: this op target — not the patchable card
-/// payload — is the unstamped-row ownership proof.
+/// payload — is the unstamped-row ownership proof. Round-5 review F2:
+/// the payload carries the production scheduler actor
+/// (`ActorId::KernelDispatcher`, exactly what `build_worker_payload`
+/// stamps) — the proof also requires the op to be scheduler-created.
 async fn seed_worker_op_target(boot: &Boot, kind: &str, task_id: &str, card_id: &str) {
+    seed_worker_op_target_with_payload(
+        boot,
+        kind,
+        task_id,
+        card_id,
+        json!({
+            "actor": ActorId::KernelDispatcher,
+            "wave_id": boot.wave_id.as_str()
+        }),
+    )
+    .await;
+}
+
+/// [`seed_worker_op_target`] with a caller-supplied persisted payload —
+/// the round-5 F2 legacy-actor test seeds a `calm.task.dispatch`-shaped
+/// op (actor = the requesting spec card) under the task's idempotency
+/// key to prove it does NOT count as ownership.
+async fn seed_worker_op_target_with_payload(
+    boot: &Boot,
+    kind: &str,
+    task_id: &str,
+    card_id: &str,
+    payload: Value,
+) {
     let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"));
     op_repo
         .insert_operation(
@@ -325,7 +352,7 @@ async fn seed_worker_op_target(boot: &Boot, kind: &str, task_id: &str, card_id: 
                 idempotency_key: Some(task_id.to_string()),
                 payload_hash: "seeded-ownership-test".into(),
             },
-            json!({ "wave_id": boot.wave_id.as_str() }),
+            payload,
         )
         .await
         .expect("seed worker op row");
@@ -1691,6 +1718,91 @@ async fn planning_wave_promotes_to_working_on_claim() {
 }
 
 // ---------------------------------------------------------------------------
+// Review round 5 — F1: a dependent task claimed while the wave sits in
+// Reviewing (the first worker's completion promoted it) rides the legal
+// Reviewing → Working edge in the claim tx
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reviewing_wave_promotes_back_to_working_on_dependent_claim() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(&boot, plan_task(&boot.wave_id, "t1", TaskKind::Codex, &[])).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "t2", TaskKind::Codex, &["t1"]),
+    )
+    .await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let t1 = task_row(&boot, "t1").await;
+    assert_eq!(t1.status, TaskStatus::Running);
+
+    // First worker reports → emit tx flips t1 done AND promotes the
+    // wave Working → Reviewing.
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": t1.id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("t1 complete");
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+
+    // t2's dep is now satisfied; in production the task.completed
+    // envelope pokes the scheduler. The claim from a Reviewing wave
+    // must promote it back to Working in the same tx — otherwise the
+    // wave reads `Reviewing` while new work runs and the second
+    // completion's Working → Reviewing transition can never fire.
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let t2 = task_row(&boot, "t2").await;
+    assert_eq!(t2.status, TaskStatus::Running, "dependent task claimed");
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "claim tx must ride the legal Reviewing → Working edge"
+    );
+
+    // The second completion promotes Working → Reviewing again.
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": t2.id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("t2 complete");
+    assert_eq!(task_row(&boot, "t2").await.status, TaskStatus::Done);
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+}
+
+// ---------------------------------------------------------------------------
 // Review round 1 — F6: resuming a dispatched terminal task immediately
 // reconciles a recorded exit (one boot sweep, no second pass)
 // ---------------------------------------------------------------------------
@@ -2308,6 +2420,83 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
     assert_eq!(row.status, TaskStatus::Done);
     assert_eq!(row.worker_card_id.as_deref(), Some(real_card_id.as_str()));
     assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 5 — F2: an op row under the task's idempotency key whose
+// persisted payload actor is NOT KernelDispatcher (a legacy
+// `calm.task.dispatch` spawn) proves nothing — its worker card cannot
+// flip the plan task during the unstamped `dispatched` window
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    // Dispatched + unstamped: the window the scheduler has not yet
+    // classified the payload conflict as spawn-failed.
+    let mut task = plan_task(&boot.wave_id, "legacy-owned", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    // A legacy `calm.task.dispatch` operation created by a spec reusing
+    // the same idempotency key: kind + key + card target all match the
+    // scheduler shape, but the persisted payload actor is the spec card
+    // — NOT KernelDispatcher.
+    bind_worker_card_payload(&boot, &task_id).await;
+    seed_worker_op_target_with_payload(
+        &boot,
+        "codex-worker",
+        &task_id,
+        boot.worker_card_id.as_str(),
+        json!({
+            "actor": ActorId::AiSpec(boot.spec_card_id.clone()),
+            "wave_id": boot.wave_id.as_str()
+        }),
+    )
+    .await;
+
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect_err("a legacy-actor op's card must not flip the unstamped row");
+    let row = task_row(&boot, "legacy-owned").await;
+    assert_eq!(row.status, TaskStatus::Dispatched, "row untouched");
+    assert_eq!(row.worker_card_id, None, "no stamp stolen");
+    assert!(
+        event_rows(&boot, "task.completed").await.is_empty(),
+        "rejected report persists nothing"
+    );
+
+    // Fail path is guarded identically.
+    call_tool(
+        &boot,
+        TOOL_TASK_FAIL,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "reason": "not the scheduler's worker" }),
+    )
+    .await
+    .expect_err("legacy-actor fail report must be rejected");
+    assert_eq!(
+        task_row(&boot, "legacy-owned").await.status,
+        TaskStatus::Dispatched
+    );
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "rejected reports must not promote Working → Reviewing"
+    );
 }
 
 // ---------------------------------------------------------------------------

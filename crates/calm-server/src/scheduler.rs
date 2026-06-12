@@ -532,10 +532,17 @@ impl Scheduler {
                         // schedules Planning waves (review F5) — a wave the
                         // spec never moved past Planning is promoted along
                         // the legal kernel chain Planning → Dispatching →
-                        // Working here, so a successful claim always leaves
-                        // the wave `Working` and the later Working →
-                        // Reviewing auto-transition can fire.
+                        // Working here. §5.2 also keeps Reviewing in the
+                        // schedulable set (round-5 review F1): a dependent
+                        // task that becomes ready after the first worker's
+                        // completion promoted the wave to Reviewing is
+                        // claimed from Reviewing, so the legal Reviewing →
+                        // Working edge rides the same claim tx. A
+                        // successful claim therefore always leaves the wave
+                        // `Working` and the later Working → Reviewing
+                        // auto-transition can fire again.
                         for (from, to) in [
+                            (WaveLifecycle::Reviewing, WaveLifecycle::Working),
                             (WaveLifecycle::Planning, WaveLifecycle::Dispatching),
                             (WaveLifecycle::Dispatching, WaveLifecycle::Working),
                         ] {

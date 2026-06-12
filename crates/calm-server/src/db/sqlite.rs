@@ -1099,11 +1099,22 @@ pub async fn task_mark_running_tx(
 /// allow extra fields), so a payload `idempotency_key` echo proves
 /// nothing.
 ///
-/// Returns `false` when no worker op row targets the card — including
-/// the crash window between the claim and the op insert, where NO
-/// ownership is provable: unstamped reports are rejected there, the
-/// sweep's dispatched arm resubmits the op, and the real worker spawned
-/// by that resubmit can report.
+/// Round-5 review F2: the op must additionally be SCHEDULER-created —
+/// its persisted `payload_json` actor is `ActorId::KernelDispatcher`
+/// (`build_worker_payload` stamps it; serde shape
+/// `{"actor":{"kind":"KernelDispatcher"}}`). A legacy
+/// `calm.task.dispatch` operation carries the requesting envelope's
+/// actor (the spec card, `{"kind":"AiSpec",...}`) and could otherwise
+/// collide on the same idempotency key — that foreign op's worker card
+/// must NOT be able to flip the plan task during the unstamped
+/// `dispatched` window (the scheduler classifies the payload-hash
+/// conflict as a permanent spawn failure instead).
+///
+/// Returns `false` when no scheduler worker op row targets the card —
+/// including the crash window between the claim and the op insert,
+/// where NO ownership is provable: unstamped reports are rejected
+/// there, the sweep's dispatched arm resubmits the op, and the real
+/// worker spawned by that resubmit can report.
 pub async fn worker_op_targets_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     task_id: &str,
@@ -1116,6 +1127,7 @@ pub async fn worker_op_targets_card_tx(
                  AND idempotency_key = ?1
                  AND target_type = 'card'
                  AND target_id = ?2
+                 AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'
            )"#,
     )
     .bind(task_id)
