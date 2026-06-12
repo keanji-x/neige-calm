@@ -19,7 +19,6 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 ENV_FILE="$REPO_ROOT/.env"
 ARTIFACT_DIR="$REPO_ROOT/e2e-artifacts"
 WORKSPACE=""
-SERVER_CONTAINER="neige-calm-$DEV_ID-server-1"
 COOKIE_HEADER=""; PORT=""; SERVER_CID=""
 
 export NO_PROXY="127.0.0.1,localhost"
@@ -97,7 +96,7 @@ pick_port() {
   printf '%s\n' "$port"
 }
 init_workspace() {
-  docker exec "$SERVER_CONTAINER" sh -lc '
+  docker exec "$SERVER_CID" sh -lc '
     set -e
     ws=$1
     mkdir -p "$ws"
@@ -107,7 +106,7 @@ init_workspace() {
 }
 start_stack() {
   printf 'Starting isolated stack: run_id=%s dev_id=%s port=%s\n' "$RUN_ID" "$DEV_ID" "$PORT"
-  (cd "$REPO_ROOT" && make dev DEV_ID="$DEV_ID" COMPOSE_PROJECT_NAME="$PROJECT" CALM_PORT="$PORT")
+  (cd "$REPO_ROOT" && make dev DEV_ID="$DEV_ID" COMPOSE_PROJECT_NAME="$PROJECT" CALM_PORT="$PORT" RESET_DB= FRESH=)
   SERVER_CID="$(cd "$REPO_ROOT" && docker compose -p "$PROJECT" ps -q server || true)"
   [[ -n "$SERVER_CID" ]] || fail "server container was not created for compose project $PROJECT"
 }
@@ -223,8 +222,8 @@ poll_wave() {
     cards_json="$API_BODY"
     expect_2xx GET "/api/waves/$wave_id" -
     detail_json="$API_BODY"
-    if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/src/greet.py"; then greet=yes; else greet=no; fi
-    if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/USAGE.md"; then usage=yes; else usage=no; fi
+    if docker exec "$SERVER_CID" test -f "$WORKSPACE/src/greet.py"; then greet=yes; else greet=no; fi
+    if docker exec "$SERVER_CID" test -f "$WORKSPACE/USAGE.md"; then usage=yes; else usage=no; fi
     IFS=$'\t' read -r lifecycle worker_count worker_statuses greet usage report lifecycle_ready \
       < <(summarize_state "$cards_json" "$detail_json" "$greet" "$usage") \
       || fail 'summarize_state produced no parsable state'
