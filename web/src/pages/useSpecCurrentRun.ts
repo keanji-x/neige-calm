@@ -143,9 +143,10 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
       await resetSpecCard(cardId);
       setPhase(null);
       // A successful reset mints a fresh harness session — the dormant
-      // state (and its stale error) no longer applies.
+      // state (and its stale errors) no longer applies.
       setSubmitDormant(false);
       setSubmitError(null);
+      setStopError(null);
     } catch (err) {
       const msg = errorMessage(err, 'Reset failed');
       setResetError(msg);

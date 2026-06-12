@@ -441,7 +441,7 @@
           "cards"
         ],
         "summary": "Issue #668 — stop the running spec turn.",
-        "description": "Guard chain mirrors `/spec/input` (card → role → kind), but deliberately\nWITHOUT the lazy-recovery path and its per-card lock: a harness that\nneeds recovering has, by construction, no running turn to stop, so a\nregistry miss (or no active runtime row) is the same typed 409\n`spec_harness_dormant` the input route uses — the client steers the user\nto Reset.\n\nIdle is a graceful no-op, not an error: the harness's own\n`issue_interrupt` ignores interrupts when no turn is active, so the route\nreports `stopped: false` (decided from the harness phase just before\ndispatch) and skips the operation entirely. The phase read and the\ndispatch are not atomic — a turn could start in between — but the failure\nmode is benign (the user presses Stop again). `IssuingInterrupt` also\nreports `stopped: false`: an interrupt is already in flight and\nre-dispatching would be ignored by the FSM anyway.",
+        "description": "Guard chain mirrors `/spec/input` (card → role → kind), but deliberately\nWITHOUT the lazy-recovery path and its per-card lock: a harness that\nneeds recovering has, by construction, no running turn to stop, so a\nregistry miss (or no active runtime row) is the same typed 409\n`spec_harness_dormant` the input route uses — the client steers the user\nto Reset.\n\nIdle is a graceful no-op, not an error: the harness's own\n`issue_interrupt` ignores interrupts when no turn is active, so the route\nreports `stopped: false` (decided from the harness phase just before\ndispatch) and skips the operation entirely. The phase read and the\ndispatch are not atomic — a turn could start in between — but the failure\nmode is benign (the user presses Stop again). `IssuingInterrupt` also\nreports `stopped: false`: an interrupt is already in flight and\nre-dispatching would be ignored by the FSM anyway.\n\n`IssuingTurn` is a best-effort window, so it reports `stopped: false`\ntoo: while the `turn/start` RPC is in flight the shared app-server may\nnot have populated `active_turn_id_for_thread` yet, so the harness's\n`issue_interrupt` can resolve no target and no-op — the turn would then\nkeep running despite a `stopped: true` answer. The route still dispatches\nthe interrupt (it lands when the app-server already knows the turn), but\nonly `TurnRunning` — where an interrupt target is guaranteed — earns\n`stopped: true`. The user can press Stop again once the turn is running.\nNon-goal: teaching the run loop to remember a pending interrupt across\nthe Issuing window and fire it on `turn/start` completion.",
         "operationId": "interrupt_spec_card",
         "parameters": [
           {
@@ -456,7 +456,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Interrupt dispatched at the running turn (`stopped: true`), or graceful no-op because no turn was running (`stopped: false`)",
+            "description": "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3933,7 +3933,7 @@
           },
           "stopped": {
             "type": "boolean",
-            "description": "True when a turn was actually running (or being issued) and an\ninterrupt was dispatched at it; false when the harness was idle and\nthe stop was a graceful no-op. \"stopped: true\" means the interrupt\nwas *issued* — completion is asynchronous (`turn/aborted` lands via\nthe harness FSM, with an interrupt-timeout watchdog as backstop)."
+            "description": "True when a turn was actually running and an interrupt was\ndispatched at it; false when the harness was idle (graceful no-op)\nor a `turn/start` was still in flight (interrupt dispatched\nbest-effort, but not guaranteed to land — press Stop again once the\nturn is running). \"stopped: true\" means the interrupt was *issued* —\ncompletion is asynchronous (`turn/aborted` lands via the harness\nFSM, with an interrupt-timeout watchdog as backstop)."
           }
         }
       },

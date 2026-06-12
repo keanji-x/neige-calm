@@ -115,6 +115,17 @@ export interface paths {
          *     mode is benign (the user presses Stop again). `IssuingInterrupt` also
          *     reports `stopped: false`: an interrupt is already in flight and
          *     re-dispatching would be ignored by the FSM anyway.
+         *
+         *     `IssuingTurn` is a best-effort window, so it reports `stopped: false`
+         *     too: while the `turn/start` RPC is in flight the shared app-server may
+         *     not have populated `active_turn_id_for_thread` yet, so the harness's
+         *     `issue_interrupt` can resolve no target and no-op — the turn would then
+         *     keep running despite a `stopped: true` answer. The route still dispatches
+         *     the interrupt (it lands when the app-server already knows the turn), but
+         *     only `TurnRunning` — where an interrupt target is guaranteed — earns
+         *     `stopped: true`. The user can press Stop again once the turn is running.
+         *     Non-goal: teaching the run loop to remember a pending interrupt across
+         *     the Issuing window and fire it on `turn/start` completion.
          */
         post: operations["interrupt_spec_card"];
         delete?: never;
@@ -1153,11 +1164,13 @@ export interface components {
             card_id: string;
             runtime_id: string;
             /**
-             * @description True when a turn was actually running (or being issued) and an
-             *     interrupt was dispatched at it; false when the harness was idle and
-             *     the stop was a graceful no-op. "stopped: true" means the interrupt
-             *     was *issued* — completion is asynchronous (`turn/aborted` lands via
-             *     the harness FSM, with an interrupt-timeout watchdog as backstop).
+             * @description True when a turn was actually running and an interrupt was
+             *     dispatched at it; false when the harness was idle (graceful no-op)
+             *     or a `turn/start` was still in flight (interrupt dispatched
+             *     best-effort, but not guaranteed to land — press Stop again once the
+             *     turn is running). "stopped: true" means the interrupt was *issued* —
+             *     completion is asynchronous (`turn/aborted` lands via the harness
+             *     FSM, with an interrupt-timeout watchdog as backstop).
              */
             stopped: boolean;
         };
@@ -2339,7 +2352,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Interrupt dispatched at the running turn (`stopped: true`), or graceful no-op because no turn was running (`stopped: false`) */
+            /** @description Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running) */
             200: {
                 headers: {
                     [name: string]: unknown;

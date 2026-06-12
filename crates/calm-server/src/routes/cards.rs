@@ -586,11 +586,13 @@ pub struct InterruptSpecCardResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub runtime_id: String,
-    /// True when a turn was actually running (or being issued) and an
-    /// interrupt was dispatched at it; false when the harness was idle and
-    /// the stop was a graceful no-op. "stopped: true" means the interrupt
-    /// was *issued* — completion is asynchronous (`turn/aborted` lands via
-    /// the harness FSM, with an interrupt-timeout watchdog as backstop).
+    /// True when a turn was actually running and an interrupt was
+    /// dispatched at it; false when the harness was idle (graceful no-op)
+    /// or a `turn/start` was still in flight (interrupt dispatched
+    /// best-effort, but not guaranteed to land — press Stop again once the
+    /// turn is running). "stopped: true" means the interrupt was *issued* —
+    /// completion is asynchronous (`turn/aborted` lands via the harness
+    /// FSM, with an interrupt-timeout watchdog as backstop).
     pub stopped: bool,
 }
 
@@ -726,13 +728,24 @@ pub(crate) async fn send_spec_input(
 /// mode is benign (the user presses Stop again). `IssuingInterrupt` also
 /// reports `stopped: false`: an interrupt is already in flight and
 /// re-dispatching would be ignored by the FSM anyway.
+///
+/// `IssuingTurn` is a best-effort window, so it reports `stopped: false`
+/// too: while the `turn/start` RPC is in flight the shared app-server may
+/// not have populated `active_turn_id_for_thread` yet, so the harness's
+/// `issue_interrupt` can resolve no target and no-op — the turn would then
+/// keep running despite a `stopped: true` answer. The route still dispatches
+/// the interrupt (it lands when the app-server already knows the turn), but
+/// only `TurnRunning` — where an interrupt target is guaranteed — earns
+/// `stopped: true`. The user can press Stop again once the turn is running.
+/// Non-goal: teaching the run loop to remember a pending interrupt across
+/// the Issuing window and fire it on `turn/start` completion.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/spec/interrupt",
     tag = "cards",
     params(("id" = String, Path, description = "Spec card id")),
     responses(
-        (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`), or graceful no-op because no turn was running (`stopped: false`)", body = InterruptSpecCardResponse),
+        (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)", body = InterruptSpecCardResponse),
         (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 409, description = "No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`)", body = ErrorBody),
@@ -772,11 +785,14 @@ pub(crate) async fn interrupt_spec_card(
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
 
     let phase = harness.snapshot().await.phase;
-    let stopped = matches!(
+    // Dispatch for IssuingTurn too (best-effort), but only TurnRunning —
+    // where an interrupt target is guaranteed — reports `stopped: true`.
+    let dispatch = matches!(
         phase,
         HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
     );
-    if stopped {
+    let stopped = matches!(phase, HarnessPhaseTag::TurnRunning);
+    if dispatch {
         let payload = serde_json::to_value(SpecHarnessInterruptOperationPayload {
             runtime_id: runtime.id.clone(),
             reason: "user_stop".into(),

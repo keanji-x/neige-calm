@@ -6,6 +6,10 @@
 //!   route answers `200 { stopped: true }`;
 //! - stopping when no turn is running is a graceful no-op:
 //!   `200 { stopped: false }`, nothing dispatched;
+//! - stopping while a `turn/start` is still in flight (`IssuingTurn`)
+//!   answers `stopped: false` — the interrupt is dispatched best-effort
+//!   (it lands only when the app-server already knows the active turn),
+//!   so the route must not promise the turn was stopped;
 //! - no active runtime row, or an active row with no registered harness,
 //!   is the typed 409 `spec_harness_dormant` (same code as `/spec/input`).
 
@@ -20,7 +24,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::{
-    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, SpecHarness, SpecHarnessParams,
+    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, SpecHarness,
+    SpecHarnessParams,
 };
 use calm_server::ids::WaveId;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
@@ -253,6 +258,81 @@ async fn interrupt_running_turn_issues_interrupt() {
             .interrupted_turns_for_test()
             .contains(&(thread_id.clone(), "T1".to_string())),
         "expected turn/interrupt at ({thread_id}, T1); got {:?}",
+        boot.state
+            .shared_codex_appserver
+            .interrupted_turns_for_test()
+    );
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+/// Interrupt while a `turn/start` is still in flight (`IssuingTurn`) and
+/// the shared app-server does NOT yet know the active turn: the harness's
+/// `issue_interrupt` resolves no target and no-ops, so the route must
+/// answer `stopped: false` — a `stopped: true` here would narrate a false
+/// "Turn stopped" while the turn keeps running.
+#[tokio::test]
+async fn interrupt_issuing_turn_window_reports_not_stopped() {
+    let boot = boot().await;
+    let (card, runtime_id, _thread_id, harness) = seed_live_spec_harness(&boot).await;
+    harness
+        .set_state_for_test(HarnessState::Issuing {
+            since: Instant::now(),
+            kind: IssuingKind::TurnStart,
+        })
+        .await;
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/interrupt", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["stopped"], json!(false), "body={body}");
+    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .interrupted_turns_for_test()
+            .is_empty(),
+        "no active turn id is known yet, so nothing can be interrupted"
+    );
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+/// Interrupt during `IssuingTurn` when the shared app-server already knows
+/// the active turn: the interrupt is still dispatched best-effort, but the
+/// route keeps `stopped: false` — only `TurnRunning` guarantees a target.
+#[tokio::test]
+async fn interrupt_issuing_turn_dispatches_best_effort() {
+    let boot = boot().await;
+    let (card, runtime_id, thread_id, harness) = seed_live_spec_harness(&boot).await;
+    boot.state
+        .shared_codex_appserver
+        .set_active_turn_for_test(&thread_id, "T2");
+    harness
+        .set_state_for_test(HarnessState::Issuing {
+            since: Instant::now(),
+            kind: IssuingKind::TurnStart,
+        })
+        .await;
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/interrupt", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["stopped"], json!(false), "body={body}");
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .interrupted_turns_for_test()
+            .contains(&(thread_id.clone(), "T2".to_string())),
+        "expected best-effort turn/interrupt at ({thread_id}, T2); got {:?}",
         boot.state
             .shared_codex_appserver
             .interrupted_turns_for_test()
