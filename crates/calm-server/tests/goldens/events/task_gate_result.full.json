@@ -1,0 +1,17 @@
+{
+  "description": "task.gate_result (#644 PR-C gate runner verdict) red attempt with every optional present: failing_step + exit_code + agent_message.",
+  "wire": {
+    "ev": "task.gate_result",
+    "data": {
+      "task_id": "wave-01:build-step",
+      "idempotency_key": "wave-01:build-step",
+      "passed": false,
+      "failing_step": "clippy",
+      "exit_code": 101,
+      "log_tail": "error: gate step failed\n",
+      "log_path": "/data/gate-logs/wave-01:build-step-g2.log",
+      "attempt": 2,
+      "agent_message": "gate attempt 2 failed at clippy"
+    }
+  }
+}
