@@ -58,6 +58,10 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::{Task, TaskKind, TaskStatus, Wave, WaveLifecycle, new_id, now_ms};
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
+use crate::operation::task_verify_adapter::{
+    GateResultCtx, GateVerdict, TASK_VERIFY_KIND, TaskVerifyOperationPayload,
+    apply_gate_result_in_tx, gate_attempt_key,
+};
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
@@ -358,6 +362,21 @@ impl Scheduler {
         }
         let budget = self.wave_budget(wave_id).await?;
         let tasks = self.repo.tasks_by_wave(wave_id.as_str()).await?;
+        // §6.2 trigger 2 — the emit-tx flip already moved gated rows to
+        // `verifying`; this pass (poked by the `task.completed`
+        // envelope) drives each one's gate. Fire-and-forget: a gate can
+        // run for minutes-to-hours and must never block the wave lock;
+        // `drive_gate`'s single-flight guard collapses duplicates.
+        for task in tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Verifying)
+            .cloned()
+        {
+            let this = Arc::clone(self);
+            tokio::spawn(async move {
+                this.drive_gate(task).await;
+            });
+        }
         let ready = compute_ready(&tasks, budget);
         for task in ready {
             self.dispatch_task(task, &wave).await;
@@ -789,7 +808,11 @@ impl Scheduler {
     ///   `terminals.exit_code = -1`, so a recorded exit runs the same
     ///   guarded completion tx as the live exit hook.
     /// - `running` + codex kind: left alone (policy-free; risk R4).
-    /// - `verifying`: PR-C.
+    /// - `verifying`: drive the current gate attempt
+    ///   ([`Scheduler::drive_gate`] — submit when missing, `wait()`
+    ///   re-drive when non-terminal, outcome copy when terminal); the
+    ///   parked-op enforcement arms (dead probe / deadline) run via
+    ///   `OperationRuntime::sweep_parked` at the top of the body.
     ///
     /// Boot-gated (round-3 review F2): both backstop callers — the
     /// reconcile tick and the Lagged arm — are spawned during
@@ -850,6 +873,16 @@ impl Scheduler {
     /// dispatch (blocking in [`Scheduler::sweep_all`], fire-and-forget
     /// in [`Scheduler::sweep_boot`]).
     async fn sweep_reconcile(self: &Arc<Self>) -> BTreeSet<String> {
+        // #653 §4.4 call-site (c): the consumer reconcile tick runs the
+        // saga's parked sweep — recovers durable verdicts from dead
+        // gates (pre-deadline dead-probe) and kill-fails past-deadline
+        // work. Every arm is fenced single-winner, so racing the live
+        // observer / boot recovery is safe.
+        if let Some(runtime) = self.operation_runtime.upgrade()
+            && let Err(e) = runtime.sweep_parked().await
+        {
+            tracing::warn!(error = %e, "scheduler sweep: sweep_parked failed; next tick retries");
+        }
         let mut pending_waves: BTreeSet<String> = BTreeSet::new();
         let tasks = match self.repo.tasks_nonterminal().await {
             Ok(tasks) => tasks,
@@ -873,9 +906,19 @@ impl Scheduler {
                 // (PTY under proc-supervisor) and reports via the emit
                 // tx; the scheduler holds no liveness judgment (R4).
                 TaskStatus::Running => {}
-                // PR-C territory; the gate sweep arms land with the
-                // gate runner.
-                TaskStatus::Verifying => {}
+                // §8 verifying arm (parked formulation): drive the
+                // current gate attempt — op missing → submit,
+                // non-terminal → single-flight `wait()` re-drive
+                // (doubles as the parked-deadline watcher), terminal →
+                // copy the outcome to the row. Spawned because a gate
+                // watch can outlive the sweep by hours; dead-parked
+                // enforcement itself is `sweep_parked`'s job above.
+                TaskStatus::Verifying => {
+                    let this = Arc::clone(self);
+                    tokio::spawn(async move {
+                        this.drive_gate(task).await;
+                    });
+                }
                 TaskStatus::Done | TaskStatus::Failed | TaskStatus::Canceled => {}
             }
         }
@@ -983,6 +1026,194 @@ impl Scheduler {
                 "scheduler sweep: terminal completion tx failed; next sweep retries"
             );
         }
+    }
+
+    /// Drive one `verifying` task's gate (issue #644 PR-C, §6.2 trigger
+    /// 2 + the §8 verifying arms in the #653 parked formulation).
+    /// Single-flight per task (`"gate:{task.id}"` — disjoint from the
+    /// worker-spawn keyspace so a sweep gate drive never starves a
+    /// spawn drive of the same task id, and vice versa); shared
+    /// verbatim between the live pass (poked by `task.completed`) and
+    /// the sweep arm. Deliberately does NOT hold the dispatch
+    /// semaphore: the `wait()` below can span a multi-hour gate, and
+    /// the real spawn work is bounded by the saga's own drive lease.
+    async fn drive_gate(self: &Arc<Self>, task: Task) {
+        let inflight_key = format!("gate:{}", task.id);
+        let Some(_inflight) = InflightGuard::acquire(&self.inflight, &inflight_key) else {
+            tracing::debug!(task_id = %task.id, "scheduler: gate drive already in flight");
+            return;
+        };
+        let Some(runtime) = self.operation_runtime.upgrade() else {
+            tracing::debug!(
+                task_id = %task.id,
+                "scheduler: operation runtime dropped; skipping gate drive"
+            );
+            return;
+        };
+        if let Err(e) = self.drive_gate_inner(&runtime, &task).await {
+            tracing::warn!(
+                task_id = %task.id,
+                error = %e,
+                "scheduler: gate drive failed; next trigger/sweep retries"
+            );
+        }
+    }
+
+    /// The §8 arm body. Resolution order (parked formulation):
+    ///
+    /// 1. `gate_attempt >= 1` and the op `"{task.id}#g{attempt}"`
+    ///    exists → `wait()` it (terminal rows return immediately;
+    ///    non-terminal ops get the single-flight re-drive — the one
+    ///    public API that re-polls `drive()` — and a *parked* op's
+    ///    wait-poll doubles as its deadline watcher, #653 §4.3), then
+    ///    copy the outcome to the row iff it is still `verifying` at
+    ///    that attempt (the live observer's one-tx completion normally
+    ///    got there first and the guard misses — by design).
+    /// 2. Op missing (or `gate_attempt == 0`, no attempt ever
+    ///    prepared) → submit `#g{gate_attempt + 1}` and watch it the
+    ///    same way. Racing submitters compute the same key and dedupe
+    ///    on the operations unique index; the adapter's `prepare_tx`
+    ///    bump admits exactly one op per attempt number.
+    async fn drive_gate_inner(&self, runtime: &Arc<OperationRuntime>, task: &Task) -> Result<()> {
+        if task.gate_attempt >= 1 {
+            let key = gate_attempt_key(&task.id, task.gate_attempt);
+            if let Some(op) = runtime
+                .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &key)
+                .await?
+            {
+                let log_path = op
+                    .spawn_artifacts
+                    .as_ref()
+                    .and_then(|a| a.log_path.clone())
+                    .unwrap_or_default();
+                let result = runtime.wait(&op.id).await?;
+                return self
+                    .reconcile_gate_outcome(task, task.gate_attempt, &log_path, result.outcome)
+                    .await;
+            }
+        }
+        let attempt = task.gate_attempt + 1;
+        let payload = serde_json::to_value(TaskVerifyOperationPayload {
+            actor: ActorId::KernelDispatcher,
+            wave_id: task.wave_id.clone(),
+            task_id: task.id.clone(),
+            attempt,
+        })?;
+        let payload_hash = stable_payload_hash(&payload)?;
+        let op_id = runtime
+            .submit(
+                TASK_VERIFY_KIND,
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(gate_attempt_key(&task.id, attempt)),
+                    payload_hash,
+                },
+                payload,
+            )
+            .await?;
+        let result = runtime.wait(&op_id).await?;
+        self.reconcile_gate_outcome(task, attempt, "", result.outcome)
+            .await
+    }
+
+    /// The consumer reconcile arm kept from #653 §6.2: "row
+    /// `verifying`, op terminal → copy the outcome to the row". Needed
+    /// because op-only terminal writes exist — boot recovery's
+    /// `VerifyParked` Complete/Fail arms and `sweep_parked`'s
+    /// enforcement write the *operation* without touching consumer
+    /// tables (#653 §4.2). The copy runs the SAME one-tx body as the
+    /// live observer (guarded flip + `task.gate_result` + lifecycle
+    /// promotion), so first writer wins on the
+    /// `status='verifying' AND gate_attempt=N` guard and duplication
+    /// is impossible.
+    ///
+    /// Outcome mapping: op succeeded → its result IS the recorded
+    /// `GateVerdict` (the observer/recovery spliced it into
+    /// `tx_output.result`); op failed `parked_deadline` →
+    /// `gate-timeout`; any other failure / stuck / unparseable result
+    /// → `gate-infra`. A benignly-failed attempt (lost `prepare_tx`
+    /// bump — its Conflict error fails the op) can never mis-fail the
+    /// row: losing the bump means the row's `gate_attempt` never
+    /// reached this op's attempt number, so the in-tx guard misses.
+    async fn reconcile_gate_outcome(
+        &self,
+        task: &Task,
+        attempt: i64,
+        log_path: &str,
+        outcome: OperationOutcome,
+    ) -> Result<()> {
+        let verdict = match outcome {
+            OperationOutcome::Succeeded { result }
+            | OperationOutcome::SucceededViaCollision { result, .. } => {
+                match serde_json::from_value::<GateVerdict>(result) {
+                    Ok(verdict) => verdict,
+                    Err(e) => GateVerdict {
+                        passed: false,
+                        status_detail: Some("gate-infra".into()),
+                        failing_step: None,
+                        exit_code: None,
+                        log_tail: format!("gate op result unparseable: {e}"),
+                        log_path: log_path.to_string(),
+                        attempt,
+                    },
+                }
+            }
+            OperationOutcome::Failed {
+                last_error,
+                last_error_class,
+                ..
+            } => {
+                let status_detail = if last_error_class.as_deref() == Some("parked_deadline") {
+                    "gate-timeout"
+                } else {
+                    "gate-infra"
+                };
+                GateVerdict {
+                    passed: false,
+                    status_detail: Some(status_detail.into()),
+                    failing_step: None,
+                    exit_code: None,
+                    log_tail: last_error,
+                    log_path: log_path.to_string(),
+                    attempt,
+                }
+            }
+            OperationOutcome::Stuck { reason, .. } => GateVerdict {
+                passed: false,
+                status_detail: Some("gate-infra".into()),
+                failing_step: None,
+                exit_code: None,
+                log_tail: reason,
+                log_path: log_path.to_string(),
+                attempt,
+            },
+        };
+        let pool = self
+            .repo
+            .sqlite_pool()
+            .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
+        let Some(wave) = self.repo.wave_get(&task.wave_id).await? else {
+            tracing::debug!(task_id = %task.id, "scheduler: gate task's wave row is gone");
+            return Ok(());
+        };
+        let rctx = GateResultCtx {
+            task_id: task.id.clone(),
+            wave_id: wave.id.clone(),
+            cove_id: wave.cove_id.clone(),
+        };
+        let mut tx = begin_immediate_tx(&pool).await?;
+        let envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
+        if envelopes.is_empty() {
+            // Guard miss: the live observer's tx (or a superseding
+            // attempt) already moved the row. Nothing was written.
+            tx.rollback().await?;
+            return Ok(());
+        }
+        tx.commit().await?;
+        for envelope in envelopes {
+            self.events.emit_envelope(envelope);
+        }
+        Ok(())
     }
 }
 
