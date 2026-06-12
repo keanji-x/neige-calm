@@ -65,23 +65,38 @@ boot the server (see the `webServer` comment in
   violation on a common page fails the spec. Runs under the
   `a11y` project.
 
+- `a11y-spec-chat-{seed,live,input,interrupt}.spec.ts` — browser-level
+  regression pins for the SpecCurrentRun / spec-chat UI (issue #682;
+  anchored on the #676 dead-Stop-chip and #657 dead-typing-indicator
+  incidents). The replay stub can't progress the harness FSM, so the
+  specs drive phases through `POST /dev/force-spec-phase` (see
+  `helpers/spec-chat.ts`): seed (`GET /spec/run` opens working UI on a
+  mid-turn page load), live (`harness.phase.changed` updates without
+  reload + snake_case wire-shape pin), input (`POST /spec/input` happy
+  path, no phase churn), interrupt (Stop chip / ■ / Esc fire
+  `POST /spec/interrupt`; probed stub outcome pinned). Run under the
+  `a11y` project.
+
 Add more specs as flows stabilize — keep them as narrowly scoped as
 the golden path so a single broken seed doesn't take the whole
 suite down.
 
 ## A11y scripts
 
-The keyboard + axe suites come with their own npm scripts, all of
-which run under the `a11y` Playwright project (requires `cargo`):
+The keyboard + axe + spec-chat suites come with their own npm
+scripts, all of which run under the `a11y` Playwright project
+(requires `cargo`):
 
 ```sh
-npm run a11y:e2e   # keyboard-only flows (a11y-keyboard.spec.ts)
-npm run a11y:axe   # axe scans       (a11y-axe.spec.ts)
-npm run a11y       # lint + keyboard + axe in sequence
+npm run a11y:e2e       # keyboard-only flows (a11y-keyboard.spec.ts)
+npm run a11y:axe       # axe scans       (a11y-axe.spec.ts)
+npm run a11y:spec-chat # spec-chat pins  (a11y-spec-chat-*.spec.ts)
+npm run a11y           # lint + keyboard + axe + spec-chat in sequence
 ```
 
-`npm run a11y` is the local gate for a11y-touching PRs. CI does
-not yet invoke any Playwright project — these are run locally.
+`npm run a11y` is the gate for a11y-touching PRs — CI runs it in
+the `web (build + test + a11y)` job (`.github/workflows/ci.yml`),
+so anything not wired into it does not run in CI.
 
 ## Projects
 
@@ -103,5 +118,6 @@ backends:
   on PATH; default fixture override via `NEIGE_FIXTURE=<path>`.
 
 The default `npx playwright test` (no `--project=`) runs both —
-which means cargo must be available. CI does not currently invoke
-Playwright; e2e specs are run locally only.
+which means cargo must be available. CI runs only the `a11y`
+project, via `npm run a11y` (see "A11y scripts" above); the
+`chromium` project needs the `make dev` stack and stays local.
