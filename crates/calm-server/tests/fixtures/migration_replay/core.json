@@ -1,0 +1,748 @@
+{
+  "_comment": [
+    "Synthetic migration-replay fixture (PR0-D of #679). Tables are seeded",
+    "in declaration order (FK parents first). Each row carries the HEAD",
+    "column superset; the harness filters columns down to whatever exists",
+    "at the staged version. min_version/max_version gate values whose",
+    "legality changed over time:",
+    "  - cards.role='plain' is trigger-rejected from 0037 on (max 36)",
+    "  - legacy 'codex.job_requested' events are rewritten by 0038 (max 37)",
+    "  - runtimes (0028+), operations (0029+), 'parked' phase (0042+)",
+    "  - card_codex_threads exists 0025..0033, spec_push_queue 0022..0032",
+    "Boundary values on purpose: NULLs, alias event kinds, every wave",
+    "lifecycle state, exited/signal-killed terminals, spec runtime with",
+    "and without an mcp token (0035/0036 transform the token-less one)."
+  ],
+  "tables": [
+    {
+      "table": "coves",
+      "rows": [
+        {
+          "columns": {
+            "id": "cove-user",
+            "name": "user cove",
+            "color": "#112233",
+            "sort": 1.0,
+            "kind": "user",
+            "created_at": 1000,
+            "updated_at": 1000
+          }
+        },
+        {
+          "columns": {
+            "id": "cove-system",
+            "name": "system cove",
+            "color": "#000000",
+            "sort": 0.0,
+            "kind": "system",
+            "created_at": 1000,
+            "updated_at": 1000
+          }
+        }
+      ]
+    },
+    {
+      "table": "cove_folders",
+      "rows": [
+        {
+          "columns": {
+            "id": 1,
+            "cove_id": "cove-user",
+            "path": "/tmp/replay-fixture",
+            "created_at": 1100
+          }
+        }
+      ]
+    },
+    {
+      "table": "waves",
+      "rows": [
+        {
+          "columns": {
+            "id": "wave-draft",
+            "cove_id": "cove-user",
+            "title": "draft wave",
+            "sort": 0.0,
+            "archived_at": null,
+            "lifecycle": "draft",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 1200
+          }
+        },
+        {
+          "columns": {
+            "id": "wave-working",
+            "cove_id": "cove-user",
+            "title": "working wave",
+            "sort": 1.0,
+            "archived_at": null,
+            "lifecycle": "working",
+            "cwd": "/tmp/work",
+            "terminal_at": 1300,
+            "pinned_at": 1400,
+            "task_budget": 3,
+            "created_at": 1200,
+            "updated_at": 1300
+          }
+        },
+        {
+          "columns": {
+            "id": "wave-done",
+            "cove_id": "cove-user",
+            "title": "done wave",
+            "sort": 2.0,
+            "archived_at": 2000,
+            "lifecycle": "done",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 2000
+          }
+        },
+        {
+          "columns": {
+            "id": "wave-failed",
+            "cove_id": "cove-user",
+            "title": "failed wave",
+            "sort": 3.0,
+            "archived_at": null,
+            "lifecycle": "failed",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 1900
+          }
+        },
+        {
+          "columns": {
+            "id": "wave-planning",
+            "cove_id": "cove-user",
+            "title": "planning wave",
+            "sort": 4.0,
+            "archived_at": null,
+            "lifecycle": "planning",
+            "cwd": "/tmp",
+            "terminal_at": null,
+            "pinned_at": null,
+            "created_at": 1200,
+            "updated_at": 1250
+          }
+        }
+      ]
+    },
+    {
+      "table": "cards",
+      "rows": [
+        {
+          "columns": {
+            "id": "card-spec",
+            "wave_id": "wave-working",
+            "kind": "codex",
+            "sort": 0.0,
+            "payload": { "codex_source": "shared", "codex_thread_id": "thread-spec-1" },
+            "role": "spec",
+            "deletable": 0,
+            "body_crdt": null,
+            "created_at": 1300,
+            "updated_at": 1300
+          }
+        },
+        {
+          "columns": {
+            "id": "card-spec-no-token",
+            "wave_id": "wave-done",
+            "kind": "codex",
+            "sort": 0.0,
+            "payload": { "codex_source": "shared" },
+            "role": "spec",
+            "deletable": 0,
+            "body_crdt": null,
+            "created_at": 1300,
+            "updated_at": 1300
+          }
+        },
+        {
+          "columns": {
+            "id": "card-codex-w",
+            "wave_id": "wave-working",
+            "kind": "codex",
+            "sort": 1.0,
+            "payload": { "terminal_id": "term-codex-w" },
+            "role": "worker",
+            "deletable": 1,
+            "body_crdt": null,
+            "created_at": 1310,
+            "updated_at": 1310
+          }
+        },
+        {
+          "columns": {
+            "id": "card-term",
+            "wave_id": "wave-draft",
+            "kind": "terminal",
+            "sort": 0.0,
+            "payload": { "terminal_id": "term-plain" },
+            "role": "worker",
+            "deletable": 1,
+            "body_crdt": null,
+            "created_at": 1320,
+            "updated_at": 1320
+          }
+        },
+        {
+          "columns": {
+            "id": "card-claude",
+            "wave_id": "wave-planning",
+            "kind": "claude",
+            "sort": 0.0,
+            "payload": { "terminal_id": "term-claude", "claude_session_id": "sess-claude-1" },
+            "role": "worker",
+            "deletable": 1,
+            "body_crdt": null,
+            "created_at": 1330,
+            "updated_at": 1330
+          }
+        },
+        {
+          "max_version": 36,
+          "columns": {
+            "id": "card-plain-legacy",
+            "wave_id": "wave-done",
+            "kind": "terminal",
+            "sort": 1.0,
+            "payload": {},
+            "role": "plain",
+            "deletable": 1,
+            "body_crdt": null,
+            "created_at": 1340,
+            "updated_at": 1340
+          }
+        },
+        {
+          "columns": {
+            "id": "card-report",
+            "wave_id": "wave-failed",
+            "kind": "wave-report",
+            "sort": -1.0,
+            "payload": { "schemaVersion": 1, "summary": "", "body": "# Goal\n" },
+            "role": "reportcard",
+            "deletable": 0,
+            "body_crdt": null,
+            "created_at": 1350,
+            "updated_at": 1350
+          }
+        }
+      ]
+    },
+    {
+      "table": "terminals",
+      "rows": [
+        {
+          "columns": {
+            "id": "term-codex-w",
+            "card_id": "card-codex-w",
+            "program": "codex",
+            "cwd": "/tmp/work",
+            "env": { "TERM": "xterm-256color" },
+            "daemon_handle": "legacy-handle-1",
+            "pid": null,
+            "theme_fg": "216,219,226",
+            "theme_bg": "15,20,24",
+            "exit_code": null,
+            "signal_killed": 0,
+            "created_at": 1310
+          }
+        },
+        {
+          "columns": {
+            "id": "term-plain",
+            "card_id": "card-term",
+            "program": "bash",
+            "cwd": "/tmp",
+            "env": {},
+            "daemon_handle": null,
+            "pid": 4242,
+            "theme_fg": "216,219,226",
+            "theme_bg": "15,20,24",
+            "exit_code": 0,
+            "signal_killed": 0,
+            "created_at": 1320
+          }
+        },
+        {
+          "columns": {
+            "id": "term-claude",
+            "card_id": "card-claude",
+            "program": "claude",
+            "cwd": "/tmp",
+            "env": {},
+            "daemon_handle": null,
+            "pid": null,
+            "theme_fg": "216,219,226",
+            "theme_bg": "15,20,24",
+            "exit_code": null,
+            "signal_killed": 1,
+            "created_at": 1330
+          }
+        }
+      ]
+    },
+    {
+      "table": "card_mcp_tokens",
+      "rows": [
+        {
+          "columns": {
+            "card_id": "card-spec",
+            "hashed_token": "a3f1c2d4e5f60718293a4b5c6d7e8f90a3f1c2d4e5f60718293a4b5c6d7e8f90",
+            "created_at": 1400
+          }
+        },
+        {
+          "columns": {
+            "card_id": "card-codex-w",
+            "hashed_token": "b4f1c2d4e5f60718293a4b5c6d7e8f90a3f1c2d4e5f60718293a4b5c6d7e8f91",
+            "created_at": 1410
+          }
+        }
+      ]
+    },
+    {
+      "table": "card_codex_threads",
+      "rows": [
+        {
+          "min_version": 25,
+          "max_version": 33,
+          "columns": {
+            "thread_id": "thread-w1",
+            "card_id": "card-codex-w",
+            "role": "worker",
+            "wave_id": "wave-working",
+            "created_at": 1500,
+            "updated_at": 1500
+          }
+        }
+      ]
+    },
+    {
+      "table": "spec_push_queue",
+      "rows": [
+        {
+          "min_version": 22,
+          "max_version": 32,
+          "columns": {
+            "id": 1,
+            "card_id": "card-spec",
+            "envelope_id": 2,
+            "text": "queued observation"
+          }
+        }
+      ]
+    },
+    {
+      "table": "events",
+      "rows": [
+        {
+          "columns": {
+            "id": 1,
+            "kind": "wave.updated",
+            "payload": { "id": "wave-working" },
+            "actor": "user",
+            "at": 1600,
+            "correlation": null,
+            "event_version": 1,
+            "scope_kind": "wave",
+            "scope_cove": "cove-user",
+            "scope_wave": "wave-working",
+            "scope_card": null
+          }
+        },
+        {
+          "max_version": 37,
+          "columns": {
+            "id": 2,
+            "kind": "codex.job_requested",
+            "payload": { "wave_id": "wave-working" },
+            "actor": "ai:spec",
+            "at": 1610,
+            "correlation": "corr-1",
+            "event_version": 1,
+            "scope_kind": "wave",
+            "scope_cove": "cove-user",
+            "scope_wave": "wave-working",
+            "scope_card": null
+          }
+        },
+        {
+          "min_version": 38,
+          "columns": {
+            "id": 3,
+            "kind": "codex.worker_requested",
+            "payload": { "wave_id": "wave-working" },
+            "actor": "ai:spec",
+            "at": 1620,
+            "correlation": null,
+            "event_version": 2,
+            "scope_kind": "wave",
+            "scope_cove": "cove-user",
+            "scope_wave": "wave-working",
+            "scope_card": null
+          }
+        },
+        {
+          "columns": {
+            "id": 4,
+            "kind": "task.completed",
+            "payload": { "ok": true },
+            "actor": "ai:worker",
+            "at": 1630,
+            "correlation": null,
+            "event_version": 1,
+            "scope_kind": "card",
+            "scope_cove": "cove-user",
+            "scope_wave": "wave-working",
+            "scope_card": "card-codex-w"
+          }
+        }
+      ]
+    },
+    {
+      "table": "runtimes",
+      "rows": [
+        {
+          "min_version": 28,
+          "columns": {
+            "id": "rt-codex-w",
+            "card_id": "card-codex-w",
+            "kind": "codex",
+            "agent_provider": "codex",
+            "status": "running",
+            "terminal_run_id": "term-codex-w",
+            "thread_id": "thread-w1",
+            "session_id": null,
+            "active_turn_id": "turn-1",
+            "handle_state_json": null,
+            "lease_owner": null,
+            "lease_until_ms": null,
+            "created_at_ms": 1700,
+            "updated_at_ms": 1700,
+            "completed_at_ms": null
+          }
+        },
+        {
+          "min_version": 28,
+          "columns": {
+            "id": "rt-spec",
+            "card_id": "card-spec",
+            "kind": "shared-spec",
+            "agent_provider": "codex",
+            "status": "idle",
+            "terminal_run_id": null,
+            "thread_id": "thread-spec-1",
+            "session_id": null,
+            "active_turn_id": null,
+            "handle_state_json": { "last_thread_id": "thread-spec-1" },
+            "lease_owner": "kernel-1",
+            "lease_until_ms": 99999999999,
+            "created_at_ms": 1700,
+            "updated_at_ms": 1710,
+            "completed_at_ms": null
+          }
+        },
+        {
+          "min_version": 28,
+          "columns": {
+            "id": "rt-spec-no-token",
+            "card_id": "card-spec-no-token",
+            "kind": "shared-spec",
+            "agent_provider": "codex",
+            "status": "idle",
+            "terminal_run_id": null,
+            "thread_id": "thread-spec-2",
+            "session_id": null,
+            "active_turn_id": null,
+            "handle_state_json": { "last_thread_id": "thread-spec-2" },
+            "lease_owner": null,
+            "lease_until_ms": null,
+            "created_at_ms": 1700,
+            "updated_at_ms": 1710,
+            "completed_at_ms": null
+          }
+        },
+        {
+          "min_version": 28,
+          "columns": {
+            "id": "rt-term-exited",
+            "card_id": "card-term",
+            "kind": "terminal",
+            "agent_provider": null,
+            "status": "exited",
+            "terminal_run_id": "term-plain",
+            "thread_id": null,
+            "session_id": null,
+            "active_turn_id": null,
+            "handle_state_json": null,
+            "lease_owner": null,
+            "lease_until_ms": null,
+            "created_at_ms": 1700,
+            "updated_at_ms": 1800,
+            "completed_at_ms": 1800
+          }
+        }
+      ]
+    },
+    {
+      "table": "operations",
+      "rows": [
+        {
+          "min_version": 29,
+          "columns": {
+            "id": "op-pending",
+            "operation_key": "spawn:card-codex-w:1",
+            "kind": "spawn_worker",
+            "idempotency_key": null,
+            "payload_hash": "hash-1",
+            "target_type": "card",
+            "target_id": "card-codex-w",
+            "target_json": { "card_id": "card-codex-w" },
+            "payload_json": { "goal": "do the thing" },
+            "tx_output_json": null,
+            "phase": "pending",
+            "phase_detail_json": null,
+            "attempt": 0,
+            "last_error": null,
+            "compensation_state": null,
+            "lease_owner": null,
+            "lease_until_ms": null,
+            "created_at_ms": 1900,
+            "updated_at_ms": 1900,
+            "completed_at_ms": null
+          }
+        },
+        {
+          "min_version": 29,
+          "columns": {
+            "id": "op-succeeded",
+            "operation_key": "spawn:card-claude:1",
+            "kind": "spawn_worker",
+            "idempotency_key": "idem-1",
+            "payload_hash": "hash-2",
+            "target_type": "card",
+            "target_id": "card-claude",
+            "target_json": { "card_id": "card-claude" },
+            "payload_json": {},
+            "tx_output_json": { "card_id": "card-claude" },
+            "phase": "succeeded",
+            "phase_detail_json": null,
+            "attempt": 1,
+            "last_error": null,
+            "compensation_state": null,
+            "lease_owner": null,
+            "lease_until_ms": null,
+            "created_at_ms": 1900,
+            "updated_at_ms": 1950,
+            "completed_at_ms": 1950
+          }
+        },
+        {
+          "min_version": 42,
+          "columns": {
+            "id": "op-parked",
+            "operation_key": "spawn:card-term:1",
+            "kind": "spawn_worker",
+            "idempotency_key": null,
+            "payload_hash": "hash-3",
+            "target_type": "card",
+            "target_id": "card-term",
+            "target_json": { "card_id": "card-term" },
+            "payload_json": {},
+            "tx_output_json": null,
+            "phase": "parked",
+            "phase_detail_json": { "reason": "waiting" },
+            "attempt": 1,
+            "last_error": null,
+            "compensation_state": null,
+            "lease_owner": null,
+            "lease_until_ms": null,
+            "created_at_ms": 1900,
+            "updated_at_ms": 1960,
+            "completed_at_ms": null,
+            "spawn_artifacts_json": { "pid": 4242 },
+            "parked_at_ms": 1960,
+            "parked_deadline_ms": 2960
+          }
+        }
+      ]
+    },
+    {
+      "table": "harness_items",
+      "rows": [
+        {
+          "min_version": 31,
+          "columns": {
+            "id": 1,
+            "runtime_id": "rt-codex-w",
+            "card_id": "card-codex-w",
+            "wave_id": "wave-working",
+            "thread_id": "thread-w1",
+            "turn_id": null,
+            "item_uuid": "item-uuid-1",
+            "item_type": "agent_message",
+            "method": "item/completed",
+            "params": "{\"text\":\"hi\"}",
+            "created_at_ms": 2000
+          }
+        }
+      ]
+    },
+    {
+      "table": "tasks",
+      "rows": [
+        {
+          "min_version": 41,
+          "columns": {
+            "id": "wave-working:t1",
+            "wave_id": "wave-working",
+            "key": "t1",
+            "kind": "codex",
+            "goal": "implement the slice",
+            "context_json": { "files": [] },
+            "acceptance_criteria": "tests green",
+            "cwd": null,
+            "depends_on_json": [],
+            "priority": 1,
+            "gate_json": null,
+            "status": "pending",
+            "status_detail": null,
+            "worker_card_id": null,
+            "gate_result_json": null,
+            "gate_attempt": 0,
+            "created_at_ms": 2100,
+            "updated_at_ms": 2100,
+            "finished_at_ms": null
+          }
+        },
+        {
+          "min_version": 41,
+          "columns": {
+            "id": "wave-working:t2",
+            "wave_id": "wave-working",
+            "key": "t2",
+            "kind": "terminal",
+            "goal": "cargo test",
+            "context_json": {},
+            "acceptance_criteria": null,
+            "cwd": "/tmp/work",
+            "depends_on_json": ["t1"],
+            "priority": 0,
+            "gate_json": { "cmd": "cargo test" },
+            "status": "done",
+            "status_detail": "gate-green",
+            "worker_card_id": "card-term",
+            "gate_result_json": { "exit": 0 },
+            "gate_attempt": 1,
+            "created_at_ms": 2100,
+            "updated_at_ms": 2200,
+            "finished_at_ms": 2200
+          }
+        }
+      ]
+    },
+    {
+      "table": "wave_vcs_objects",
+      "rows": [
+        {
+          "min_version": 39,
+          "columns": {
+            "hash": "obj-tree-1",
+            "kind": "tree",
+            "bytes": "{\"entries\":[]}",
+            "created_at": 2300
+          }
+        }
+      ]
+    },
+    {
+      "table": "wave_vcs_commits",
+      "rows": [
+        {
+          "min_version": 39,
+          "columns": {
+            "hash": "commit-1",
+            "wave_id": "wave-working",
+            "parent_hash": null,
+            "tree_hash": "obj-tree-1",
+            "manifest_schema_version": 1,
+            "author": "kernel",
+            "message": "root",
+            "lifecycle": "working",
+            "event_id": null,
+            "created_at": 2300
+          }
+        }
+      ]
+    },
+    {
+      "table": "wave_vcs_refs",
+      "rows": [
+        {
+          "min_version": 39,
+          "columns": {
+            "wave_id": "wave-working",
+            "head_hash": "commit-1",
+            "updated_event_id": null
+          }
+        }
+      ]
+    },
+    {
+      "table": "overlays",
+      "rows": [
+        {
+          "columns": {
+            "id": "ov-layout-1",
+            "plugin_id": "kernel",
+            "entity_kind": "view",
+            "entity_id": "wave-working",
+            "kind": "layout",
+            "payload": { "schemaVersion": 1, "positions": {} },
+            "updated_at": 2400
+          }
+        }
+      ]
+    },
+    {
+      "table": "settings",
+      "rows": [
+        {
+          "columns": {
+            "key": "theme",
+            "value": "{\"mode\":\"dark\"}",
+            "updated_at": 2500
+          }
+        }
+      ]
+    },
+    {
+      "table": "plugins",
+      "rows": [
+        {
+          "columns": {
+            "id": "plugin-echo",
+            "version": "1.0.0",
+            "install_path": "/tmp/plugins/echo",
+            "manifest": { "id": "plugin-echo" },
+            "enabled": 1,
+            "user_config": {},
+            "installed_at": 2600,
+            "updated_at": 2600
+          }
+        }
+      ]
+    }
+  ]
+}

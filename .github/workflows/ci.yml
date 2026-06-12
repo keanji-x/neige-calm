@@ -69,6 +69,15 @@ jobs:
         # Feature enabled for compile-check coverage; codex-e2e tests self-skip when no codex binary is discoverable, the default in GHA runners.
         run: cargo test --workspace --locked --features calm-server/codex-e2e
 
+      # #679 PR0-D — migration-replay gate, made explicit so a failure is
+      # attributable at a glance. Re-runs the (already compiled, ~10s)
+      # snapshot replay harness: every per-version stage→seed→replay stop
+      # must converge on the fresh-DB schema. The external-snapshot half
+      # self-skips while NEIGE_SNAPSHOT_DB is unset in CI; point it at a
+      # sanitized prod snapshot to extend the gate to real data.
+      - name: migration replay gate (#679 PR0-D)
+        run: cargo test -p calm-server --locked --test migration_replay_harness
+
   web:
     name: web (build + test + a11y)
     runs-on: ubuntu-latest
