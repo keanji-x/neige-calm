@@ -2,7 +2,7 @@
 // the app-level theme.
 //
 // Why this lives in the `a11y` Playwright project despite not being an
-// a11y test: it needs the auto-spawned `cargo run --bin replay --serve`
+// a11y test: it needs the auto-spawned `cargo run --features fixtures --bin replay -- --serve`
 // stack (real REST + WS, in-memory sqlite, dev-autologin auth) AND the
 // Vite dev server in front of it. The `chromium` project would also
 // work in principle but requires the developer's `make dev` stack

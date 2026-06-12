@@ -244,6 +244,7 @@ async fn run_serve(
     let dev_routes = axum::Router::new()
         .route("/dev/reset", post(dev_reset))
         .route("/dev/force-wave-lifecycle", post(dev_force_wave_lifecycle))
+        .route("/dev/force-spec-phase", post(dev_force_spec_phase))
         .with_state(dev_state);
     // Issue #189 — the production `main.rs` mounts an auth router
     // (`/api/auth/{login,whoami,logout}`) so the frontend's `SessionProvider`
@@ -343,6 +344,16 @@ struct DevResetState {
 }
 
 async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<serde_json::Value>) {
+    // Issue #682 review — drain `/dev/force-spec-phase`-stood-up harnesses
+    // BEFORE reseeding: the reseed wipes their runtime rows, and a harness
+    // left registered would survive as an orphaned 50ms-tick task whose
+    // persists warn forever ("runtime … not found"), accumulating across a
+    // Playwright suite's per-test resets. Shutting down first (while the
+    // rows still exist) keeps the final snapshot persist clean.
+    let drained = replay::shutdown_registered_harnesses(&s.app).await;
+    if drained > 0 {
+        tracing::info!(drained, "dev reset: shut down registered spec harnesses");
+    }
     match replay::reset_from_fixture(&s.repo, &s.bus, &s.fixture).await {
         Ok(ids) => (
             StatusCode::OK,
@@ -512,6 +523,64 @@ async fn dev_force_wave_lifecycle(
         }))),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": e.to_string(),
+            })),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `POST /dev/force-spec-phase` — dev-only, `--serve` mode only.
+//
+// Issue #682 PR-1 — the spec harness FSM can never progress organically in
+// a replay run: the shared codex app-server is a stub (`is_running()` ==
+// false), so the `spec-harness-start` operation submitted by `POST
+// /api/waves` fails at validate and the spec card sits with no runtime row
+// and no registered harness (Step-0 probe, pinned by
+// `tests/replay_force_spec_phase.rs`). Playwright e2e for SpecCurrentRun
+// (#676 Stop-chip seed path, #657 typing indicator) needs to drive
+// `GET /spec/run` + `harness.phase.changed` anyway.
+//
+// The handler delegates to `calm_server::replay::force_spec_phase`
+// (fixtures-gated — the `replay` [[bin]] declares
+// `required-features = ["fixtures"]`): card guards mirror the production
+// `/spec/*` routes (404 unknown / 403 non-spec-codex), a missing runtime
+// row + harness is stood up via the boot-recovery seam, and the phase
+// force itself reuses the harness run_loop's `persist_snapshot` path —
+// the single write point that keeps `GET /spec/run`, the WS event, and
+// the DB snapshot consistent. Forcing the same phase twice emits no
+// duplicate event.
+//
+// Body: `{card_id, to}` with `to` as the snake_case `HarnessPhaseTag`
+// (`idle`, `issuing_turn`, `turn_running`, ...). `wedged` is rejected
+// with 400 — persisting it marks the runtime failed, which the active-
+// runtime read path no longer projects (review finding, #684). Response:
+// `{ok, card_id, runtime_id, old_phase, new_phase}`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct ForceSpecPhaseBody {
+    card_id: String,
+    to: calm_server::harness::HarnessPhaseTag,
+}
+
+async fn dev_force_spec_phase(
+    State(s): State<DevResetState>,
+    axum::Json(body): axum::Json<ForceSpecPhaseBody>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
+    let repo: Arc<dyn calm_server::db::Repo> = s.repo.clone();
+    match calm_server::replay::force_spec_phase(&s.app, repo, &body.card_id, body.to).await {
+        Ok(outcome) => Ok(axum::Json(serde_json::json!({
+            "ok": true,
+            "card_id": outcome.card_id,
+            "runtime_id": outcome.runtime_id,
+            "old_phase": outcome.old_phase,
+            "new_phase": outcome.new_phase,
+        }))),
+        Err(e) => Err((
+            e.status(),
             axum::Json(serde_json::json!({
                 "ok": false,
                 "error": e.to_string(),

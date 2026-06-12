@@ -78,6 +78,12 @@ test('setup', async () => {
     '--quiet',
     '--bin',
     'replay',
+    // #682 — the replay [[bin]] declares `required-features = ["fixtures"]`
+    // (its `/dev/force-spec-phase` hook reaches a fixtures-gated harness
+    // seam); cargo refuses to build it without the flag. Keep in sync with
+    // the `cargo build --bin replay` step in `.github/workflows/ci.yml`.
+    '--features',
+    'fixtures',
     '--',
     '--serve',
     '--file',

@@ -376,6 +376,272 @@ pub async fn reset_from_fixture(
 }
 
 // ---------------------------------------------------------------------------
+// `force_spec_phase` — issue #682, dev hook behind `POST /dev/force-spec-phase`
+// ---------------------------------------------------------------------------
+
+/// Sentinel thread id stamped on dev-forced spec runtimes. The stub
+/// app-server can never start a real thread in replay mode, but the
+/// harness needs *a* thread id to be recoverable (boot recovery and
+/// `/spec/input` lazy recovery both refuse rows with no thread anywhere).
+#[cfg(feature = "fixtures")]
+pub const DEV_FORCED_THREAD_ID: &str = "dev-forced-thread";
+
+/// Outcome of [`force_spec_phase`], serialized verbatim into the replay
+/// binary's `POST /dev/force-spec-phase` response body.
+#[cfg(feature = "fixtures")]
+#[derive(Debug, serde::Serialize)]
+pub struct ForceSpecPhaseOutcome {
+    pub card_id: String,
+    pub runtime_id: String,
+    pub old_phase: crate::harness::HarnessPhaseTag,
+    pub new_phase: crate::harness::HarnessPhaseTag,
+}
+
+/// Issue #682 PR-1 — force a spec card's harness phase. Dev-only: this is
+/// the engine behind the replay binary's `POST /dev/force-spec-phase`, so
+/// Playwright e2e can drive `GET /spec/run`, `harness.phase.changed`
+/// events, and the SpecCurrentRun UI without a real codex daemon.
+///
+/// Why the function must stand its own harness up (Step-0 probe, pinned by
+/// `tests/replay_force_spec_phase.rs`): in replay boot the shared codex
+/// app-server is a stub (`is_running()` == false), so the
+/// `spec-harness-start` operation submitted by `POST /api/waves` fails at
+/// `validate` — the spec card exists but has NO runtime row and NO
+/// registered harness. A 404 on registry miss would make e2e setup
+/// impossible, so this converges any valid spec card to a forceable
+/// harness:
+///
+/// 1. card guard mirrors the production `/spec/*` routes (404 unknown
+///    card / role, 403 non-spec-codex);
+/// 2. no active runtime row → insert one (`runtime_start_tx`, kind
+///    `SharedSpec`) carrying an initial [`HarnessSnapshot`] and the
+///    [`DEV_FORCED_THREAD_ID`] sentinel;
+/// 3. registry miss → [`crate::harness::spawn_recovered_harness`] — the
+///    exact seam boot recovery uses; it does no codex RPC;
+/// 4. [`crate::harness::SpecHarness::force_phase_for_dev`] sets the FSM
+///    state and reuses the regular persist path, so snapshot, runtime
+///    status, `GET /spec/run`, and the `HarnessPhaseChanged` event all
+///    agree by construction.
+///
+/// Errors use [`crate::error::CalmError`] so the binary's handler can map
+/// `e.status()` straight to an HTTP status.
+#[cfg(feature = "fixtures")]
+pub async fn force_spec_phase(
+    state: &AppState,
+    repo: Arc<dyn crate::db::Repo>,
+    card_id: &str,
+    to: crate::harness::HarnessPhaseTag,
+) -> crate::error::Result<ForceSpecPhaseOutcome> {
+    use axum::extract::FromRef;
+
+    use crate::db::write_in_tx_typed;
+    use crate::error::CalmError;
+    use crate::harness::{HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
+    use crate::model::{CardRole, new_id, now_ms};
+    use crate::per_card_lock::lock_card;
+    use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+    use crate::state::RouteState;
+
+    // Issue #682 review — `wedged` is not forceable: `persist_snapshot`
+    // would write `RunStatus::Failed` (via `run_status_for`), and the read
+    // path (`runtime_get_active_for_card`, used by `GET /spec/run` and by
+    // this function) filters failed rows — a "successful" force would
+    // instantly report `{runtime_id: null, phase: null}` and the next
+    // force would mint a second runtime. Body validation runs first,
+    // mirroring `send_spec_input`'s text guard.
+    if to == HarnessPhaseTag::Wedged {
+        return Err(CalmError::BadRequest(
+            "`wedged` is not forceable (a failed runtime row is no longer projectable by \
+             GET /spec/run); supported phases: pending_thread_start, idle, issuing_turn, \
+             issuing_interrupt, turn_running, turn_completed, resumed"
+                .into(),
+        ));
+    }
+
+    // Guard chain mirrors `routes::cards::get_spec_run`: card → role → kind.
+    let card = repo
+        .card_get(card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let role = state
+        .write()
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    if card.kind != "codex" || role != CardRole::Spec {
+        return Err(CalmError::Forbidden(format!(
+            "card {card_id} is not a spec codex card",
+        )));
+    }
+
+    // Issue #682 review — take the same per-card recovery lock
+    // `ensure_live_spec_harness` (`/spec/input` lazy recovery) and
+    // `/spec/reset` use, and hold it through stand-up + force. Without it
+    // a concurrent Send racing this hook could double-spawn the harness
+    // (the second `spawn_recovered_harness` shuts the first down), or a
+    // reset could supersede the runtime between the fetch below and
+    // registration. Everything after this line reads/writes runtime rows
+    // and the registry under the lock.
+    let route = RouteState::from_ref(state);
+    let _recovery_guard = lock_card(&route.spec_recovery_locks, card.id.as_str()).await;
+
+    // Ensure an active runtime row exists (Step-0: replay boot leaves none).
+    let card_id_string = card.id.to_string();
+    let runtime = match repo.runtime_get_active_for_card(&card_id_string).await? {
+        Some(runtime) => runtime,
+        None => {
+            let runtime_id = new_id();
+            let mut snapshot = HarnessSnapshot::initial(0, Vec::new());
+            snapshot.last_thread_id = Some(DEV_FORCED_THREAD_ID.into());
+            let snapshot_value = serde_json::to_value(&snapshot)?;
+            let runtime_id_for_tx = runtime_id.clone();
+            let card_id_for_tx = card_id_string.clone();
+            write_in_tx_typed(repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    crate::db::sqlite::runtime_start_tx(
+                        tx,
+                        RuntimeInit {
+                            id: runtime_id_for_tx,
+                            card_id: card_id_for_tx,
+                            kind: RuntimeKind::SharedSpec,
+                            agent_provider: Some(AgentProvider::Codex),
+                            // Deliberately `Idle`, not the `Starting` that
+                            // `run_status_for(PendingThreadStart)` would
+                            // derive from the snapshot phase: a `starting`
+                            // row trips `ensure_live_spec_harness`'s 503
+                            // "start still in flight" guard, breaking
+                            // `/spec/input` until the first force lands.
+                            // Harmless mismatch — the first
+                            // `persist_snapshot` (end of this function)
+                            // overwrites status from the live state anyway.
+                            status: RunStatus::Idle,
+                            terminal_run_id: None,
+                            thread_id: Some(DEV_FORCED_THREAD_ID.into()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: Some(snapshot_value),
+                            lease_owner: None,
+                            lease_until_ms: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await?;
+            repo.runtime_get_active_for_card(&card_id_string)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::Internal(format!(
+                        "dev-forced runtime {runtime_id} missing right after insert"
+                    ))
+                })?
+        }
+    };
+
+    // `spawn_recovered_harness` needs a deserializable snapshot on the row;
+    // a row from some other (half-failed) source may lack one — heal it
+    // with a fresh initial snapshot rather than 404ing.
+    let runtime = match runtime.handle_state_json.as_ref() {
+        Some(value) if is_harness_snapshot_value(value) => runtime,
+        _ => {
+            let mut snapshot = HarnessSnapshot::initial(0, Vec::new());
+            snapshot.last_thread_id = runtime
+                .thread_id
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| Some(DEV_FORCED_THREAD_ID.into()));
+            let snapshot_value = serde_json::to_value(&snapshot)?;
+            let runtime_id_for_tx = runtime.id.clone();
+            write_in_tx_typed(repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    crate::db::sqlite::runtime_set_handle_state_tx(
+                        tx,
+                        &runtime_id_for_tx,
+                        Some(snapshot_value),
+                    )
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await?;
+            repo.runtime_get_active_for_card(&card_id_string)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::Internal(format!(
+                        "runtime for card {card_id_string} vanished while healing snapshot"
+                    ))
+                })?
+        }
+    };
+
+    // Registry miss → stand the harness up via the boot-recovery seam
+    // (no codex RPC; snapshot load + catch-up replay + run + register).
+    let harness = match state.harness.get(&runtime.id) {
+        Some(harness) => harness,
+        None => crate::harness::spawn_recovered_harness(
+            repo.clone(),
+            state.events.clone(),
+            state.card_role_cache.clone(),
+            state.wave_cove_cache.clone(),
+            state.shared_codex_appserver.clone(),
+            &state.harness,
+            runtime.clone(),
+        )
+        .await?
+        .ok_or_else(|| {
+            CalmError::Internal(format!(
+                "spawn_recovered_harness declined runtime {} for card {card_id_string}",
+                runtime.id
+            ))
+        })?,
+    };
+
+    // Issue #682 review — the recovered harness runs against the replay
+    // stub app-server, so it must never issue turns: `turn_start` would
+    // fail, the batch would re-buffer with `hard_fire`, and the run loop
+    // would churn phases every 50ms tick the moment `/spec/input` (or a
+    // catch-up observation) lands in an issuable phase. Observations still
+    // enqueue — PR-2's `/spec/input` happy path stays functional.
+    // Idempotent, so calling it on an already-paused (previously forced)
+    // harness is fine.
+    harness.pause_issuance_for_dev();
+
+    let (old_phase, new_phase) = harness.force_phase_for_dev(to).await?;
+    Ok(ForceSpecPhaseOutcome {
+        card_id: card_id_string,
+        runtime_id: runtime.id,
+        old_phase,
+        new_phase,
+    })
+}
+
+/// Issue #682 review — shut down and deregister every registered spec
+/// harness. The replay binary's `POST /dev/reset` calls this BEFORE
+/// reseeding the repo: `reset_from_fixture` wipes the runtime rows, so a
+/// harness left registered would survive as an orphaned 50ms-tick task
+/// whose every snapshot persist warns "runtime … not found" — and across a
+/// long Playwright suite (`beforeEach` reset pattern) those accumulate.
+///
+/// Uses the existing remove-then-`shutdown()` seam (`HarnessRegistry::
+/// remove` + `SpecHarness::shutdown`), the same path `spec-harness-shutdown`
+/// and wave deletion take — no new kill mechanism. Shutdown against the
+/// replay stub daemon degrades to warn-logged no-op RPCs by design.
+///
+/// Returns the number of harnesses shut down.
+#[cfg(feature = "fixtures")]
+pub async fn shutdown_registered_harnesses(state: &AppState) -> usize {
+    let harnesses = state.harness.drain_all_for_dev();
+    let count = harnesses.len();
+    for harness in harnesses {
+        if let Err(e) = harness.shutdown().await {
+            tracing::warn!(error = %e, "dev reset: spec harness shutdown failed");
+        }
+    }
+    count
+}
+
+// ---------------------------------------------------------------------------
 // Assertion helpers used by `--assert`
 // ---------------------------------------------------------------------------
 

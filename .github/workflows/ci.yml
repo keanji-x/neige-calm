@@ -175,9 +175,12 @@ jobs:
       # no-op rather than a cold compile that may bump up against the 60s
       # READY_TIMEOUT_MS banner-wait. --locked matches the `rust` job.
       #
+      # `--features fixtures` (#682): the replay [[bin]] declares
+      # `required-features = ["fixtures"]` for its `/dev/force-spec-phase`
+      # hook; the setup hook passes the same flag so this stays a cache hit.
       - name: cargo build --bin replay
         working-directory: .
-        run: cargo build -p calm-server --bin replay --locked
+        run: cargo build -p calm-server --bin replay --features fixtures --locked
 
       # Playwright browsers aren't bundled with `@playwright/test`; the
       # binary must be downloaded once per runner. `--with-deps` also

@@ -83,6 +83,12 @@ pub(super) struct Inner {
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
     shutdown: broadcast::Sender<()>,
     shutting_down: Arc<AtomicBool>,
+    /// Issue #682 review — issuance kill-switch for dev-forced harnesses.
+    /// Checked at the top of [`maybe_issue_turn`]; observations still
+    /// enqueue normally, the harness just never calls `turn_start`. Only
+    /// the fixtures-gated [`SpecHarness::pause_issuance_for_dev`] sets it,
+    /// so production harnesses never pause.
+    issuance_paused: AtomicBool,
     abort_handle: StdMutex<Option<AbortHandle>>,
     config: HarnessConfig,
 }
@@ -254,6 +260,118 @@ impl SpecHarness {
         on_observation(&self.inner, obs, envelope_id).await;
     }
 
+    /// Issue #682 — dev-only seam for the replay binary's
+    /// `POST /dev/force-spec-phase`. Forces the harness FSM into the state
+    /// matching `tag` (synthesized with `"dev-forced"` sentinel ids) and
+    /// runs the regular [`persist_snapshot`] path — the single write point
+    /// that updates the persisted snapshot (`runtime_set_handle_state_tx`),
+    /// the runtime row status, and emits `HarnessPhaseChanged` when the
+    /// phase actually changed. All three read surfaces (`GET /spec/run`,
+    /// the WS event stream, the DB snapshot) stay consistent by
+    /// construction. Forcing the same phase twice emits no duplicate event
+    /// (persist only emits on `last_phase != new_phase`).
+    ///
+    /// Live-watchdog interactions a caller (read: PR-2 e2e specs) must know:
+    /// - forcing `resumed` is not sticky — `watchdog_tick` decays `Resumed`
+    ///   to `Idle` after `config.resumed_reconcile_budget` (default 5s),
+    ///   emitting one more `HarnessPhaseChanged`;
+    /// - `wedged` is rejected (`BadRequest`): persisting it writes
+    ///   `RunStatus::Failed` via `run_status_for`, and
+    ///   `runtime_get_active_for_card` filters failed rows, so `GET
+    ///   /spec/run` would instantly report dormant and the next force would
+    ///   mint a second runtime. The dev endpoint
+    ///   (`replay::force_spec_phase`) 400s before ever reaching here;
+    /// - any armed `interrupt_deadline` (a prior `/spec/interrupt`) and
+    ///   `issued_turn_id` are cleared before persisting, so the interrupt
+    ///   watchdog can't asynchronously flip a freshly forced phase to
+    ///   `Wedged` mid-test.
+    ///
+    /// Returns `(old_phase, new_phase)` so the dev endpoint can report
+    /// what it did.
+    #[cfg(feature = "fixtures")]
+    pub async fn force_phase_for_dev(
+        &self,
+        tag: HarnessPhaseTag,
+    ) -> Result<(HarnessPhaseTag, HarnessPhaseTag)> {
+        const DEV_FORCED_TURN_ID: &str = "dev-forced";
+        let now = Instant::now();
+        let state = match tag {
+            HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
+            HarnessPhaseTag::Idle => HarnessState::Idle,
+            HarnessPhaseTag::IssuingTurn => HarnessState::Issuing {
+                since: now,
+                kind: IssuingKind::TurnStart,
+            },
+            HarnessPhaseTag::IssuingInterrupt => HarnessState::Issuing {
+                since: now,
+                kind: IssuingKind::Interrupt {
+                    target_turn_id: DEV_FORCED_TURN_ID.into(),
+                    reason: "dev-forced".into(),
+                },
+            },
+            HarnessPhaseTag::TurnRunning => HarnessState::TurnRunning {
+                turn_id: DEV_FORCED_TURN_ID.into(),
+                started_at: now,
+            },
+            HarnessPhaseTag::TurnCompleted => HarnessState::TurnCompleted {
+                last_turn_id: DEV_FORCED_TURN_ID.into(),
+            },
+            HarnessPhaseTag::Resumed => HarnessState::Resumed { resumed_at: now },
+            // See doc-comment: a forced Wedged would persist as
+            // `RunStatus::Failed`, which the active-runtime read path
+            // filters out. `replay::force_spec_phase` rejects the tag with
+            // the client-facing message; this arm is defense in depth for
+            // any future direct caller.
+            HarnessPhaseTag::Wedged => {
+                return Err(CalmError::BadRequest(
+                    "force_phase_for_dev does not support `wedged` (a failed runtime row \
+                     is no longer projectable by GET /spec/run)"
+                        .into(),
+                ));
+            }
+        };
+        let old_phase = *self.inner.last_phase.lock().await;
+        *self.inner.state.lock().await = state;
+        // Phases that imply a known turn need `last_turn_id` populated so
+        // `persist_snapshot` can derive `active_turn_id` (TurnRunning /
+        // IssuingInterrupt) and the snapshot round-trips through
+        // `state_from_snapshot` recovery. Keep a real id if one exists.
+        if matches!(
+            tag,
+            HarnessPhaseTag::TurnRunning
+                | HarnessPhaseTag::IssuingInterrupt
+                | HarnessPhaseTag::TurnCompleted
+        ) {
+            let mut last_turn_id = self.inner.last_turn_id.lock().await;
+            if last_turn_id.is_none() {
+                *last_turn_id = Some(DEV_FORCED_TURN_ID.into());
+            }
+        }
+        // Issue #682 review — disarm async followers of the *previous*
+        // state before persisting the forced one: a `/spec/interrupt`
+        // issued earlier arms `interrupt_deadline` (30s), after which
+        // `watchdog_tick` would flip the harness to `Wedged` mid-test and
+        // emit an unexpected phase event. `issued_turn_id` likewise belongs
+        // to the superseded state.
+        *self.inner.issued_turn_id.lock().await = None;
+        *self.inner.interrupt_deadline.lock().await = None;
+        persist_snapshot(&self.inner).await?;
+        Ok((old_phase, tag))
+    }
+
+    /// Issue #682 review — permanently stop this harness from issuing
+    /// turns. `replay::force_spec_phase` calls this on every harness it
+    /// hands out: in replay mode the shared codex app-server is a
+    /// non-running stub, so `turn_start` always fails and the run loop
+    /// would otherwise churn (`issuing_turn` → fail → re-buffer with
+    /// `hard_fire` → retry) on every 50ms tick once an issuable phase
+    /// holds a pending observation. Observations (`/spec/input`) still
+    /// enqueue normally — the harness just never issues.
+    #[cfg(feature = "fixtures")]
+    pub fn pause_issuance_for_dev(&self) {
+        self.inner.issuance_paused.store(true, Ordering::SeqCst);
+    }
+
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
     }
@@ -325,6 +443,7 @@ fn inner_from_params(
         interrupt_deadline: Mutex::new(None),
         shutdown,
         shutting_down: Arc::new(AtomicBool::new(false)),
+        issuance_paused: AtomicBool::new(false),
         abort_handle: StdMutex::new(None),
         config: params.config,
     })
@@ -876,6 +995,11 @@ const SINCE_LAST_TURN_DIFF_TIMEOUT: Duration = Duration::from_secs(5);
 const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
+    // Issue #682 review — dev-forced harnesses run against the replay
+    // binary's stub app-server; see `SpecHarness::pause_issuance_for_dev`.
+    if inner.issuance_paused.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     // Most ticks find the queue empty; bail before any logging so the 50ms
     // tick cadence does not flood the log with one entry line per tick.
     let queue_len = inner.pending_queue.lock().await.len();

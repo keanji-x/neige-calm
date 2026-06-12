@@ -17,7 +17,7 @@
 //     `golden-path.spec.ts`, `wave-create.spec.ts`.
 //
 //   * `a11y` — issue #56 slice 5. Targets the in-process replay binary
-//     (`cargo run --bin replay -- --serve`) spawned by the `replay-setup`
+//     (`cargo run --features fixtures --bin replay -- --serve`) spawned by the `replay-setup`
 //     dependency project in `_setup/replay-server.ts`, preloaded with a
 //     curated event-trace fixture. Use this project for tests that need
 //     the event trace ring buffer (`window.__neigeEvents__`) — they
