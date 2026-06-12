@@ -13,10 +13,10 @@ use calm_server::event::EventBus;
 use calm_server::model::{new_id, now_ms};
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
-    OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationResult,
-    OperationRuntime, ParkedOutcome, ParkedRecovery, Phase, PhaseTag, ProviderAdapter,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
+    ParkedCompletion, ParkedOutcome, ParkedRecovery, Phase, PhaseTag, ProviderAdapter,
     RecoveryMode, SpawnArtifacts, SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, Tx,
-    TxOutput,
+    TxOutput, complete_parked_for_test,
 };
 use calm_server::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
@@ -24,7 +24,6 @@ use calm_server::proc_identity::{
 use calm_server::state::DaemonClient;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use serde_json::{Value, json};
-use sqlx::{Row, SqlitePool};
 use tokio::sync::Mutex;
 
 #[tokio::test]
@@ -543,7 +542,20 @@ impl ProviderAdapter for ObserverParkingAdapter {
                     child.wait()
                 })
                 .await;
-                complete_raw(&pool, &completion, &op_id, verdict).await;
+                let outcome = match verdict {
+                    ObserverVerdict::Succeeded(result) => ParkedOutcome::Succeeded { result },
+                    ObserverVerdict::Failed(reason) => ParkedOutcome::Failed {
+                        last_error: reason,
+                        last_error_class: Some("observer".into()),
+                    },
+                };
+                match complete_parked_for_test(&pool, &op_id, &outcome)
+                    .await
+                    .expect("complete parked")
+                {
+                    ParkedCompletion::Completed(result) => completion.complete(result),
+                    ParkedCompletion::AlreadyResolved { .. } => {}
+                }
             }),
         })
     }
@@ -686,88 +698,6 @@ const PARK_PHASES: &[PhaseTag] = &[
 enum ObserverVerdict {
     Succeeded(Value),
     Failed(String),
-}
-
-async fn complete_raw(
-    pool: &SqlitePool,
-    completion: &OperationCompletionBus,
-    op_id: &str,
-    verdict: ObserverVerdict,
-) {
-    let mut tx = pool.begin().await.expect("begin completion tx");
-    let row = sqlx::query("SELECT phase, tx_output_json FROM operations WHERE id = ?1")
-        .bind(op_id)
-        .fetch_one(&mut *tx)
-        .await
-        .expect("read op");
-    let phase: String = row.try_get("phase").expect("phase");
-    if phase != "parked" {
-        tx.rollback().await.expect("rollback non-parked");
-        return;
-    }
-    let raw: String = row.try_get("tx_output_json").expect("tx output");
-    let mut output: TxOutput = serde_json::from_str(&raw).expect("tx output json");
-    output.post_commit_events.clear();
-    let now = now_ms();
-    let (phase, detail, last_error, result) = match verdict {
-        ObserverVerdict::Succeeded(result) => {
-            output.result = result.clone();
-            (
-                "succeeded",
-                None,
-                None,
-                OperationResult {
-                    op_id: op_id.to_string(),
-                    outcome: OperationOutcome::Succeeded { result },
-                },
-            )
-        }
-        ObserverVerdict::Failed(reason) => (
-            "failed",
-            Some(
-                serde_json::to_string(&json!({
-                    "from_phase": PhaseTag::Parked,
-                    "last_error_class": "observer",
-                }))
-                .expect("phase detail"),
-            ),
-            Some(reason.clone()),
-            OperationResult {
-                op_id: op_id.to_string(),
-                outcome: OperationOutcome::Failed {
-                    last_error: reason,
-                    from_phase: PhaseTag::Parked,
-                    last_error_class: Some("observer".into()),
-                },
-            },
-        ),
-    };
-    let changed = sqlx::query(
-        r#"UPDATE operations
-           SET phase = ?1,
-               phase_detail_json = ?2,
-               tx_output_json = ?3,
-               last_error = ?4,
-               lease_owner = NULL,
-               lease_until_ms = NULL,
-               parked_deadline_ms = NULL,
-               completed_at_ms = ?5,
-               updated_at_ms = ?5
-           WHERE id = ?6 AND phase = 'parked'"#,
-    )
-    .bind(phase)
-    .bind(detail)
-    .bind(serde_json::to_string(&output).expect("serialize output"))
-    .bind(last_error)
-    .bind(now)
-    .bind(op_id)
-    .execute(&mut *tx)
-    .await
-    .expect("complete parked raw");
-    tx.commit().await.expect("commit completion");
-    if changed.rows_affected() == 1 {
-        completion.complete(result);
-    }
 }
 
 fn operation_key() -> OperationKey {

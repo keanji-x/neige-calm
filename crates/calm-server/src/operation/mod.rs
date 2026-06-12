@@ -641,7 +641,7 @@ pub trait OperationRepo: Send + Sync {
         if result.rows_affected() == 0 {
             return Ok(None);
         }
-        self.get_operation(op_id).await
+        fetch_claimed_parked(&pool, op_id, &lease_owner).await
     }
 
     async fn parked_operations(&self) -> Result<Vec<Operation>> {
@@ -2383,6 +2383,38 @@ pub(crate) async fn complete_parked_tx(
     Ok(ParkedCompletion::Completed(completed))
 }
 
+#[cfg(any(test, feature = "fixtures"))]
+#[doc(hidden)]
+pub async fn complete_parked_for_test(
+    pool: &SqlitePool,
+    op_id: &OperationId,
+    outcome: &ParkedOutcome,
+) -> Result<ParkedCompletion> {
+    let mut tx = begin_immediate_tx(pool).await?;
+    let completion = complete_parked_tx(&mut tx, op_id, outcome).await?;
+    tx.commit().await?;
+    Ok(completion)
+}
+
+async fn fetch_claimed_parked(
+    pool: &SqlitePool,
+    op_id: &str,
+    lease_owner: &str,
+) -> Result<Option<Operation>> {
+    let row = sqlx::query(
+        r#"SELECT *
+           FROM operations
+           WHERE id = ?1
+             AND lease_owner = ?2
+             AND phase = 'parked'"#,
+    )
+    .bind(op_id)
+    .bind(lease_owner)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(operation_from_row).transpose()
+}
+
 fn operation_from_row(row: &SqliteRow) -> Result<Operation> {
     let target_json: String = row.try_get("target_json")?;
     let payload_json: String = row.try_get("payload_json")?;
@@ -3100,6 +3132,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claim_parked_fetch_misses_when_completion_wins_after_update() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+        let parked = parked_operation(&repo, now_ms() + 10_000).await;
+        let now = now_ms();
+        let lease_owner = new_id();
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET lease_owner = ?1,
+                   lease_until_ms = ?2,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND phase = 'parked'
+                 AND (lease_owner IS NULL OR lease_until_ms < ?3)"#,
+        )
+        .bind(&lease_owner)
+        .bind(now + OPERATION_LEASE_MS)
+        .bind(now)
+        .bind(&parked.id)
+        .execute(sqlx_repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(result.rows_affected(), 1);
+
+        let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+        assert!(matches!(
+            complete_parked_tx(
+                &mut tx,
+                &parked.id,
+                &ParkedOutcome::Succeeded {
+                    result: json!({ "winner": "completion" }),
+                },
+            )
+            .await
+            .unwrap(),
+            ParkedCompletion::Completed(_)
+        ));
+        tx.commit().await.unwrap();
+
+        assert!(
+            fetch_claimed_parked(sqlx_repo.pool(), &parked.id, &lease_owner)
+                .await
+                .unwrap()
+                .is_none(),
+            "post-claim fetch must miss after completion clears the lease"
+        );
+    }
+
+    #[tokio::test]
     async fn completion_clears_lease_so_claimed_deadline_write_loses_ordering_b() {
         let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
@@ -3156,6 +3239,7 @@ mod tests {
         let adapter = Arc::new(TestParkingAdapter {
             observer_runs,
             record_artifacts: true,
+            steal_lease_after_artifacts: false,
         });
         let runtime = test_runtime(sqlx_repo, repo, vec![adapter]);
 
@@ -3176,6 +3260,7 @@ mod tests {
         let adapter = Arc::new(TestParkingAdapter {
             observer_runs: observer_runs.clone(),
             record_artifacts: false,
+            steal_lease_after_artifacts: false,
         });
         let runtime = test_runtime(sqlx_repo, repo, vec![adapter]);
         let op_id = runtime
@@ -3203,6 +3288,46 @@ mod tests {
             observer_runs.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "observer must be dropped when set_parked fails the artifact fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_parked_lost_lease_after_artifacts_drops_observer() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let pool = sqlx_repo.pool().clone();
+        let repo = Arc::new(SqlxOperationRepo::new(pool));
+        let observer_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = Arc::new(TestParkingAdapter {
+            observer_runs: observer_runs.clone(),
+            record_artifacts: true,
+            steal_lease_after_artifacts: true,
+        });
+        let runtime = test_runtime(sqlx_repo, repo.clone(), vec![adapter]);
+        let op_id = runtime
+            .submit(
+                "park-test",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: None,
+                    payload_hash: "hash".into(),
+                },
+                json!({ "wave_id": "wave-a" }),
+            )
+            .await
+            .unwrap();
+
+        tokio::task::yield_now().await;
+
+        let stored = repo.get_operation(&op_id).await.unwrap().unwrap();
+        assert_eq!(stored.phase, Phase::SpawnStarted);
+        assert_eq!(stored.lease_owner.as_deref(), Some("stolen-driver"));
+        assert!(stored.spawn_artifacts.is_some());
+        assert_eq!(
+            observer_runs.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "observer must be dropped when set_parked loses the lease"
         );
     }
 
@@ -3312,6 +3437,7 @@ mod tests {
     struct TestParkingAdapter {
         observer_runs: Arc<std::sync::atomic::AtomicUsize>,
         record_artifacts: bool,
+        steal_lease_after_artifacts: bool,
     }
 
     #[async_trait]
@@ -3362,6 +3488,30 @@ mod tests {
             if self.record_artifacts {
                 ctx.record_spawn_artifacts(op, &sample_spawn_artifacts())
                     .await?;
+                if self.steal_lease_after_artifacts {
+                    let pool = ctx.operation_repo.sqlite_pool();
+                    let now = now_ms();
+                    let result = sqlx::query(
+                        r#"UPDATE operations
+                           SET lease_owner = 'stolen-driver',
+                               lease_until_ms = ?1,
+                               updated_at_ms = ?2
+                           WHERE id = ?3
+                             AND phase = 'spawn_started'
+                             AND lease_owner = ?4"#,
+                    )
+                    .bind(now + OPERATION_LEASE_MS)
+                    .bind(now)
+                    .bind(&op.id)
+                    .bind(required_lease_owner(op)?)
+                    .execute(&pool)
+                    .await?;
+                    if result.rows_affected() == 0 {
+                        return Err(CalmError::Internal(
+                            "test adapter failed to steal operation lease".into(),
+                        ));
+                    }
+                }
             }
             let observer_runs = self.observer_runs.clone();
             Ok(SpawnOutcome::Parked {
