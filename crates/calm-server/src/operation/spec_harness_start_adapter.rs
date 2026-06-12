@@ -16,7 +16,7 @@ use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
-    SpecHarnessParams, initial_snapshot_with_goal,
+    SpecHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
@@ -229,8 +229,18 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 .await?
                 .and_then(|runtime| {
                     let state = runtime.handle_state_json?;
-                    (state.get("mode").and_then(Value::as_str) == Some(HARNESS_MODE))
-                        .then(|| HarnessSnapshot::from_value_strict(state))
+                    if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE) {
+                        return None;
+                    }
+                    if !is_harness_snapshot_value(&state) {
+                        tracing::warn!(
+                            card_id = %card_id,
+                            "reset: dormant runtime snapshot has corrupt/unknown shape; \
+                             discarding inherited queue and starting a fresh session"
+                        );
+                        return None;
+                    }
+                    Some(HarnessSnapshot::from_value_strict(state))
                 })
         } else {
             None

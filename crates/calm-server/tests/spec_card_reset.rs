@@ -1690,6 +1690,115 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
     }
 }
 
+/// #649 followup (codex-review P2 on #660) — the corrupt-snapshot shape that
+/// degrades `/spec/input` to the typed 409 dormant must NOT panic the
+/// recommended Reset: `spec-harness-start` gates snapshot inheritance on
+/// `is_harness_snapshot_value` and starts a fresh session, discarding the
+/// corrupt row's queued observations.
+#[tokio::test]
+async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "spec_harness": true
+            }),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    let old_runtime_id = new_id();
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: old_runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread-corrupt".into()),
+            session_id: None,
+            active_turn_id: None,
+            // Same corrupt shape that 409s /spec/input: harness mode but an
+            // unknown schema_version that `from_value_strict` would panic on.
+            handle_state_json: Some(json!({
+                "mode": "harness",
+                "schema_version": 999,
+                "phase": "idle"
+            })),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
+    assert_eq!(
+        boot.repo
+            .runtime_get_by_id(&old_runtime_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Superseded
+    );
+    let active = boot
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("new active runtime");
+    assert_ne!(active.id, old_runtime_id);
+    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+    let new_snapshot = HarnessSnapshot::from_value_strict(
+        active
+            .handle_state_json
+            .clone()
+            .expect("new runtime snapshot"),
+    );
+    // Fresh session: nothing inherited from the corrupt row — watermark is 0
+    // and the queue holds at most the freshly seeded wave goal.
+    assert_eq!(
+        new_snapshot.push_watermark, 0,
+        "corrupt inherited snapshot must be discarded, not carried over"
+    );
+    assert!(
+        new_snapshot
+            .pending_queue
+            .iter()
+            .all(|obs| matches!(obs, Observation::WaveGoal { .. })),
+        "fresh queue must only contain the seeded wave goal: {:?}",
+        new_snapshot.pending_queue
+    );
+    assert!(boot.state.harness.get(&active.id).is_some());
+    if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     let _guard = ENV_LOCK.lock().await;

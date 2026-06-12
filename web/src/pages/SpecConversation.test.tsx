@@ -386,13 +386,13 @@ describe('SpecConversation', () => {
     mocks.state.currentRun = makeRun({
       submitDormant: true,
       submitError:
-        "Research agent isn't running for this wave — Reset to start a session",
+        "Spec Agent isn't running for this wave — Reset to start a session",
     });
     render(<Harness />);
 
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent(
-      "Research agent isn't running for this wave — Reset to start a session",
+      "Spec Agent isn't running for this wave — Reset to start a session",
     );
     expect(alert).toHaveAttribute('data-dormant', 'true');
     expect(

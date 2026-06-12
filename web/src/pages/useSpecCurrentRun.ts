@@ -159,7 +159,7 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
       if (err instanceof CalmApiError && err.code === 'spec_harness_dormant') {
         setSubmitDormant(true);
         setSubmitError(
-          "Research agent isn't running for this wave — Reset to start a session",
+          "Spec Agent isn't running for this wave — Reset to start a session",
         );
       } else {
         setSubmitError(errorMessage(err, 'Failed to send message'));
