@@ -17,7 +17,7 @@
 //
 // The suite runs under the Playwright `a11y` project — see
 // `playwright.config.ts`. That project starts a Vite dev server in front
-// of `cargo run --bin replay --serve`, which boots an in-memory kernel
+// of `cargo run --features fixtures --bin replay -- --serve`, which boots an in-memory kernel
 // with a fixture preloaded. The replay binary seeds the events table but
 // does NOT project them onto the entity tables (see
 // `crates/calm-server/src/replay.rs`); that's intentional, so the entity

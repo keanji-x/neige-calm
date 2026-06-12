@@ -93,7 +93,7 @@ backends:
   MockRepo. Specs: `golden-path.spec.ts`, `wave-create.spec.ts`.
   Run with `npx playwright test --project=chromium`.
 
-- **`a11y`**: targets the `cargo run --bin replay --serve` binary
+- **`a11y`**: targets the `cargo run --features fixtures --bin replay -- --serve` binary
   spawned by `_setup/replay-server.setup.ts`, preloaded with a
   curated event-trace fixture from
   `crates/calm-server/tests/fixtures/events/`. Each test starts

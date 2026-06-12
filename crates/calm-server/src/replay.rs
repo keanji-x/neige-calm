@@ -432,11 +432,31 @@ pub async fn force_spec_phase(
     card_id: &str,
     to: crate::harness::HarnessPhaseTag,
 ) -> crate::error::Result<ForceSpecPhaseOutcome> {
+    use axum::extract::FromRef;
+
     use crate::db::write_in_tx_typed;
     use crate::error::CalmError;
-    use crate::harness::{HarnessSnapshot, is_harness_snapshot_value};
+    use crate::harness::{HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
     use crate::model::{CardRole, new_id, now_ms};
+    use crate::per_card_lock::lock_card;
     use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+    use crate::state::RouteState;
+
+    // Issue #682 review — `wedged` is not forceable: `persist_snapshot`
+    // would write `RunStatus::Failed` (via `run_status_for`), and the read
+    // path (`runtime_get_active_for_card`, used by `GET /spec/run` and by
+    // this function) filters failed rows — a "successful" force would
+    // instantly report `{runtime_id: null, phase: null}` and the next
+    // force would mint a second runtime. Body validation runs first,
+    // mirroring `send_spec_input`'s text guard.
+    if to == HarnessPhaseTag::Wedged {
+        return Err(CalmError::BadRequest(
+            "`wedged` is not forceable (a failed runtime row is no longer projectable by \
+             GET /spec/run); supported phases: pending_thread_start, idle, issuing_turn, \
+             issuing_interrupt, turn_running, turn_completed, resumed"
+                .into(),
+        ));
+    }
 
     // Guard chain mirrors `routes::cards::get_spec_run`: card → role → kind.
     let card = repo
@@ -452,6 +472,17 @@ pub async fn force_spec_phase(
             "card {card_id} is not a spec codex card",
         )));
     }
+
+    // Issue #682 review — take the same per-card recovery lock
+    // `ensure_live_spec_harness` (`/spec/input` lazy recovery) and
+    // `/spec/reset` use, and hold it through stand-up + force. Without it
+    // a concurrent Send racing this hook could double-spawn the harness
+    // (the second `spawn_recovered_harness` shuts the first down), or a
+    // reset could supersede the runtime between the fetch below and
+    // registration. Everything after this line reads/writes runtime rows
+    // and the registry under the lock.
+    let route = RouteState::from_ref(state);
+    let _recovery_guard = lock_card(&route.spec_recovery_locks, card.id.as_str()).await;
 
     // Ensure an active runtime row exists (Step-0: replay boot leaves none).
     let card_id_string = card.id.to_string();
@@ -473,6 +504,15 @@ pub async fn force_spec_phase(
                             card_id: card_id_for_tx,
                             kind: RuntimeKind::SharedSpec,
                             agent_provider: Some(AgentProvider::Codex),
+                            // Deliberately `Idle`, not the `Starting` that
+                            // `run_status_for(PendingThreadStart)` would
+                            // derive from the snapshot phase: a `starting`
+                            // row trips `ensure_live_spec_harness`'s 503
+                            // "start still in flight" guard, breaking
+                            // `/spec/input` until the first force lands.
+                            // Harmless mismatch — the first
+                            // `persist_snapshot` (end of this function)
+                            // overwrites status from the live state anyway.
                             status: RunStatus::Idle,
                             terminal_run_id: None,
                             thread_id: Some(DEV_FORCED_THREAD_ID.into()),
@@ -557,6 +597,16 @@ pub async fn force_spec_phase(
         })?,
     };
 
+    // Issue #682 review — the recovered harness runs against the replay
+    // stub app-server, so it must never issue turns: `turn_start` would
+    // fail, the batch would re-buffer with `hard_fire`, and the run loop
+    // would churn phases every 50ms tick the moment `/spec/input` (or a
+    // catch-up observation) lands in an issuable phase. Observations still
+    // enqueue — PR-2's `/spec/input` happy path stays functional.
+    // Idempotent, so calling it on an already-paused (previously forced)
+    // harness is fine.
+    harness.pause_issuance_for_dev();
+
     let (old_phase, new_phase) = harness.force_phase_for_dev(to).await?;
     Ok(ForceSpecPhaseOutcome {
         card_id: card_id_string,
@@ -564,6 +614,31 @@ pub async fn force_spec_phase(
         old_phase,
         new_phase,
     })
+}
+
+/// Issue #682 review — shut down and deregister every registered spec
+/// harness. The replay binary's `POST /dev/reset` calls this BEFORE
+/// reseeding the repo: `reset_from_fixture` wipes the runtime rows, so a
+/// harness left registered would survive as an orphaned 50ms-tick task
+/// whose every snapshot persist warns "runtime … not found" — and across a
+/// long Playwright suite (`beforeEach` reset pattern) those accumulate.
+///
+/// Uses the existing remove-then-`shutdown()` seam (`HarnessRegistry::
+/// remove` + `SpecHarness::shutdown`), the same path `spec-harness-shutdown`
+/// and wave deletion take — no new kill mechanism. Shutdown against the
+/// replay stub daemon degrades to warn-logged no-op RPCs by design.
+///
+/// Returns the number of harnesses shut down.
+#[cfg(feature = "fixtures")]
+pub async fn shutdown_registered_harnesses(state: &AppState) -> usize {
+    let harnesses = state.harness.drain_all_for_dev();
+    let count = harnesses.len();
+    for harness in harnesses {
+        if let Err(e) = harness.shutdown().await {
+            tracing::warn!(error = %e, "dev reset: spec harness shutdown failed");
+        }
+    }
+    count
 }
 
 // ---------------------------------------------------------------------------

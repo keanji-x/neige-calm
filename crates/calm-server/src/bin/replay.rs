@@ -344,6 +344,16 @@ struct DevResetState {
 }
 
 async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<serde_json::Value>) {
+    // Issue #682 review — drain `/dev/force-spec-phase`-stood-up harnesses
+    // BEFORE reseeding: the reseed wipes their runtime rows, and a harness
+    // left registered would survive as an orphaned 50ms-tick task whose
+    // persists warn forever ("runtime … not found"), accumulating across a
+    // Playwright suite's per-test resets. Shutting down first (while the
+    // rows still exist) keeps the final snapshot persist clean.
+    let drained = replay::shutdown_registered_harnesses(&s.app).await;
+    if drained > 0 {
+        tracing::info!(drained, "dev reset: shut down registered spec harnesses");
+    }
     match replay::reset_from_fixture(&s.repo, &s.bus, &s.fixture).await {
         Ok(ids) => (
             StatusCode::OK,
@@ -544,7 +554,9 @@ async fn dev_force_wave_lifecycle(
 // duplicate event.
 //
 // Body: `{card_id, to}` with `to` as the snake_case `HarnessPhaseTag`
-// (`idle`, `issuing_turn`, `turn_running`, ...). Response:
+// (`idle`, `issuing_turn`, `turn_running`, ...). `wedged` is rejected
+// with 400 — persisting it marks the runtime failed, which the active-
+// runtime read path no longer projects (review finding, #684). Response:
 // `{ok, card_id, runtime_id, old_phase, new_phase}`.
 // ---------------------------------------------------------------------------
 

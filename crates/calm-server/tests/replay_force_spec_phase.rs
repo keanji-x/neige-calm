@@ -368,3 +368,165 @@ async fn force_spec_phase_same_phase_twice_emits_one_event() {
         1
     );
 }
+
+/// (d) #684 review — `wedged` is rejected with 400. Persisting a forced
+/// Wedged writes `RunStatus::Failed`, which `runtime_get_active_for_card`
+/// filters out: `GET /spec/run` would instantly answer dormant and the
+/// next force would mint a second runtime. The guard runs before any
+/// stand-up, so a rejected force leaves no runtime row behind.
+#[tokio::test]
+async fn force_spec_phase_rejects_wedged_with_bad_request() {
+    let boot = boot().await;
+    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+
+    let err = replay::force_spec_phase(
+        &boot.state,
+        boot.dyn_repo(),
+        &spec_card_id,
+        HarnessPhaseTag::Wedged,
+    )
+    .await
+    .expect_err("wedged must be rejected");
+    assert!(
+        matches!(err, CalmError::BadRequest(_)),
+        "expected BadRequest, got {err:?}"
+    );
+    assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    let message = err.to_string();
+    for tag in [
+        "pending_thread_start",
+        "idle",
+        "issuing_turn",
+        "issuing_interrupt",
+        "turn_running",
+        "turn_completed",
+        "resumed",
+    ] {
+        assert!(
+            message.contains(tag),
+            "error must list supported tag {tag}; got: {message}"
+        );
+    }
+
+    let runtime = boot
+        .repo
+        .runtime_get_active_for_card(&spec_card_id)
+        .await
+        .unwrap();
+    assert!(
+        runtime.is_none(),
+        "wedged guard runs before stand-up; no runtime row may be created, got {runtime:?}"
+    );
+}
+
+/// (e) #684 review — the dev-stood-up harness must never run the issuing
+/// loop against the replay stub daemon. `/spec/input` (registry fast path,
+/// hard-fire `UserMessage`) on a forced-`idle` harness would otherwise
+/// flip to `issuing_turn` on the next 50ms tick, fail `turn_start` against
+/// the stub, re-buffer with `hard_fire`, and churn phases forever. With
+/// issuance paused the observation enqueues and the phase stays put.
+#[tokio::test]
+async fn forced_harness_spec_input_enqueues_without_issuing_turns() {
+    let boot = boot().await;
+    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+
+    let outcome = replay::force_spec_phase(
+        &boot.state,
+        boot.dyn_repo(),
+        &spec_card_id,
+        HarnessPhaseTag::Idle,
+    )
+    .await
+    .expect("force to idle");
+
+    // PR-2's happy path: `/spec/input` through the real route. The forced
+    // harness is registered, so `ensure_live_spec_harness` takes the
+    // registry fast path (no daemon-liveness 503).
+    let (status, body, text) = post(
+        boot.app.clone(),
+        &format!("/api/cards/{spec_card_id}/spec/input"),
+        json!({ "text": "hello from the dev-forced harness" }),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "/spec/input must stay functional on a forced harness: status={status} body={text}"
+    );
+    assert_eq!(body["runtime_id"], json!(outcome.runtime_id));
+
+    // UserMessage is hard-fire: an unpaused harness would issue on the
+    // next 50ms tick. Give the run loop several ticks (and clear the
+    // 250ms debounce floor) to prove nothing fires.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let (status, run) = get(
+        boot.app.clone(),
+        &format!("/api/cards/{spec_card_id}/spec/run"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        run["phase"],
+        json!("idle"),
+        "phase must stay stable (no issuing churn); got {run}"
+    );
+    assert_eq!(
+        phase_changed_events(&boot, HarnessPhaseTag::IssuingTurn).await,
+        0,
+        "no issuing_turn transition may ever be emitted (turn_start attempt)"
+    );
+    let harness = boot
+        .state
+        .harness
+        .get(&outcome.runtime_id)
+        .expect("forced harness stays registered");
+    assert_eq!(
+        harness.pending_len_for_test().await,
+        1,
+        "observation must stay enqueued — issuance is paused, not observation intake"
+    );
+}
+
+/// (f) #684 review — the `/dev/reset` drain seam: every registered harness
+/// is shut down and deregistered so reseeding can't leave orphaned
+/// 50ms-tick tasks warning against wiped runtime rows. A later force
+/// stands a fresh harness back up.
+#[tokio::test]
+async fn shutdown_registered_harnesses_drains_registry_and_allows_reforce() {
+    let boot = boot().await;
+    let (_wave_id, spec_card_id) = create_wave(&boot).await;
+
+    let outcome = replay::force_spec_phase(
+        &boot.state,
+        boot.dyn_repo(),
+        &spec_card_id,
+        HarnessPhaseTag::Idle,
+    )
+    .await
+    .expect("force to idle stands the harness up");
+    assert_eq!(boot.state.harness.len_active(), 1);
+
+    let drained = replay::shutdown_registered_harnesses(&boot.state).await;
+    assert_eq!(drained, 1, "exactly the dev-forced harness is drained");
+    assert_eq!(
+        boot.state.harness.len_active(),
+        0,
+        "registry must be empty after the dev-reset drain"
+    );
+
+    // Re-forcing after a drain recovers: the runtime row is still active,
+    // so the same runtime gets a freshly spawned harness.
+    let again = replay::force_spec_phase(
+        &boot.state,
+        boot.dyn_repo(),
+        &spec_card_id,
+        HarnessPhaseTag::TurnRunning,
+    )
+    .await
+    .expect("force after drain respawns the harness");
+    assert_eq!(again.runtime_id, outcome.runtime_id);
+    assert!(
+        boot.state.harness.get(&again.runtime_id).is_some(),
+        "re-force must register a fresh harness"
+    );
+}
