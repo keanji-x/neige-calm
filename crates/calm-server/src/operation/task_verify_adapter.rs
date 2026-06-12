@@ -167,10 +167,26 @@ pub(crate) async fn apply_gate_result_in_tx(
     rctx: &GateResultCtx,
     verdict: &GateVerdict,
 ) -> Result<Vec<BroadcastEnvelope>> {
+    apply_gate_result_with_guard_in_tx(tx, rctx, verdict, verdict.attempt).await
+}
+
+/// [`apply_gate_result_in_tx`] with an explicit row-guard attempt
+/// (PR #685 review F4): the scheduler's pre-bump reconcile arm flips a
+/// row still sitting at `verdict.attempt - 1` — the shape left behind
+/// when `prepare_tx` failed with a client error BEFORE the guarded
+/// bump (wave row gone → Conflict, gate_json gone → Conflict). The
+/// recorded verdict keeps the op's attempt number; only the in-tx
+/// guard differs.
+pub(crate) async fn apply_gate_result_with_guard_in_tx(
+    tx: &mut super::Tx<'_>,
+    rctx: &GateResultCtx,
+    verdict: &GateVerdict,
+    guard_attempt: i64,
+) -> Result<Vec<BroadcastEnvelope>> {
     let rows = task_apply_gate_result_tx(
         tx,
         &rctx.task_id,
-        verdict.attempt,
+        guard_attempt,
         verdict.passed,
         verdict.status_detail.as_deref(),
         &serde_json::to_string(verdict)?,

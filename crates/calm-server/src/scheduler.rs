@@ -1142,6 +1142,15 @@ impl Scheduler {
         log_path: &str,
         outcome: OperationOutcome,
     ) -> Result<()> {
+        // PR #685 review F4 — whether the op terminal-FAILED (vs
+        // succeeded with a recorded verdict). Only a failed/stuck op is
+        // eligible for the pre-bump fallback below: an op that reached
+        // a verdict necessarily ran `prepare_tx`'s bump first, so its
+        // eq-attempt guard is the only correct one.
+        let op_terminal_failed = matches!(
+            outcome,
+            OperationOutcome::Failed { .. } | OperationOutcome::Stuck { .. }
+        );
         let verdict = match outcome {
             OperationOutcome::Succeeded { result }
             | OperationOutcome::SucceededViaCollision { result, .. } => {
@@ -1202,7 +1211,29 @@ impl Scheduler {
             cove_id: wave.cove_id.clone(),
         };
         let mut tx = begin_immediate_tx(&pool).await?;
-        let envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
+        let mut envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
+        if envelopes.is_empty() && op_terminal_failed && verdict.attempt >= 1 {
+            // PR #685 review F4 — the pre-bump failure arm. A client
+            // error in `prepare_tx` BEFORE the guarded bump (wave row
+            // gone → Conflict) terminal-fails op `#gN` while the row
+            // stays `verifying@N-1`; every later drive recomputes the
+            // same key, dedupes onto the dead op, and the eq-attempt
+            // guard above misses forever — a permanent loop with no
+            // outcome, no event, and no operator escape. Flip the row
+            // at its pre-bump attempt instead: the failed op can never
+            // bump it, no second op for attempt N can exist (operations
+            // unique index), and a row that DID reach attempt N makes
+            // this relaxed guard miss, so a benignly-failed attempt
+            // still cannot mis-fail a row another op owns.
+            envelopes =
+                crate::operation::task_verify_adapter::apply_gate_result_with_guard_in_tx(
+                    &mut tx,
+                    &rctx,
+                    &verdict,
+                    verdict.attempt - 1,
+                )
+                .await?;
+        }
         if envelopes.is_empty() {
             // Guard miss: the live observer's tx (or a superseding
             // attempt) already moved the row. Nothing was written.

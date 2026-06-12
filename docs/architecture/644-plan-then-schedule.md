@@ -816,8 +816,15 @@ stuck / unparseable results, the recorded verdict for op success). Op missing
 → submit `#g{N+1}` and watch it the same way. The reconcile-copy is needed
 because op-only terminal writes exist (boot `VerifyParked` and `sweep_parked`
 write the operation, never consumer tables — #653 §4.2); it runs the same
-guarded one-tx body, so first writer wins and duplication is impossible. The
-scheduler's reconcile tick also calls `OperationRuntime::sweep_parked()`
+guarded one-tx body, so first writer wins and duplication is impossible. One
+extra arm (PR #685 F4): a `prepare_tx` client error BEFORE the guarded bump
+(wave row gone → Conflict) terminal-fails op `#gN` while the row stays
+`verifying@N-1` — the eq-attempt guard would miss forever while every later
+drive dedupes onto the dead op. For terminal-FAILED ops only, a guard miss
+falls back to flipping the row at `gate_attempt = N-1`
+(`failed('gate-infra')`, same one-tx body); safe because the failed op can
+never bump the row and the operations unique index admits no second `#gN`.
+The scheduler's reconcile tick also calls `OperationRuntime::sweep_parked()`
 (#653 §4.4 call-site c).
 
 **Single-runner invariant** (no concurrent duplicate gates in one cwd):

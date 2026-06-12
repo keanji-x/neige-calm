@@ -3150,6 +3150,55 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// PR #685 review F4 — a `prepare_tx` client error BEFORE the guarded
+/// bump terminal-fails op `#g1` while the row stays `verifying@0`.
+/// Pre-fix this looped forever (every drive deduped onto the dead op
+/// and the eq-attempt reconcile guard missed); the pre-bump arm must
+/// flip the row `failed('gate-infra')` and emit the gate result.
+/// Repro: a verifying row whose `gate_json` is gone — prepare_tx
+/// raises Conflict before `task_gate_attempt_bump_tx` (same pre-bump
+/// class as "wave row gone").
+#[tokio::test]
+async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("prebump");
+
+    let mut task = plan_task(&boot.wave_id, "prebump", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Verifying;
+    task.gate_json = None; // pre-bump Conflict: "task declares no gate"
+    seed_task(&boot, task).await;
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "prebump", 30).await;
+
+    assert_eq!(row.status, TaskStatus::Failed, "{row:?}");
+    assert_eq!(row.status_detail.as_deref(), Some("gate-infra"));
+    assert_eq!(row.gate_attempt, 0, "the bump never happened");
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], false);
+    assert_eq!(verdict["attempt"], 1, "the verdict records the op attempt");
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "exactly one gate result: {rows:?}");
+    // The dead op is terminal-failed and no second attempt was minted.
+    let task_id = format!("{}:prebump", boot.wave_id.as_str());
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(matches!(op.phase.tag(), PhaseTag::Failed), "{:?}", op.phase.tag());
+    assert_eq!(operation_count(&boot, "task-verify").await, 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[tokio::test]
 async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
