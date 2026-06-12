@@ -4,6 +4,11 @@
 # `/api/fs/gitstatus` + `/api/fs/gitdiff` endpoints shell out to `git`, and
 # codex/claude worker agents also expect `git` on PATH. The chromium e2e stack
 # also needs python3 for `web/e2e/tui-theme-protocol.spec.ts`'s TUI fixture.
+# bubblewrap provides `bwrap`, which codex 0.13x execs for every sandboxed
+# `local_shell` tool call — without it every AI shell command (e.g.
+# `neige ls` from a spec card) dies with "bwrap: not found". The compose
+# side (seccomp/apparmor unconfined, #572) only unblocks the kernel
+# namespace syscalls; the binary itself must exist in this image.
 # The release binaries are still bind-mounted by docker-compose (see the
 # `server` service volumes); this image only adds the missing runtime tools.
 #
@@ -15,5 +20,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates python3 \
+ && apt-get install -y --no-install-recommends git ca-certificates python3 bubblewrap \
  && rm -rf /var/lib/apt/lists/*
