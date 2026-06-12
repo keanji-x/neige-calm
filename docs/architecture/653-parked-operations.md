@@ -965,28 +965,34 @@ the op, §4.2), and the `sweep_parked()` call from the reconcile tick (§4.4).
 Called from three arms — boot `VerifyParked` (§4.2), `sweep_parked`'s
 pre-deadline dead-probe, and its past-deadline arm (§4.4, including the
 post-kill re-check) — distinguished by `RecoveryMode`. Decision order is
-**exit file first, liveness second**:
+**liveness first; the exit file is consulted only for DEAD work**
+(superseding this doc's earlier "exit file first" ordering and the
+live-observer "ordering B" preference — PR #685 F1: gate steps execute
+untrusted repo code in a worker-reachable tree, and a worker-forgeable file
+must never outrank a kernel-observed wait status or short-circuit a live
+gate; 644 §6.7 documents the residual dead-gate tamper concession this
+keeps). The live observer (§6.1 step 6) likewise derives its verdict from
+the wait status alone and never reads the exit file. No durable verdict is
+discarded by liveness-first: the ms window where the wrapper has renamed
+the file but not yet exited resolves via the `Boot` reattach observer
+(polls until death, then reads the file), and past deadline via §4.4's
+post-kill re-check (called with `alive == false` after the kill, so a
+pre-kill verdict still completes).
 
-- Exit file present and parseable → `Complete(verdict-from-exit-code)`,
-  regardless of `alive` and mode. The live observer (§6.1 step 6) applies
-  the same preference to its own wait status: a signal-death status with a
-  present, parseable exit file reports the file's verdict (§4.4 ordering B). The verdict is durable the instant the
-  wrapper's `rename` lands (§6.1 step 3); keying on `alive` first would
-  discard it in the ms window where the wrapper has renamed the file but not
-  yet exited — past deadline, that turned a real durable verdict into a
-  SIGKILL + `parked_deadline` fail. §4.4's `Complete`-with-live-group
-  contract covers the residue: the deadline arm kills the (exiting) group
-  before completing.
-- Exit file present but unparseable → `Fail("gate-infra")`. Truncation is
-  impossible (tmp+rename, §6.1 step 3) and §6.1 step 2 unlinked the path
-  before this run spawned, so an unparseable file is a foreign artifact —
-  fail loudly rather than guess.
-- No exit file, `alive == false` → `Fail("gate-infra")` (runtime default
+- `alive == false`, exit file present and parseable →
+  `Complete(verdict-from-exit-code)` — the crashed-kernel recovery hint:
+  once no wait status can ever exist, the file is the only verdict channel
+  left.
+- `alive == false`, exit file present but unparseable → `Fail("gate-infra")`.
+  Truncation is impossible (tmp+rename, §6.1 step 3) and §6.1 step 2
+  unlinked the path before this run spawned, so an unparseable file is a
+  foreign artifact — fail loudly rather than guess.
+- `alive == false`, no exit file → `Fail("gate-infra")` (runtime default
   would also do; explicit for the error class). The §4.4 pre-deadline
   dead-probe deliberately does *not* act on this return — only `Boot` and
   `PastDeadline` do — so a live observer about to commit is never raced by a
   premature infra-fail.
-- No exit file, `alive == true` — mode decides:
+- `alive == true` — mode decides (the exit file is NOT read):
   - `Boot` → re-attach: spawn an observer that polls `verify_owned_pid`
     until false, then reads the exit file (present → verdict; absent →
     infra-fail), completing via the same Completed-gated one-tx body (§6.1
