@@ -3228,7 +3228,11 @@ async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
         .await
         .unwrap()
         .expect("op row");
-    assert!(matches!(op.phase.tag(), PhaseTag::Failed), "{:?}", op.phase.tag());
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Failed),
+        "{:?}",
+        op.phase.tag()
+    );
     assert_eq!(operation_count(&boot, "task-verify").await, 1);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -3498,7 +3502,11 @@ async fn boot_reattach_live_gate_lands_verdict_after_exit() {
         .await
         .unwrap()
         .expect("op row");
-    assert!(matches!(op.phase.tag(), PhaseTag::Succeeded), "{:?}", op.phase.tag());
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Succeeded),
+        "{:?}",
+        op.phase.tag()
+    );
     let rows = event_rows(&boot, "task.gate_result").await;
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].1["passed"], true);

@@ -937,11 +937,9 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 (true, _) => timeout_verdict(&observer_log_path, attempt, timeout_secs),
                 (false, Ok(status)) => match status.code() {
                     Some(code) => verdict_from_exit_code(code, &observer_log_path, attempt),
-                    None => infra_verdict(
-                        "gate wrapper killed by signal",
-                        &observer_log_path,
-                        attempt,
-                    ),
+                    None => {
+                        infra_verdict("gate wrapper killed by signal", &observer_log_path, attempt)
+                    }
                 },
                 (false, Err(e)) => infra_verdict(
                     &format!("gate wrapper wait failed: {e}"),
@@ -1259,7 +1257,9 @@ mod tests {
         // F1: the exit path is captured into a shell variable and the
         // env var is unset BEFORE any step runs — step children must
         // not inherit the verdict-file path.
-        let unset_pos = script.find("unset NEIGE_GATE_EXIT_PATH").expect("unset line");
+        let unset_pos = script
+            .find("unset NEIGE_GATE_EXIT_PATH")
+            .expect("unset line");
         let first_step_pos = script.find("'::gate-step fmt'").expect("first step");
         assert!(unset_pos < first_step_pos, "unset precedes every step");
         // Exit file lands via tmp + rename, and the wrapper always

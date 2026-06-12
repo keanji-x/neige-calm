@@ -1229,14 +1229,13 @@ impl Scheduler {
             // unique index), and a row that DID reach attempt N makes
             // this relaxed guard miss, so a benignly-failed attempt
             // still cannot mis-fail a row another op owns.
-            envelopes =
-                crate::operation::task_verify_adapter::apply_gate_result_with_guard_in_tx(
-                    &mut tx,
-                    &rctx,
-                    &verdict,
-                    verdict.attempt - 1,
-                )
-                .await?;
+            envelopes = crate::operation::task_verify_adapter::apply_gate_result_with_guard_in_tx(
+                &mut tx,
+                &rctx,
+                &verdict,
+                verdict.attempt - 1,
+            )
+            .await?;
         }
         if envelopes.is_empty() {
             // Guard miss: the live observer's tx (or a superseding
