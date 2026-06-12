@@ -38,10 +38,15 @@
  *   `SYNC_EVENT_VERSION` bumped 2 → 3 in lockstep). Older frontends'
  *   zod schemas don't know the new discriminators and would silently
  *   drop plan/dispatch invalidation frames, so bump here.
+ * * `5` — gate-result wire kind (issue #644 PR-C). Adds
+ *   `task.gate_result` to the WS event union (backend
+ *   `SYNC_EVENT_VERSION` bumped 3 → 4 in lockstep). Older frontends'
+ *   zod schemas don't know the new discriminator and would silently
+ *   drop gate-result invalidation frames, so bump here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 4;
+export const WEB_COMPAT_VERSION = 5;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

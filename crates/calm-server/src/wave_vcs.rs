@@ -1747,6 +1747,11 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         // dirties the same run paths a `*.worker_requested` would.
         | Event::TaskDispatched {
             idempotency_key, ..
+        }
+        // Issue #644 PR-C — the gate verdict updates the task's run
+        // status surface the same way a task report does.
+        | Event::TaskGateResult {
+            idempotency_key, ..
         } => {
             delta.add_run_key(idempotency_key);
         }

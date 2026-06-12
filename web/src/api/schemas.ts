@@ -541,6 +541,30 @@ export const taskDispatchedSchema = z.object({
   }),
 });
 
+/**
+ * `Event::TaskGateResult` — issue #644 PR-C: the kernel gate runner
+ * finished one `task-verify` attempt; appended in the same tx as the
+ * `verifying → done|failed` tasks-row flip. `task_id` and
+ * `idempotency_key` both carry the task id (`"{wave_id}:{key}"`).
+ * Kernel-only (actor `KernelDispatcher`). `failing_step` / `exit_code`
+ * are absent on the wire for verdicts that don't carry them (skip-if-
+ * none serde on the Rust side).
+ */
+export const taskGateResultSchema = z.object({
+  ev: z.literal('task.gate_result'),
+  data: z.object({
+    task_id: z.string(),
+    idempotency_key: z.string(),
+    passed: z.boolean(),
+    failing_step: z.string().optional(),
+    exit_code: z.number().optional(),
+    log_tail: z.string(),
+    log_path: z.string(),
+    attempt: z.number(),
+    agent_message: z.string().optional(),
+  }),
+});
+
 // ---------------- EventScope (mirror event.rs) ----------------
 
 /**
@@ -605,6 +629,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskFailedSchema,
   planUpdatedSchema,
   taskDispatchedSchema,
+  taskGateResultSchema,
 ]);
 
 // ---------------- Inferred types ----------------
@@ -649,5 +674,6 @@ export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
 export type PlanUpdatedEvent = z.infer<typeof planUpdatedSchema>;
 export type TaskDispatchedEvent = z.infer<typeof taskDispatchedSchema>;
+export type TaskGateResultEvent = z.infer<typeof taskGateResultSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;
