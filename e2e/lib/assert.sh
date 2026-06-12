@@ -6,6 +6,13 @@ fail() {
   exit 1
 }
 
+: "${E2E_SKIP_STATUS:=77}"
+
+skip() {
+  printf 'SKIP: %s\n' "$*" >&2
+  exit "$E2E_SKIP_STATUS"
+}
+
 poll_until() {
   local timeout_secs=$1
   local fn=$2

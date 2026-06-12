@@ -73,6 +73,12 @@ start_stack() {
 }
 
 check_server_logs() {
+  case "${CASE_CHECK_SERVER_LOGS:-1}" in
+    0|false|FALSE|no|NO)
+      return 0
+      ;;
+  esac
+
   [[ -n "${SERVER_CID:-}" ]] || resolve_server_cid
   [[ -n "$SERVER_CID" ]] || return 0
   local match
@@ -116,7 +122,7 @@ e2e_cleanup() {
   trap - EXIT ERR
   set +e
   printf 'Exit status: %s\n' "$status" >&2
-  if (( status != 0 )); then
+  if (( status != 0 && status != E2E_SKIP_STATUS )); then
     dump_artifacts
   fi
   teardown_stack

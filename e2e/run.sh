@@ -23,6 +23,8 @@ Usage: e2e/run.sh [--tier N | --all] [--case substring] [--list]
 
 Defaults to tier 1 only. Tier 2 burns real Codex tokens and must be requested
 with --tier 2 or --all.
+
+Cases may call skip to exit with status 77; skipped cases do not fail the run.
 EOF
 }
 
@@ -99,9 +101,10 @@ run_one_case() (
   set -euo pipefail
   set -E
 
-  local case_file=$1 name=$2 tier=$3 timeout_secs=$4
+  local case_file=$1 name=$2 tier=$3 timeout_secs=$4 case_status
   # shellcheck disable=SC1090
   source "$case_file"
+  CASE_CHECK_SERVER_LOGS="${CASE_CHECK_SERVER_LOGS:-1}"
 
   RUN_ID="e2e-$(date +%s)-$RANDOM"
   DEV_ID="$RUN_ID"
@@ -127,7 +130,13 @@ run_one_case() (
   PORT="$(pick_port)"
   start_stack
   wait_for_health
+  set +e
   run_case_with_timeout "$timeout_secs"
+  case_status=$?
+  set -e
+  if (( case_status != 0 )); then
+    exit "$case_status"
+  fi
 )
 
 TIER_FILTER=1
@@ -171,6 +180,7 @@ mapfile -t CASE_FILES < <(find "$SCRIPT_DIR/cases" -maxdepth 1 -type f -name '[0
 
 selected=0
 passed=0
+skipped=0
 failed=0
 declare -a selected_files=()
 declare -a selected_names=()
@@ -204,10 +214,15 @@ for i in "${!selected_files[@]}"; do
     printf 'PASS %s tier=%s %s\n' "$case_id" "${selected_tiers[$i]}" "${selected_names[$i]}"
   else
     status=$?
-    failed=$((failed + 1))
-    printf 'FAIL %s tier=%s status=%s %s\n' "$case_id" "${selected_tiers[$i]}" "$status" "${selected_names[$i]}"
+    if (( status == E2E_SKIP_STATUS )); then
+      skipped=$((skipped + 1))
+      printf 'SKIP %s tier=%s status=%s %s\n' "$case_id" "${selected_tiers[$i]}" "$status" "${selected_names[$i]}"
+    else
+      failed=$((failed + 1))
+      printf 'FAIL %s tier=%s status=%s %s\n' "$case_id" "${selected_tiers[$i]}" "$status" "${selected_names[$i]}"
+    fi
   fi
 done
 
-printf 'SUMMARY selected=%s passed=%s failed=%s\n' "$selected" "$passed" "$failed"
+printf 'SUMMARY selected=%s passed=%s skipped=%s failed=%s\n' "$selected" "$passed" "$skipped" "$failed"
 (( failed == 0 ))

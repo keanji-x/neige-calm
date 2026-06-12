@@ -26,6 +26,7 @@ the case file. A case declares:
 CASE_NAME="short human name"
 CASE_TIER=1
 CASE_TIMEOUT_SECS=300
+CASE_CHECK_SERVER_LOGS=1
 
 case_run() {
   # use lib primitives here
@@ -36,6 +37,14 @@ The runner owns `RUN_ID` and `DEV_ID`, stack startup, the cleanup trap, artifact
 dumping on failure, per-case `PASS`/`FAIL` lines, the final summary, and the
 nonzero exit if any case fails. Cases should use library functions for API calls,
 auth, docker exec file probes, polling, and stack access.
+
+`CASE_CHECK_SERVER_LOGS` is optional and defaults to `1`. Set it to `0` only
+for cases where the spec-harness inert log signatures are expected by the
+scenario; tier 2 Codex cases should leave the fail-fast check on.
+
+Cases may call `skip "reason"` when a valid host-local condition makes the
+assertion unreachable. Skip exits with status `77`, is reported as `SKIP`, does
+not dump failure artifacts, and does not make the final run fail.
 
 ## Tiers And Order
 
@@ -55,7 +64,8 @@ battle-tested dev-state neutralizer sweep: `CALM_CONTAINER_STATE_DIR=`,
 API helpers keep environment-first `.env` lookup, the autologin probe, and the
 compose-resolved `SERVER_CID` for `docker exec`. The multitask case keeps the
 done-only lifecycle gate, trailing-newline-safe JSON summaries, and fail-fast
-server log signatures.
+server log signatures. Tier 1 no-Codex cases that intentionally exercise an
+inert shared spec harness should declare `CASE_CHECK_SERVER_LOGS=0`.
 
 ## Add A Case
 
@@ -63,5 +73,7 @@ server log signatures.
 2. Add `e2e/cases/NNN-name.sh`.
 3. Declare `CASE_NAME`, `CASE_TIER`, and `CASE_TIMEOUT_SECS`.
 4. Implement `case_run()` using `api.sh`, `stack.sh`, and `assert.sh`.
-5. Run `bash -n e2e/run.sh e2e/lib/*.sh e2e/cases/*.sh` and `shellcheck` if it
+5. Use `skip "reason"` for environment-dependent paths that cannot be asserted
+   without failing the case.
+6. Run `bash -n e2e/run.sh e2e/lib/*.sh e2e/cases/*.sh` and `shellcheck` if it
    is installed.

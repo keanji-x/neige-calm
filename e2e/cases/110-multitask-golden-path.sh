@@ -5,6 +5,7 @@
 CASE_NAME="multitask golden path"
 CASE_TIER=2
 CASE_TIMEOUT_SECS=1500
+CASE_CHECK_SERVER_LOGS=1
 
 multitask_create_cove() {
   local body cove_id
