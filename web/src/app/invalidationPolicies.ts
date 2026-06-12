@@ -75,6 +75,7 @@ type WaveFilesDerivedEvent =
   | EventOf<'claude.hook'>
   | EventOf<'codex.worker_requested'>
   | EventOf<'terminal.worker_requested'>
+  | EventOf<'task.dispatched'>
   | EventOf<'task.completed'>
   | EventOf<'task.failed'>
   | EventOf<'terminal.deleted'>;
@@ -227,4 +228,9 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'plan.updated': noop(
     'No task-plan query exists yet; the PR-B scheduler consumes plan revisions server-side.',
   ),
+  'task.dispatched': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason:
+      'Scheduler claim record (#644 PR-B) — the runs views derive their requested-record from it; same surface task.completed/failed refresh.',
+  },
 });

@@ -523,6 +523,24 @@ export const planUpdatedSchema = z.object({
   }),
 });
 
+/**
+ * `Event::TaskDispatched` — issue #644 PR-B: the kernel scheduler
+ * claimed a plan task (`pending → dispatched`), appended inside the
+ * claim tx. `idempotency_key` is the task id (`"{wave_id}:{key}"`);
+ * `kind` is the worker kind (`"codex"` / `"terminal"` — a plain string
+ * so a future worker kind is not a wire break). Kernel-only (actor
+ * `KernelDispatcher`); the runs views treat it as the requested-record
+ * fallback for scheduler-dispatched tasks.
+ */
+export const taskDispatchedSchema = z.object({
+  ev: z.literal('task.dispatched'),
+  data: z.object({
+    idempotency_key: z.string(),
+    kind: z.string(),
+    agent_message: z.string().optional(),
+  }),
+});
+
 // ---------------- EventScope (mirror event.rs) ----------------
 
 /**
@@ -586,6 +604,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskCompletedSchema,
   taskFailedSchema,
   planUpdatedSchema,
+  taskDispatchedSchema,
 ]);
 
 // ---------------- Inferred types ----------------
@@ -629,5 +648,6 @@ export type TerminalWorkerRequestedEvent = z.infer<typeof terminalWorkerRequeste
 export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
 export type PlanUpdatedEvent = z.infer<typeof planUpdatedSchema>;
+export type TaskDispatchedEvent = z.infer<typeof taskDispatchedSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;
