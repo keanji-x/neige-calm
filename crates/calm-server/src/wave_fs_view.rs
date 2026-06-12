@@ -206,7 +206,7 @@ impl<'a> WaveFsView<'a> {
             path if path.starts_with("plan/") => {
                 let parts: Vec<&str> = path.split('/').collect();
                 if parts.len() != 3 || parts[2] != "gate.log" {
-                    return Err(path_not_available(&path));
+                    return Err(path_not_available(path));
                 }
                 self.cat_gate_log(wave, parts[1]).await
             }
