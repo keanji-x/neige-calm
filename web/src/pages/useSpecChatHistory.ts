@@ -18,6 +18,13 @@ export interface SpecChatHistorySnapshot {
   loadEarlierPending: boolean;
   loadEarlier(): Promise<void>;
   addEcho(text: string): void;
+  /**
+   * Append a FE-local system row (#668 — e.g. "Turn stopped" after a user
+   * stop; interrupted turns never emit `item/completed`, so without it the
+   * stop would be visually silent). Shares the echo lifecycle: cleared on
+   * card change and transcript-clear, never persisted server-side.
+   */
+  addSystemNote(text: string): void;
 }
 
 function isCompletedMessageItem(
@@ -101,6 +108,10 @@ export function useSpecChatHistory(
     setEchoes((current) => {
       const matchedUserIndexes = new Set<number>();
       const next = current.filter((echo) => {
+        // System notes (#668) live in the same FE-local list for lifecycle
+        // (clear on card change / transcript-clear) but never reconcile
+        // against landed user rows.
+        if (echo.kind !== 'user') return true;
         const matchedIndex = userTexts.findIndex(
           (userText, index) =>
             !matchedUserIndexes.has(index) &&
@@ -344,6 +355,21 @@ export function useSpecChatHistory(
     ]);
   }, []);
 
+  const addSystemNote = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    echoIdRef.current -= 1;
+    setEchoes((current) => [
+      ...current,
+      {
+        id: echoIdRef.current,
+        kind: 'system',
+        text: trimmed,
+        atMs: Date.now(),
+      },
+    ]);
+  }, []);
+
   const visibleEntries = useMemo<VisibleChatEntry[]>(
     () => [...entries, ...echoes],
     [entries, echoes],
@@ -355,5 +381,6 @@ export function useSpecChatHistory(
     loadEarlierPending,
     loadEarlier,
     addEcho,
+    addSystemNote,
   };
 }

@@ -249,6 +249,13 @@ export const sendSpecInput = (id: string, text: string) =>
     `/api/cards/${encodeURIComponent(id)}/spec/input`,
     { text },
   );
+// #668 — stop the running spec turn. `stopped: false` means the harness was
+// idle and the stop was a graceful no-op (no interrupt dispatched).
+export const interruptSpecCard = (id: string) =>
+  request<{ card_id: string; runtime_id: string; stopped: boolean }>(
+    'POST',
+    `/api/cards/${encodeURIComponent(id)}/spec/interrupt`,
+  );
 export const listHarnessItems = (
   id: string,
   params: {

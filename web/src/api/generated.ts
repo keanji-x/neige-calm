@@ -89,6 +89,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cards/{id}/spec/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue #668 — stop the running spec turn.
+         * @description Guard chain mirrors `/spec/input` (card → role → kind), but deliberately
+         *     WITHOUT the lazy-recovery path and its per-card lock: a harness that
+         *     needs recovering has, by construction, no running turn to stop, so a
+         *     registry miss (or no active runtime row) is the same typed 409
+         *     `spec_harness_dormant` the input route uses — the client steers the user
+         *     to Reset.
+         *
+         *     Idle is a graceful no-op, not an error: the harness's own
+         *     `issue_interrupt` ignores interrupts when no turn is active, so the route
+         *     reports `stopped: false` (decided from the harness phase just before
+         *     dispatch) and skips the operation entirely. The phase read and the
+         *     dispatch are not atomic — a turn could start in between — but the failure
+         *     mode is benign (the user presses Stop again). `IssuingInterrupt` also
+         *     reports `stopped: false`: an interrupt is already in flight and
+         *     re-dispatching would be ignored by the FSM anyway.
+         */
+        post: operations["interrupt_spec_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/spec/reset": {
         parameters: {
             query?: never;
@@ -1114,6 +1148,18 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "other";
+        };
+        InterruptSpecCardResponse: {
+            card_id: string;
+            runtime_id: string;
+            /**
+             * @description True when a turn was actually running (or being issued) and an
+             *     interrupt was dispatched at it; false when the harness was idle and
+             *     the stop was a graceful no-op. "stopped: true" means the interrupt
+             *     was *issued* — completion is asynchronous (`turn/aborted` lands via
+             *     the harness FSM, with an interrupt-timeout watchdog as backstop).
+             */
+            stopped: boolean;
         };
         ListdirResponse: {
             /**
@@ -2272,6 +2318,65 @@ export interface operations {
             };
             /** @description Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    interrupt_spec_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Spec card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Interrupt dispatched at the running turn (`stopped: true`), or graceful no-op because no turn was running (`stopped: false`) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterruptSpecCardResponse"];
+                };
+            };
+            /** @description Card is not a spec codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

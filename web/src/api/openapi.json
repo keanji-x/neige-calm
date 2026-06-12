@@ -435,6 +435,79 @@
         }
       }
     },
+    "/api/cards/{id}/spec/interrupt": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "summary": "Issue #668 — stop the running spec turn.",
+        "description": "Guard chain mirrors `/spec/input` (card → role → kind), but deliberately\nWITHOUT the lazy-recovery path and its per-card lock: a harness that\nneeds recovering has, by construction, no running turn to stop, so a\nregistry miss (or no active runtime row) is the same typed 409\n`spec_harness_dormant` the input route uses — the client steers the user\nto Reset.\n\nIdle is a graceful no-op, not an error: the harness's own\n`issue_interrupt` ignores interrupts when no turn is active, so the route\nreports `stopped: false` (decided from the harness phase just before\ndispatch) and skips the operation entirely. The phase read and the\ndispatch are not atomic — a turn could start in between — but the failure\nmode is benign (the user presses Stop again). `IssuingInterrupt` also\nreports `stopped: false`: an interrupt is already in flight and\nre-dispatching would be ignored by the FSM anyway.",
+        "operationId": "interrupt_spec_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Spec card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Interrupt dispatched at the running turn (`stopped: true`), or graceful no-op because no turn was running (`stopped: false`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterruptSpecCardResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a spec codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/spec/reset": {
       "post": {
         "tags": [
@@ -3843,6 +3916,26 @@
             }
           }
         ]
+      },
+      "InterruptSpecCardResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "runtime_id",
+          "stopped"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "stopped": {
+            "type": "boolean",
+            "description": "True when a turn was actually running (or being issued) and an\ninterrupt was dispatched at it; false when the harness was idle and\nthe stop was a graceful no-op. \"stopped: true\" means the interrupt\nwas *issued* — completion is asynchronous (`turn/aborted` lands via\nthe harness FSM, with an interrupt-timeout watchdog as backstop)."
+          }
+        }
       },
       "ListdirResponse": {
         "type": "object",

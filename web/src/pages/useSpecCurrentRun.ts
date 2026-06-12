@@ -1,5 +1,10 @@
 import { useCallback, useEffect } from 'react';
-import { CalmApiError, resetSpecCard, sendSpecInput } from '../api/calm';
+import {
+  CalmApiError,
+  interruptSpecCard,
+  resetSpecCard,
+  sendSpecInput,
+} from '../api/calm';
 import { sharedEventStream } from '../api/events';
 import { useCardStatusOverlay } from '../cards/overlayRegistry';
 import { useState } from '../shared/state';
@@ -38,6 +43,14 @@ export interface SpecRunSnapshot {
    * for this card and the user should Reset to start one (issue #649 i2).
    */
   submitDormant: boolean;
+  /**
+   * Stop the running turn (#668). Resolves with the server's `stopped`
+   * flag: `true` when an interrupt was dispatched at a running turn,
+   * `false` when the harness was already idle (graceful no-op).
+   */
+  stop(): Promise<boolean>;
+  stopPending: boolean;
+  stopError: string | null;
 }
 
 export function toFsmState(state: string | undefined): FsmState {
@@ -87,6 +100,8 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
   const [submitPending, setSubmitPending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitDormant, setSubmitDormant] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
 
   useEffect(() => {
     setPhase(null);
@@ -112,6 +127,8 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     setSubmitPending(false);
     setSubmitError(null);
     setSubmitDormant(false);
+    setStopPending(false);
+    setStopError(null);
   }, [cardId]);
 
   const reset = useCallback(async () => {
@@ -170,6 +187,31 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     }
   }, [cardId]);
 
+  const stop = useCallback(async () => {
+    if (!cardId) {
+      const err = new Error('Spec card unavailable');
+      setStopError(err.message);
+      throw err;
+    }
+    setStopPending(true);
+    setStopError(null);
+    try {
+      const res = await interruptSpecCard(cardId);
+      return res.stopped;
+    } catch (err) {
+      if (err instanceof CalmApiError && err.code === 'spec_harness_dormant') {
+        setStopError(
+          "Spec Agent isn't running for this wave — Reset to start a session",
+        );
+      } else {
+        setStopError(errorMessage(err, 'Failed to stop turn'));
+      }
+      throw err;
+    } finally {
+      setStopPending(false);
+    }
+  }, [cardId]);
+
   return {
     cardId: cardId ?? null,
     rawState,
@@ -183,5 +225,8 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     submitPending,
     submitError,
     submitDormant,
+    stop,
+    stopPending,
+    stopError,
   };
 }

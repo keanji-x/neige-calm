@@ -17,8 +17,8 @@ use crate::model::{
     NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
 };
 use crate::routes::cards::{
-    CreateCardBody, HarnessItemsQuery, ResetSpecCardResponse, SendSpecInputRequest,
-    SendSpecInputResponse, ViaToolCall,
+    CreateCardBody, HarnessItemsQuery, InterruptSpecCardResponse, ResetSpecCardResponse,
+    SendSpecInputRequest, SendSpecInputResponse, ViaToolCall,
 };
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
@@ -79,6 +79,7 @@ use utoipa::OpenApi;
         crate::routes::cards::update_card,
         crate::routes::cards::get_harness_items,
         crate::routes::cards::send_spec_input,
+        crate::routes::cards::interrupt_spec_card,
         crate::routes::cards::reset_spec_card,
         crate::routes::cards::delete_card,
         // ---- overlays ----
@@ -160,6 +161,7 @@ use utoipa::OpenApi;
         HarnessItemsQuery,
         SendSpecInputRequest,
         SendSpecInputResponse,
+        InterruptSpecCardResponse,
         ResetSpecCardResponse,
         // Issue #229 PR B — wave-report card payload shape (kernel-owned;
         // surfaced in the OpenAPI doc so frontend codegen + external

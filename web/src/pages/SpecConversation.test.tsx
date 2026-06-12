@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
     state,
     submit: vi.fn(),
     reset: vi.fn(),
+    stop: vi.fn(),
     useSpecCurrentRun: vi.fn(() => state.currentRun),
     listHarnessItems: vi.fn(),
     sharedEventStream: vi.fn(() => stream),
@@ -72,6 +73,9 @@ function makeRun(
     submitError: null,
     submitDormant: false,
     submit: mocks.submit,
+    stop: mocks.stop,
+    stopPending: false,
+    stopError: null,
     ...overrides,
   };
 }
@@ -222,6 +226,8 @@ describe('SpecConversation', () => {
     mocks.submit.mockResolvedValue(undefined);
     mocks.reset.mockReset();
     mocks.reset.mockResolvedValue(undefined);
+    mocks.stop.mockReset();
+    mocks.stop.mockResolvedValue(true);
     mocks.useSpecCurrentRun.mockClear();
     mocks.listHarnessItems.mockReset();
     mocks.listHarnessItems.mockResolvedValue([]);
@@ -338,6 +344,8 @@ describe('SpecConversation', () => {
 
   it('shows a send button only when the draft is non-empty and sends on click', async () => {
     const user = userEvent.setup();
+    // Idle: while Working the glyph slot holds the ■ stop affordance (#668).
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
     render(<Harness />);
 
     expect(
@@ -539,6 +547,125 @@ describe('SpecConversation', () => {
     expect(
       screen.getByRole('status', { name: 'Spec Agent is working' }),
     ).toBeInTheDocument();
+    expect(screen.getByText('Esc to stop')).toBeInTheDocument();
+  });
+
+  it('shows the Stop chip only while Working and stops on click', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    const { rerender } = render(<Harness />);
+
+    expect(
+      screen.queryByRole('button', { name: 'Stop spec turn' }),
+    ).not.toBeInTheDocument();
+
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    rerender(<Harness />);
+
+    const stopChip = screen.getByRole('button', { name: 'Stop spec turn' });
+    expect(stopChip.closest('.report-convo-status')).not.toBeNull();
+    await user.click(stopChip);
+
+    await waitFor(() => {
+      expect(mocks.stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('disables the Stop chip while a stop is pending', () => {
+    mocks.state.currentRun = makeRun({
+      fsm: 'Working',
+      rawState: 'running',
+      stopPending: true,
+    });
+    render(<Harness />);
+
+    expect(
+      screen.getByRole('button', { name: 'Stop spec turn' }),
+    ).toBeDisabled();
+  });
+
+  it('replaces the send glyph with a stop square while Working', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(<Harness />);
+
+    // ■ is present even with an empty draft, and wins over ↵ with one.
+    expect(
+      screen.getByRole('button', { name: 'Stop turn' }),
+    ).toBeInTheDocument();
+    await user.type(draftBox(), 'queued follow-up');
+    expect(
+      screen.queryByRole('button', { name: 'Send' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Stop turn' }));
+    await waitFor(() => {
+      expect(mocks.stop).toHaveBeenCalledTimes(1);
+    });
+    // Enter still queues the draft while a turn is running.
+    await user.type(draftBox(), '{Enter}');
+    await waitFor(() => {
+      expect(mocks.submit).toHaveBeenCalledWith('queued follow-up');
+    });
+  });
+
+  it('stops the running turn on Esc', async () => {
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(<Harness />);
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(mocks.stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('does not stop on Esc while idle, mid-IME, or with the reset dialog open', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Idle', rawState: 'idle' });
+    const { rerender } = render(<Harness />);
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape' });
+    expect(mocks.stop).not.toHaveBeenCalled();
+
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    rerender(<Harness />);
+
+    fireEvent.keyDown(draftBox(), { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(draftBox(), { key: 'Escape', keyCode: 229 });
+    expect(mocks.stop).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Reset spec session' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reset spec session?' });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  it('appends a local system note after a successful stop', async () => {
+    const user = userEvent.setup();
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(<Harness />);
+
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+
+    expect(await screen.findByText(/Turn stopped/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Turn stopped/).closest('.report-convo-system'),
+    ).not.toBeNull();
+  });
+
+  it('does not add a system note when the stop was an idle no-op', async () => {
+    const user = userEvent.setup();
+    mocks.stop.mockResolvedValue(false);
+    mocks.state.currentRun = makeRun({ fsm: 'Working', rawState: 'running' });
+    render(<Harness />);
+
+    await user.click(screen.getByRole('button', { name: 'Stop spec turn' }));
+
+    await waitFor(() => {
+      expect(mocks.stop).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByText(/Turn stopped/)).not.toBeInTheDocument();
   });
 
   it('continues fetching the tail after a full asc page with no messages', async () => {

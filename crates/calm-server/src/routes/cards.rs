@@ -17,9 +17,10 @@ use crate::db::write_with_event_typed;
 use crate::db::{RepoRead, RouteRepo};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::harness::{Observation, is_harness_snapshot_value};
+use crate::harness::{HarnessPhaseTag, Observation, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id};
+use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
@@ -112,6 +113,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
         .route("/api/cards/{id}/spec/input", post(send_spec_input))
+        .route("/api/cards/{id}/spec/interrupt", post(interrupt_spec_card))
         .route("/api/cards/{id}/spec/reset", post(reset_spec_card))
 }
 
@@ -579,6 +581,19 @@ pub struct SendSpecInputResponse {
     pub runtime_id: String,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InterruptSpecCardResponse {
+    #[schema(value_type = String)]
+    pub card_id: CardId,
+    pub runtime_id: String,
+    /// True when a turn was actually running (or being issued) and an
+    /// interrupt was dispatched at it; false when the harness was idle and
+    /// the stop was a graceful no-op. "stopped: true" means the interrupt
+    /// was *issued* — completion is asynchronous (`turn/aborted` lands via
+    /// the harness FSM, with an interrupt-timeout watchdog as backstop).
+    pub stopped: bool,
+}
+
 const MAX_SPEC_INPUT_CHARS: usize = 32_768;
 
 fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
@@ -691,6 +706,97 @@ pub(crate) async fn send_spec_input(
     Ok(Json(SendSpecInputResponse {
         card_id: card.id,
         runtime_id: runtime.id.clone(),
+    }))
+}
+
+/// Issue #668 — stop the running spec turn.
+///
+/// Guard chain mirrors `/spec/input` (card → role → kind), but deliberately
+/// WITHOUT the lazy-recovery path and its per-card lock: a harness that
+/// needs recovering has, by construction, no running turn to stop, so a
+/// registry miss (or no active runtime row) is the same typed 409
+/// `spec_harness_dormant` the input route uses — the client steers the user
+/// to Reset.
+///
+/// Idle is a graceful no-op, not an error: the harness's own
+/// `issue_interrupt` ignores interrupts when no turn is active, so the route
+/// reports `stopped: false` (decided from the harness phase just before
+/// dispatch) and skips the operation entirely. The phase read and the
+/// dispatch are not atomic — a turn could start in between — but the failure
+/// mode is benign (the user presses Stop again). `IssuingInterrupt` also
+/// reports `stopped: false`: an interrupt is already in flight and
+/// re-dispatching would be ignored by the FSM anyway.
+#[utoipa::path(
+    post,
+    path = "/api/cards/{id}/spec/interrupt",
+    tag = "cards",
+    params(("id" = String, Path, description = "Spec card id")),
+    responses(
+        (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`), or graceful no-op because no turn was running (`stopped: false`)", body = InterruptSpecCardResponse),
+        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 409, description = "No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`)", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn interrupt_spec_card(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(id): Path<String>,
+) -> Result<Json<InterruptSpecCardResponse>> {
+    let card = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let role = s
+        .write
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    if card.kind != "codex" || role != CardRole::Spec {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is not a spec codex card",
+        )));
+    }
+
+    let dormant = || {
+        CalmError::SpecHarnessDormant(format!(
+            "no live spec harness session for card {id}; reset to start a session",
+        ))
+    };
+    let runtime = s
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await?
+        .ok_or_else(dormant)?;
+    let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
+
+    let phase = harness.snapshot().await.phase;
+    let stopped = matches!(
+        phase,
+        HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
+    );
+    if stopped {
+        let payload = serde_json::to_value(SpecHarnessInterruptOperationPayload {
+            runtime_id: runtime.id.clone(),
+            reason: "user_stop".into(),
+        })?;
+        run_spec_card_operation(&s, "spec-harness-interrupt", payload).await?;
+    }
+
+    tracing::info!(
+        actor = %actor.as_str(),
+        card_id = %card.id,
+        runtime_id = %runtime.id,
+        ?phase,
+        stopped,
+        "spec harness user stop requested"
+    );
+
+    Ok(Json(InterruptSpecCardResponse {
+        card_id: card.id,
+        runtime_id: runtime.id.clone(),
+        stopped,
     }))
 }
 
@@ -916,13 +1022,13 @@ async fn reset_spec_harness_card(
         force_new_thread: true,
     };
     let start_payload = serde_json::to_value(start_request)?;
-    run_reset_operation(&s, "spec-harness-start", start_payload).await?;
+    run_spec_card_operation(&s, "spec-harness-start", start_payload).await?;
 
     if let Some(runtime) = runtime {
         let shutdown_payload = serde_json::to_value(SpecHarnessShutdownOperationPayload {
             runtime_id: runtime.id.clone(),
         })?;
-        run_reset_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
+        run_spec_card_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
     }
 
     let active = s
@@ -950,7 +1056,7 @@ async fn reset_spec_harness_card(
     })
 }
 
-async fn run_reset_operation(s: &RouteState, kind: &str, payload: Value) -> Result<()> {
+async fn run_spec_card_operation(s: &RouteState, kind: &str, payload: Value) -> Result<()> {
     let payload_hash = stable_payload_hash(&payload)?;
     let op_id = s
         .operation_runtime
