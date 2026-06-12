@@ -6,7 +6,7 @@ import { waveFsCardMetaSchema } from '../schemas';
 
 export const CardMetaViewer: WaveFsViewer<WaveFsCardMeta> = {
   id: 'card-meta',
-  match: (path) => /^cards\/[^/]+\/meta\.json$/.test(path),
+  match: (path) => /^cards\/[^/]+\/\.meta\.json$/.test(path),
   parse: (raw) => waveFsCardMetaSchema.parse(JSON.parse(raw)),
   Component: CardMetaViewerComponent,
 };
