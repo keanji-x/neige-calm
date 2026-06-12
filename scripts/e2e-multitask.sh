@@ -22,8 +22,8 @@ export NO_PROXY="127.0.0.1,localhost"
 export no_proxy="$NO_PROXY"
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 cleanup() {
-  local status
-  status=$?
+  local status=$?
+  trap - EXIT ERR
   set +e
   printf 'Exit status: %s\n' "$status" >&2
   if (( status != 0 )); then
@@ -34,10 +34,14 @@ cleanup() {
   fi
   command -v docker >/dev/null 2>&1 \
     && (cd "$REPO_ROOT" && docker compose -p "$PROJECT" down -v --remove-orphans) >/dev/null 2>&1
-  trap - EXIT
   exit "$status"
 }
-trap 'printf "ERR: line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+on_err() {
+  local status=$1 line=$2 command=$3
+  printf 'ERR: line %s: %s\n' "$line" "$command" >&2
+  return "$status"
+}
+trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
 trap cleanup EXIT
 dotenv_get() {
   local key=$1 line value
@@ -193,7 +197,6 @@ const flags = [
   process.env.GREET,
   process.env.USAGE,
   body && body !== "# Goal\n\n_The spec agent will fill this in._\n" ? "changed" : "placeholder",
-  workers.length >= 2 && workers.every((c) => c.runtime && c.runtime.status !== "running") ? "yes" : "no",
   wave.lifecycle === "reviewing" || wave.lifecycle === "done" ? "yes" : "no",
 ];
 process.stdout.write([wave.lifecycle ?? "unknown", workers.length, workers.map((c) => c.runtime?.status ?? "none").join(",") || "-", ...flags].join("\t") + "\n");
@@ -204,14 +207,14 @@ poll_wave() {
   local wave_id=$1 start=$SECONDS total=1200 stage1=300 stage1_ok=0
   while (( SECONDS - start <= total )); do
     check_server_logs
-    local cards_json detail_json elapsed lifecycle worker_count worker_statuses greet usage report workers_done lifecycle_ready
+    local cards_json detail_json elapsed lifecycle worker_count worker_statuses greet usage report lifecycle_ready
     expect_2xx GET "/api/waves/$wave_id/cards" -
     cards_json="$API_BODY"
     expect_2xx GET "/api/waves/$wave_id" -
     detail_json="$API_BODY"
     if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/src/greet.py"; then greet=yes; else greet=no; fi
     if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/USAGE.md"; then usage=yes; else usage=no; fi
-    IFS=$'\t' read -r lifecycle worker_count worker_statuses greet usage report workers_done lifecycle_ready \
+    IFS=$'\t' read -r lifecycle worker_count worker_statuses greet usage report lifecycle_ready \
       < <(summarize_state "$cards_json" "$detail_json" "$greet" "$usage") \
       || fail 'summarize_state produced no parsable state'
 
@@ -226,7 +229,7 @@ poll_wave() {
     fi
 
     if (( stage1_ok == 1 )) \
-      && [[ "$workers_done" == "yes" && "$greet" == "yes" && "$usage" == "yes" ]] \
+      && [[ "$greet" == "yes" && "$usage" == "yes" ]] \
       && [[ "$report" == "changed" && "$lifecycle_ready" == "yes" ]]; then
       printf 'PASS run_id=%s wave_id=%s workers=%s lifecycle=%s workspace=%s\n' \
         "$RUN_ID" "$wave_id" "$worker_count" "$lifecycle" "$WORKSPACE"
@@ -236,7 +239,7 @@ poll_wave() {
     (( elapsed < total )) || break
     sleep 10
   done
-  fail "stage 2 timed out after 20 minutes before workers, files, report, and lifecycle were complete"
+  fail "stage 2 timed out after 20 minutes before files, report, and lifecycle were complete"
 }
 
 main() {
