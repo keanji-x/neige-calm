@@ -1027,6 +1027,59 @@ async fn terminal_hook_completes_task_on_exit() {
 }
 
 #[tokio::test]
+async fn terminal_exit_beats_running_stamp() {
+    // §3 fast-terminal-exit: the exit lands while the row is still
+    // `dispatched` (the scheduler's `wait()` has not returned, so the
+    // running stamp hasn't happened). The completion guard includes
+    // `dispatched`, the hook resolves the task from the card payload's
+    // `idempotency_key` (not `worker_card_id`, which is still NULL),
+    // and the late running stamp must then no-op.
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "fast-term", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+
+    let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+
+    let row = task_row(&boot, "fast-term").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Done,
+        "dispatched → done via the exit hook"
+    );
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(card_id.as_str()),
+        "hook stamps worker_card_id even before the scheduler could"
+    );
+
+    // The scheduler's late running stamp (guard `WHERE status =
+    // 'dispatched'`) must be a no-op — it can never regress the row.
+    let stamped = calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
+        let task_id = task_id.clone();
+        move |tx| {
+            Box::pin(async move {
+                calm_server::db::sqlite::task_mark_running_tx(tx, &task_id, Some("late"), now_ms())
+                    .await
+            })
+        }
+    })
+    .await
+    .expect("late running stamp tx");
+    assert_eq!(
+        stamped, 0,
+        "late running stamp must lose to the completed flip"
+    );
+    let row = task_row(&boot, "fast-term").await;
+    assert_eq!(row.status, TaskStatus::Done);
+    assert_eq!(row.worker_card_id.as_deref(), Some(card_id.as_str()));
+}
+
+#[tokio::test]
 async fn terminal_hook_nonzero_exit_fails_task() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
