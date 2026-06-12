@@ -1,7 +1,11 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type { z } from 'zod';
 import type {
+  AgentProvider,
+  CardRuntimeView,
   CardRole,
+  RuntimeKind,
+  RunStatus,
   Wave,
   WaveFsCardMeta,
   WaveFsHookEvent,
@@ -14,9 +18,15 @@ import type {
   WaveFsRunVerdictSummary,
 } from '../api/generated-events';
 import {
+  agentProviderSchema,
+  cardRuntimeSchema,
+  cardRuntimeViewSchema,
+  runStatusSchema,
+  runtimeKindSchema,
   waveFsCardMetaSchema,
   waveFsCardRoleSchema,
   waveFsCardsIndexSchema,
+  waveFsHookEventsSchema,
   waveFsHookEventSchema,
   waveFsRunDetailSchema,
   waveFsRunEventRefSchema,
@@ -31,6 +41,11 @@ import {
 
 describe('wave fs zod to generated type conformance', () => {
   it('pins enum schemas to generated unions', () => {
+    expectTypeOf<z.infer<typeof agentProviderSchema>>()
+      .toEqualTypeOf<AgentProvider>();
+    expectTypeOf<z.infer<typeof runStatusSchema>>().toEqualTypeOf<RunStatus>();
+    expectTypeOf<z.infer<typeof runtimeKindSchema>>()
+      .toEqualTypeOf<RuntimeKind>();
     expectTypeOf<z.infer<typeof waveFsCardRoleSchema>>().toEqualTypeOf<CardRole>();
     expectTypeOf<z.infer<typeof waveFsRunStatusSchema>>()
       .toEqualTypeOf<WaveFsRunStatus>();
@@ -64,5 +79,14 @@ describe('wave fs zod to generated type conformance', () => {
   it('pins hook-event schema for future event viewers', () => {
     expectTypeOf<z.infer<typeof waveFsHookEventSchema>>()
       .toEqualTypeOf<WaveFsHookEvent>();
+    expectTypeOf<z.infer<typeof waveFsHookEventsSchema>>()
+      .toEqualTypeOf<WaveFsHookEvent[]>();
+  });
+
+  it('pins runtime schemas to generated shapes', () => {
+    expectTypeOf<z.infer<typeof cardRuntimeViewSchema>>()
+      .toEqualTypeOf<CardRuntimeView>();
+    expectTypeOf<z.infer<typeof cardRuntimeSchema>>()
+      .toEqualTypeOf<CardRuntimeView | null>();
   });
 });
