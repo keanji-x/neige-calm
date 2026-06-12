@@ -317,17 +317,25 @@ export function SpecConversation({
   const onStopRef = useRef(onStop);
   onStopRef.current = onStop;
 
-  const isWorking = run.fsm === 'Working';
+  // #668 fix — gate on the harness phase, not `fsm === 'Working'`: no
+  // status overlay is ever published for spec cards, so the overlay-derived
+  // fsm never reaches 'Working' in production and every stop affordance
+  // stayed dead. `working` comes straight from the phase wire signal.
+  const isWorking = run.working;
+  // While an interrupt is in flight the stop affordances stay visible but
+  // inert — pressing Stop twice can't dispatch a second interrupt.
+  const stopVisible = run.working || run.stopping;
+  const stopDisabled = run.stopPending || run.stopping;
 
   // Esc stops the running turn (#668). A document-level listener (instead
   // of per-element onKeyDown) covers focus anywhere in the conversation
   // region — the scroll area and the inputbar — plus document.body (a
   // keyboard user with no focused widget). Esc from a sibling widget
   // (report rail, menus) is left alone, as is an Esc a closer listener
-  // already consumed (defaultPrevented). Gated on conversation mode +
-  // Working, skipped while the reset ConfirmDialog is open (its own
-  // Esc-to-cancel wins) and during IME composition; preventDefault only
-  // when handled.
+  // already consumed (defaultPrevented). Gated on conversation mode + a
+  // live turn (`run.working`; an in-flight interrupt leaves Esc inert),
+  // skipped while the reset ConfirmDialog is open (its own Esc-to-cancel
+  // wins) and during IME composition; preventDefault only when handled.
   useEffect(() => {
     if (!inConversation || !isWorking || resetOpen) return;
     const handler = (e: KeyboardEvent) => {
@@ -404,24 +412,22 @@ export function SpecConversation({
           </div>
           {inConversation && (
             <span className="report-convo-status" aria-label="Spec agent status">
+              {/* #668 fix — the chip reflects the harness phase when one is
+                  known; the overlay-derived rawState (which never publishes
+                  for spec cards) is only the fallback. */}
               <span
                 className="report-convo-state"
                 data-fsm={run.fsm}
-                title={run.rawState}
+                title={run.phase ?? run.rawState}
               >
-                {humanizeToken(run.rawState)}
+                {humanizeToken(run.phase ?? run.rawState)}
               </span>
-              {run.phase && (
-                <span className="report-convo-phase">
-                  {humanizeToken(run.phase)}
-                </span>
-              )}
-              {isWorking && (
+              {stopVisible && (
                 <button
                   type="button"
                   className="report-convo-stop"
                   aria-label="Stop spec turn"
-                  disabled={run.stopPending}
+                  disabled={stopDisabled}
                   onClick={() => {
                     void onStop();
                   }}
@@ -542,12 +548,12 @@ export function SpecConversation({
                   is supported). Conversation mode only: in report mode the
                   running turn isn't visible, so the input keeps its plain
                   send affordance. */}
-              {inConversation && isWorking ? (
+              {inConversation && stopVisible ? (
                 <button
                   type="button"
                   className="report-convo-send"
                   aria-label="Stop turn"
-                  disabled={run.stopPending}
+                  disabled={stopDisabled}
                   onClick={() => {
                     void onStop();
                   }}

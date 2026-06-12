@@ -569,6 +569,69 @@
         }
       }
     },
+    "/api/cards/{id}/spec/run": {
+      "get": {
+        "tags": [
+          "cards"
+        ],
+        "summary": "Issue #668 fix — read the current spec-harness phase for a card.",
+        "description": "Guard chain mirrors `/spec/interrupt` (card → role → kind), but unlike\nthe write routes a dormant harness is a normal answer for a read: no\nactive runtime row, or an active row with no registered harness, is\n`200 {runtime_id: null, phase: null}` rather than a 409.",
+        "operationId": "get_spec_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Spec card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetSpecRunResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a spec codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/coves": {
       "get": {
         "tags": [
@@ -3703,6 +3766,36 @@
           "descendant"
         ]
       },
+      "GetSpecRunResponse": {
+        "type": "object",
+        "description": "Issue #668 fix — current spec-harness run snapshot for a card.\n\n`harness.phase.changed` is the only live phase signal, so a page opened\nmid-turn would otherwise sit on `phase: null` until the next transition.\nThis read endpoint lets the client seed its initial phase. Dormancy (no\nactive runtime row, or no registered harness) is NOT an error here —\nit's the `{runtime_id: null, phase: null}` answer.",
+        "required": [
+          "card_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "phase": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HarnessPhaseTag",
+                "description": "Current harness phase, or null when the harness is dormant."
+              }
+            ]
+          },
+          "runtime_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Active runtime id, or null when the harness is dormant."
+          }
+        }
+      },
       "GitChangedFile": {
         "type": "object",
         "required": [
@@ -3868,6 +3961,19 @@
             "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500."
           }
         }
+      },
+      "HarnessPhaseTag": {
+        "type": "string",
+        "enum": [
+          "pending_thread_start",
+          "idle",
+          "issuing_turn",
+          "issuing_interrupt",
+          "turn_running",
+          "turn_completed",
+          "resumed",
+          "wedged"
+        ]
       },
       "InstallBody": {
         "type": "object",

@@ -2479,8 +2479,7 @@ select:-webkit-autofill {
   align-items: center;
   min-width: 0;
 }
-.report-convo-state,
-.report-convo-phase {
+.report-convo-state {
   display: inline-flex;
   align-items: center;
   min-height: 20px;
@@ -2507,9 +2506,6 @@ select:-webkit-autofill {
   color: var(--warn);
   border-color: var(--warn-border);
   background: var(--warn-soft);
-}
-.report-convo-phase {
-  color: var(--text-3);
 }
 /* #668 — Stop chip: Reset's chip metrics, neutral palette (stopping a turn
    is routine, not destructive). */

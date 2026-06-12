@@ -12,6 +12,11 @@
 //!   so the route must not promise the turn was stopped;
 //! - no active runtime row, or an active row with no registered harness,
 //!   is the typed 409 `spec_harness_dormant` (same code as `/spec/input`).
+//!
+//! Also covers the read sibling `GET /api/cards/{id}/spec/run` (#668 fix):
+//! same guard chain, but dormancy is a normal `{runtime_id: null,
+//! phase: null}` answer instead of a 409 — the client uses it to seed its
+//! initial phase when a page opens mid-turn.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -128,6 +133,23 @@ async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
                 .uri(uri)
                 .body(Body::empty())
                 .unwrap(),
@@ -404,6 +426,82 @@ async fn interrupt_registry_miss_409_dormant() {
 
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], json!("spec_harness_dormant"), "body={body}");
+}
+
+/// `GET /spec/run` with a running turn reports the live phase
+/// (`turn_running`) and the active runtime id — the production wire value
+/// the frontend gates Stop/typing on.
+#[tokio::test]
+async fn get_spec_run_running_turn_reports_phase() {
+    let boot = boot().await;
+    let (card, runtime_id, _thread_id, harness) = seed_live_spec_harness(&boot).await;
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id: "T1".into(),
+            started_at: Instant::now(),
+        })
+        .await;
+
+    let (status, body) = get_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/run", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["phase"], json!("turn_running"), "body={body}");
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
+/// `GET /spec/run` with no active runtime row: dormancy is not an error
+/// for a read — 200 with null `runtime_id`/`phase`.
+#[tokio::test]
+async fn get_spec_run_without_runtime_returns_nulls() {
+    let boot = boot().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+
+    let (status, body) = get_json(boot.app, &format!("/api/cards/{}/spec/run", card.id)).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["runtime_id"], json!(null), "body={body}");
+    assert_eq!(body["phase"], json!(null), "body={body}");
+}
+
+/// `GET /spec/run` with an active runtime row but no registered harness
+/// (post-restart shape) is the same dormant nulls answer.
+#[tokio::test]
+async fn get_spec_run_registry_miss_returns_nulls() {
+    let boot = boot().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Spec).await;
+    seed_active_spec_runtime_row(&boot, &card).await;
+
+    let (status, body) = get_json(boot.app, &format!("/api/cards/{}/spec/run", card.id)).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["runtime_id"], json!(null), "body={body}");
+    assert_eq!(body["phase"], json!(null), "body={body}");
+}
+
+/// `GET /spec/run` refuses non-spec codex cards with 403, mirroring the
+/// write routes' guard chain.
+#[tokio::test]
+async fn get_spec_run_non_spec_card_403() {
+    let boot = boot().await;
+    let card = seed_codex_card_with_role(&boot, CardRole::Worker).await;
+
+    let (status, body) = get_json(boot.app, &format!("/api/cards/{}/spec/run", card.id)).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not a spec codex card")),
+        "body={body}"
+    );
 }
 
 /// Non-spec codex cards are refused with 403, mirroring `/spec/input`.

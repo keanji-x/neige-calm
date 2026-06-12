@@ -3,7 +3,7 @@
 
 import { fireUnauthorized } from './onUnauthorized';
 import type { paths } from './generated';
-import type { HarnessItem } from './generated-events';
+import type { HarnessItem, HarnessPhaseTag } from './generated-events';
 import type {
   CardPatchBody,
   CovePatchBody,
@@ -256,6 +256,16 @@ export const interruptSpecCard = (id: string) =>
     'POST',
     `/api/cards/${encodeURIComponent(id)}/spec/interrupt`,
   );
+// #668 fix — current harness phase for a spec card, used to seed the phase
+// before the first `harness.phase.changed` event arrives (a page opened
+// mid-turn would otherwise see no live signal). Nulls mean the harness is
+// dormant — for a read that's a normal answer, not an error.
+export const getSpecRun = (id: string) =>
+  request<{
+    card_id: string;
+    runtime_id: string | null;
+    phase: HarnessPhaseTag | null;
+  }>('GET', `/api/cards/${encodeURIComponent(id)}/spec/run`);
 export const listHarnessItems = (
   id: string,
   params: {

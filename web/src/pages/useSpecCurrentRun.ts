@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import {
   CalmApiError,
+  getSpecRun,
   interruptSpecCard,
   resetSpecCard,
   sendSpecInput,
@@ -23,10 +24,26 @@ export interface SpecRunSnapshot {
   cardId: string | null;
   /** Raw status from overlay (e.g. "TurnRunning", "Idle"). */
   rawState: string;
-  /** Normalized FSM state via toFsmState. */
+  /**
+   * Normalized FSM state. No status overlay is ever published for spec
+   * cards in production (#668 fix), so when a harness phase is known it
+   * wins; the overlay-derived state is only the fallback.
+   */
   fsm: FsmState;
-  /** Latest harness phase from harness.phase.changed event. */
+  /**
+   * Latest harness phase: seeded from `GET /spec/run` on mount/card
+   * change, then updated from `harness.phase.changed` events. Null until
+   * either source answers (or when the harness is dormant).
+   */
   phase: string | null;
+  /**
+   * True while a turn is live (`issuing_turn` / `turn_running`) — the
+   * gate for every stop affordance and the typing indicator (#668 fix:
+   * `fsm === 'Working'` never fired because spec cards have no overlay).
+   */
+  working: boolean;
+  /** True while an interrupt is in flight (`issuing_interrupt`). */
+  stopping: boolean;
   /** Latest active tool/function call from harness items. */
   latestTool: LatestHarnessActivity;
   /** Reset session state. */
@@ -80,6 +97,30 @@ export function toFsmState(state: string | undefined): FsmState {
   }
 }
 
+/**
+ * Map a `HarnessPhaseTag` wire value onto the chip's FSM styling buckets.
+ * `issuing_interrupt` deliberately reuses the Working color — an interrupt
+ * in flight is still "the agent is busy" to the reader.
+ */
+export function phaseToFsm(phase: string): FsmState {
+  switch (phase) {
+    case 'pending_thread_start':
+      return 'Starting';
+    case 'issuing_turn':
+    case 'turn_running':
+    case 'issuing_interrupt':
+      return 'Working';
+    case 'idle':
+    case 'turn_completed':
+    case 'resumed':
+      return 'Idle';
+    case 'wedged':
+      return 'Errored';
+    default:
+      return 'Starting';
+  }
+}
+
 export function humanizeToken(token: string): string {
   return token
     .replace(/_/g, ' ')
@@ -93,8 +134,13 @@ function errorMessage(err: unknown, fallback: string): string {
 export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
   const status = useCardStatusOverlay(cardId);
   const rawState = status?.state ?? 'Starting';
-  const fsm = toFsmState(rawState);
   const [phase, setPhase] = useState<string | null>(null);
+  // The harness phase is the real live signal — no status overlay is ever
+  // published for spec cards, so `toFsmState(rawState)` alone would pin
+  // the chip on 'Starting' forever (#668 fix).
+  const fsm = phase != null ? phaseToFsm(phase) : toFsmState(rawState);
+  const working = phase === 'issuing_turn' || phase === 'turn_running';
+  const stopping = phase === 'issuing_interrupt';
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [submitPending, setSubmitPending] = useState(false);
@@ -116,7 +162,23 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
         setPhase(ev.data.new_phase);
       }
     });
+    // Seed the phase: `harness.phase.changed` only reports transitions, so
+    // a page opened mid-turn would otherwise sit on null until the next
+    // one (#668 fix). An event that lands first wins — it is strictly
+    // newer than the snapshot read.
+    let cancelled = false;
+    getSpecRun(cardId).then(
+      (run) => {
+        if (cancelled || run.phase == null) return;
+        setPhase((current) => current ?? run.phase);
+      },
+      () => {
+        // Best-effort seed: on failure the gates simply stay closed until
+        // the next phase transition arrives over the event stream.
+      },
+    );
     return () => {
+      cancelled = true;
       off();
     };
   }, [cardId]);
@@ -218,6 +280,8 @@ export function useSpecCurrentRun(cardId: string | undefined): SpecRunSnapshot {
     rawState,
     fsm,
     phase,
+    working,
+    stopping,
     latestTool: { toolLabel: null, toolStatus: null },
     resetPending,
     resetError,

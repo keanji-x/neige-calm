@@ -114,6 +114,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
         .route("/api/cards/{id}/spec/input", post(send_spec_input))
         .route("/api/cards/{id}/spec/interrupt", post(interrupt_spec_card))
+        .route("/api/cards/{id}/spec/run", get(get_spec_run))
         .route("/api/cards/{id}/spec/reset", post(reset_spec_card))
 }
 
@@ -596,6 +597,23 @@ pub struct InterruptSpecCardResponse {
     pub stopped: bool,
 }
 
+/// Issue #668 fix — current spec-harness run snapshot for a card.
+///
+/// `harness.phase.changed` is the only live phase signal, so a page opened
+/// mid-turn would otherwise sit on `phase: null` until the next transition.
+/// This read endpoint lets the client seed its initial phase. Dormancy (no
+/// active runtime row, or no registered harness) is NOT an error here —
+/// it's the `{runtime_id: null, phase: null}` answer.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GetSpecRunResponse {
+    #[schema(value_type = String)]
+    pub card_id: CardId,
+    /// Active runtime id, or null when the harness is dormant.
+    pub runtime_id: Option<String>,
+    /// Current harness phase, or null when the harness is dormant.
+    pub phase: Option<HarnessPhaseTag>,
+}
+
 const MAX_SPEC_INPUT_CHARS: usize = 32_768;
 
 fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
@@ -813,6 +831,66 @@ pub(crate) async fn interrupt_spec_card(
         card_id: card.id,
         runtime_id: runtime.id.clone(),
         stopped,
+    }))
+}
+
+/// Issue #668 fix — read the current spec-harness phase for a card.
+///
+/// Guard chain mirrors `/spec/interrupt` (card → role → kind), but unlike
+/// the write routes a dormant harness is a normal answer for a read: no
+/// active runtime row, or an active row with no registered harness, is
+/// `200 {runtime_id: null, phase: null}` rather than a 409.
+#[utoipa::path(
+    get,
+    path = "/api/cards/{id}/spec/run",
+    tag = "cards",
+    params(("id" = String, Path, description = "Spec card id")),
+    responses(
+        (status = 200, description = "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = GetSpecRunResponse),
+        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn get_spec_run(
+    State(s): State<RouteState>,
+    Path(id): Path<String>,
+) -> Result<Json<GetSpecRunResponse>> {
+    let card = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let role = s
+        .write
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    if card.kind != "codex" || role != CardRole::Spec {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is not a spec codex card",
+        )));
+    }
+
+    let dormant = GetSpecRunResponse {
+        card_id: card.id.clone(),
+        runtime_id: None,
+        phase: None,
+    };
+    let Some(runtime) = s
+        .repo
+        .runtime_get_active_for_card(&card.id.to_string())
+        .await?
+    else {
+        return Ok(Json(dormant));
+    };
+    let Some(harness) = s.harness.get(&runtime.id) else {
+        return Ok(Json(dormant));
+    };
+    let phase = harness.snapshot().await.phase;
+    Ok(Json(GetSpecRunResponse {
+        card_id: card.id,
+        runtime_id: Some(runtime.id.clone()),
+        phase: Some(phase),
     }))
 }
 
