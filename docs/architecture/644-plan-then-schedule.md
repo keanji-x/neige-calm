@@ -411,8 +411,10 @@ Validation (whole batch in one immediate tx; any failure rolls back all):
    (`operation/mod.rs:612-625`).
 6. Gate policy (**PR-C-only** — not implemented in PR-A/PR-B): when
    `waves.require_task_gates = 1`, a `codex` task with no `gate` is rejected
-   unless it carries `no_gate_reason` (schema field above; recorded in
-   `context_json` — the escape hatch is auditable). Terminal tasks are exempt
+   unless it carries `no_gate_reason` (schema field above; recorded trimmed in
+   `context_json` — the escape hatch is auditable, so an empty/whitespace
+   reason is rejected at field validation, PR #685 round-3 F2). Terminal
+   tasks are exempt
    (they are often the glue the gates themselves would run). Before PR-C this
    rule is vacuous anyway: rule 8 rejects every *declared* gate, so enforcing
    rule 6 in PR-A would reject every normal codex task. PR-C activates rule 6
@@ -911,7 +913,15 @@ Push rewiring (`dispatcher.rs:71-96` + `harness_observation_from_event`,
   lookup (by idempotency key, gate predicate above) into both the live push
   branch and `replay_harness_events_since`; `task.gate_result` joins the
   replayed kinds list at `harness/mod.rs:88-96`.
-- Worker `task.failed` pushes as today (no gate runs on failure).
+- Worker `task.failed` pushes as today when the failure actually landed on
+  the row pre-gate (no gate runs on failure): the gated row reads `failed`
+  with `status_detail` `worker-reported`/`spawn-failed`. A gated `task.failed`
+  in any other row state (PR #685 round-3 F1) — a stale/retried report while
+  the gate is in flight (`verifying`) or after the gate already decided the
+  row (`done`, or `failed` with a `gate-*` detail) — is suppressed in both
+  the live push branch and the boot replay: the spec hears the machine
+  `task.gate_result`, not a worker claim that lost the race. Ungated
+  `task.failed` keeps today's behavior unconditionally.
 - Gate logs readable by the spec via a new wave-fs view `plan/<key>/gate.log`
   (file-backed read in `wave_fs_view.rs`, spec-role only — `neige` calls carry
   card identity, so the view can role-gate like `descriptors_for_role`,

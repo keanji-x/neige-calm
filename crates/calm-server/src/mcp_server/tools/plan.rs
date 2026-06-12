@@ -30,8 +30,9 @@
 //!   `waves.require_task_gates = 1`, a created/updated **codex** task
 //!   must declare a `gate` or record a `no_gate_reason` (terminal
 //!   tasks are exempt; `unchanged` rows pass through so idempotent
-//!   retries of pre-flag plans keep working). `no_gate_reason` is also
-//!   recorded into `context_json` for auditability, as before.
+//!   retries of pre-flag plans keep working). `no_gate_reason` must be
+//!   a trimmed-non-empty reason (round-3 review F2) and is recorded
+//!   trimmed into `context_json` for auditability, as before.
 //! * `kind = "claude"` is rejected ("not yet supported") — no claude
 //!   worker adapter exists and the column CHECK omits the value.
 //!
@@ -246,14 +247,31 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
         None => None,
         Some(gate) => Some(normalize_gate(&key, gate)?),
     };
-    let has_no_gate_reason = input.no_gate_reason.is_some();
+    // Round-3 review F2 — `no_gate_reason` is the ONLY escape hatch
+    // for skipping a verification gate under `require_task_gates`, so
+    // an empty/whitespace reason is rejected loudly instead of
+    // becoming a `true` flag with a blank audit note. Recorded trimmed.
+    let no_gate_reason = match input.no_gate_reason {
+        None => None,
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(format!(
+                    "task {key}: `no_gate_reason` must be a non-empty reason \
+                     (it is the audited justification for skipping a verification gate)"
+                ));
+            }
+            Some(trimmed.to_string())
+        }
+    };
+    let has_no_gate_reason = no_gate_reason.is_some();
 
     // Rule 6 escape-hatch bookkeeping: `no_gate_reason` is recorded
     // into `context_json` so the audit trail carries it (the policy
     // check itself runs in the upsert tx, where the wave's
     // `require_task_gates` flag is read).
     let context = input.context.unwrap_or(Value::Null);
-    let context = match input.no_gate_reason {
+    let context = match no_gate_reason {
         None => context,
         Some(reason) => match context {
             Value::Null => json!({ "no_gate_reason": reason }),
@@ -642,7 +660,7 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": GATE_TIMEOUT_MAX_SECS, "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate." }
                                 }
                             },
-                            "no_gate_reason": { "type": "string", "description": "Escape hatch: justifies an ungated codex task on a wave with `require_task_gates`; recorded into context for audit." }
+                            "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated codex task on a wave with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
                         }
                     }
                 },
@@ -1564,6 +1582,30 @@ mod tests {
             err.contains("requires `context` to be an object"),
             "err = {err}"
         );
+    }
+
+    /// Round-3 review F2 — the rule-6 escape hatch must be a real
+    /// reason: empty/whitespace is rejected (it would otherwise count
+    /// as "present" and skip the gate with a blank audit note); a
+    /// valid reason is accepted and recorded trimmed.
+    #[test]
+    fn no_gate_reason_blank_rejected_valid_reason_trimmed() {
+        for blank in ["", " ", "  \t\n "] {
+            let mut t = raw_task("a");
+            t.no_gate_reason = Some(blank.into());
+            let err = normalize_task_input(t).expect_err("blank reason");
+            assert!(
+                err.contains("`no_gate_reason` must be a non-empty reason"),
+                "err for {blank:?} = {err}"
+            );
+        }
+
+        let mut t = raw_task("a");
+        t.no_gate_reason = Some("  docs-only change  ".into());
+        let n = normalize_task_input(t).expect("normalize");
+        assert!(n.has_no_gate_reason);
+        let ctx: Value = serde_json::from_str(&n.context_json).unwrap();
+        assert_eq!(ctx["no_gate_reason"], "docs-only change");
     }
 
     // -------------------------------------------------------- normalization

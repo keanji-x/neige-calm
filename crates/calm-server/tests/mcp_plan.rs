@@ -1166,6 +1166,36 @@ async fn rule6_matrix_require_task_gates() {
         row.context_json
     );
 
+    // Round-3 review F2 — a blank escape hatch is not an escape
+    // hatch: empty/whitespace `no_gate_reason` is rejected instead of
+    // excusing the ungated codex task with an empty audit note.
+    for blank in ["", "  "] {
+        let err = call_tool(
+            &boot,
+            TOOL_PLAN_UPSERT,
+            spec_identity(&boot),
+            upsert_args(json!([
+                { "key": "blank-excuse", "kind": "codex", "goal": "g",
+                  "no_gate_reason": blank }
+            ])),
+        )
+        .await
+        .expect_err("blank no_gate_reason must be rejected");
+        assert!(
+            err.message
+                .contains("`no_gate_reason` must be a non-empty reason"),
+            "blank {blank:?}: {err:?}"
+        );
+    }
+    assert!(
+        boot.repo
+            .task_get(&format!("{}:blank-excuse", boot.wave_id.as_str()))
+            .await
+            .unwrap()
+            .is_none(),
+        "rejected blank-reason task must not land"
+    );
+
     // terminal ungated → exempt.
     upsert_ok(
         &boot,

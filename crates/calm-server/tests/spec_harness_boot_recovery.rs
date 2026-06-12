@@ -526,7 +526,11 @@ async fn boot_recovery_skips_terminal_waves() {
 /// gated-self-report consultation as the live push branch: a gated
 /// task's `task.completed` is NOT replayed to the spec (the gate
 /// verdict is what wakes it), an ungated task's self-report and the
-/// `task.gate_result` itself replay as observations.
+/// `task.gate_result` itself replay as observations. Round-3 review
+/// F1: a stale `task.failed` against a gated row the gate owns
+/// (`verifying` here) is suppressed too, while a gated task whose
+/// worker genuinely failed pre-gate (`failed` + `worker-reported`)
+/// replays as today.
 #[tokio::test]
 async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -584,18 +588,24 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         updated_at_ms: now_ms(),
         finished_at_ms: None,
     };
-    let gated = mk_task(
-        "gated",
-        Some(json!({ "steps": [{ "name": "t", "cmd": "true" }] }).to_string()),
-    );
+    let gate_json = json!({ "steps": [{ "name": "t", "cmd": "true" }] }).to_string();
+    let gated = mk_task("gated", Some(gate_json.clone()));
     let mut ungated = mk_task("ungated", None);
     ungated.status = calm_server::model::TaskStatus::Done;
+    // Round-3 review F1 — a gated task whose worker genuinely failed
+    // pre-gate: the failure landed on the row, so its `task.failed`
+    // replays as today.
+    let mut gated_failed = mk_task("gated-failed", Some(gate_json));
+    gated_failed.status = calm_server::model::TaskStatus::Failed;
+    gated_failed.status_detail = Some("worker-reported".to_string());
     let gated_id = gated.id.clone();
     let ungated_id = ungated.id.clone();
+    let gated_failed_id = gated_failed.id.clone();
     calm_server::db::write_in_tx_typed(repo.as_ref() as &dyn Repo, move |tx| {
         Box::pin(async move {
             calm_server::db::sqlite::task_insert_tx(tx, &gated).await?;
             calm_server::db::sqlite::task_insert_tx(tx, &ungated).await?;
+            calm_server::db::sqlite::task_insert_tx(tx, &gated_failed).await?;
             Ok(())
         })
     })
@@ -621,6 +631,20 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             idempotency_key: ungated_id.clone(),
             result: json!({ "ok": true }),
             artifacts: Vec::new(),
+            agent_message: None,
+        },
+        // Round-3 review F1 — a stale/retried `task.failed` against
+        // the gated row the gate owns (`verifying`): the failure never
+        // landed on the row, so it must NOT replay.
+        Event::TaskFailed {
+            idempotency_key: gated_id.clone(),
+            reason: "stale worker claim".into(),
+            agent_message: None,
+        },
+        // ... while the genuine pre-gate worker failure replays.
+        Event::TaskFailed {
+            idempotency_key: gated_failed_id.clone(),
+            reason: "worker said no".into(),
             agent_message: None,
         },
     ] {
@@ -703,8 +727,9 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(
         stored.pending_queue.len(),
-        2,
-        "ungated self-report + gate result, never the gated self-report: {:?}",
+        3,
+        "ungated self-report + gate result + genuine pre-gate failure, \
+         never the gated self-report or the stale gated task.failed: {:?}",
         stored.pending_queue
     );
     assert!(
@@ -730,6 +755,24 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             Observation::TaskCompleted { idempotency_key, .. } if idempotency_key == &gated_id
         )),
         "gated self-report must be suppressed in replay (§6.5): {:?}",
+        stored.pending_queue
+    );
+    // Round-3 review F1 — failure split.
+    assert!(
+        !stored.pending_queue.iter().any(|obs| matches!(
+            obs,
+            Observation::TaskFailed { idempotency_key, .. } if idempotency_key == &gated_id
+        )),
+        "stale task.failed against the verifying gated row must be suppressed in replay: {:?}",
+        stored.pending_queue
+    );
+    assert!(
+        stored.pending_queue.iter().any(|obs| matches!(
+            obs,
+            Observation::TaskFailed { idempotency_key, .. }
+                if idempotency_key == &gated_failed_id
+        )),
+        "genuine pre-gate worker failure must replay as today: {:?}",
         stored.pending_queue
     );
     let handle = registry.get(&runtime_id).expect("recovered harness");

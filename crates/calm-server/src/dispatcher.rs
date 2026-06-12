@@ -112,19 +112,47 @@ pub(crate) fn event_warrants_spec_push_with_role(
 /// set** is not pushed — the spec hears the gate verdict
 /// (`task.gate_result`), not the self-report. Deliberately NOT
 /// status-based: a fast gate can flip the row terminal before this
-/// read, and a status predicate would then push both. Ungated tasks,
-/// non-task keys (legacy), `task.failed` (no gate runs on failure),
-/// and lookup errors (fail-open: a spurious self-report push is
-/// benign; a silently lost wake-up is not) all push as today.
+/// read, and a status predicate would then push both.
+///
+/// Round-3 review F1 — a `task.failed` for a GATED row is suppressed
+/// too UNLESS the failure actually landed on the row pre-gate
+/// (`failed` + `worker-reported`/`spawn-failed`, the two details the
+/// worker/kernel failure flip writes — design §6.5's "worker
+/// `task.failed` pushes as today; no gate runs on failure"). Any
+/// other row state means the gate already owns the task: a stale or
+/// retried `calm.task.fail` against a `verifying` row (or one the
+/// gate already decided — `done`, or `failed` with a `gate-*` detail)
+/// is a claim that lost the race, and pushing it would let the worker
+/// wake/mislead the spec instead of the machine `task.gate_result`.
+///
+/// Ungated tasks, non-task keys (legacy), and lookup errors
+/// (fail-open: a spurious self-report push is benign; a silently lost
+/// wake-up is not) all push as today.
 pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Event) -> bool {
-    let Event::TaskCompleted {
-        idempotency_key, ..
-    } = event
-    else {
-        return false;
+    let (idempotency_key, is_failure) = match event {
+        Event::TaskCompleted {
+            idempotency_key, ..
+        } => (idempotency_key, false),
+        Event::TaskFailed {
+            idempotency_key, ..
+        } => (idempotency_key, true),
+        _ => return false,
     };
     match repo.task_get(idempotency_key).await {
-        Ok(Some(task)) => task.gate_json.is_some(),
+        Ok(Some(task)) => {
+            if task.gate_json.is_none() {
+                return false;
+            }
+            if !is_failure {
+                return true;
+            }
+            let failure_landed_pre_gate = task.status == crate::model::TaskStatus::Failed
+                && matches!(
+                    task.status_detail.as_deref(),
+                    Some("worker-reported") | Some("spawn-failed")
+                );
+            !failure_landed_pre_gate
+        }
         Ok(None) => false,
         Err(e) => {
             tracing::warn!(
@@ -825,10 +853,11 @@ impl Inner {
                 // Issue #644 PR-C (§6.5) — gated self-report
                 // suppression: a `task.completed` whose key resolves
                 // to a tasks row WITH a gate is a claim, not evidence;
-                // the spec hears the gate result instead. The
-                // predicate is "task has gate_json", deliberately not
-                // status-based — a fast gate can flip the row to
-                // `done` before this read.
+                // the spec hears the gate result instead. Round-3
+                // review F1 extends this to a gated `task.failed`
+                // that did not land a pre-gate row failure (stale /
+                // retried report while the gate is in flight or
+                // already decided) — see `is_gated_self_report`.
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write)
                     && !is_gated_self_report(self.repo.as_ref(), &envelope.event).await
                 {
@@ -1903,8 +1932,12 @@ mod tests {
     /// Issue #644 PR-C (§6.5) — the gated-self-report predicate the
     /// live push branch and the boot replay both consult: TRUE exactly
     /// for a `task.completed` whose key resolves to a tasks row with
-    /// `gate_json` set; ungated rows, legacy keys (no row),
-    /// `task.failed`, and the gate result itself all push.
+    /// `gate_json` set, plus (round-3 review F1) a `task.failed` for a
+    /// gated row that did NOT land a pre-gate failure on the row
+    /// (stale/retried report while the gate is in flight or decided).
+    /// Ungated rows, legacy keys (no row), genuine pre-gate failures
+    /// (`failed` + `worker-reported`/`spawn-failed`), and the gate
+    /// result itself all push.
     #[tokio::test]
     async fn gated_self_report_predicate() {
         let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
@@ -1934,15 +1967,41 @@ mod tests {
             updated_at_ms: 1,
             finished_at_ms: None,
         };
-        let gated = mk_task(
-            "gated",
-            Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".into()),
-        );
+        let gate_json = || Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".to_string());
+        let gated = mk_task("gated", gate_json());
         let ungated = mk_task("ungated", None);
+        // Gated rows whose worker genuinely failed pre-gate.
+        let mut gated_worker_failed = mk_task("gated-worker-failed", gate_json());
+        gated_worker_failed.status = crate::model::TaskStatus::Failed;
+        gated_worker_failed.status_detail = Some("worker-reported".into());
+        let mut gated_spawn_failed = mk_task("gated-spawn-failed", gate_json());
+        gated_spawn_failed.status = crate::model::TaskStatus::Failed;
+        gated_spawn_failed.status_detail = Some("spawn-failed".into());
+        // Gated row the gate already failed — a late worker
+        // `task.failed` retry must not re-wake the spec.
+        let mut gated_gate_failed = mk_task("gated-gate-failed", gate_json());
+        gated_gate_failed.status = crate::model::TaskStatus::Failed;
+        gated_gate_failed.status_detail = Some("gate-red".into());
+        // Gated row the gate already passed.
+        let mut gated_done = mk_task("gated-done", gate_json());
+        gated_done.status = crate::model::TaskStatus::Done;
+        // Ungated row that failed — ungated failures always push.
+        let mut ungated_failed = mk_task("ungated-failed", None);
+        ungated_failed.status = crate::model::TaskStatus::Failed;
+        ungated_failed.status_detail = Some("worker-reported".into());
         crate::db::write_in_tx_typed(&repo, move |tx| {
             Box::pin(async move {
-                crate::db::sqlite::task_insert_tx(tx, &gated).await?;
-                crate::db::sqlite::task_insert_tx(tx, &ungated).await?;
+                for t in [
+                    &gated,
+                    &ungated,
+                    &gated_worker_failed,
+                    &gated_spawn_failed,
+                    &gated_gate_failed,
+                    &gated_done,
+                    &ungated_failed,
+                ] {
+                    crate::db::sqlite::task_insert_tx(tx, t).await?;
+                }
                 Ok(())
             })
         })
@@ -1955,23 +2014,45 @@ mod tests {
             artifacts: Vec::new(),
             agent_message: None,
         };
+        let failed = |key: &str| Event::TaskFailed {
+            idempotency_key: format!("w:{key}"),
+            reason: "boom".into(),
+            agent_message: None,
+        };
         assert!(is_gated_self_report(&repo, &completed("gated")).await);
         assert!(!is_gated_self_report(&repo, &completed("ungated")).await);
         assert!(
             !is_gated_self_report(&repo, &completed("legacy-no-row")).await,
             "legacy keys with no tasks row push as today"
         );
+        // Round-3 review F1 — gated `task.failed` matrix.
         assert!(
-            !is_gated_self_report(
-                &repo,
-                &Event::TaskFailed {
-                    idempotency_key: "w:gated".into(),
-                    reason: "boom".into(),
-                    agent_message: None,
-                }
-            )
-            .await,
-            "worker task.failed pushes as today (no gate runs on failure)"
+            is_gated_self_report(&repo, &failed("gated")).await,
+            "stale task.failed while the gate is in flight (`verifying`) is suppressed"
+        );
+        assert!(
+            is_gated_self_report(&repo, &failed("gated-gate-failed")).await,
+            "late task.failed after the gate already failed the row is suppressed"
+        );
+        assert!(
+            is_gated_self_report(&repo, &failed("gated-done")).await,
+            "late task.failed after the gate already passed the row is suppressed"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("gated-worker-failed")).await,
+            "a genuine pre-gate worker failure pushes as today (no gate runs on failure)"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("gated-spawn-failed")).await,
+            "a spawn failure pushes as today (no gate runs on failure)"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("ungated-failed")).await,
+            "ungated failures keep today's behavior"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("legacy-no-row")).await,
+            "legacy task.failed keys with no tasks row push as today"
         );
         assert!(
             !is_gated_self_report(
