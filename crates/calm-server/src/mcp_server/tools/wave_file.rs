@@ -64,8 +64,9 @@ fn cat_descriptor() -> ToolDescriptor {
              `cards/<card_id>/.meta.json`, `cards/<card_id>/.payload.json`, \
              `cards/<card_id>/runtime.json`, \
              `cards/<card_id>/events.json`, `cards/<card_id>/conversation.md`, \
-             `runs/index.json`, `runs/<idempotency_key>.md`, and \
-             `runs/<idempotency_key>.json`."
+             `runs/index.json`, `runs/<idempotency_key>.md`, \
+             `runs/<idempotency_key>.json`, and `plan/<key>/gate.log` \
+             (spec-only: the latest verification-gate attempt's full log)."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -104,7 +105,13 @@ async fn wave_cat(
     require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
     let path = parse_path_arg(&args, true)?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
-    let view = WaveFsView::new(ctx.repo.as_ref(), &ctx.write);
+    // Issue #644 PR-C — `plan/<key>/gate.log` is enabled only here (MCP
+    // carries a card identity); the view enforces the spec-only role
+    // gate at read time (§6.5/§6.7). The gate-logs dir is the
+    // CONFIGURED one threaded through `AppContext` (PR #685 F3), never
+    // recomputed from env.
+    let view = WaveFsView::new(ctx.repo.as_ref(), &ctx.write)
+        .with_gate_log_access(identity.role, ctx.gate_logs_dir.clone());
     let content = view
         .cat(&wave, path.as_str())
         .await

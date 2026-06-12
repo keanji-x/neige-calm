@@ -87,6 +87,14 @@ pub(crate) fn event_warrants_spec_push_with_role(
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
             !matches!(actor, ActorId::AiSpec(_))
         }
+        // Issue #644 PR-C (§6.5) — the gate runner's verdict is always
+        // pushed: it is kernel-only at the role gate (actor
+        // `KernelDispatcher`), so no self-push loop is possible. For a
+        // gated task this is the wake-up that replaces the suppressed
+        // worker self-report (the gated-self-report consultation is a
+        // tasks-row lookup and lives with the async callers — see
+        // `is_gated_self_report`).
+        Event::TaskGateResult { .. } => true,
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
@@ -94,6 +102,66 @@ pub(crate) fn event_warrants_spec_push_with_role(
             is_turn_end && is_worker
         }
         _ => false,
+    }
+}
+
+/// Issue #644 PR-C (§6.5) — the gated-self-report predicate shared by
+/// the live push branch and the boot replay
+/// (`harness::replay_harness_events_since`): a worker `task.completed`
+/// whose idempotency key resolves to a tasks row **with `gate_json`
+/// set** is not pushed — the spec hears the gate verdict
+/// (`task.gate_result`), not the self-report. Deliberately NOT
+/// status-based: a fast gate can flip the row terminal before this
+/// read, and a status predicate would then push both.
+///
+/// Round-3 review F1 — a `task.failed` for a GATED row is suppressed
+/// too UNLESS the failure actually landed on the row pre-gate
+/// (`failed` + `worker-reported`/`spawn-failed`, the two details the
+/// worker/kernel failure flip writes — design §6.5's "worker
+/// `task.failed` pushes as today; no gate runs on failure"). Any
+/// other row state means the gate already owns the task: a stale or
+/// retried `calm.task.fail` against a `verifying` row (or one the
+/// gate already decided — `done`, or `failed` with a `gate-*` detail)
+/// is a claim that lost the race, and pushing it would let the worker
+/// wake/mislead the spec instead of the machine `task.gate_result`.
+///
+/// Ungated tasks, non-task keys (legacy), and lookup errors
+/// (fail-open: a spurious self-report push is benign; a silently lost
+/// wake-up is not) all push as today.
+pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Event) -> bool {
+    let (idempotency_key, is_failure) = match event {
+        Event::TaskCompleted {
+            idempotency_key, ..
+        } => (idempotency_key, false),
+        Event::TaskFailed {
+            idempotency_key, ..
+        } => (idempotency_key, true),
+        _ => return false,
+    };
+    match repo.task_get(idempotency_key).await {
+        Ok(Some(task)) => {
+            if task.gate_json.is_none() {
+                return false;
+            }
+            if !is_failure {
+                return true;
+            }
+            let failure_landed_pre_gate = task.status == crate::model::TaskStatus::Failed
+                && matches!(
+                    task.status_detail.as_deref(),
+                    Some("worker-reported") | Some("spawn-failed")
+                );
+            !failure_landed_pre_gate
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                idempotency_key = %idempotency_key,
+                error = %e,
+                "dispatcher push: gated-self-report lookup failed; pushing self-report (fail-open)"
+            );
+            false
+        }
     }
 }
 
@@ -238,6 +306,11 @@ fn dispatcher_operation_runtime(
         shared_codex_appserver,
         repo,
     ));
+    let task_verify_adapter = Arc::new(
+        crate::operation::task_verify_adapter::TaskVerifyAdapter::new(
+            crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
+        ),
+    );
     let completion = OperationCompletionBus::new();
     Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -251,6 +324,7 @@ fn dispatcher_operation_runtime(
             spec_harness_start_adapter,
             spec_harness_interrupt_adapter,
             spec_harness_shutdown_adapter,
+            task_verify_adapter,
         ],
         events.clone(),
         completion.clone(),
@@ -610,6 +684,11 @@ impl Dispatcher {
             "terminal.worker_requested".into(),
             "task.completed".into(),
             "task.failed".into(),
+            // Issue #644 PR-C — the gate runner's verdict: pushed to
+            // the spec (hard-fire) and a scheduler trigger (a gate
+            // verdict terminalizes the task — budget freed / deps
+            // satisfiable).
+            "task.gate_result".into(),
             "wave.report_edited".into(),
             "codex.hook".into(),
             "claude.hook".into(),
@@ -768,8 +847,20 @@ impl Inner {
         // worker-request path (the two `*.worker_requested` kinds) falls through
         // untouched.
         match &envelope.event {
-            Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
+            Event::TaskCompleted { .. }
+            | Event::TaskFailed { .. }
+            | Event::TaskGateResult { .. } => {
+                // Issue #644 PR-C (§6.5) — gated self-report
+                // suppression: a `task.completed` whose key resolves
+                // to a tasks row WITH a gate is a claim, not evidence;
+                // the spec hears the gate result instead. Round-3
+                // review F1 extends this to a gated `task.failed`
+                // that did not land a pre-gate row failure (stale /
+                // retried report while the gate is in flight or
+                // already decided) — see `is_gated_self_report`.
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write)
+                    && !is_gated_self_report(self.repo.as_ref(), &envelope.event).await
+                {
                     if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                         self.observe_harness(wave_id, &envelope.event, envelope.id)
                             .await;
@@ -1434,6 +1525,31 @@ pub(crate) fn harness_observation_from_event(
             idempotency_key: idempotency_key.clone(),
             error: reason.clone(),
         }),
+        // Issue #644 PR-C (§6.5) — the gate runner's verdict. The plan
+        // key is recovered from the task-id convention
+        // `"{wave_id}:{key}"` (§2.1) for the turn text's
+        // `plan/<key>/gate.log` path.
+        Event::TaskGateResult {
+            task_id,
+            idempotency_key,
+            passed,
+            failing_step,
+            exit_code,
+            log_tail,
+            attempt,
+            ..
+        } => Some(HarnessObservation::TaskGateResult {
+            idempotency_key: idempotency_key.clone(),
+            key: task_id
+                .strip_prefix(&format!("{}:", wave_id.as_str()))
+                .unwrap_or(task_id)
+                .to_string(),
+            passed: *passed,
+            failing_step: failing_step.clone(),
+            exit_code: *exit_code,
+            log_tail: log_tail.clone(),
+            attempt: *attempt,
+        }),
         Event::WaveReportEdited { body_after, .. } => Some(HarnessObservation::ReportEdited {
             wave_id: wave_id.clone(),
             body_sha256: sha256_hex(body_after),
@@ -1670,6 +1786,7 @@ mod tests {
                 "terminal.worker_requested".into(),
                 "task.completed".into(),
                 "task.failed".into(),
+                "task.gate_result".into(),
                 "wave.report_edited".into(),
                 "codex.hook".into(),
                 "claude.hook".into(),
@@ -1714,6 +1831,19 @@ mod tests {
         assert!(filter.matches(&env(Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            agent_message: None,
+        })));
+        // Issue #644 PR-C — gate verdicts route to the push branch
+        // (and poke the scheduler).
+        assert!(filter.matches(&env(Event::TaskGateResult {
+            task_id: "w:k".into(),
+            idempotency_key: "w:k".into(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: String::new(),
+            log_path: "/tmp/gate.log".into(),
+            attempt: 1,
             agent_message: None,
         })));
         assert!(filter.matches(&env(Event::WaveReportEdited {
@@ -1799,6 +1929,196 @@ mod tests {
         assert!(EditAuthor::Kernel != EditAuthor::User);
     }
 
+    /// Issue #644 PR-C (§6.5) — the gated-self-report predicate the
+    /// live push branch and the boot replay both consult: TRUE exactly
+    /// for a `task.completed` whose key resolves to a tasks row with
+    /// `gate_json` set, plus (round-3 review F1) a `task.failed` for a
+    /// gated row that did NOT land a pre-gate failure on the row
+    /// (stale/retried report while the gate is in flight or decided).
+    /// Ungated rows, legacy keys (no row), genuine pre-gate failures
+    /// (`failed` + `worker-reported`/`spawn-failed`), and the gate
+    /// result itself all push.
+    #[tokio::test]
+    async fn gated_self_report_predicate() {
+        let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        let mk_task = |key: &str, gate: Option<String>| crate::model::Task {
+            id: format!("w:{key}"),
+            wave_id: "w".into(),
+            key: key.into(),
+            kind: crate::model::TaskKind::Codex,
+            goal: "g".into(),
+            context_json: "null".into(),
+            acceptance_criteria: None,
+            cwd: None,
+            depends_on_json: "[]".into(),
+            priority: 0,
+            gate_json: gate,
+            status: crate::model::TaskStatus::Verifying,
+            status_detail: None,
+            worker_card_id: None,
+            gate_result_json: None,
+            gate_attempt: 0,
+            gate_pid: None,
+            gate_pid_starttime: None,
+            gate_pid_boot_id: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            finished_at_ms: None,
+        };
+        let gate_json = || Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".to_string());
+        let gated = mk_task("gated", gate_json());
+        let ungated = mk_task("ungated", None);
+        // Gated rows whose worker genuinely failed pre-gate.
+        let mut gated_worker_failed = mk_task("gated-worker-failed", gate_json());
+        gated_worker_failed.status = crate::model::TaskStatus::Failed;
+        gated_worker_failed.status_detail = Some("worker-reported".into());
+        let mut gated_spawn_failed = mk_task("gated-spawn-failed", gate_json());
+        gated_spawn_failed.status = crate::model::TaskStatus::Failed;
+        gated_spawn_failed.status_detail = Some("spawn-failed".into());
+        // Gated row the gate already failed — a late worker
+        // `task.failed` retry must not re-wake the spec.
+        let mut gated_gate_failed = mk_task("gated-gate-failed", gate_json());
+        gated_gate_failed.status = crate::model::TaskStatus::Failed;
+        gated_gate_failed.status_detail = Some("gate-red".into());
+        // Gated row the gate already passed.
+        let mut gated_done = mk_task("gated-done", gate_json());
+        gated_done.status = crate::model::TaskStatus::Done;
+        // Ungated row that failed — ungated failures always push.
+        let mut ungated_failed = mk_task("ungated-failed", None);
+        ungated_failed.status = crate::model::TaskStatus::Failed;
+        ungated_failed.status_detail = Some("worker-reported".into());
+        crate::db::write_in_tx_typed(&repo, move |tx| {
+            Box::pin(async move {
+                for t in [
+                    &gated,
+                    &ungated,
+                    &gated_worker_failed,
+                    &gated_spawn_failed,
+                    &gated_gate_failed,
+                    &gated_done,
+                    &ungated_failed,
+                ] {
+                    crate::db::sqlite::task_insert_tx(tx, t).await?;
+                }
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed tasks");
+
+        let completed = |key: &str| Event::TaskCompleted {
+            idempotency_key: format!("w:{key}"),
+            result: serde_json::Value::Null,
+            artifacts: Vec::new(),
+            agent_message: None,
+        };
+        let failed = |key: &str| Event::TaskFailed {
+            idempotency_key: format!("w:{key}"),
+            reason: "boom".into(),
+            agent_message: None,
+        };
+        assert!(is_gated_self_report(&repo, &completed("gated")).await);
+        assert!(!is_gated_self_report(&repo, &completed("ungated")).await);
+        assert!(
+            !is_gated_self_report(&repo, &completed("legacy-no-row")).await,
+            "legacy keys with no tasks row push as today"
+        );
+        // Round-3 review F1 — gated `task.failed` matrix.
+        assert!(
+            is_gated_self_report(&repo, &failed("gated")).await,
+            "stale task.failed while the gate is in flight (`verifying`) is suppressed"
+        );
+        assert!(
+            is_gated_self_report(&repo, &failed("gated-gate-failed")).await,
+            "late task.failed after the gate already failed the row is suppressed"
+        );
+        assert!(
+            is_gated_self_report(&repo, &failed("gated-done")).await,
+            "late task.failed after the gate already passed the row is suppressed"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("gated-worker-failed")).await,
+            "a genuine pre-gate worker failure pushes as today (no gate runs on failure)"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("gated-spawn-failed")).await,
+            "a spawn failure pushes as today (no gate runs on failure)"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("ungated-failed")).await,
+            "ungated failures keep today's behavior"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("legacy-no-row")).await,
+            "legacy task.failed keys with no tasks row push as today"
+        );
+        assert!(
+            !is_gated_self_report(
+                &repo,
+                &Event::TaskGateResult {
+                    task_id: "w:gated".into(),
+                    idempotency_key: "w:gated".into(),
+                    passed: true,
+                    failing_step: None,
+                    exit_code: Some(0),
+                    log_tail: String::new(),
+                    log_path: "/tmp/gate.log".into(),
+                    attempt: 1,
+                    agent_message: None,
+                }
+            )
+            .await,
+            "the gate verdict itself is never suppressed"
+        );
+    }
+
+    /// Issue #644 PR-C — `task.gate_result` maps to the hard-fire
+    /// `Observation::TaskGateResult`, with the plan key recovered from
+    /// the `"{wave_id}:{key}"` task-id convention (§2.1).
+    #[test]
+    fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
+        let wave = WaveId::from("wave-1");
+        let event = Event::TaskGateResult {
+            task_id: "wave-1:impl-parser".into(),
+            idempotency_key: "wave-1:impl-parser".into(),
+            passed: false,
+            failing_step: Some("test".into()),
+            exit_code: Some(101),
+            log_tail: "boom".into(),
+            log_path: "/tmp/gate-logs/wave-1:impl-parser-g2.log".into(),
+            attempt: 2,
+            agent_message: None,
+        };
+        let obs = harness_observation_from_event(&wave, &event)
+            .expect("gate result must map to an observation");
+        assert!(obs.is_hard_fire(), "gate results are hard-fired (§6.5)");
+        match &obs {
+            HarnessObservation::TaskGateResult {
+                idempotency_key,
+                key,
+                passed,
+                failing_step,
+                exit_code,
+                attempt,
+                ..
+            } => {
+                assert_eq!(idempotency_key, "wave-1:impl-parser");
+                assert_eq!(key, "impl-parser", "plan key = task id minus wave prefix");
+                assert!(!passed);
+                assert_eq!(failing_step.as_deref(), Some("test"));
+                assert_eq!(*exit_code, Some(101));
+                assert_eq!(*attempt, 2);
+            }
+            other => panic!("expected TaskGateResult observation, got {other:?}"),
+        }
+        let text = obs.to_turn_text();
+        assert!(text.contains("Task impl-parser gate FAILED at step test (exit 101)"));
+        assert!(text.contains("plan/impl-parser/gate.log"));
+        assert!(text.contains("runs/wave-1:impl-parser.md"));
+    }
+
     #[test]
     fn event_warrants_spec_push_covers_push_allowlist() {
         let cache = CardRoleCache::new();
@@ -1841,6 +2161,26 @@ mod tests {
         assert!(!event_warrants_spec_push(
             &failed,
             &ActorId::AiSpec(spec.clone()),
+            &write
+        ));
+
+        // Issue #644 PR-C — the gate verdict always warrants a push
+        // (kernel-only kind; the gated-self-report consultation is a
+        // separate async predicate).
+        let gate_result = Event::TaskGateResult {
+            task_id: "w:k".into(),
+            idempotency_key: "w:k".into(),
+            passed: false,
+            failing_step: Some("test".into()),
+            exit_code: Some(101),
+            log_tail: "boom".into(),
+            log_path: "/tmp/gate.log".into(),
+            attempt: 1,
+            agent_message: None,
+        };
+        assert!(event_warrants_spec_push(
+            &gate_result,
+            &ActorId::KernelDispatcher,
             &write
         ));
 

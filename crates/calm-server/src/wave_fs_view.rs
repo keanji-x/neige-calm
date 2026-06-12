@@ -29,11 +29,34 @@ pub(crate) const RESERVED_RUN_KEYS: &[&str] = &["index"];
 pub struct WaveFsView<'a> {
     repo: &'a dyn RouteRepo,
     write: &'a WriteContext,
+    /// Issue #644 PR-C (§6.5) — `plan/<key>/gate.log` access:
+    /// `(caller role, gate-logs dir)`. `None` (the default) keeps the
+    /// path unavailable — surfaces that don't carry a card identity
+    /// (HTTP wave routes) never expose gate logs. Even when wired, only
+    /// `CardRole::Spec` passes (§6.7: workers must not read gate
+    /// material).
+    gate_log_access: Option<(CardRole, std::path::PathBuf)>,
 }
 
 impl<'a> WaveFsView<'a> {
     pub fn new(repo: &'a dyn RouteRepo, write: &'a WriteContext) -> Self {
-        Self { repo, write }
+        Self {
+            repo,
+            write,
+            gate_log_access: None,
+        }
+    }
+
+    /// Enable the `plan/<key>/gate.log` view for a caller with the
+    /// given card role (issue #644 PR-C). The role gate itself is
+    /// enforced at read time so a worker gets a Forbidden, not a 404.
+    pub fn with_gate_log_access(
+        mut self,
+        role: CardRole,
+        gate_logs_dir: std::path::PathBuf,
+    ) -> Self {
+        self.gate_log_access = Some((role, gate_logs_dir));
+        self
     }
 
     pub async fn ls(
@@ -176,7 +199,67 @@ impl<'a> WaveFsView<'a> {
                     Err(path_not_available(path))
                 }
             }
+            // Issue #644 PR-C (§6.5) — the gate runner's log for the
+            // task's CURRENT gate attempt, read straight off disk
+            // (file-backed; the row's `gate_result_json.log_tail` is
+            // only the trailing 8 KiB).
+            path if path.starts_with("plan/") => {
+                let parts: Vec<&str> = path.split('/').collect();
+                if parts.len() != 3 || parts[2] != "gate.log" {
+                    return Err(path_not_available(path));
+                }
+                self.cat_gate_log(wave, parts[1]).await
+            }
             other => Err(path_not_available(other)),
+        }
+    }
+
+    /// `plan/<key>/gate.log` (issue #644 PR-C): spec-role-gated read of
+    /// `<gate_logs_dir>/{task_id}-g{gate_attempt}.log`. Advisory
+    /// content per §6.7 — the log is worker-reachable on disk; the
+    /// verdict rides the wrapper exit status, never this file.
+    async fn cat_gate_log(&self, wave: &Wave, key: &str) -> Result<WaveFsContent, WaveFsError> {
+        let Some((role, gate_logs_dir)) = &self.gate_log_access else {
+            return Err(WaveFsError::Forbidden(
+                "wave_file: forbidden: plan/<key>/gate.log is not available on this surface"
+                    .to_string(),
+            ));
+        };
+        if *role != CardRole::Spec {
+            return Err(WaveFsError::Forbidden(format!(
+                "wave_file: forbidden: plan/{key}/gate.log is spec-only (§6.7); caller role {role:?}"
+            )));
+        }
+        let task_id = format!("{}:{key}", wave.id.as_str());
+        let task = self
+            .repo
+            .task_get(&task_id)
+            .await
+            .map_err(|e| WaveFsError::Internal(format!("wave_file: task lookup: {e}")))?
+            .ok_or_else(|| path_not_available(&format!("plan/{key}/gate.log")))?;
+        if task.gate_json.is_none() {
+            return Err(path_not_available(&format!(
+                "plan/{key}/gate.log (task declares no gate)"
+            )));
+        }
+        if task.gate_attempt < 1 {
+            return Err(path_not_available(&format!(
+                "plan/{key}/gate.log (no gate attempt has run yet)"
+            )));
+        }
+        let log_path = gate_logs_dir.join(format!("{task_id}-g{}.log", task.gate_attempt));
+        match tokio::fs::read_to_string(&log_path).await {
+            Ok(content) => Ok(WaveFsContent {
+                content,
+                content_type: "text/plain".into(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(path_not_available(
+                &format!("plan/{key}/gate.log (log file not present yet)"),
+            )),
+            Err(e) => Err(WaveFsError::Internal(format!(
+                "wave_file: gate log read {}: {e}",
+                log_path.display()
+            ))),
         }
     }
 

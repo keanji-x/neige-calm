@@ -119,6 +119,7 @@ impl McpServer {
         shim_bin: PathBuf,
         registry: Arc<ToolRegistry>,
         daemon_token_hash: Option<String>,
+        gate_logs_dir: PathBuf,
     ) -> anyhow::Result<Arc<Self>> {
         if let Some(parent) = socket_path.parent()
             && !parent.exists()
@@ -171,6 +172,7 @@ impl McpServer {
             events,
             write,
             daemon_token_hash,
+            gate_logs_dir,
         });
 
         let socket_for_handle = socket_path.clone();

@@ -20,6 +20,7 @@ use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
+use crate::operation::task_verify_adapter::TaskVerifyAdapter;
 use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
@@ -556,6 +557,9 @@ impl AppState {
             shared_codex_appserver.clone(),
             repo.clone(),
         ));
+        let task_verify_adapter = Arc::new(TaskVerifyAdapter::new(
+            TaskVerifyAdapter::default_gate_logs_dir(),
+        ));
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo.clone(),
@@ -569,6 +573,7 @@ impl AppState {
                 spec_harness_start_adapter,
                 spec_harness_interrupt_adapter,
                 spec_harness_shutdown_adapter,
+                task_verify_adapter,
             ],
             events.clone(),
             completion.clone(),
@@ -722,6 +727,9 @@ impl AppState {
             self.shared_codex_appserver.clone(),
             self.raw.clone(),
         ));
+        let task_verify_adapter = Arc::new(TaskVerifyAdapter::new(
+            TaskVerifyAdapter::default_gate_logs_dir(),
+        ));
         let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo.clone(),
@@ -735,6 +743,7 @@ impl AppState {
                 spec_harness_start_adapter,
                 spec_harness_interrupt_adapter,
                 spec_harness_shutdown_adapter,
+                task_verify_adapter,
             ],
             self.events.clone(),
             completion.clone(),
@@ -863,6 +872,11 @@ impl AppState {
         let daemon_mcp_token =
             crate::mcp_server::auth::get_or_generate_daemon_token(&cfg.data_dir_resolved())?;
         let daemon_mcp_token_hash = crate::mcp_server::auth::hash_token(&daemon_mcp_token);
+        // Issue #644 PR-C (PR #685 F3) — ONE resolution of the gate-logs
+        // dir, shared by the gate runner (TaskVerifyAdapter below) and
+        // the MCP `plan/<key>/gate.log` view, so a `--data-dir` CLI flag
+        // without `CALM_DATA_DIR` cannot split writer and reader.
+        let gate_logs_dir = cfg.data_dir_resolved().join("gate-logs");
         let mcp_server = crate::mcp_server::McpServer::spawn(
             repo.clone(),
             events.clone(),
@@ -871,6 +885,7 @@ impl AppState {
             mcp_shim_bin,
             mcp_registry,
             Some(daemon_mcp_token_hash),
+            gate_logs_dir.clone(),
         )
         .await?;
         if let Err(e) = codex
@@ -960,6 +975,7 @@ impl AppState {
             shared_codex_appserver.clone(),
             repo.clone(),
         ));
+        let task_verify_adapter = Arc::new(TaskVerifyAdapter::new(gate_logs_dir.clone()));
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(
             OperationRuntime::new(
@@ -974,6 +990,7 @@ impl AppState {
                     spec_harness_start_adapter,
                     spec_harness_interrupt_adapter,
                     spec_harness_shutdown_adapter,
+                    task_verify_adapter,
                 ],
                 events.clone(),
                 completion.clone(),

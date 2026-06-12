@@ -145,6 +145,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
         registry,
         None,
+        std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await
     .expect("spawn McpServer");
@@ -657,6 +658,7 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
         None,
+        std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await;
 

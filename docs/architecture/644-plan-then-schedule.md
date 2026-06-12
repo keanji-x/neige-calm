@@ -1,8 +1,12 @@
 # Plan-then-schedule: task plan table, kernel scheduler, enforced verification gate (issue #644)
 
-Status: design, revision 4 (folds in review channels A+B, rounds 1-3; see
-§11). No code in this PR. All file:line citations refer to the tree at the
-time of writing (`main`, post-#642/#643).
+Status: design, revision 5 — "parked" (§6.2 and the §8 `verifying` arms are
+rewritten on the #653 parked-operations primitive, replacing v4's in-memory
+waiter machinery; see the §11 v4→v5 note and
+`docs/architecture/653-parked-operations.md` §6). Earlier revisions folded in
+review channels A+B, rounds 1-3 (§11). File:line citations predate PR-A/B/C
+landing and refer to the tree at the time of the original writing (`main`,
+post-#642/#643), except where marked.
 
 Splits "deciding what to do" (spec LLM) from "running it" (kernel mechanics):
 the spec maintains a durable per-wave task plan via new `calm.plan.*` tools; a
@@ -407,8 +411,10 @@ Validation (whole batch in one immediate tx; any failure rolls back all):
    (`operation/mod.rs:612-625`).
 6. Gate policy (**PR-C-only** — not implemented in PR-A/PR-B): when
    `waves.require_task_gates = 1`, a `codex` task with no `gate` is rejected
-   unless it carries `no_gate_reason` (schema field above; recorded in
-   `context_json` — the escape hatch is auditable). Terminal tasks are exempt
+   unless it carries `no_gate_reason` (schema field above; recorded trimmed in
+   `context_json` — the escape hatch is auditable, so an empty/whitespace
+   reason is rejected at field validation, PR #685 round-3 F2). Terminal
+   tasks are exempt
    (they are often the glue the gates themselves would run). Before PR-C this
    rule is vacuous anyway: rule 8 rejects every *declared* gate, so enforcing
    rule 6 in PR-A would reject every normal codex task. PR-C activates rule 6
@@ -685,138 +691,151 @@ logs/observations without inventing a DSL. A blocking remote-CI check is just
 a step (`gh run watch ...` / `gh pr checks --watch`) — no special-casing in
 the kernel.
 
-### 6.2 `task-verify` operation + gate runner (redesigned)
+### 6.2 `task-verify` operation + gate runner (parked, v5)
 
-The v1 design ("operation succeeds at spawn, in-memory waiter, detached
-`setsid` child, pid in `tx_output`") was incoherent across restart, as both
-review channels found: `tx_output` is only writable pre-spawn — the runtime's
-post-spawn writes are just `set_phase(SpawnSucceeded)`/`set_phase(Succeeded)`
-(`operation/mod.rs:866-881,895-903`) — so the pid was unknowable anywhere
-durable; boot recovery scans only non-terminal operations
-(`operation/mod.rs:1284-1300`), so a `succeeded`-at-spawn op is invisible to
-it; and a `setsid` orphan **survives** kernel death while its waiter does not,
-so a naive re-run races the orphan in one cwd. Redesign — **durable
-`(pid, starttime, boot_id)` bookkeeping on the tasks row, a release handshake
-that makes the record durable before the gate body can run, kill-then-spawn,
-registry-aware sweeps** (direction (a); direction (b), a supervised no-`setsid` child, fails
-because `PDEATHSIG` only covers the direct child — `cargo test` grandchildren
-outlive it, so a killable process *group* is needed anyway; direction (c), a
-saga post-spawn persistence hook, has no existing extension point per the
-write-point audit above and is not worth extending the saga for one adapter).
-
-Constraint kept from v1: the operation still `Succeeded`s at spawn, because
-operation leases are 60s (`OPERATION_LEASE_MS`, `operation/mod.rs:32`) and a
-10-minute `cargo test` inside a phase would outlive its lease and invite
-re-claim (`operation/mod.rs:1222-1282`). The saga guarantees at-least-once
-*start*; everything after start is owned by durable rows + the waiter/sweeps.
+> v4 of this section rebuilt durability *outside* the saga — an in-memory
+> waiter registry with attempt-guarded `remove_if` deregistration, an
+> operation that "succeeds at spawn", and a `(pid, starttime, boot_id)`
+> triple on the tasks row as the only durable record. Issue #653 moved that
+> durability *into* the saga (`docs/architecture/653-parked-operations.md`,
+> §6 of which supersedes the v4 text); this revision documents the
+> implemented PR-C shape. Deleted from v4: the waiter registry and its
+> liveness definition, the operation-succeeds-at-spawn fiction, and the §8
+> waiter-liveness sweep arm. Kept from v4: the stdin record-then-release
+> handshake, kill-prior-before-spawn, per-attempt idempotency keys, the §8
+> arm-2 single-flight `wait()` re-drive (reduced form), the gated
+> self-report suppression (§6.5), and the §3 lifecycle-promotion move.
 
 New `ProviderAdapter` kind `task-verify`
 (`crates/calm-server/src/operation/task_verify_adapter.rs`), submitted by the
 scheduler when it observes the `running/dispatched → verifying` flip (the
 emit-tx flip in §3 already happened; scheduler trigger 2 reacts to the
-`task.completed` envelope). The submitter computes
+`task.completed` envelope and the schedule pass drives every `verifying` row
+of the wave). The submitter computes
 `idempotency_key = "{task.id}#g{row.gate_attempt + 1}"` from the current row;
 racing submitters compute the same key and dedupe on the operations unique
-index.
+index. One operation per gate **attempt**; the op is **parked** while the
+gate runs (no lease held, excluded from drive claims, visible to boot
+recovery as `VerifyParked` — #653 §2-4).
 
 **Who writes what, when:**
 
 - `validate`: task exists, status `verifying`, gate present.
 - `prepare_tx` (attempt `N` parsed from the op's idempotency key): guarded
   bump `UPDATE tasks SET gate_attempt=N WHERE id=? AND gate_attempt=N-1 AND
-  status='verifying'`; `rows_affected==0` → fail the op benignly (a different
-  attempt won, or the task moved on). Freeze `gate_json` + resolved cwd +
-  `N` into `tx_output.data` — the gate that runs is the one recorded.
+  status='verifying'` (`task_gate_attempt_bump_tx`); `rows_affected==0` →
+  fail the op benignly (a different attempt won, or the task moved on).
+  Freeze `gate_json` + resolved cwd (`gate.cwd → task.cwd → waves.cwd`,
+  §6.4) + `N` into `tx_output.data` — the gate that runs is the one
+  recorded.
 - `spawn_side_effect` (at-least-once; **idempotent by kill-then-spawn**):
-  1. *Kill prior*: read `tasks.gate_pid`/`gate_pid_starttime`/
-     `gate_pid_boot_id`; if set, verify with the repo's established owned-pid
-     guard — reuse `verify_owned_pid(pid, starttime, boot_id)`
-     (`crates/calm-server/src/spec_appserver.rs:145-171`, `pub`; rejects
-     cross-reboot pid recycle via boot_id and same-boot recycle via the
-     strictly-later starttime, per its own doc comment at
-     `spec_appserver.rs:109-144`) — and on match `SIGKILL` the group via
-     `signal_process_group` (`spec_appserver.rs:174`, `pub`). Mismatch →
-     nothing to kill (pid recycled, rebooted, or never ran); proceed.
-  2. *Spawn, held*: one **wrapper script** per attempt, generated from the
-     frozen `gate_json` into `<data_dir>/gate-logs/{task_id}-g{N}.sh`, run
-     **explicitly as `/bin/sh <path>`** — the repo's shell convention is
-     `/bin/sh -c` (`routes/terminal.rs:125-126`) and nothing in `crates/`
-     requires bash, so the wrapper is POSIX sh; no shebang/exec-bit reliance —
-     as a `setsid` session leader (`tokio::process::Command` + `pre_exec`)
-     with **stdin piped from the kernel**. The wrapper's first action is the
-     release handshake: `read -r _go || exit 75` — plain POSIX `read -r`, **no
-     `-t`** (`read -t` is a bash/ksh/zsh extension; dash rejects it and every
-     gate would go `'gate-infra'`); the release timeout is enforced
-     kernel-side (steps 3-4 below). It runs **no gate step** until the kernel
-     writes the go-token. Kernel death (or abort of the spawning task) before
-     release drops the kernel-held `ChildStdin` — the pipe's only write end —
-     the `read` sees EOF, returns non-zero, and the held child exits 75
-     having executed nothing. Then: run the steps sequentially, echoing
-     `::gate-step <name>` sentinels and exiting with the first failing step's
-     code. stdout+stderr → `<data_dir>/gate-logs/{task_id}-g{N}.log`. One
-     process group = one kill target for wrapper + current step + descendants.
-  3. *Persist record*: the spawner (kernel side — the parent knows the pid
-     synchronously from spawn) reads `/proc/<pid>/stat` starttime + the
-     current boot_id (`read_proc_start_time` / `read_boot_id`,
-     `spec_appserver.rs:40,94`, both `pub`) and commits
-     `UPDATE tasks SET gate_pid=?, gate_pid_starttime=?, gate_pid_boot_id=?
-     WHERE id=? AND status='verifying' AND gate_attempt=N`. This is the
-     durable record the saga cannot hold (§1.2). Guard fails (task moved on)
-     → kill the held group, fail the op benignly. Steps 3-4 run under a
-     **60s kernel-side timeout** (replacing v3's wrapper-side `read -t 60`):
-     on expiry, SIGKILL the held group and fail the op `'gate-infra'`.
-  4. *Release*: write the **newline-terminated** go-token (`"go\n"` — POSIX
-     `read` returns non-zero on EOF-before-newline even when bytes arrived,
-     which would trip `|| exit 75` despite a successful release) to the
-     child's stdin and close it. Only
-     now can a gate command run — so **every gate process that ever executes
-     a step is already recorded in the row**; there is no fork-window orphan
-     (this closes the v2 residual both round-2 channels flagged: the v2
-     wrapper-writes-pidfile scheme left a forked-but-unrecorded duplicate
-     that no sweep would ever reap).
-  5. *Register waiter*: an in-process tokio task keyed in a
-     `DashMap<TaskId, WaiterHandle { attempt, join: JoinHandle }>` registry;
-     `insert` overwrites a superseded attempt's entry; return. The runtime
-     then advances the op `spawn_succeeded → succeeded`.
-     **"Live registered waiter" is defined as: entry present AND
-     `entry.attempt == tasks.gate_attempt` AND `!join.is_finished()`**; the
-     waiter body runs under a drop-guard that deregisters on completion,
-     panic, or abort — and deregistration is **attempt-guarded**:
-     `registry.remove_if(&task_id, |_, h| h.attempt == my_attempt)`
-     (`DashMap::remove_if`, dashmap 6; already the repo's compare-and-remove
-     idiom, `shared_codex_appserver.rs:575`). Without the guard there is an
-     ABA delete: attempt N's kill-prior SIGKILLs N-1's group while N-1's
-     waiter is still alive; N registers (overwriting N-1's entry); N-1's
-     waiter exits later (its tx no-ops under the `gate_attempt=N-1` guard)
-     and an unguarded drop-guard would remove **N's live entry** — the next
-     sweep would see "no live waiter", arm 3 would kill healthy gate N, and
-     N's still-registered-attempt waiter could win its attempt-guarded tx
-     with the SIGKILL exit → false red. A dead or attempt-stale handle counts
-     as no waiter — so a waiter that dies without its tx leaves the task
-     visible to the reconcile sweep (§8 arm 3) instead of skip-forever.
-- **Waiter**, on wrapper exit (or after killing the group at `timeout_secs`):
-  one tx — guarded flip `UPDATE tasks SET status=<done|failed>,
-  status_detail=?, gate_result_json=?, gate_pid=NULL, gate_pid_starttime=NULL,
-  gate_pid_boot_id=NULL, finished_at_ms=? WHERE id=? AND status='verifying'
-  AND gate_attempt=N` + append `Event::TaskGateResult` (§6.5) + the lifecycle
-  promotion (§3 note). The attempt guard means a superseded waiter (its
-  attempt was killed and re-run) writes nothing. A wrapper exit with no
-  `::gate-step` sentinel seen (e.g. the handshake `read` hit EOF, exit 75)
-  is `'gate-infra'`. (A kernel-side release-timeout kill fails the op at
-  steps 3-4 before any waiter exists — compensation / arm 4 cover it.)
-  The drop-guard's attempt-guarded remove (step 5) runs on every exit path.
-- `plan_compensation` / `compensate_step`: kill the recorded process group
-  (`verify_owned_pid`-guarded), mark task `failed('gate-infra')` if still
-  `verifying` at attempt `N`.
+  1. *Kill prior* (#653 §3.2 contract item 2 + consumer policy): (a) this
+     op's own recorded `spawn_artifacts` (same-op re-drive), (b) the
+     previous attempt's op artifacts
+     (`find_by_idempotency_key("task-verify", "{task.id}#g{N-1}")`), (c) the
+     tasks-row `gate_pid`/`gate_pid_starttime`/`gate_pid_boot_id` triple —
+     kept as a belt-and-suspenders record (it is written before release and
+     covers the window where the op-row artifacts never committed; the
+     gate-result flip clears it). Every kill is
+     `verify_owned_pid`-guarded (`crate::proc_identity`, lifted by #653
+     PR-1) and `SIGKILL`s the process *group*.
+  2. *Unlink the stale exit file* `{task_id}-g{N}.exit` (+ its `.tmp`) —
+     strictly after the kills, strictly before the spawn (#653 §6.1 step 2):
+     a same-op re-drive must never recover the prior run's verdict as if it
+     were the re-run's.
+  3. *Spawn, held*: one POSIX wrapper per attempt, generated from the frozen
+     gate into `<data_dir>/gate-logs/{task_id}-g{N}.sh`, run as
+     `/bin/sh <path>` in a `setsid` session (one process group = one kill
+     target), stdin piped from the kernel. First action is the release
+     handshake `read -r _go || exit 75` — kernel death before release EOFs
+     the pipe and the held child exits having executed nothing. The wrapper
+     then captures the exit-file path into an unexported shell variable and
+     `unset`s `NEIGE_GATE_EXIT_PATH` BEFORE any step runs, so step children
+     (the untrusted repo code a gate executes) never inherit the
+     verdict-file path. It echoes `::gate-step <name>` sentinels, runs each
+     step body in a subshell `( … )` (a step's top-level `exit`/`exec`/`set
+     -e` ends the step, never bypasses the finish handler), and writes its
+     exit code to `{task_id}-g{N}.exit` via tmp + `rename(2)` as its last
+     action (a mid-write SIGKILL leaves no file, never a truncated one).
+     stdout+stderr → `{task_id}-g{N}.log`. Env: `env_clear()` + explicit
+     `PATH`/`HOME`/`LANG`/`LC_ALL`/`TERM` + proxy settings; in particular no
+     `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (§6.3).
+  4. *Record, then release* (under a kernel-side 60s timeout; expiry kills
+     the held group and fails the op): record the identity on the tasks row
+     (guarded `WHERE status='verifying' AND gate_attempt=N`) **and** as op
+     spawn artifacts via the #653 `record_spawn_artifacts` hook (pid, pgid,
+     starttime, boot_id, log path, exit path) — both BEFORE the release
+     write `"go\n"`, so **every gate process that can execute a step is
+     recorded**; there is no fork-window orphan.
+  5. *Park*: return `SpawnOutcome::Parked { deadline_ms: timeout_secs +
+     120s slack, observer }`. The runtime commits the park and only then
+     spawns the **exit observer** (#653 §3.1 ordering — an observer exists
+     only after its park committed).
+- **Exit observer** (owns the `Child`): `wait()` the wrapper, group-killing
+  at `timeout_secs` (live timeout enforcement stays with the handle owner;
+  the parked deadline is the backstop for a dead observer). **The live
+  verdict is the wrapper's wait status, observed over the kernel-owned
+  process handle — the exit file is never consulted while a wait status
+  exists** (§6.7: gate steps execute untrusted repo code in a
+  worker-reachable tree; a forged exit file must not flip a killed/red gate
+  green). Wrapper exit 0 → green; non-zero with a `::gate-step` sentinel →
+  `gate-red` + `failing_step` + `exit_code`; non-zero with NO sentinel (e.g.
+  handshake EOF, exit 75) → `gate-infra`; signal death → `gate-infra`;
+  timeout group-kill → `gate-timeout`. Completion is ONE
+  tx: `complete_parked_tx(op, verdict)` and — **only on
+  `ParkedCompletion::Completed`** (#653 §3.3 write-gate) — the guarded flip
+  `verifying → done|failed` + clear the pid triple + `Event::TaskGateResult`
+  (§6.5) + the §3 lifecycle promotion (`task_apply_gate_result_tx` +
+  `apply_gate_result_in_tx`). On `AlreadyResolved` the tx rolls back and
+  NOTHING is written — enforcement won; the scheduler's reconcile copies the
+  op outcome to the row instead.
+- `recover_parked` (#653 §4.2/§6.3 — boot `VerifyParked`, `sweep_parked`
+  dead-probe, past-deadline arm): **liveness first; the exit file is the
+  crashed-kernel recovery hint, consulted only for DEAD work** (once no
+  wait status can ever exist it is the only verdict channel left — §6.7
+  documents the residual same-user tamper risk this accepts). Dead +
+  present+parseable → `Complete(verdict)`; dead + unparseable → fail
+  (`gate-infra`); dead + no file → fail (`gate-infra`);
+  alive + `Boot` → re-attach (spawn an observer that polls
+  `verify_owned_pid` until the gate dies, then reads the exit file;
+  completes via the same Completed-gated one-tx body) and `LeaveParked`;
+  alive + `PreDeadlineProbe` → `LeaveParked`; alive + `PastDeadline` → fail
+  ("gate timeout"), no reattach observer (the caller kills the group next).
+- `plan_compensation` / `compensate_step`: kill the recorded group (op
+  artifacts + tasks-row triple, both `verify_owned_pid`-guarded), then mark
+  the task `failed('gate-infra')` via the same one-tx gate-result body if it
+  is still `verifying` at attempt `N`.
+
+**Consumer-side driving (scheduler).** `drive_gate` (single-flight per task,
+key `"gate:{task.id}"`, shared by the live pass and the sweep arm): look up
+the op for the row's CURRENT attempt (`#g{row.gate_attempt}`;
+`gate_attempt == 0` → none was ever prepared). Op exists → `wait()` it (the
+one public API that re-polls `drive()`; for a parked op the wait-poll also
+runs `enforce_parked_deadline`, #653 §4.3), then copy the terminal outcome to
+the row iff it is still `verifying` at that attempt (`gate-timeout` for
+`last_error_class="parked_deadline"`, `gate-infra` for other op failures /
+stuck / unparseable results, the recorded verdict for op success). Op missing
+→ submit `#g{N+1}` and watch it the same way. The reconcile-copy is needed
+because op-only terminal writes exist (boot `VerifyParked` and `sweep_parked`
+write the operation, never consumer tables — #653 §4.2); it runs the same
+guarded one-tx body, so first writer wins and duplication is impossible. One
+extra arm (PR #685 F4): a `prepare_tx` client error BEFORE the guarded bump
+(wave row gone → Conflict) terminal-fails op `#gN` while the row stays
+`verifying@N-1` — the eq-attempt guard would miss forever while every later
+drive dedupes onto the dead op. For terminal-FAILED ops only, a guard miss
+falls back to flipping the row at `gate_attempt = N-1`
+(`failed('gate-infra')`, same one-tx body); safe because the failed op can
+never bump the row and the operations unique index admits no second `#gN`.
+The scheduler's reconcile tick also calls `OperationRuntime::sweep_parked()`
+(#653 §4.4 call-site c).
 
 **Single-runner invariant** (no concurrent duplicate gates in one cwd):
 (i) at most one non-terminal `task-verify` op per task — submissions key off
 `row.gate_attempt + 1`, `prepare_tx`'s guarded bump admits exactly one op per
-attempt number, and the sweep never mints a new attempt while a non-terminal
-op **or an attempt-matched live waiter** exists — it re-drives the existing
-op instead (§8 arms 1-2); (ii) every gate process that can execute a
-step is recorded in the row before release (handshake, step 4), and every
-spawn kills the recorded predecessor before starting; (iii) the
+attempt number, and the driver re-drives the existing attempt's op instead of
+minting `#g{N+1}` while one exists; (ii) every gate process that can execute
+a step is recorded before release (handshake, step 4), and every spawn kills
+the recorded predecessor before starting; (iii) the
 `(pid, starttime, boot_id)` `verify_owned_pid` match prevents pid reuse —
 same-boot or cross-reboot — from killing an innocent process. Gates remain
 **at-least-once** (risk R1) but never concurrent per task.
@@ -827,9 +846,12 @@ result events surface.
 
 ### 6.3 Execution semantics
 
-- Env: minimal kernel env + proxy settings (like `terminal_worker_env`,
-  `terminal_adapter.rs:837-849`). **No `NEIGE_MCP_TOKEN`/`NEIGE_MCP_SOCKET`** —
-  the gate cannot write kernel state.
+- Env: built from EMPTY (`env_clear()`), then explicit
+  `PATH`/`HOME`/`LANG`/`LC_ALL`/`TERM` (copied from the kernel) + the proxy
+  settings `terminal_worker_env` resolves (`terminal_adapter.rs:837-849`).
+  **No `NEIGE_MCP_TOKEN`/`NEIGE_MCP_SOCKET`** — the gate cannot write kernel
+  state — and no incidental kernel env. `NEIGE_GATE_EXIT_PATH` is handed to
+  the wrapper only; the wrapper unsets it before any step runs (§6.2 step 3).
 - Timeout: waiter kills the process group at `timeout_secs` (default 1800,
   cap 7200) → red, `status_detail='gate-timeout'`.
 - Exit semantics: wrapper exit 0 → green; non-zero → red with `failing_step`
@@ -891,7 +913,15 @@ Push rewiring (`dispatcher.rs:71-96` + `harness_observation_from_event`,
   lookup (by idempotency key, gate predicate above) into both the live push
   branch and `replay_harness_events_since`; `task.gate_result` joins the
   replayed kinds list at `harness/mod.rs:88-96`.
-- Worker `task.failed` pushes as today (no gate runs on failure).
+- Worker `task.failed` pushes as today when the failure actually landed on
+  the row pre-gate (no gate runs on failure): the gated row reads `failed`
+  with `status_detail` `worker-reported`/`spawn-failed`. A gated `task.failed`
+  in any other row state (PR #685 round-3 F1) — a stale/retried report while
+  the gate is in flight (`verifying`) or after the gate already decided the
+  row (`done`, or `failed` with a `gate-*` detail) — is suppressed in both
+  the live push branch and the boot replay: the spec hears the machine
+  `task.gate_result`, not a worker claim that lost the race. Ungated
+  `task.failed` keeps today's behavior unconditionally.
 - Gate logs readable by the spec via a new wave-fs view `plan/<key>/gate.log`
   (file-backed read in `wave_fs_view.rs`, spec-role only — `neige` calls carry
   card identity, so the view can role-gate like `descriptors_for_role`,
@@ -920,8 +950,29 @@ privileges, no sandbox. This is the **same trust level the spec already has**:
 `calm.task.dispatch kind=terminal` runs arbitrary `cmd` as a kernel-spawned
 PTY today (`emit.rs:151-167`, `terminal_adapter.rs:563+`). What the gate adds:
 
-- Workers cannot read or edit the gate definition (kernel-side storage; not in
-  card payloads; `plan/` list omits commands for non-spec roles).
+- The gate definition's *authoritative* copy is kernel-side (`tasks.gate_json`;
+  not in card payloads; `plan/` list omits commands for non-spec roles) — but
+  the **rendered wrapper script is NOT secret**: it is written to
+  `<data_dir>/gate-logs/{task_id}-g{N}.sh`, which sits in the same
+  generally-worker-reachable tree as the logs (below). A same-user worker can
+  read it (learning the step commands and, between spawn and the wrapper's
+  `unset`, the exit-file path is also visible in `/proc/<pid>/environ`) and
+  could edit it before the spawn reads it. What actually holds is the
+  wait-status invariant below: the script's *effect* is judged by the
+  kernel-owned process handle, and the run that gets recorded was frozen in
+  `prepare_tx`. Possible future hardening (not done): pipe the wrapper body
+  to `sh -s` over stdin after the handshake instead of materializing a file.
+- **Verdict channel.** The live verdict is the wrapper's exit status observed
+  by the kernel over the process handle (`wait()`); the worker-reachable
+  `.exit` file is never consulted while a wait status exists, and the wrapper
+  unsets `NEIGE_GATE_EXIT_PATH` before running any step, so step children
+  cannot learn the path from their environment. **Residual concession**: after
+  a kernel crash the wait status is gone forever, and the `.exit` file is the
+  only verdict channel left — recovery for a *dead* gate trusts it. Since the
+  path is derivable by any same-user process (it can read the wrapper script;
+  secrecy is unattainable), a hostile same-user worker that wins the race
+  against its own gate's real exit can forge a crashed-kernel verdict. This is
+  the same out-of-scope same-user trust boundary as the log tampering below.
 - Workers **can** still game the *tree being gated*: they edit the same
   checkout the gate runs in and could alter tests, add a `build.rs`, or wrap
   the toolchain. The gate proves "this tree passes these commands", not "the
@@ -983,24 +1034,17 @@ claim; a kernel gate may verify it before the task counts as done."
 Boot order: harness recovery → supervisor reconcile → runtime orphans →
 operation recovery → **scheduler sweep** (extending `lib.rs:140-145` +
 `boot_order_tests`). One shared sweep body runs at boot, on the periodic
-reconcile tick, and after `Lagged` (§5.1); the in-process **waiter registry**
-(§6.2) makes every one of them safe — the live-waiter skip is part of the
-shared body, **including boot**. That is load-bearing at boot, not vacuous:
-operation recovery runs *before* the sweep and is synchronous
-apply-then-drive (`operation/mod.rs:702-724`), so a `task-verify` op that was
-non-terminal at crash has already been fully re-driven — its
-`spawn_side_effect` registered a fresh waiter and the op advanced to
-`succeeded` (`operation/mod.rs:866-903`) — by the time the sweep reads it.
-Without the skip, the boot sweep's arm 3 would see "op succeeded, row
-`verifying`", kill that freshly re-driven healthy gate, and the killed gate's
-waiter could still win its attempt-guarded tx (the guard holds until the
-replacement's `prepare_tx` bumps `gate_attempt`) → false red. With the skip,
-a live registered waiter (§6.2's liveness definition: entry present,
-`entry.attempt == row.gate_attempt`, join handle not finished) means the gate
-is owned in-process and the sweep leaves it alone; a dead handle deregisters
-(attempt-guarded `remove_if`, §6.2 step 5 — a superseded waiter's late exit
-cannot delete the live attempt's entry), so a waiter that panicked/aborted
-leaves the task visible to the next tick rather than skip-forever.
+reconcile tick, and after `Lagged` (§5.1). v5: the v4 in-process waiter
+registry and its live-waiter skip are GONE — gate recovery rides the #653
+parked primitive instead. Operation recovery runs *before* the sweep and
+handles parked `task-verify` ops as `VerifyParked` (#653 §4.2): a healthy
+running gate is re-attached (an observer polls the identity triple and
+recovers the verdict from the exit file — §6.2 `recover_parked`), dead work
+with a durable exit file completes with the real verdict, dead work without
+one fails the op. The scheduler sweep then needs no liveness judgment of its
+own: `sweep_parked` (run at the top of every sweep body) enforces deadlines
+and recovers dead-gate verdicts with single-winner fences, and the
+`verifying` arm below only drives/reconciles operations.
 
 Per task status:
 
@@ -1030,76 +1074,58 @@ Per task status:
   ('dispatched','running')` flip; first wins, second no-ops. The periodic
   sweep runs the same arm, covering a terminal exit whose live event was lost
   to a lagged bus.
-- `verifying` (the redesigned arm — operation recovery and the sweep can no
-  longer both start a gate):
-  1. **Live registered waiter for this task** (§6.2 liveness definition:
-     entry present, `entry.attempt == row.gate_attempt`, join not finished) →
-     skip; the gate is owned in-process. Applies to every sweep, boot
-     included (see the derivation in the intro above).
-  2. Otherwise look up the op `(kind='task-verify',
+- `verifying` (the parked arm — boot recovery, `sweep_parked`, and the
+  scheduler's `drive_gate` split the job; no arm can race another into a
+  double-run):
+  1. Look up the op `(kind='task-verify',
      idempotency_key="{task.id}#g{row.gate_attempt}")` (for
      `gate_attempt = 0`, no attempt was ever prepared → treat as missing).
-     **Op non-terminal** → **re-drive it; never defer unconditionally, never
-     mint `#g{N+1}`**. There is no background operation driver in steady
-     state — the driver loop is an unbuilt TODO (`operation/mod.rs:570`
-     comment) and only `submit` and `wait` ever call `drive()`
-     (`operation/mod.rs:605-630,641-662`; the dispatch paths call `wait()`
-     explicitly, `dispatcher.rs:1231-1242`) — so v3's "defer, recovery will
-     re-drive it" was boot-true but steady-state-false: a submitter that dies
-     after the op insert (or after `prepare_tx` bumped `gate_attempt`) but
-     before waiter registration leaves a non-terminal op that every periodic
-     sweep would defer on forever. The sweep therefore spawns a
-     **single-flight re-drive task** (keyed by op id in a scheduler-local
-     `DashMap`, removed when it returns) that calls
-     `operation_runtime.wait(&op_id)` — the one pub API that re-polls
-     `drive()` until the op is terminal (`operation/mod.rs:641-662`). The
-     re-driven `spawn_side_effect`'s kill-then-spawn (§6.2) reaps any
-     recorded orphan from its own earlier attempt and registers a fresh
-     waiter; terminal outcomes are reconciled by arms 3-4 on the next pass
-     (the re-drive task discards the result). **No double-drive**: `drive()`
-     claims a 60s lease per op — the claim UPDATE is guarded by
-     `lease_until_ms IS NULL OR < now` (`claim_drive_batch`,
-     `operation/mod.rs:1222-1282`) — so a sweep re-drive racing the original
-     submitter's `wait()`, boot recovery, or another tick executes no phase
-     twice; losers poll. At boot this arm is normally vacuous: operation
-     recovery runs *before* the sweep and has already re-driven the op
-     (`operation/mod.rs:692-724,1284-1300`), so arm 1's live waiter skips
-     the task; if a recovery item errored (`apply_recovery` logs and
-     continues, `operation/mod.rs:702-724`), this arm is the retry. The v1
-     unconditional "submit a fresh attempt" remains the double-run bug both
-     round-1 reviews flagged — re-drive advances the *existing* attempt.
-  3. **Op `succeeded`, row still `verifying`, no attempt-matched live
-     waiter** → the waiter died (with the kernel, or panicked/aborted while
-     the kernel lived — the dead join handle deregistered it) but the
-     `setsid` orphan may survive. Kill the recorded process group (row
-     triple, `verify_owned_pid`-guarded), then submit `#g{N+1}`; its
-     `prepare_tx`/spawn proceed per §6.2 (its kill-prior is then a no-op).
-     There is no waiter left to race: attempt N's waiter is dead by this
-     arm's precondition, and any still-running stale-attempt waiter writes
-     nothing under its `gate_attempt` tx guard — so no attempt-guarded tx
-     can land a false red.
-  4. **Op `failed`/`stuck`** → compensation should have marked the task; if
-     the row is still `verifying`, mark `failed('gate-infra')` (guarded).
-  5. **Op missing** (crash between the emit-tx flip and the scheduler's
-     submit) → submit `#g{row.gate_attempt + 1}` — first attempt or next, same
-     path.
+     **Op non-terminal** → **single-flight `wait()` re-drive; never mint
+     `#g{N+1}` while one exists**. There is no background operation driver
+     in steady state (the driver loop is an unbuilt TODO,
+     `operation/mod.rs:570`; only `submit` and `wait` call `drive()`), so a
+     submitter that dies after the op insert would otherwise strand a
+     non-terminal op forever. A *parked* op cannot be claimed by the drive
+     at all (#653 §4.1) — for it the `wait()` poll doubles as a live
+     deadline watcher (`enforce_parked_deadline`, #653 §4.3) while the exit
+     observer / `sweep_parked` / boot recovery own the actual completion.
+  2. **Op terminal, row still `verifying` at the op's attempt** → copy the
+     outcome to the row (the §6.2 reconcile arm, same guarded one-tx body
+     as the observer: flip + `task.gate_result` + promotion). Covers boot
+     `VerifyParked` Fail/Complete and `sweep_parked` enforcement, which
+     write the op only (#653 §4.2): op success carries the recorded
+     verdict; `parked_deadline` → `failed('gate-timeout')`; other failures
+     / stuck → `failed('gate-infra')`. A benignly-failed attempt (lost
+     `prepare_tx` bump) can never mis-fail the row — losing the bump means
+     `row.gate_attempt` never reached that op's attempt, so the guard
+     misses.
+  3. **Op missing** (crash between the emit-tx flip and the scheduler's
+     submit, or first attempt) → submit `#g{row.gate_attempt + 1}` — first
+     attempt or next, same path.
+  4. **Parked op, provably-dead process, no recorded outcome** → handled by
+     `sweep_parked`/boot per #653 semantics (the pre-deadline dead-probe
+     lands a recoverable verdict or fails the op `parked_dead` immediately —
+     PR #685 round-2 F2; the deadline arm / boot are the backstops, same
+     class), then arm 2 copies the failure to the row as
+     `gate-infra`. No automatic re-attempt — the spec re-plans (§6.3
+     invariant: gate didn't prove green ⇒ `failed`).
   Crash-window walk for one attempt: before `prepare_tx` commit → op
-  non-terminal, arm 2, no process ever existed; after `prepare_tx`, before
-  fork → arm 2, kill-prior finds nothing; after fork, before the pid-record
-  commit → the child is still **held at the handshake** (§6.2 step 2) and
-  kernel death closed its stdin, so it exits without running a single gate
-  step — arm 2 re-drives, kill-prior finds the row triple NULL and nothing
-  is running (v2's "bounded duplicate the next sweep reaps" residual is
-  gone: under the v2 wrapper-writes-pidfile scheme the replacement's live
-  waiter made every later sweep skip the task, so that duplicate was in
-  fact never reaped — the handshake removes the duplicate instead of
-  hand-waving its reaping); after the record commit, before release → same
-  held-child self-exit; the re-drive's kill-prior sees `verify_owned_pid`
-  false (process gone) and spawns fresh; after release, gate running →
-  classic recorded orphan: arm 2 (op non-terminal, re-drive kill-prior
-  reaps) or arm 3 (op succeeded, no live waiter → kill + `#g{N+1}`); after
-  the waiter tx → row is terminal, sweep skips. **Gates therefore must be
-  re-runnable**; the prompt says so (risk R1).
+  non-terminal, arm 1, no process ever existed; after `prepare_tx`, before
+  fork → arm 1, kill-prior finds nothing; after fork, before the record
+  commits → the child is still **held at the handshake** (§6.2 step 3) and
+  kernel death closed its stdin, so it exits 75 without running a single
+  gate step — the re-drive's kill-prior finds nothing recorded and nothing
+  running; after record, before release → same held-child self-exit, the
+  re-drive's kill-prior sees `verify_owned_pid` false and spawns fresh;
+  after release, before the park commits → the op is `spawn_started` with
+  artifacts recorded; boot recovery re-drives it and the re-drive's
+  kill-prior reaps the released gate from its own op row (#653 §3.2 item
+  2; a verdict produced in that window is lost and the gate re-runs —
+  at-least-once, risk R1); parked + gate running + kernel dies → boot
+  re-attach (§6.2 `recover_parked`), the gate survives the restart; parked
+  + gate finished while kernel down → exit file recovers the REAL verdict
+  (v4 lost it); after the completion tx → row is terminal, sweep skips.
+  **Gates therefore must be re-runnable**; the prompt says so (risk R1).
 - `done/failed/canceled`: terminal, sweep skips.
 - Spec harness: gate-result events that landed while the kernel was down are
   replayed into the pending queue by the existing snapshot-watermark catch-up
@@ -1271,6 +1297,27 @@ rule 8.)
 ---
 
 ## 11. Review disposition
+
+### v4 → v5 (parked, with #644 PR-C)
+
+§6.2 and the §8 `verifying` arms were rewritten on the #653
+parked-operations primitive, as #653 promised when it superseded the v4 text
+(`653-parked-operations.md` §6 supersession notice). Deleted: the in-memory
+waiter registry + attempt-guarded `remove_if` deregistration, the
+waiter-liveness sweep arm (v4 §8 arm 1) and arm 3's
+kill-healthy-gate-then-resubmit, and the operation-succeeds-at-spawn
+fiction. Kept: the stdin record-then-release handshake, kill-prior (now
+reading op-row `spawn_artifacts` first; the tasks-row
+`gate_pid`/`gate_pid_starttime`/`gate_pid_boot_id` triple — which #653
+proposed dropping — is RETAINED as a belt-and-suspenders pre-release record
+and cleared by the gate-result flip), per-attempt idempotency keys, arm 2's
+single-flight `wait()` re-drive (reduced precondition: "row `verifying`, op
+non-terminal"), arms 4-5 (folded into the v5 arm list), the gated
+self-report suppression (§6.5), and the §3 lifecycle-promotion move. New in
+v5: boot re-attach to a healthy running gate and exit-file verdict recovery
+(both via `recover_parked`), and the consumer reconcile-copy arm for op-only
+terminal writes.
+
 
 ### Round 1 (v1 → v2)
 

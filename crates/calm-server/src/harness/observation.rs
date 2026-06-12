@@ -37,6 +37,23 @@ pub enum Observation {
     UserMessage {
         text: String,
     },
+    /// Issue #644 PR-C (§6.5) — the kernel gate runner recorded a
+    /// verdict for one gate attempt. Hard-fired: for a gated task this
+    /// REPLACES the suppressed worker self-report as the spec's wake-up
+    /// (the spec hears the gate, not the claim). `idempotency_key` is
+    /// the task id (`"{wave_id}:{key}"`); `key` is the plan key used in
+    /// the turn-text paths (`plan/<key>/gate.log`, `runs/<task.id>.md`).
+    TaskGateResult {
+        idempotency_key: String,
+        key: String,
+        passed: bool,
+        #[serde(default)]
+        failing_step: Option<String>,
+        #[serde(default)]
+        exit_code: Option<i32>,
+        log_tail: String,
+        attempt: i64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +71,7 @@ impl Observation {
                 | Observation::TaskFailed { .. }
                 | Observation::WorkerHookStop { .. }
                 | Observation::UserMessage { .. }
+                | Observation::TaskGateResult { .. }
         )
     }
 
@@ -87,6 +105,34 @@ impl Observation {
             } => format!(
                 "A worker card finished a turn. Re-read the wave state to incorporate any changes.\n(hook_id={idempotency_key})"
             ),
+            // §6.5 turn text. `failing_step` is absent on
+            // timeout/infra verdicts (no step sentinel attributed) —
+            // the log tail carries the reason there.
+            Observation::TaskGateResult {
+                idempotency_key,
+                key,
+                passed,
+                failing_step,
+                exit_code,
+                log_tail,
+                attempt,
+            } => {
+                let verdict = if *passed {
+                    "passed".to_string()
+                } else {
+                    match (failing_step.as_deref(), exit_code) {
+                        (Some(step), Some(code)) => {
+                            format!("FAILED at step {step} (exit {code})")
+                        }
+                        (Some(step), None) => format!("FAILED at step {step}"),
+                        (None, Some(code)) => format!("FAILED (exit {code})"),
+                        (None, None) => "FAILED".to_string(),
+                    }
+                };
+                format!(
+                    "Task {key} gate {verdict} (attempt {attempt}). Log tail:\n{log_tail}\nRead the full log at plan/{key}/gate.log; read the worker output at runs/{idempotency_key}.md."
+                )
+            }
         }
     }
 }

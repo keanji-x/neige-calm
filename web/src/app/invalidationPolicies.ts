@@ -78,6 +78,7 @@ type WaveFilesDerivedEvent =
   | EventOf<'task.dispatched'>
   | EventOf<'task.completed'>
   | EventOf<'task.failed'>
+  | EventOf<'task.gate_result'>
   | EventOf<'terminal.deleted'>;
 
 function waveFilesDerivedEventKeys(
@@ -232,5 +233,10 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     requiresContext: waveFilesDerivedEventKeys,
     reason:
       'Scheduler claim record (#644 PR-B) — the runs views derive their requested-record from it; same surface task.completed/failed refresh.',
+  },
+  'task.gate_result': {
+    requiresContext: waveFilesDerivedEventKeys,
+    reason:
+      'Gate-runner verdict (#644 PR-C) — flips the plan-task row done/failed; refreshes the same runs/wave-files surface as task.completed/failed.',
   },
 });

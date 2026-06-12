@@ -350,7 +350,18 @@ const BUS_CAPACITY: usize = 1024;
 ///   WITHOUT advancing the cursor. Migration 0043 re-stamps any
 ///   `plan.updated` / `task.dispatched` rows persisted at version 2
 ///   before this bump shipped.
-pub const SYNC_EVENT_VERSION: u32 = 3;
+/// * `4` — gate-result wire kind (issue #644 PR-C). Adds
+///   `task.gate_result` to the event union. A v3 tab whose per-frame
+///   gate cached `syncEventVersion=3` at mount would treat
+///   `eventVersion=3` frames carrying the new kind as in-range,
+///   advance its replay cursor, then silently fail zod on the unknown
+///   discriminator — permanently skipping the gate-result
+///   invalidation. Bumping to `4` makes those tabs drop the frames
+///   WITHOUT advancing the cursor. Migration 0044 re-stamps any
+///   `task.gate_result` rows persisted below version 4 (defensive —
+///   the kind and the bump ship in the same change, mirroring the
+///   0043 procedure).
+pub const SYNC_EVENT_VERSION: u32 = 4;
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
@@ -730,6 +741,43 @@ pub enum Event {
         #[ts(optional)]
         agent_message: Option<String>,
     },
+
+    /// Issue #644 PR-C — the kernel gate runner finished one
+    /// `task-verify` attempt and recorded its verdict. Appended in the
+    /// SAME tx as the `verifying → done|failed` tasks-row flip (the
+    /// gate observer's completion tx, or the scheduler's reconcile
+    /// backstop), wave-scoped, actor `ActorId::KernelDispatcher` —
+    /// every kernel-emitted task event uses `KernelDispatcher` so
+    /// `is_spec_verdict_event` never classifies it as a spec verdict
+    /// (design §6.5).
+    ///
+    /// `task_id` and `idempotency_key` both carry the task id
+    /// (`"{wave_id}:{key}"`); the duplicate key field keeps the
+    /// task-event correlation convention every other `task.*` kind
+    /// uses. `passed` is the machine verdict (wrapper exit 0);
+    /// `failing_step` is the last `::gate-step` sentinel before a red
+    /// exit; `log_tail` is the trailing ≤8KiB of the gate log;
+    /// `attempt` is the gate attempt number `N` from the operation's
+    /// `#g{N}` idempotency suffix. Kernel-only: the in-tx role gate
+    /// refuses it from any card-derived actor or plugin.
+    #[serde(rename = "task.gate_result")]
+    TaskGateResult {
+        task_id: String,
+        idempotency_key: String,
+        passed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        failing_step: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        exit_code: Option<i32>,
+        log_tail: String,
+        log_path: String,
+        attempt: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_message: Option<String>,
+    },
 }
 
 /// Central event-classifier result for the kernel's event surfaces.
@@ -922,6 +970,15 @@ impl Event {
                 entity_kind: None,
                 entity_id: None,
             },
+            // Issue #644 PR-C — like the other task-lifecycle signals:
+            // no plugin / entity classification; consumers filter via
+            // the events kind clause + the envelope's wave scope.
+            Event::TaskGateResult { .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: None,
+                entity_id: None,
+            },
         }
     }
 
@@ -959,6 +1016,7 @@ impl Event {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
+            Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
 
@@ -1112,7 +1170,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TerminalWorkerRequested { .. }
         | Event::TaskCompleted { .. }
         | Event::TaskFailed { .. }
-        | Event::TaskDispatched { .. } => vec!["*".into()],
+        | Event::TaskDispatched { .. }
+        | Event::TaskGateResult { .. } => vec!["*".into()],
 
         // Issue #644 — plan revisions are wave-scoped on the payload, so
         // wave subscribers (future UI task list) can filter without the
@@ -1630,6 +1689,19 @@ mod scope_tests {
         };
         assert_eq!(task_dispatched.kind_tag(), "task.dispatched");
 
+        let task_gate_result = Event::TaskGateResult {
+            task_id: "wave-1:impl-parser".into(),
+            idempotency_key: "wave-1:impl-parser".into(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: String::new(),
+            log_path: "/tmp/gate.log".into(),
+            attempt: 1,
+            agent_message: None,
+        };
+        assert_eq!(task_gate_result.kind_tag(), "task.gate_result");
+
         let claude_hook = Event::ClaudeHook {
             card_id: CardId::from("card-1"),
             kind: "hook.claude.stop".into(),
@@ -1993,6 +2065,52 @@ mod scope_tests {
         assert_eq!(back.kind_tag(), "task.failed");
     }
 
+    #[test]
+    fn task_gate_result_serde_round_trip() {
+        // Issue #644 PR-C — pin the gate-result wire shape: zod's
+        // `taskGateResultSchema` and the SYNC_EVENT_VERSION=4 history
+        // bullet both depend on these exact field names.
+        let ev = Event::TaskGateResult {
+            task_id: "w-1:impl".into(),
+            idempotency_key: "w-1:impl".into(),
+            passed: false,
+            failing_step: Some("clippy".into()),
+            exit_code: Some(101),
+            log_tail: "error: ...".into(),
+            log_path: "/data/gate-logs/w-1:impl-g2.log".into(),
+            attempt: 2,
+            agent_message: None,
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "task.gate_result");
+        assert_eq!(json["data"]["task_id"], "w-1:impl");
+        assert_eq!(json["data"]["idempotency_key"], "w-1:impl");
+        assert_eq!(json["data"]["passed"], false);
+        assert_eq!(json["data"]["failing_step"], "clippy");
+        assert_eq!(json["data"]["exit_code"], 101);
+        assert_eq!(json["data"]["log_tail"], "error: ...");
+        assert_eq!(json["data"]["attempt"], 2);
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "task.gate_result");
+
+        // Green verdict: the Option fields stay off the wire.
+        let green = Event::TaskGateResult {
+            task_id: "w-1:impl".into(),
+            idempotency_key: "w-1:impl".into(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: String::new(),
+            log_path: "/data/gate-logs/w-1:impl-g1.log".into(),
+            attempt: 1,
+            agent_message: None,
+        };
+        let json = serde_json::to_value(&green).unwrap();
+        assert!(json["data"].get("failing_step").is_none());
+        assert!(json["data"].get("agent_message").is_none());
+    }
+
     // ----- PR2 of #247: EditAuthor + WaveReportEdited -------------------
     //
     // Pin the wire shape of the structured edit-log variant + its
@@ -2309,6 +2427,17 @@ mod scope_tests {
             Event::TaskDispatched {
                 idempotency_key: "wave-1:impl-parser".into(),
                 kind: "codex".into(),
+                agent_message: None,
+            },
+            Event::TaskGateResult {
+                task_id: "wave-1:impl-parser".into(),
+                idempotency_key: "wave-1:impl-parser".into(),
+                passed: false,
+                failing_step: Some("test".into()),
+                exit_code: Some(101),
+                log_tail: "boom".into(),
+                log_path: "/tmp/gate-logs/wave-1:impl-parser-g1.log".into(),
+                attempt: 1,
                 agent_message: None,
             },
         ]

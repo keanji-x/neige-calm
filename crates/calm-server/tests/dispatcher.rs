@@ -1160,6 +1160,7 @@ async fn dispatcher_promotes_to_working_before_fast_worker_report() {
         events: events.clone(),
         write: calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         daemon_token_hash: None,
+        gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
     });
     let task_completed = calm_server::mcp_server::build_default_registry()
         .lookup(calm_server::mcp_server::tools::emit::TOOL_TASK_COMPLETE)

@@ -15,7 +15,8 @@
 //!   §3 fast-report race — `fast_worker_report_beats_running_stamp`.
 //!   §5.4 spawn failure — `spawn_failure_marks_failed_and_emits_kernel_task_failed`.
 //!   §3 emit-tx flips — `worker_report_flips_row_inside_emit_tx`,
-//!     `duplicate_report_is_idempotent`, `gated_row_is_left_alone_on_complete`.
+//!     `duplicate_report_is_idempotent`,
+//!     `gated_success_report_flips_to_verifying_and_suppresses_promotion`.
 //!   §3 verdict isolation — `spec_verdict_never_flips_rows`.
 //!   M2 live path — `terminal_hook_completes_task_on_exit`.
 //!   §8 sweep arms — `sweep_reconciles_running_terminal_with_recorded_exit`,
@@ -110,6 +111,20 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
+    // PR-C activated rule 6 and new waves default `require_task_gates
+    // = 1` (migration 0041 DB DEFAULT) — this suite mostly plans
+    // ungated tasks, so the boot wave opts out; gate-specific tests
+    // declare real gates regardless of the flag.
+    repo.wave_update(
+        wave.id.as_str(),
+        WavePatch {
+            require_task_gates: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("boot wave opts out of rule 6");
+
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
@@ -125,6 +140,7 @@ async fn boot() -> Boot {
         events: events.clone(),
         write: write.clone(),
         daemon_token_hash: None,
+        gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
@@ -1058,10 +1074,12 @@ async fn duplicate_report_is_idempotent() {
 }
 
 #[tokio::test]
-async fn gated_row_is_left_alone_on_complete() {
-    // Defensive PR-C guard: no gated row can exist yet (PR-A rule 8),
-    // but if one did, `calm.task.complete` must NOT flip it to done —
-    // gated completion belongs to the verify pipeline.
+async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
+    // §3 (PR-C): a gated row's success report is a claim, not
+    // evidence — the emit tx hands the row to the gate runner
+    // (`running → verifying`) and the `Working → Reviewing`
+    // auto-promotion is suppressed (the gate-result tx promotes
+    // instead, on ANY verdict).
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let mut task = plan_task(&boot.wave_id, "gated", TaskKind::Codex, &[]);
@@ -1086,14 +1104,28 @@ async fn gated_row_is_left_alone_on_complete() {
     )
     .await
     .expect("task complete");
+    let row = task_row(&boot, "gated").await;
     assert_eq!(
-        task_row(&boot, "gated").await.status,
-        TaskStatus::Running,
-        "gated rows must not be mis-flipped to done"
+        row.status,
+        TaskStatus::Verifying,
+        "gated success report flips running → verifying, never done"
+    );
+    assert_eq!(row.gate_attempt, 0, "no gate attempt prepared yet");
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "Working → Reviewing promotion is suppressed for gated tasks (§3)"
     );
 
-    // Worker failure flips regardless of gate (§3: no gate runs on
-    // failure).
+    // A worker `task.fail` against the now-`verifying` row is moot —
+    // the verify pipeline owns it (verifying → failed only via gate
+    // verdict). The legacy event persists; the row is untouched.
     call_tool(
         &boot,
         TOOL_TASK_FAIL,
@@ -1101,8 +1133,12 @@ async fn gated_row_is_left_alone_on_complete() {
         json!({ "idempotency_key": task_id, "reason": "boom" }),
     )
     .await
-    .expect("task fail");
-    assert_eq!(task_row(&boot, "gated").await.status, TaskStatus::Failed);
+    .expect("task fail persists as a non-flip report");
+    assert_eq!(
+        task_row(&boot, "gated").await.status,
+        TaskStatus::Verifying,
+        "a verifying row is owned by the gate; worker reports cannot flip it"
+    );
 }
 
 #[tokio::test]
@@ -2707,4 +2743,1084 @@ async fn backstop_sweep_noops_until_boot_sweep_completes() {
     // Post-boot ticks sweep for real (and stay idempotent).
     scheduler.sweep_all().await;
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+}
+
+// ---------------------------------------------------------------------------
+// PR-C — task-verify gate runner (real /bin/sh gates on parked operations)
+//
+// Coverage map (brief §7 / design § → test):
+//   green gate → done + TaskGateResult(passed) + promotion —
+//     `green_gate_flips_verifying_to_done_and_promotes`.
+//   red gate → failed('gate-red') + failing_step + log_tail —
+//     `red_gate_fails_with_failing_step_and_log_tail`.
+//   timeout → group killed + 'gate-timeout' —
+//     `gate_timeout_group_kills_and_fails_gate_timeout`.
+//   kill-prior (recorded triple) — `gate_spawn_kills_prior_recorded_group`.
+//   parked-op boot liveness (dead, no outcome → per-#653 handling +
+//     consumer reconcile copy) —
+//     `parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra`.
+//   §6.5 suppression predicate — `gated_self_report_predicate`.
+//
+// Real processes are spawned (POSIX sh, sleep) — serialized behind one
+// lock like the dispatcher daemon-spawn tests (CI flake limits).
+// ---------------------------------------------------------------------------
+
+static GATE_SPAWN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn unique_gate_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "neige-gate-test-{tag}-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    std::fs::create_dir_all(&dir).expect("gate dir");
+    dir
+}
+
+fn gate_task(boot: &Boot, key: &str, gate_json: &str) -> Task {
+    let mut task = plan_task(&boot.wave_id, key, TaskKind::Codex, &[]);
+    task.status = TaskStatus::Verifying;
+    task.gate_json = Some(gate_json.to_string());
+    task
+}
+
+async fn wait_for_terminal_row(boot: &Boot, key: &str, timeout_secs: u64) -> Task {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        let row = task_row(boot, key).await;
+        if matches!(row.status, TaskStatus::Done | TaskStatus::Failed) {
+            return row;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "task {key} did not reach a terminal status in {timeout_secs}s: {row:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+async fn wave_lifecycle(boot: &Boot) -> WaveLifecycle {
+    boot.repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .lifecycle
+}
+
+#[tokio::test]
+async fn green_gate_flips_verifying_to_done_and_promotes() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("green");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [
+            { "name": "hello", "cmd": "echo gate-says-hello" },
+            { "name": "check", "cmd": "test -d ." }
+        ]
+    })
+    .to_string();
+    let task = gate_task(&boot, "green", &gate);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "green", 30).await;
+
+    assert_eq!(row.status, TaskStatus::Done, "{row:?}");
+    assert_eq!(row.status_detail, None);
+    assert_eq!(row.gate_attempt, 1);
+    assert!(row.gate_pid.is_none(), "pid triple cleared by the flip");
+    assert!(row.finished_at_ms.is_some());
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], true, "{verdict}");
+    assert_eq!(verdict["exit_code"], 0);
+    assert_eq!(verdict["attempt"], 1);
+    assert!(
+        verdict["log_tail"]
+            .as_str()
+            .unwrap()
+            .contains("gate-says-hello"),
+        "{verdict}"
+    );
+
+    // The §6.5 event landed, actor KernelDispatcher, passed=true.
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let (actor, data) = &rows[0];
+    assert!(
+        actor.contains("kernel-dispatcher") || actor.contains("KernelDispatcher"),
+        "gate result actor must be the kernel dispatcher: {actor}"
+    );
+    assert_eq!(data["task_id"], task_id.as_str());
+    assert_eq!(data["passed"], true);
+
+    // §3: exactly one promotion per gated task, in the gate-result tx.
+    assert_eq!(wave_lifecycle(&boot).await, WaveLifecycle::Reviewing);
+
+    // Disk artifacts: full log with sentinels, exit file "0".
+    let log = std::fs::read_to_string(dir.join(format!("{task_id}-g1.log"))).unwrap();
+    assert!(log.contains("::gate-step hello"), "{log}");
+    assert!(log.contains("gate-says-hello"), "{log}");
+    let exit = std::fs::read_to_string(dir.join(format!("{task_id}-g1.exit"))).unwrap();
+    assert_eq!(exit.trim(), "0");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn red_gate_fails_with_failing_step_and_log_tail() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("red");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [
+            { "name": "ok", "cmd": "true" },
+            { "name": "boom", "cmd": "echo failing-out; exit 7" }
+        ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "red", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "red", 30).await;
+
+    assert_eq!(
+        row.status,
+        TaskStatus::Failed,
+        "gate red is failed: {row:?}"
+    );
+    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], false);
+    assert_eq!(verdict["failing_step"], "boom", "{verdict}");
+    assert_eq!(verdict["exit_code"], 7);
+    assert!(
+        verdict["log_tail"]
+            .as_str()
+            .unwrap()
+            .contains("failing-out"),
+        "{verdict}"
+    );
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1["passed"], false);
+    assert_eq!(rows[0].1["failing_step"], "boom");
+    // Promotion fires on ANY verdict (§3) — red included.
+    assert_eq!(wave_lifecycle(&boot).await, WaveLifecycle::Reviewing);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn gate_timeout_group_kills_and_fails_gate_timeout() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("timeout");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "timeout_secs": 1,
+        "steps": [ { "name": "hang", "cmd": "sleep 600" } ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "hang", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    let started = std::time::Instant::now();
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "hang", 30).await;
+
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("gate-timeout"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(25),
+        "live timeout enforcement, not the parked deadline backstop"
+    );
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["status_detail"], "gate-timeout");
+    // No exit file — the group was SIGKILLed mid-step.
+    let task_id = format!("{}:hang", boot.wave_id.as_str());
+    assert!(!dir.join(format!("{task_id}-g1.exit")).exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn gate_spawn_kills_prior_recorded_group() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("killprior");
+
+    // A live `setsid` group recorded on the tasks row — the stand-in
+    // for a previous attempt's orphaned gate.
+    let mut cmd = tokio::process::Command::new("sleep");
+    cmd.arg("600").kill_on_drop(true);
+    // SAFETY: setsid() is async-signal-safe, called pre-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut orphan = cmd.spawn().expect("spawn orphan sleeper");
+    let orphan_pid = orphan.id().expect("orphan pid") as i64;
+    let start_time =
+        calm_server::proc_identity::read_proc_start_time(orphan_pid as i32).expect("starttime");
+    let boot_id = calm_server::proc_identity::read_boot_id().expect("boot id");
+
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "ok", "cmd": "true" } ]
+    })
+    .to_string();
+    let mut task = gate_task(&boot, "killprior", &gate);
+    task.gate_pid = Some(orphan_pid);
+    task.gate_pid_starttime = Some(start_time as i64);
+    task.gate_pid_boot_id = Some(boot_id);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "killprior", 30).await;
+    assert_eq!(row.status, TaskStatus::Done);
+
+    // Kill-prior reaped the recorded group before spawning the fresh
+    // attempt: the sleeper died to SIGKILL well before its 600s.
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), orphan.wait())
+        .await
+        .expect("orphan must be dead (kill-prior)")
+        .expect("wait");
+    assert!(!status.success(), "killed, not exited: {status:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F1 — the verdict channel is the wait status, never
+/// the worker-reachable exit file: a step that forges `0` into the
+/// exit path and then SIGKILLs the wrapper group must still land a
+/// FAILED row (signal death → gate-infra), not a green one.
+#[tokio::test]
+async fn forged_exit_file_and_group_kill_cannot_flip_gate_green() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("forge");
+    let task_id = format!("{}:forge", boot.wave_id.as_str());
+    let exit_path = dir.join(format!("{task_id}-g1.exit"));
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ {
+            "name": "forge",
+            "cmd": format!("printf '0\\n' > '{}'; kill -9 0", exit_path.display()),
+        } ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "forge", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "forge", 30).await;
+
+    assert_eq!(
+        row.status,
+        TaskStatus::Failed,
+        "forged exit file must not pass the gate: {row:?}"
+    );
+    assert_eq!(row.status_detail.as_deref(), Some("gate-infra"));
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], false, "{verdict}");
+    // The forged file IS on disk — proving the observer ignored it.
+    assert_eq!(
+        std::fs::read_to_string(&exit_path).unwrap().trim(),
+        "0",
+        "forged artifact present but not consulted"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F2 — a step body is a free-form snippet: a top-level
+/// `exit 7` must end the STEP (red, exit_code 7) and still flow
+/// through `neige_gate_finish`, leaving the exit file for
+/// crashed-kernel recovery.
+#[tokio::test]
+async fn step_exit_ends_step_and_still_writes_exit_file() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("stepexit");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "bail", "cmd": "exit 7" } ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "stepexit", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "stepexit", 30).await;
+
+    assert_eq!(row.status, TaskStatus::Failed, "{row:?}");
+    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["exit_code"], 7, "{verdict}");
+    assert_eq!(verdict["failing_step"], "bail");
+    // The finish handler ran despite the step's `exit`: the durable
+    // recovery hint exists and carries the real code.
+    let task_id = format!("{}:stepexit", boot.wave_id.as_str());
+    let exit = std::fs::read_to_string(dir.join(format!("{task_id}-g1.exit"))).unwrap();
+    assert_eq!(exit.trim(), "7");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F1+F5 — step env hygiene: `NEIGE_GATE_EXIT_PATH` is
+/// unset before any step runs, the kernel's environment does not leak
+/// (env_clear), and the explicit minimal set (PATH, HOME) survives.
+#[tokio::test]
+async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    // Sentinel for the env_clear assertion: cargo always sets this for
+    // the test process, so it stands in for "arbitrary kernel env".
+    assert!(
+        std::env::var_os("CARGO_MANIFEST_DIR").is_some(),
+        "test must run under cargo for the kernel-env sentinel"
+    );
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("env");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [
+            { "name": "no-exit-path", "cmd": "test -z \"$NEIGE_GATE_EXIT_PATH\"" },
+            { "name": "no-kernel-env", "cmd": "test -z \"$CARGO_MANIFEST_DIR\"" },
+            { "name": "minimal-set", "cmd": "test -n \"$PATH\" && test -n \"$HOME\"" }
+        ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "env", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "env", 30).await;
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        row.status,
+        TaskStatus::Done,
+        "all env-hygiene steps must pass: {verdict}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F6 — gates are in-flight machinery, not new claims:
+/// §5.2 scopes lifecycle gating to claims, so a gated task that
+/// reported while the wave is Blocked must have its gate driven by the
+/// very pass the report poked — not sit `verifying` until the slow
+/// reconcile tick.
+#[tokio::test]
+async fn blocked_wave_still_drives_verifying_gate() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Blocked).await;
+    let dir = unique_gate_dir("blocked");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "ok", "cmd": "true" } ]
+    })
+    .to_string();
+    seed_task(&boot, gate_task(&boot, "blocked", &gate)).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "blocked", 30).await;
+    assert_eq!(row.status, TaskStatus::Done, "{row:?}");
+    // Lifecycle promotion is still guarded on Working → Reviewing: a
+    // Blocked wave stays Blocked (the user gets unblocked explicitly).
+    assert_eq!(wave_lifecycle(&boot).await, WaveLifecycle::Blocked);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F4 — a `prepare_tx` client error BEFORE the guarded
+/// bump terminal-fails op `#g1` while the row stays `verifying@0`.
+/// Pre-fix this looped forever (every drive deduped onto the dead op
+/// and the eq-attempt reconcile guard missed); the pre-bump arm must
+/// flip the row `failed('gate-infra')` and emit the gate result.
+/// Repro: a verifying row whose `gate_json` is gone — prepare_tx
+/// raises Conflict before `task_gate_attempt_bump_tx` (same pre-bump
+/// class as "wave row gone").
+#[tokio::test]
+async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("prebump");
+
+    let mut task = plan_task(&boot.wave_id, "prebump", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Verifying;
+    task.gate_json = None; // pre-bump Conflict: "task declares no gate"
+    seed_task(&boot, task).await;
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "prebump", 30).await;
+
+    assert_eq!(row.status, TaskStatus::Failed, "{row:?}");
+    assert_eq!(row.status_detail.as_deref(), Some("gate-infra"));
+    assert_eq!(row.gate_attempt, 0, "the bump never happened");
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], false);
+    assert_eq!(verdict["attempt"], 1, "the verdict records the op attempt");
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "exactly one gate result: {rows:?}");
+    // The dead op is terminal-failed and no second attempt was minted.
+    let task_id = format!("{}:prebump", boot.wave_id.as_str());
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Failed),
+        "{:?}",
+        op.phase.tag()
+    );
+    assert_eq!(operation_count(&boot, "task-verify").await, 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("bootdead");
+
+    // A `verifying` row whose attempt-1 op is parked with artifacts of
+    // a provably-dead process and NO exit file — the "kernel died,
+    // gate died, no verdict" crash shape.
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "ok", "cmd": "true" } ]
+    })
+    .to_string();
+    let mut task = gate_task(&boot, "bootdead", &gate);
+    task.gate_attempt = 1;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
+    let op_id = operation_repo
+        .insert_operation(
+            "task-verify",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(format!("{task_id}#g1")),
+                payload_hash: "hash".into(),
+            },
+            json!({}),
+        )
+        .await
+        .unwrap();
+    let mut claimed = operation_repo.claim_drive_batch(1).await.unwrap();
+    assert_eq!(claimed.len(), 1, "exactly the crafted op");
+    let _op = claimed.pop().unwrap();
+    let mut output = TxOutput::new("task", Some(task_id.clone()), json!({}));
+    output.data = json!({
+        "task_id": task_id,
+        "wave_id": boot.wave_id.as_str(),
+        "cove_id": "cove-x",
+        "key": "bootdead",
+        "attempt": 1,
+        "cwd": dir.to_str().unwrap(),
+        "gate": { "steps": [ { "name": "ok", "cmd": "true" } ] }
+    });
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'spawn_started',
+               tx_output_json = ?1,
+               target_json = '{"type":"task","id":null}'
+           WHERE id = ?2"#,
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();
+    let artifacts = calm_server::operation::SpawnArtifacts {
+        pid: 999_999,
+        pgid: 999_999,
+        start_time: 1,
+        boot_id: calm_server::proc_identity::read_boot_id().unwrap_or_else(|| "boot".into()),
+        log_path: Some(dir.join("bootdead-g1.log").display().to_string()),
+        extra: json!({ "exit_path": dir.join("bootdead-g1.exit").display().to_string() }),
+    };
+    operation_repo
+        .record_spawn_artifacts(&op, &artifacts)
+        .await
+        .unwrap();
+    operation_repo
+        .set_parked(&op, now_ms() + 600_000)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    // Boot recovery: VerifyParked → dead, no exit file → op fails
+    // parked_dead (#653 §4.2; op-only write).
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Failed),
+        "dead parked gate with no verdict fails at boot: {:?}",
+        op.phase.tag()
+    );
+    assert_eq!(
+        task_row(&boot, "bootdead").await.status,
+        TaskStatus::Verifying,
+        "boot recovery writes the op only — the row copy is the scheduler's job"
+    );
+
+    // Consumer reconcile (§6.2 / §8 arm 2): the sweep's verifying arm
+    // copies the op failure to the row as gate-infra.
+    scheduler.sweep_all().await;
+    let row = wait_for_terminal_row(&boot, "bootdead", 30).await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("gate-infra"));
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "reconcile copy emits the gate result");
+    assert_eq!(rows[0].1["passed"], false);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Craft the durable shape `spawn_side_effect` leaves behind: a parked
+/// `task-verify` op `#g1` with frozen tx_output and recorded spawn
+/// artifacts. Mirrors the bootdead test's inline crafting (PR #685 F8).
+async fn seed_parked_gate_op(
+    boot: &Boot,
+    task_id: &str,
+    key: &str,
+    dir: &std::path::Path,
+    artifacts: &calm_server::operation::SpawnArtifacts,
+) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
+    let op_id = operation_repo
+        .insert_operation(
+            "task-verify",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(format!("{task_id}#g1")),
+                payload_hash: "hash".into(),
+            },
+            json!({}),
+        )
+        .await
+        .unwrap();
+    let mut claimed = operation_repo.claim_drive_batch(1).await.unwrap();
+    assert_eq!(claimed.len(), 1, "exactly the crafted op");
+    claimed.pop();
+    let mut output = TxOutput::new("task", Some(task_id.to_string()), json!({}));
+    output.data = json!({
+        "task_id": task_id,
+        "wave_id": boot.wave_id.as_str(),
+        "cove_id": "cove-x",
+        "key": key,
+        "attempt": 1,
+        "cwd": dir.to_str().unwrap(),
+        "gate": { "steps": [ { "name": "ok", "cmd": "true" } ] }
+    });
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'spawn_started',
+               tx_output_json = ?1,
+               target_json = '{"type":"task","id":null}'
+           WHERE id = ?2"#,
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();
+    operation_repo
+        .record_spawn_artifacts(&op, artifacts)
+        .await
+        .unwrap();
+    operation_repo
+        .set_parked(&op, now_ms() + 600_000)
+        .await
+        .unwrap()
+        .unwrap();
+    op_id
+}
+
+/// PR #685 review F8(a) — boot reattach to a LIVE gate: a parked op
+/// whose recorded process survived the kernel restart is left parked
+/// by recovery, and the spawned reattach observer lands the verdict
+/// (one-tx flip + event) once the process exits.
+#[tokio::test]
+async fn boot_reattach_live_gate_lands_verdict_after_exit() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("reattach");
+
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "ok", "cmd": "true" } ]
+    })
+    .to_string();
+    let mut task = gate_task(&boot, "reattach", &gate);
+    task.gate_attempt = 1;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // The surviving wrapper stand-in: alive across "the restart",
+    // writes its exit file green (tmp + rename, like the real wrapper)
+    // and exits ~1s from now.
+    let exit_path = dir.join(format!("{task_id}-g1.exit"));
+    let log_path = dir.join(format!("{task_id}-g1.log"));
+    std::fs::write(&log_path, "::gate-step ok\nfine\n").unwrap();
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg(format!(
+        "sleep 1; printf '0\\n' > '{exit}.tmp'; mv -f -- '{exit}.tmp' '{exit}'",
+        exit = exit_path.display()
+    ));
+    // SAFETY: setsid() is async-signal-safe, called pre-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut survivor = cmd.spawn().expect("spawn surviving gate stand-in");
+    let pid = survivor.id().expect("pid") as i32;
+    let artifacts = calm_server::operation::SpawnArtifacts {
+        pid,
+        pgid: pid,
+        start_time: calm_server::proc_identity::read_proc_start_time(pid).expect("starttime"),
+        boot_id: calm_server::proc_identity::read_boot_id().expect("boot id"),
+        log_path: Some(log_path.display().to_string()),
+        extra: json!({ "exit_path": exit_path.display().to_string() }),
+    };
+    seed_parked_gate_op(&boot, &task_id, "reattach", &dir, &artifacts).await;
+
+    let (runtime, _scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    // Alive → LeaveParked: the op survives recovery unresolved.
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Parked),
+        "live gate stays parked at boot: {:?}",
+        op.phase.tag()
+    );
+    // Reap the stand-in in the test so the observer's liveness poll
+    // sees a dead pid, not a zombie.
+    survivor.wait().await.expect("stand-in exits");
+    // The reattach observer polls the identity until death, reads the
+    // exit file, and lands the one-tx completion: row done + event.
+    let row = wait_for_terminal_row(&boot, "reattach", 30).await;
+    assert_eq!(row.status, TaskStatus::Done, "{row:?}");
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], true, "{verdict}");
+    assert_eq!(verdict["exit_code"], 0);
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Succeeded),
+        "{:?}",
+        op.phase.tag()
+    );
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1["passed"], true);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 review F8(b) — exit-file verdict recovery: a parked op
+/// whose process died while the kernel was down, leaving a valid exit
+/// file, recovers the REAL red verdict (gate-red, exit_code, failing
+/// step) — never gate-infra.
+#[tokio::test]
+async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("deadexit");
+
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "boom", "cmd": "false" } ]
+    })
+    .to_string();
+    let mut task = gate_task(&boot, "deadexit", &gate);
+    task.gate_attempt = 1;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Dead-process artifacts + the durable verdict the wrapper wrote
+    // before the whole stack went down.
+    let exit_path = dir.join(format!("{task_id}-g1.exit"));
+    let log_path = dir.join(format!("{task_id}-g1.log"));
+    std::fs::write(&log_path, "::gate-step boom\nboom-out\n").unwrap();
+    std::fs::write(&exit_path, "7\n").unwrap();
+    let artifacts = calm_server::operation::SpawnArtifacts {
+        pid: 999_999,
+        pgid: 999_999,
+        start_time: 1,
+        boot_id: calm_server::proc_identity::read_boot_id().unwrap_or_else(|| "boot".into()),
+        log_path: Some(log_path.display().to_string()),
+        extra: json!({ "exit_path": exit_path.display().to_string() }),
+    };
+    seed_parked_gate_op(&boot, &task_id, "deadexit", &dir, &artifacts).await;
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    // Dead + parseable exit file → the op completes with the recorded
+    // verdict (op-only write, #653 §4.2).
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Succeeded),
+        "dead gate WITH a verdict recovers it: {:?}",
+        op.phase.tag()
+    );
+    assert_eq!(
+        task_row(&boot, "deadexit").await.status,
+        TaskStatus::Verifying,
+        "boot recovery writes the op only"
+    );
+
+    // Sweep copies the REAL verdict to the row — red, not infra.
+    scheduler.sweep_all().await;
+    let row = wait_for_terminal_row(&boot, "deadexit", 30).await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["exit_code"], 7, "{verdict}");
+    assert_eq!(verdict["failing_step"], "boom");
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1["passed"], false);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 fix round 2, F2 — a parked gate whose process died BEFORE
+/// the deadline with no exit file must fail `gate-infra` promptly via
+/// the steady-state pre-deadline probe, not sit `verifying` until
+/// `parked_deadline_ms` and get misreported `gate-timeout`.
+#[tokio::test]
+async fn parked_gate_dead_pre_deadline_fails_gate_infra_promptly() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("predead");
+
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [ { "name": "ok", "cmd": "true" } ]
+    })
+    .to_string();
+    let mut task = gate_task(&boot, "predead", &gate);
+    task.gate_attempt = 1;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Dead-process artifacts (the "group killed, no verdict written"
+    // shape), parked deadline far in the FUTURE — only the probe can
+    // resolve this before then.
+    let artifacts = calm_server::operation::SpawnArtifacts {
+        pid: 999_999,
+        pgid: 999_999,
+        start_time: 1,
+        boot_id: calm_server::proc_identity::read_boot_id().unwrap_or_else(|| "boot".into()),
+        log_path: Some(dir.join("predead-g1.log").display().to_string()),
+        extra: json!({ "exit_path": dir.join("predead-g1.exit").display().to_string() }),
+    };
+    seed_parked_gate_op(&boot, &task_id, "predead", &dir, &artifacts).await;
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    // Steady-state sweep (NOT boot recovery): the pre-deadline probe
+    // sees dead + no exit file → Fail → op failed `parked_dead`, then
+    // the same sweep's verifying arm copies it to the row.
+    let started = std::time::Instant::now();
+    scheduler.sweep_all().await;
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Failed),
+        "pre-deadline probe fails the dead op: {:?}",
+        op.phase.tag()
+    );
+    let row = wait_for_terminal_row(&boot, "predead", 30).await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(
+        row.status_detail.as_deref(),
+        Some("gate-infra"),
+        "dead-no-verdict is infra, never gate-timeout: {row:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(25),
+        "probe path, not the parked-deadline backstop"
+    );
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1["passed"], false);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PR #685 fix round 2, F1 — dropping/aborting the exit observer (the
+/// in-process stand-in for a graceful kernel shutdown dropping every
+/// spawned task) must NOT kill the running gate: no `kill_on_drop` on
+/// the wrapper child. The group stays alive, and a boot-style recovery
+/// reattaches and lands the real verdict once the gate finishes.
+#[tokio::test]
+async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("obsdrop");
+
+    let mut task = gate_task(
+        &boot,
+        "obsdrop",
+        &json!({
+            "cwd": dir.to_str().unwrap(),
+            "steps": [ { "name": "ok", "cmd": "sleep 2; echo fine" } ]
+        })
+        .to_string(),
+    );
+    task.gate_attempt = 1;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    // Drive the REAL adapter's spawn by hand so the test owns the
+    // observer future the runtime would otherwise detach: craft the
+    // op in `spawn_started` with the frozen tx_output, call
+    // `spawn_side_effect`, park, spawn the observer — then ABORT it
+    // mid-`wait()` (the drop a graceful shutdown performs).
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
+    let op_id = operation_repo
+        .insert_operation(
+            "task-verify",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(format!("{task_id}#g1")),
+                payload_hash: "hash".into(),
+            },
+            json!({}),
+        )
+        .await
+        .unwrap();
+    let mut claimed = operation_repo.claim_drive_batch(1).await.unwrap();
+    assert_eq!(claimed.len(), 1, "exactly the crafted op");
+    claimed.pop();
+    let mut output = TxOutput::new("task", Some(task_id.clone()), json!({}));
+    output.data = json!({
+        "task_id": task_id,
+        "wave_id": boot.wave_id.as_str(),
+        "cove_id": "cove-x",
+        "key": "obsdrop",
+        "attempt": 1,
+        "cwd": dir.to_str().unwrap(),
+        "gate": { "steps": [ { "name": "ok", "cmd": "sleep 2; echo fine" } ] }
+    });
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'spawn_started',
+               tx_output_json = ?1,
+               target_json = '{"type":"task","id":null}'
+           WHERE id = ?2"#,
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();
+
+    let adapter = calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone());
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let spawn_ctx = SpawnCtx::new(
+        route_repo,
+        operation_repo.clone(),
+        Arc::new(DaemonClient {
+            data_dir: std::path::PathBuf::from("/tmp/neige-scheduler-test-noop"),
+            proc_supervisor_sock: Some(std::path::PathBuf::from(
+                "/tmp/neige-scheduler-test-missing.sock",
+            )),
+        }),
+        TerminalRendererRegistry::new(),
+        boot.events.clone(),
+        OperationCompletionBus::new(),
+    );
+    let outcome = adapter
+        .spawn_side_effect(&output, &op, &spawn_ctx)
+        .await
+        .expect("gate spawn");
+    let SpawnOutcome::Parked {
+        deadline_ms,
+        observer,
+    } = outcome
+    else {
+        panic!("task-verify spawn must park");
+    };
+    operation_repo
+        .set_parked(&op, deadline_ms)
+        .await
+        .unwrap()
+        .expect("park commits");
+    let observer_task = tokio::spawn(observer);
+    observer_task.abort();
+    let _ = observer_task.await; // joined: the Child handle is dropped NOW
+
+    // The regression assertion: the wrapper survived the observer drop
+    // (with `kill_on_drop` it would already be SIGKILLed here).
+    let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();
+    let artifacts = op.spawn_artifacts.clone().expect("recorded artifacts");
+    assert!(
+        calm_server::proc_identity::verify_owned_pid(
+            artifacts.pid,
+            artifacts.start_time,
+            &artifacts.boot_id
+        ),
+        "gate wrapper must survive an observer drop"
+    );
+
+    // The dropped Child is unreaped; reap the wrapper deterministically
+    // once it exits so the reattach liveness poll sees a dead pid, not
+    // a zombie (in production the restarted kernel is a NEW process and
+    // init reaps the orphan).
+    let wrapper_pid = artifacts.pid;
+    tokio::task::spawn_blocking(move || {
+        let mut status: libc::c_int = 0;
+        // ECHILD (tokio's orphan reaper won) is fine — either way the
+        // pid leaves /proc.
+        unsafe { libc::waitpid(wrapper_pid, &mut status, 0) };
+    });
+
+    // Boot-style recovery: parked + alive → reattach observer; the
+    // wrapper finishes (~2s), writes its exit file, and the observer
+    // lands the green verdict via the one-tx flip.
+    let (runtime, _scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .expect("op row");
+    assert!(
+        matches!(op.phase.tag(), PhaseTag::Parked),
+        "live gate stays parked through boot recovery: {:?}",
+        op.phase.tag()
+    );
+    let row = wait_for_terminal_row(&boot, "obsdrop", 30).await;
+    assert_eq!(row.status, TaskStatus::Done, "{row:?}");
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(verdict["passed"], true, "{verdict}");
+    assert_eq!(verdict["exit_code"], 0);
+    let rows = event_rows(&boot, "task.gate_result").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1["passed"], true);
+    std::fs::remove_dir_all(&dir).ok();
 }

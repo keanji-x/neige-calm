@@ -379,6 +379,63 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('parses a valid task.gate_result (#644 PR-C), red verdict', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: false,
+        failing_step: 'clippy',
+        exit_code: 101,
+        log_tail: 'error: ...',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+      },
+    });
+    expect(parsed.ev).toBe('task.gate_result');
+    if (parsed.ev === 'task.gate_result') {
+      expect(parsed.data.passed).toBe(false);
+      expect(parsed.data.failing_step).toBe('clippy');
+      expect(parsed.data.exit_code).toBe(101);
+      expect(parsed.data.attempt).toBe(1);
+    }
+  });
+
+  it('parses a green task.gate_result with the optional fields absent', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: true,
+        exit_code: 0,
+        log_tail: '',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+      },
+    });
+    expect(parsed.ev).toBe('task.gate_result');
+    if (parsed.ev === 'task.gate_result') {
+      expect(parsed.data.passed).toBe(true);
+      expect(parsed.data.failing_step).toBeUndefined();
+    }
+  });
+
+  it('rejects task.gate_result missing passed', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        log_tail: '',
+        log_path: '/p',
+        attempt: 1,
+      },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 // ---- PR2 of #247: wave.report_edited ----------------------------------

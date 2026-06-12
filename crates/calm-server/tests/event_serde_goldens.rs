@@ -658,6 +658,58 @@ golden_test!(
     }
 );
 
+golden_test!(
+    task_dispatched_full,
+    "task_dispatched.full.json",
+    Event::TaskDispatched {
+        idempotency_key: "wave-01:build-step".into(),
+        kind: "codex".into(),
+        agent_message: Some("scheduler claimed build-step".into()),
+    }
+);
+
+golden_test!(
+    task_dispatched_min,
+    "task_dispatched.min.json",
+    Event::TaskDispatched {
+        idempotency_key: "wave-01:build-step".into(),
+        kind: "terminal".into(),
+        agent_message: None,
+    }
+);
+
+golden_test!(
+    task_gate_result_full,
+    "task_gate_result.full.json",
+    Event::TaskGateResult {
+        task_id: "wave-01:build-step".into(),
+        idempotency_key: "wave-01:build-step".into(),
+        passed: false,
+        failing_step: Some("clippy".into()),
+        exit_code: Some(101),
+        log_tail: "error: gate step failed\n".into(),
+        log_path: "/data/gate-logs/wave-01:build-step-g2.log".into(),
+        attempt: 2,
+        agent_message: Some("gate attempt 2 failed at clippy".into()),
+    }
+);
+
+golden_test!(
+    task_gate_result_min,
+    "task_gate_result.min.json",
+    Event::TaskGateResult {
+        task_id: "wave-01:build-step".into(),
+        idempotency_key: "wave-01:build-step".into(),
+        passed: true,
+        failing_step: None,
+        exit_code: None,
+        log_tail: String::new(),
+        log_path: "/data/gate-logs/wave-01:build-step-g1.log".into(),
+        attempt: 1,
+        agent_message: None,
+    }
+);
+
 // ---------------------------------------------------------------------------
 // Alias coverage through the events-table replay path
 // ---------------------------------------------------------------------------
@@ -692,7 +744,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 28] = [
+const ALL_KIND_TAGS: [&str; 29] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -721,6 +773,7 @@ const ALL_KIND_TAGS: [&str; 28] = [
     "task.failed",
     "plan.updated",
     "task.dispatched",
+    "task.gate_result",
 ];
 
 /// Every golden file must parse, every canonical `ev` tag must be a known
@@ -755,7 +808,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 46,
+        files, 48,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -804,6 +857,7 @@ fn kind_tag_list_matches_enum() {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
+            Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
     let sample = Event::CoveDeleted {
@@ -812,7 +866,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        28,
+        29,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

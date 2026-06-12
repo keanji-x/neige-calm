@@ -80,6 +80,11 @@ pub enum RoleViolation {
     )]
     NotKernelForTaskDispatched { actor: String },
 
+    #[error(
+        "task.gate_result is a kernel-only gate-runner record; no card-derived actor may emit it (actor={actor})"
+    )]
+    NotKernelForTaskGateResult { actor: String },
+
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
 
@@ -226,6 +231,36 @@ pub fn enforce_role(
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskDispatched {
+                    actor: ai_worker_actor_label(actor, card_id),
+                });
+            }
+        }
+    }
+
+    // --- (2.7) `task.gate_result` is kernel-only. ---
+    //
+    // Issue #644 PR-C. The gate runner appends `Event::TaskGateResult`
+    // in the same tx as the `verifying → done|failed` tasks-row flip.
+    // It is the kernel's *machine verdict* for a verification gate — a
+    // card forging it could fabricate "the gate passed" evidence that
+    // the spec (and the lifecycle promotion) treats as ground truth.
+    // Same narrow gate as (2.6): only User / Kernel / KernelDispatcher
+    // pass; every card-derived actor AND plugins are refused.
+    if matches!(event, Event::TaskGateResult { .. }) {
+        match actor {
+            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Plugin(name) => {
+                return Err(RoleViolation::NotKernelForTaskGateResult {
+                    actor: format!("Plugin({name})"),
+                });
+            }
+            ActorId::AiSpec(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskGateResult {
+                    actor: format!("AiSpec({card_id})"),
+                });
+            }
+            ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskGateResult {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
@@ -1159,6 +1194,49 @@ mod tests {
         for actor in [ActorId::User, ActorId::Kernel, ActorId::KernelDispatcher] {
             let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
             assert!(res.is_ok(), "{actor:?} emitting task.dispatched: {res:?}");
+        }
+    }
+
+    #[test]
+    fn task_gate_result_is_kernel_only_644_pr_c() {
+        // Issue #644 PR-C. `task.gate_result` is the gate runner's
+        // machine verdict — every card-derived actor (spec included)
+        // and plugins are refused; the kernel families pass.
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let spec = CardId::from("spec-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        let event = Event::TaskGateResult {
+            task_id: "w:impl-parser".into(),
+            idempotency_key: "w:impl-parser".into(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: String::new(),
+            log_path: "/tmp/gate.log".into(),
+            attempt: 1,
+            agent_message: None,
+        };
+
+        for (actor, label) in [
+            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (ActorId::Plugin("p".into()), "Plugin(p)"),
+        ] {
+            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused task.gate_result"));
+            assert!(
+                matches!(err, RoleViolation::NotKernelForTaskGateResult { .. }),
+                "{label}: expected NotKernelForTaskGateResult, got {err:?}",
+            );
+        }
+
+        for actor in [ActorId::User, ActorId::Kernel, ActorId::KernelDispatcher] {
+            let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
+            assert!(res.is_ok(), "{actor:?} emitting task.gate_result: {res:?}");
         }
     }
 

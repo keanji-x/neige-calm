@@ -521,3 +521,260 @@ async fn boot_recovery_skips_terminal_waves() {
     assert_eq!(recovered, 0);
     assert!(registry.get(&runtime_id).is_none());
 }
+
+/// Issue #644 PR-C (§6.5/§8) — the boot replay applies the SAME
+/// gated-self-report consultation as the live push branch: a gated
+/// task's `task.completed` is NOT replayed to the spec (the gate
+/// verdict is what wakes it), an ungated task's self-report and the
+/// `task.gate_result` itself replay as observations. Round-3 review
+/// F1: a stale `task.failed` against a gated row the gate owns
+/// (`verifying` here) is suppressed too, while a gated task whose
+/// worker genuinely failed pre-gate (`failed` + `worker-reported`)
+/// replays as today.
+#[tokio::test]
+async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "gate-replay".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "gate-replay".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+
+    // One gated and one ungated tasks row.
+    let mk_task = |key: &str, gate: Option<String>| calm_server::model::Task {
+        id: format!("{}:{key}", wave.id.as_str()),
+        wave_id: wave.id.as_str().to_string(),
+        key: key.to_string(),
+        kind: calm_server::model::TaskKind::Codex,
+        goal: "g".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: gate,
+        status: calm_server::model::TaskStatus::Verifying,
+        status_detail: None,
+        worker_card_id: None,
+        gate_result_json: None,
+        gate_attempt: 0,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        created_at_ms: now_ms(),
+        updated_at_ms: now_ms(),
+        finished_at_ms: None,
+    };
+    let gate_json = json!({ "steps": [{ "name": "t", "cmd": "true" }] }).to_string();
+    let gated = mk_task("gated", Some(gate_json.clone()));
+    let mut ungated = mk_task("ungated", None);
+    ungated.status = calm_server::model::TaskStatus::Done;
+    // Round-3 review F1 — a gated task whose worker genuinely failed
+    // pre-gate: the failure landed on the row, so its `task.failed`
+    // replays as today.
+    let mut gated_failed = mk_task("gated-failed", Some(gate_json));
+    gated_failed.status = calm_server::model::TaskStatus::Failed;
+    gated_failed.status_detail = Some("worker-reported".to_string());
+    let gated_id = gated.id.clone();
+    let ungated_id = ungated.id.clone();
+    let gated_failed_id = gated_failed.id.clone();
+    calm_server::db::write_in_tx_typed(repo.as_ref() as &dyn Repo, move |tx| {
+        Box::pin(async move {
+            calm_server::db::sqlite::task_insert_tx(tx, &gated).await?;
+            calm_server::db::sqlite::task_insert_tx(tx, &ungated).await?;
+            calm_server::db::sqlite::task_insert_tx(tx, &gated_failed).await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+
+    let bus = EventBus::new();
+    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
+    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&cove_cache).await.unwrap();
+    let scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: cove.id.clone(),
+    };
+    for event in [
+        Event::TaskCompleted {
+            idempotency_key: gated_id.clone(),
+            result: json!({ "claim": true }),
+            artifacts: Vec::new(),
+            agent_message: None,
+        },
+        Event::TaskCompleted {
+            idempotency_key: ungated_id.clone(),
+            result: json!({ "ok": true }),
+            artifacts: Vec::new(),
+            agent_message: None,
+        },
+        // Round-3 review F1 — a stale/retried `task.failed` against
+        // the gated row the gate owns (`verifying`): the failure never
+        // landed on the row, so it must NOT replay.
+        Event::TaskFailed {
+            idempotency_key: gated_id.clone(),
+            reason: "stale worker claim".into(),
+            agent_message: None,
+        },
+        // ... while the genuine pre-gate worker failure replays.
+        Event::TaskFailed {
+            idempotency_key: gated_failed_id.clone(),
+            reason: "worker said no".into(),
+            agent_message: None,
+        },
+    ] {
+        repo.log_pure_event(
+            ActorId::User,
+            scope.clone(),
+            None,
+            &bus,
+            &role_cache,
+            &cove_cache,
+            event,
+        )
+        .await
+        .unwrap();
+    }
+    repo.log_pure_event(
+        ActorId::KernelDispatcher,
+        scope.clone(),
+        None,
+        &bus,
+        &role_cache,
+        &cove_cache,
+        Event::TaskGateResult {
+            task_id: gated_id.clone(),
+            idempotency_key: gated_id.clone(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: String::new(),
+            log_path: "/tmp/gate.log".into(),
+            attempt: 1,
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some("thread-recovered".into());
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread-recovered".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let registry = HarnessRegistry::new();
+    let recovered = recover_harnesses_on_boot(
+        repo.clone(),
+        EventBus::new(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon,
+        &registry,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered, 1);
+    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    let stored: HarnessSnapshot =
+        serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
+    assert_eq!(
+        stored.pending_queue.len(),
+        3,
+        "ungated self-report + gate result + genuine pre-gate failure, \
+         never the gated self-report or the stale gated task.failed: {:?}",
+        stored.pending_queue
+    );
+    assert!(
+        stored.pending_queue.iter().any(|obs| matches!(
+            obs,
+            Observation::TaskCompleted { idempotency_key, .. } if idempotency_key == &ungated_id
+        )),
+        "{:?}",
+        stored.pending_queue
+    );
+    assert!(
+        stored.pending_queue.iter().any(|obs| matches!(
+            obs,
+            Observation::TaskGateResult { idempotency_key, passed: true, .. }
+                if idempotency_key == &gated_id
+        )),
+        "{:?}",
+        stored.pending_queue
+    );
+    assert!(
+        !stored.pending_queue.iter().any(|obs| matches!(
+            obs,
+            Observation::TaskCompleted { idempotency_key, .. } if idempotency_key == &gated_id
+        )),
+        "gated self-report must be suppressed in replay (§6.5): {:?}",
+        stored.pending_queue
+    );
+    // Round-3 review F1 — failure split.
+    assert!(
+        !stored.pending_queue.iter().any(|obs| matches!(
+            obs,
+            Observation::TaskFailed { idempotency_key, .. } if idempotency_key == &gated_id
+        )),
+        "stale task.failed against the verifying gated row must be suppressed in replay: {:?}",
+        stored.pending_queue
+    );
+    assert!(
+        stored.pending_queue.iter().any(|obs| matches!(
+            obs,
+            Observation::TaskFailed { idempotency_key, .. }
+                if idempotency_key == &gated_failed_id
+        )),
+        "genuine pre-gate worker failure must replay as today: {:?}",
+        stored.pending_queue
+    );
+    let handle = registry.get(&runtime_id).expect("recovered harness");
+    handle.shutdown().await.unwrap();
+}

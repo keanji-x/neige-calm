@@ -92,7 +92,13 @@ pub const API_VERSION: &str = "1";
 ///   zod `WireEvent` union doesn't know the new discriminators, so its
 ///   plan/dispatch invalidation would silently drop. The compat modal
 ///   forces a hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 4;
+/// * `5` — gate-result wire kind (issue #644 PR-C). Adds
+///   `task.gate_result` to the WS event union (with
+///   `SYNC_EVENT_VERSION` bumped 3 → 4 in lockstep). A v4 frontend's
+///   zod `WireEvent` union doesn't know the new discriminator, so its
+///   gate-result invalidation would silently drop. The compat modal
+///   forces a hard refresh.
+pub const WEB_COMPAT_VERSION: u32 = 5;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,

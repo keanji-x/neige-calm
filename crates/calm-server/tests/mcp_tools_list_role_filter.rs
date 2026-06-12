@@ -150,3 +150,69 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
     );
     let _ = (&boot.server, &boot.repo);
 }
+
+/// PR #685 fix round 2, F3 — the `calm.plan.upsert` descriptor must
+/// advertise the ACCEPTED gate shape (steps/cwd/timeout_secs), the
+/// rule-6 gated-by-default policy, and the re-runnable contract — not
+/// the stale PR-A "gate is not yet accepted" text that steered agents
+/// into omitting gates or escaping via `no_gate_reason`.
+#[tokio::test]
+async fn plan_upsert_descriptor_advertises_gate_shape_and_policy() {
+    let registry = calm_server::mcp_server::build_default_registry();
+    let descriptors = registry.descriptors_for_role(CardRole::Spec);
+    let upsert = descriptors
+        .iter()
+        .find(|d| d.name == "calm.plan.upsert")
+        .expect("calm.plan.upsert descriptor");
+
+    assert!(
+        !upsert.description.contains("not yet accepted"),
+        "stale PR-A gate text: {}",
+        upsert.description
+    );
+    for needle in [
+        "gate",
+        "require_task_gates",
+        "no_gate_reason",
+        "re-runnable",
+    ] {
+        assert!(
+            upsert.description.contains(needle),
+            "description must mention `{needle}`: {}",
+            upsert.description
+        );
+    }
+
+    let gate = &upsert.input_schema["properties"]["tasks"]["items"]["properties"]["gate"];
+    assert_eq!(gate["type"], "object", "{gate:#?}");
+    assert_eq!(gate["required"], serde_json::json!(["steps"]), "{gate:#?}");
+    let step_props = &gate["properties"]["steps"]["items"];
+    assert_eq!(
+        step_props["required"],
+        serde_json::json!(["name", "cmd"]),
+        "{gate:#?}"
+    );
+    let timeout = &gate["properties"]["timeout_secs"];
+    assert_eq!(timeout["maximum"], 7200, "{gate:#?}");
+    assert!(
+        timeout["description"]
+            .as_str()
+            .unwrap()
+            .contains("default 1800"),
+        "{gate:#?}"
+    );
+    assert!(
+        gate["properties"]["cwd"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Absolute"),
+        "{gate:#?}"
+    );
+    assert!(
+        gate["description"]
+            .as_str()
+            .unwrap()
+            .contains("re-runnable"),
+        "{gate:#?}"
+    );
+}

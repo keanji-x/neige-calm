@@ -1769,6 +1769,13 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         // `plan/index.json` projection is a stated follow-up, design
         // §4.3); plan revisions therefore change no tracked path.
         Event::PlanUpdated { .. } => {}
+        // Issue #644 PR-C (PR #685 F9) — `runs/<key>` renders from the
+        // worker cards + [`*.worker_requested`, `task.dispatched`,
+        // `task.completed`, `task.failed`] events only
+        // (`wave_fs_view::runs_for_wave`); a gate verdict changes no
+        // tracked bytes today. Re-add a run-key dirty arm here when the
+        // runs projection starts consuming `task.gate_result`.
+        Event::TaskGateResult { .. } => {}
     }
     delta
 }

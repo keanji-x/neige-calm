@@ -285,9 +285,17 @@ bounded re-read** of the row instead of assuming lost lease:
 
 Dropping the observer is safe: the artifacts are durable, and whoever took
 the lease re-drives `spawn_started`, whose mandatory kill-prior step (§3.2
-contract) reaps the recorded group. Adapters should set `kill_on_drop` on the
-`Child` they move into the observer so the drop also reaps promptly, but
-correctness does not depend on it.
+contract) reaps the recorded group. Adapters must NOT set `kill_on_drop` on
+the `Child` they move into the observer (PR #685 round-2 F1): an observer
+drop is also what a graceful kernel shutdown looks like, and parked work is
+supposed to survive that for the §6.3 boot reattach. Worse, `kill_on_drop`
+SIGKILLs only the direct child (the wrapper), never its process group —
+manufacturing a "wrapper dead, group alive" state in which recovery can no
+longer verify ownership of the group, skips the kill, and fails the op while
+the orphaned group keeps running. Reaping is owned exclusively by the
+recorded-group kill paths (kill-prior, deadline enforcement, compensation),
+all of which `signal_process_group` the recorded pgid behind a
+`verify_owned_pid` check on the leader.
 
 Crash window — kernel dies after `spawn_side_effect` returns but before
 `set_parked` commits: the observer never ran (it is spawned post-commit), the
@@ -596,8 +604,11 @@ pub enum RecoveryMode {
     /// Boot VerifyParked (§4.2): LeaveParked means "I re-established
     /// observation"; reattach observers belong here.
     Boot,
-    /// sweep_parked pre-deadline dead-probe (§4.4): only Complete is acted
-    /// on; Fail/LeaveParked are ignored (no premature fail).
+    /// sweep_parked pre-deadline dead-probe (§4.4): Complete lands the
+    /// recovered outcome; Fail claims + fails the op now, class
+    /// `parked_dead` (PR #685 round-2 F2 — dead work with no recoverable
+    /// outcome must not ride to the deadline and be misclassified as a
+    /// deadline/timeout failure); LeaveParked is ignored.
     PreDeadlineProbe,
     /// sweep_parked past-deadline arm (§4.4): the op WILL terminate now.
     /// The adapter MUST NOT spawn a reattach observer (it would watch work
@@ -716,17 +727,23 @@ deadline enforcement. Per parked op:
     `parked_deadline`. Sub-millisecond window, in-contract for a hard
     deadline (§6.1's tmp+rename still guarantees a mid-write kill leaves no
     file, never a truncated one).
-- **Before deadline**: no claim, no kill. `verify_owned_pid`; if **dead** →
+- **Before deadline**: no kill of live work. `verify_owned_pid`; if **dead** →
   `recover_parked(alive = false, PreDeadlineProbe, …)`; on `Complete(outcome)` →
   `complete_parked_tx` (phase fence suffices; no claim needed for a pure
-  completion) + `publish_completion`. On `Fail`/`LeaveParked` → **do
-  nothing**: the live observer may be milliseconds from committing its own
-  verdict (it `wait()`ed the child directly and does not need the durable
-  artifact the adapter looks for) — failing here would race a real verdict.
-  Dead work without a recoverable outcome is failed by the deadline arm or
-  by the next boot, never early. This dead-probe is what bounds
-  observer-death verdict latency to one sweep tick instead of the full
-  deadline (risk R3).
+  completion) + `publish_completion`. On `Fail` → `claim_parked` +
+  `mark_failed(reason, PhaseTag::Parked, Some("parked_dead"))` +
+  `publish_completion`, same shape as the boot `Fail` arm (PR #685 round-2
+  F2). The process is provably dead, so "the live observer is about to
+  commit" is exactly the race the §4.4 single-winner orderings already
+  govern: a real verdict that commits first makes the claim miss (ordering
+  A); after the claim, the lease-fenced `mark_failed` wins and the
+  observer's completion rolls back on `AlreadyResolved` (ordering B — at
+  worst a true verdict is downgraded to an infra failure, never corrupted).
+  Leaving the op parked instead would let it ride to `parked_deadline_ms`
+  and be misreported as a deadline/timeout failure — for the gate adapter,
+  `gate-timeout` where the truth is `gate-infra`. On `LeaveParked` → do
+  nothing. This dead-probe is what bounds observer-death verdict latency to
+  one sweep tick instead of the full deadline (risk R3).
 
 **Single-winner orderings** (enforcement = the past-deadline arm; completion
 = any `complete_parked_tx` caller). The two fences interlock: the enforcer's
@@ -965,28 +982,34 @@ the op, §4.2), and the `sweep_parked()` call from the reconcile tick (§4.4).
 Called from three arms — boot `VerifyParked` (§4.2), `sweep_parked`'s
 pre-deadline dead-probe, and its past-deadline arm (§4.4, including the
 post-kill re-check) — distinguished by `RecoveryMode`. Decision order is
-**exit file first, liveness second**:
+**liveness first; the exit file is consulted only for DEAD work**
+(superseding this doc's earlier "exit file first" ordering and the
+live-observer "ordering B" preference — PR #685 F1: gate steps execute
+untrusted repo code in a worker-reachable tree, and a worker-forgeable file
+must never outrank a kernel-observed wait status or short-circuit a live
+gate; 644 §6.7 documents the residual dead-gate tamper concession this
+keeps). The live observer (§6.1 step 6) likewise derives its verdict from
+the wait status alone and never reads the exit file. No durable verdict is
+discarded by liveness-first: the ms window where the wrapper has renamed
+the file but not yet exited resolves via the `Boot` reattach observer
+(polls until death, then reads the file), and past deadline via §4.4's
+post-kill re-check (called with `alive == false` after the kill, so a
+pre-kill verdict still completes).
 
-- Exit file present and parseable → `Complete(verdict-from-exit-code)`,
-  regardless of `alive` and mode. The live observer (§6.1 step 6) applies
-  the same preference to its own wait status: a signal-death status with a
-  present, parseable exit file reports the file's verdict (§4.4 ordering B). The verdict is durable the instant the
-  wrapper's `rename` lands (§6.1 step 3); keying on `alive` first would
-  discard it in the ms window where the wrapper has renamed the file but not
-  yet exited — past deadline, that turned a real durable verdict into a
-  SIGKILL + `parked_deadline` fail. §4.4's `Complete`-with-live-group
-  contract covers the residue: the deadline arm kills the (exiting) group
-  before completing.
-- Exit file present but unparseable → `Fail("gate-infra")`. Truncation is
-  impossible (tmp+rename, §6.1 step 3) and §6.1 step 2 unlinked the path
-  before this run spawned, so an unparseable file is a foreign artifact —
-  fail loudly rather than guess.
-- No exit file, `alive == false` → `Fail("gate-infra")` (runtime default
+- `alive == false`, exit file present and parseable →
+  `Complete(verdict-from-exit-code)` — the crashed-kernel recovery hint:
+  once no wait status can ever exist, the file is the only verdict channel
+  left.
+- `alive == false`, exit file present but unparseable → `Fail("gate-infra")`.
+  Truncation is impossible (tmp+rename, §6.1 step 3) and §6.1 step 2
+  unlinked the path before this run spawned, so an unparseable file is a
+  foreign artifact — fail loudly rather than guess.
+- `alive == false`, no exit file → `Fail("gate-infra")` (runtime default
   would also do; explicit for the error class). The §4.4 pre-deadline
   dead-probe deliberately does *not* act on this return — only `Boot` and
   `PastDeadline` do — so a live observer about to commit is never raced by a
   premature infra-fail.
-- No exit file, `alive == true` — mode decides:
+- `alive == true` — mode decides (the exit file is NOT read):
   - `Boot` → re-attach: spawn an observer that polls `verify_owned_pid`
     until false, then reads the exit file (present → verdict; absent →
     infra-fail), completing via the same Completed-gated one-tx body (§6.1
