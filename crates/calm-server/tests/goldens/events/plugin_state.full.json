@@ -1,0 +1,11 @@
+{
+  "description": "plugin.state with last_error present.",
+  "wire": {
+    "ev": "plugin.state",
+    "data": {
+      "id": "plugin-x",
+      "state": "crashed",
+      "last_error": "exit code 1"
+    }
+  }
+}

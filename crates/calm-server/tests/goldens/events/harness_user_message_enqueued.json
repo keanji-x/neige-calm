@@ -1,0 +1,12 @@
+{
+  "description": "harness.user_message.enqueued (#615 F1); body text intentionally absent, only char_count.",
+  "wire": {
+    "ev": "harness.user_message.enqueued",
+    "data": {
+      "runtime_id": "rt-01",
+      "card_id": "card-01",
+      "wave_id": "wave-01",
+      "char_count": 280
+    }
+  }
+}

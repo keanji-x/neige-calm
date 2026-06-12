@@ -1,0 +1,15 @@
+{
+  "description": "cove.updated with every field present (kind=system pins the CoveKind lowercase wire shape).",
+  "wire": {
+    "ev": "cove.updated",
+    "data": {
+      "id": "cove-01",
+      "name": "Golden Cove",
+      "color": "#aabbcc",
+      "sort": 1.5,
+      "kind": "system",
+      "created_at": 1000,
+      "updated_at": 2000
+    }
+  }
+}

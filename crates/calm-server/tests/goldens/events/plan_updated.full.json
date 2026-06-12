@@ -1,0 +1,14 @@
+{
+  "description": "plan.updated (#644) with agent_message present.",
+  "wire": {
+    "ev": "plan.updated",
+    "data": {
+      "wave_id": "wave-01",
+      "changed_keys": [
+        "t1",
+        "t2"
+      ],
+      "agent_message": "plan revised"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "task.failed with agent_message present.",
+  "wire": {
+    "ev": "task.failed",
+    "data": {
+      "idempotency_key": "idem-01",
+      "reason": "compile error",
+      "agent_message": "giving up"
+    }
+  }
+}

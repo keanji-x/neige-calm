@@ -1,0 +1,11 @@
+{
+  "description": "harness.transcript.cleared inline struct variant.",
+  "wire": {
+    "ev": "harness.transcript.cleared",
+    "data": {
+      "runtime_id": "rt-01",
+      "card_id": "card-01",
+      "wave_id": "wave-01"
+    }
+  }
+}

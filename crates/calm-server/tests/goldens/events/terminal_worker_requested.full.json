@@ -1,0 +1,12 @@
+{
+  "description": "terminal.worker_requested with both optional fields present.",
+  "wire": {
+    "ev": "terminal.worker_requested",
+    "data": {
+      "idempotency_key": "idem-02",
+      "cmd": "cargo test",
+      "cwd": "/tmp/golden",
+      "agent_message": "running gate"
+    }
+  }
+}

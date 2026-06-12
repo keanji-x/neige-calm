@@ -1,0 +1,12 @@
+{
+  "description": "overlay.deleted inline struct variant.",
+  "wire": {
+    "ev": "overlay.deleted",
+    "data": {
+      "plugin_id": "plugin-x",
+      "entity_kind": "card",
+      "entity_id": "card-01",
+      "kind": "status"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "description": "wave.lifecycle_changed with agent_message present; from/to use the lowercase WaveLifecycle wire shape.",
+  "wire": {
+    "ev": "wave.lifecycle_changed",
+    "data": {
+      "id": "wave-01",
+      "cove_id": "cove-01",
+      "from": "reviewing",
+      "to": "done",
+      "agent_message": "review passed"
+    }
+  }
+}

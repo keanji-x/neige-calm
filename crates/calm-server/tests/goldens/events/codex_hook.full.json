@@ -1,0 +1,14 @@
+{
+  "description": "codex.hook passthrough with the idempotency key present; payload is opaque Value.",
+  "wire": {
+    "ev": "codex.hook",
+    "data": {
+      "card_id": "card-01",
+      "kind": "hook.codex.pre_tool_use",
+      "hook_idempotency_key": "hook-key-01",
+      "payload": {
+        "hook_event_name": "PreToolUse"
+      }
+    }
+  }
+}
