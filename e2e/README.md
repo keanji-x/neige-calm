@@ -38,6 +38,10 @@ dumping on failure, per-case `PASS`/`FAIL` lines, the final summary, and the
 nonzero exit if any case fails. Cases should use library functions for API calls,
 auth, docker exec file probes, polling, and stack access.
 
+Self-test runner changes with a temporary case body that runs a deliberately
+failing command such as `false`; it must fail the case, not pass through to the
+next assertion.
+
 `CASE_CHECK_SERVER_LOGS` is optional and defaults to `1`. Set it to `0` only
 for cases where the spec-harness inert log signatures are expected by the
 scenario; tier 2 Codex cases should leave the fail-fast check on.
@@ -69,8 +73,9 @@ inert shared spec harness should declare `CASE_CHECK_SERVER_LOGS=0`.
 
 `.env` is optional for tier 1: helper lookups read the process environment
 first, then `.env` when present, then call-site defaults. Tier 2 selections
-require Codex credentials plus `CALM_CODEX_HOST_BIN` in `.env` or the
-environment because those cases can spawn real Codex work.
+require Codex credentials. `CALM_CODEX_HOST_BIN` is optional when the compose
+default codex host path exists; set it in `.env` or the environment when the
+host binary lives elsewhere.
 
 ## Add A Case
 

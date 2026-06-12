@@ -293,7 +293,7 @@ jobs:
     # Match the chromium stack job's runner pin so the host-built release
     # binaries remain ABI-compatible with the bookworm-slim runtime image.
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -316,28 +316,32 @@ jobs:
         working-directory: web
         run: npm ci --legacy-peer-deps
 
-      # Same release build as `chromium-e2e`: e2e/run.sh owns compose startup,
-      # but docker-compose.yml still bind-mounts these host-built binaries.
-      - name: cargo build --release (server + codex bridge + mcp-stdio shim + proc-supervisor)
-        run: cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
+      # Match Makefile's `build` cargo rule so `make dev` inside e2e/run.sh
+      # finds every release binary it expects instead of compiling cold.
+      - name: cargo build --release (make dev binaries)
+        run: cargo build --manifest-path "$PWD/Cargo.toml" --release -p calm-server -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim -p calm-proc-supervisor -p neige-cli --bin calm-server --bin neige-codex-bridge --bin neige-app --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
 
       - name: npm run build (web bundle for nginx)
         working-directory: web
         run: npm run build
 
-      # No .env is created here. Tier-1 preflight treats it as optional, and
-      # compose tolerates a missing codex bind source because no tier-1 case
-      # asserts a live Codex spawn.
+      # Stub the codex CLI mount so docker compose has an existing host path
+      # for tier-1 cases that do not exercise live Codex work.
+      - name: write CI .env overrides
+        run: |
+          cat > .env <<'EOF'
+          CALM_CODEX_HOST_BIN=/bin/true
+          CALM_EXTRA_MOUNT=/tmp
+          CALM_DEV_AUTOLOGIN=true
+          HTTP_PROXY=
+          HTTPS_PROXY=
+          NO_PROXY=*
+          http_proxy=
+          https_proxy=
+          no_proxy=*
+          EOF
+
       - name: stack e2e tier 1
-        env:
-          CALM_DEV_AUTOLOGIN: "true"
-          CALM_EXTRA_MOUNT: /tmp
-          HTTP_PROXY: ""
-          HTTPS_PROXY: ""
-          NO_PROXY: "*"
-          http_proxy: ""
-          https_proxy: ""
-          no_proxy: "*"
         run: ./e2e/run.sh --tier 1
 
       - name: upload stack e2e artifacts on failure

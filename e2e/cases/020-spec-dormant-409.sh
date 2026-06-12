@@ -93,8 +93,7 @@ case_run() {
     503)
       [[ "$code" == "service_unavailable" ]] \
         || fail "POST spec/input returned 503 with code=$code: $(body_preview "$API_BODY")"
-      printf 'Dormant unavailable wave=%s spec_card=%s status=%s code=%s\n' \
-        "$wave_id" "$spec_card_id" "$status" "$code"
+      skip "daemon down (503), dormant 409 path not reached"
       ;;
     404)
       fail "POST spec/input returned 404; dormant regression must not look like a missing card: $(body_preview "$API_BODY")"

@@ -27,8 +27,11 @@ stack_preflight() {
   if (( need_codex_auth )); then
     [[ -s "$HOME/.codex/auth.json" ]] || fail "missing Codex auth at $HOME/.codex/auth.json; run codex login"
     codex_host_bin="$(dotenv_get CALM_CODEX_HOST_BIN || true)"
-    [[ -n "$codex_host_bin" ]] || fail "missing CALM_CODEX_HOST_BIN in $ENV_FILE or environment; set it to the host codex binary for tier-2 runs"
-    [[ -x "$codex_host_bin" ]] || fail "CALM_CODEX_HOST_BIN is not executable: $codex_host_bin"
+    if [[ -n "$codex_host_bin" ]]; then
+      [[ -x "$codex_host_bin" ]] || fail "CALM_CODEX_HOST_BIN is not executable: $codex_host_bin"
+    else
+      printf 'WARN: CALM_CODEX_HOST_BIN is not set; docker compose will try its default codex host path\n' >&2
+    fi
   fi
 
   if [[ -s "$HOME/.nvm/nvm.sh" ]]; then

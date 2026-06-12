@@ -67,6 +67,7 @@ case_matches() {
 
 run_case_with_timeout() {
   local timeout_secs=$1
+  local result_var=$2
   local timed_out_file="${TMPDIR:-/tmp}/neige-e2e-timeout-$RUN_ID"
   local case_pid watcher_pid status
 
@@ -83,10 +84,10 @@ run_case_with_timeout() {
   watcher_pid=$!
 
   set +e
-  wait "$case_pid"
-  status=$?
-  kill "$watcher_pid" 2>/dev/null
-  wait "$watcher_pid" 2>/dev/null
+  status=0
+  wait "$case_pid" || status=$?
+  kill "$watcher_pid" 2>/dev/null || true
+  wait "$watcher_pid" 2>/dev/null || true
   set -e
 
   if [[ -f "$timed_out_file" ]]; then
@@ -94,7 +95,7 @@ run_case_with_timeout() {
     fail "case timed out after ${timeout_secs}s"
   fi
   rm -f "$timed_out_file"
-  return "$status"
+  printf -v "$result_var" '%s' "$status"
 }
 
 run_one_case() (
@@ -126,10 +127,7 @@ run_one_case() (
   PORT="$(pick_port)"
   start_stack
   wait_for_health
-  set +e
-  run_case_with_timeout "$timeout_secs"
-  case_status=$?
-  set -e
+  run_case_with_timeout "$timeout_secs" case_status
   if (( case_status != 0 )); then
     exit "$case_status"
   fi
@@ -203,6 +201,10 @@ if (( LIST_ONLY )); then
   exit 0
 fi
 
+if ((${#selected_files[@]} == 0)); then
+  fail "no e2e cases matched selection"
+fi
+
 for tier in "${selected_tiers[@]}"; do
   if (( tier >= 2 )); then
     NEED_CODEX_REQUIREMENTS=1
@@ -213,11 +215,14 @@ done
 for i in "${!selected_files[@]}"; do
   selected=$((selected + 1))
   case_id="$(basename "${selected_files[$i]}" .sh)"
-  if run_one_case "${selected_files[$i]}" "${selected_names[$i]}" "${selected_tiers[$i]}" "${selected_timeouts[$i]}"; then
+  set +e
+  run_one_case "${selected_files[$i]}" "${selected_names[$i]}" "${selected_tiers[$i]}" "${selected_timeouts[$i]}"
+  status=$?
+  set -e
+  if (( status == 0 )); then
     passed=$((passed + 1))
     printf 'PASS %s tier=%s %s\n' "$case_id" "${selected_tiers[$i]}" "${selected_names[$i]}"
   else
-    status=$?
     if (( status == E2E_SKIP_STATUS )); then
       skipped=$((skipped + 1))
       printf 'SKIP %s tier=%s status=%s %s\n' "$case_id" "${selected_tiers[$i]}" "$status" "${selected_names[$i]}"
