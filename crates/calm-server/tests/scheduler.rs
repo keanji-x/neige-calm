@@ -15,7 +15,8 @@
 //!   §3 fast-report race — `fast_worker_report_beats_running_stamp`.
 //!   §5.4 spawn failure — `spawn_failure_marks_failed_and_emits_kernel_task_failed`.
 //!   §3 emit-tx flips — `worker_report_flips_row_inside_emit_tx`,
-//!     `duplicate_report_is_idempotent`, `gated_row_is_left_alone_on_complete`.
+//!     `duplicate_report_is_idempotent`,
+//!     `gated_success_report_flips_to_verifying_and_suppresses_promotion`.
 //!   §3 verdict isolation — `spec_verdict_never_flips_rows`.
 //!   M2 live path — `terminal_hook_completes_task_on_exit`.
 //!   §8 sweep arms — `sweep_reconciles_running_terminal_with_recorded_exit`,
