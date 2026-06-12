@@ -17,6 +17,9 @@ web/test-results/
 web/playwright-report/
 web/playwright/.cache/
 
+# Local opt-in E2E logs
+e2e-artifacts/
+
 # OS
 .DS_Store
 
