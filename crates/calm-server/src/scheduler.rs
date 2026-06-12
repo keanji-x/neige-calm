@@ -58,9 +58,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::{Task, TaskKind, TaskStatus, Wave, WaveLifecycle, new_id, now_ms};
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
-use crate::operation::terminal_adapter::{
-    TerminalWorkerOperationPayload, normalize_terminal_worker_cwd,
-};
+use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
@@ -165,7 +163,16 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 wave_id: task.wave_id.clone(),
                 idempotency_key: task.id.clone(),
                 cmd: task.goal.clone(),
-                cwd: Some(normalize_terminal_worker_cwd(task.cwd.clone())),
+                // Row value AS-IS — `None` stays `None` (#644 followup):
+                // materializing `default_cwd()` (HOME/current dir) here
+                // would make the payload — and therefore
+                // `stable_payload_hash` — depend on process env, so a
+                // restart under a different HOME would make
+                // `resume_dispatched` see its OWN operation as a foreign
+                // payload-hash conflict and permanently fail the task.
+                // The terminal adapter resolves the default at spawn
+                // time (`normalize_terminal_worker_cwd` in `prepare_tx`).
+                cwd: task.cwd.clone(),
             })?;
             Ok(("terminal-worker", payload))
         }
@@ -1431,6 +1438,34 @@ mod tests {
         assert_eq!(kind, "terminal-worker");
         assert_eq!(p["cmd"], json!("make test"));
         assert_eq!(p["cwd"], json!("/repo"));
+    }
+
+    #[test]
+    fn terminal_payload_without_cwd_keeps_row_none() {
+        // #644 followup: a terminal row with `cwd = NULL` must produce
+        // `cwd: null` in the payload — the row value, NOT a materialized
+        // `default_cwd()` (HOME/current dir). Anything env-derived here
+        // would change `stable_payload_hash` across an env-changing
+        // restart, making `resume_dispatched` classify its OWN operation
+        // as a permanent foreign idempotency conflict and fail the task
+        // instead of recovering it. `cwd: null` is by construction
+        // independent of process env (no env value can be JSON null);
+        // the adapter resolves the default at spawn time instead.
+        let mut terminal = task("t", TaskStatus::Dispatched, &[], 0);
+        terminal.kind = TaskKind::Terminal;
+        terminal.goal = "make test".into();
+        terminal.cwd = None;
+        let (kind, p1) = build_worker_payload(&terminal).unwrap();
+        assert_eq!(kind, "terminal-worker");
+        assert_eq!(p1["cwd"], Value::Null, "row None stays None");
+        // Restart simulation: rebuild from the same frozen row → the
+        // payload and its idempotency hash must be byte-identical.
+        let (_, p2) = build_worker_payload(&terminal).unwrap();
+        assert_eq!(p1, p2);
+        assert_eq!(
+            stable_payload_hash(&p1).unwrap(),
+            stable_payload_hash(&p2).unwrap()
+        );
     }
 
     // ----------------------------------------------------- inflight guard
