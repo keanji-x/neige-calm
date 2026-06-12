@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -E
 
 # Opt-in local E2E. Burns real Codex tokens; do not run from CI.
 # The host filesystem is only touched by e2e-artifacts/ when a run fails.
@@ -24,6 +25,7 @@ cleanup() {
   local status
   status=$?
   set +e
+  printf 'Exit status: %s\n' "$status" >&2
   if (( status != 0 )); then
     mkdir -p "$ARTIFACT_DIR"
     local log_file="$ARTIFACT_DIR/$RUN_ID.log"
@@ -35,6 +37,7 @@ cleanup() {
   trap - EXIT
   exit "$status"
 }
+trap 'printf "ERR: line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 trap cleanup EXIT
 dotenv_get() {
   local key=$1 line value
@@ -193,7 +196,7 @@ const flags = [
   workers.length >= 2 && workers.every((c) => c.runtime && c.runtime.status !== "running") ? "yes" : "no",
   wave.lifecycle === "reviewing" || wave.lifecycle === "done" ? "yes" : "no",
 ];
-process.stdout.write([wave.lifecycle ?? "unknown", workers.length, workers.map((c) => c.runtime?.status ?? "none").join(",") || "-", ...flags].join("\t"));
+process.stdout.write([wave.lifecycle ?? "unknown", workers.length, workers.map((c) => c.runtime?.status ?? "none").join(",") || "-", ...flags].join("\t") + "\n");
 '
 }
 
@@ -209,7 +212,8 @@ poll_wave() {
     if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/src/greet.py"; then greet=yes; else greet=no; fi
     if docker exec "$SERVER_CONTAINER" test -f "$WORKSPACE/USAGE.md"; then usage=yes; else usage=no; fi
     IFS=$'\t' read -r lifecycle worker_count worker_statuses greet usage report workers_done lifecycle_ready \
-      < <(summarize_state "$cards_json" "$detail_json" "$greet" "$usage")
+      < <(summarize_state "$cards_json" "$detail_json" "$greet" "$usage") \
+      || fail 'summarize_state produced no parsable state'
 
     elapsed=$((SECONDS - start))
     printf 'poll +%04ds lifecycle=%s workers=%s statuses=%s files=greet:%s usage:%s report:%s\n' \
