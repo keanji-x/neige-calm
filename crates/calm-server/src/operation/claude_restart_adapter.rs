@@ -156,7 +156,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         }
 
         let command_line = format!(
-            "{} --settings {} --resume {}",
+            "{} --allow-dangerously-skip-permissions --settings {} --resume {}",
             shell_single_quote(&self.codex.claude_bin),
             shell_single_quote(&settings_path),
             shell_single_quote(&claude_session_id),
