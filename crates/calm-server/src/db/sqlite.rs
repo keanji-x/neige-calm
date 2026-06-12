@@ -1085,17 +1085,56 @@ pub async fn task_mark_running_tx(
     Ok(res.rows_affected())
 }
 
+/// Round-4 review F1/F2 — durable ownership proof for the
+/// unstamped-row window: is `card_id` the card the worker-spawn
+/// operation for `task_id` actually created?
+///
+/// The worker-spawn op (`kind 'codex-worker' | 'terminal-worker'`,
+/// `idempotency_key = task id`) records its created card as the
+/// operation target: `prepare_tx_and_advance` stamps
+/// `target_type = 'card'` / `target_id` in the SAME tx in which the
+/// adapter's `prepare_tx` creates the card, and the operations table
+/// has no client-reachable write path. Card payloads, by contrast,
+/// stay patchable via `PATCH /api/cards/{id}` (the kind validators
+/// allow extra fields), so a payload `idempotency_key` echo proves
+/// nothing.
+///
+/// Returns `false` when no worker op row targets the card — including
+/// the crash window between the claim and the op insert, where NO
+/// ownership is provable: unstamped reports are rejected there, the
+/// sweep's dispatched arm resubmits the op, and the real worker spawned
+/// by that resubmit can report.
+pub async fn worker_op_targets_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: &str,
+    card_id: &str,
+) -> Result<bool> {
+    let owns: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM operations
+               WHERE kind IN ('codex-worker', 'terminal-worker')
+                 AND idempotency_key = ?1
+                 AND target_type = 'card'
+                 AND target_id = ?2
+           )"#,
+    )
+    .bind(task_id)
+    .bind(card_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(owns)
+}
+
 /// Who is asserting a worker-report flip (round-2 review F2).
 ///
 /// The two-sided `worker_card_id` guard from round 1 only protects
 /// rows that already carry a stamp; an UNSTAMPED `dispatched` row (the
 /// report-beat-the-running-stamp window) would otherwise accept any
 /// same-wave worker that echoes the task id. The ownership proof for
-/// that window is the worker-card payload binding: every worker card
-/// the scheduler spawns carries the task's `idempotency_key` in its
-/// payload (stamped at `prepare_tx` by both the codex and terminal
-/// adapters, immutable afterwards), so only the card actually spawned
-/// for the task can present it.
+/// that window is the worker-spawn operation's immutable target card
+/// ([`worker_op_targets_card_tx`], round-4 review F1/F2) — NOT the
+/// reporting card's payload, which is mutable via
+/// `PATCH /api/cards/{id}` and therefore forgeable.
 #[derive(Clone, Copy, Debug)]
 pub enum TaskReporter<'a> {
     /// Kernel-internal caller that owns the row by construction (the
@@ -1103,10 +1142,9 @@ pub enum TaskReporter<'a> {
     /// and leaves `worker_card_id` untouched (NULL COALESCE arm).
     Kernel,
     /// A worker card's report. `owns_key` must be the result of
-    /// resolving the REPORTING card's payload `idempotency_key` and
-    /// comparing it to the task id — `true` is the unstamped-row
-    /// ownership proof; stamped rows are still guarded by
-    /// `worker_card_id = card_id`.
+    /// [`worker_op_targets_card_tx`] for the REPORTING card — `true`
+    /// is the unstamped-row ownership proof; stamped rows are still
+    /// guarded by `worker_card_id = card_id`.
     Card { card_id: &'a str, owns_key: bool },
 }
 
@@ -1134,13 +1172,15 @@ impl<'a> TaskReporter<'a> {
 /// `wave_id` is part of the guard so a caller can never flip another
 /// wave's row even if it echoes a foreign task id.
 ///
-/// The card guard is two-sided (review F3 + round-2 F2): besides the
-/// COALESCE stamp, a [`TaskReporter::Card`] caller only flips a row
-/// whose `worker_card_id` matches it, or an unstamped row when the
-/// reporting card proves payload ownership (`owns_key`). A sibling
-/// worker echoing another task's idempotency key can therefore never
-/// terminalize that row, stamped or not. [`TaskReporter::Kernel`]
-/// bypasses — reserved for kernel callers that own the row.
+/// The card guard is two-sided (review F3 + round-2 F2 + round-4 F1):
+/// besides the COALESCE stamp, a [`TaskReporter::Card`] caller only
+/// flips a row whose `worker_card_id` matches it, or an unstamped row
+/// when the reporting card proves op-target ownership (`owns_key`,
+/// [`worker_op_targets_card_tx`]). A sibling worker echoing another
+/// task's idempotency key — even via a forged card payload — can
+/// therefore never terminalize that row, stamped or not.
+/// [`TaskReporter::Kernel`] bypasses — reserved for kernel callers
+/// that own the row.
 pub async fn task_complete_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -1181,8 +1221,9 @@ pub async fn task_complete_from_worker_tx(
 /// not start it).
 ///
 /// `reporter` carries the same two-sided guard as the success flip
-/// (review F3 + round-2 F2): a card only flips a matching-stamp row or
-/// an unstamped row it proves payload ownership of; `Kernel` bypasses.
+/// (review F3 + round-2 F2 + round-4 F1): a card only flips a
+/// matching-stamp row or an unstamped row it proves op-target
+/// ownership of; `Kernel` bypasses.
 pub async fn task_fail_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,

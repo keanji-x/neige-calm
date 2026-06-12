@@ -998,9 +998,12 @@ impl TerminalTaskHook {
     /// (terminal → card → payload `idempotency_key` — stamped at worker
     /// create time, so this works even when the exit beats the
     /// scheduler's `worker_card_id` stamp) and, if one exists, runs the
-    /// shared guarded completion tx. Terminals with no task row (user
-    /// terminals, legacy `calm.task.dispatch` workers, spec terminals)
-    /// no-op here.
+    /// shared guarded completion tx. The payload walk only FINDS the
+    /// candidate row; ownership is proven inside the tx against the
+    /// worker operation's immutable target card (round-4 review F2 —
+    /// card payloads are patchable, so they are not proof). Terminals
+    /// with no task row (user terminals, legacy `calm.task.dispatch`
+    /// workers, spec terminals) no-op here.
     pub async fn on_terminal_exit(
         &self,
         terminal_id: &str,
@@ -1110,15 +1113,20 @@ pub async fn complete_terminal_task(
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
             let now = now_ms();
-            // Round-2 review F2: both completion-path callers resolve
-            // `worker_card_id` FROM the task binding itself — the live
-            // hook walks terminal → card → payload `idempotency_key` to
-            // find the task, and the sweep arm resolves the card from
-            // the row stamp or the worker operation's idempotency key —
-            // so the card owns the key by construction.
+            // Round-4 review F2: the live hook resolves the task from
+            // the exiting card's PAYLOAD `idempotency_key`, which is
+            // mutable via `PATCH /api/cards/{id}` — so it is NOT proof
+            // of ownership. Prove it against the immutable worker-spawn
+            // operation target instead: only the card the op actually
+            // created may flip an UNSTAMPED row. Stamped rows are still
+            // guarded by `worker_card_id = card` (the sweep arm's
+            // row-stamp resolution rides that side); a forged-payload
+            // card fails both sides → 0 rows → no event.
+            let owns_key =
+                crate::db::sqlite::worker_op_targets_card_tx(tx, &task_id, &worker_card_id).await?;
             let reporter = TaskReporter::Card {
                 card_id: worker_card_id.as_str(),
-                owns_key: true,
+                owns_key,
             };
             let (rows, event) = if success {
                 (

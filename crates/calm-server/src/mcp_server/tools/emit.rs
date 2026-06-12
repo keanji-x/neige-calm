@@ -459,7 +459,6 @@ async fn emit_task_report_for_identity(
             let wave_scope = wave_scope.clone();
             let wave_id = wave_id.clone();
             let worker_card_id = card_id_str.clone();
-            let card_payload = card.payload.clone();
             Box::pin(async move {
                 // Issue #644 PR-B — flip the matching plan-task row INSIDE
                 // the same tx that persists the worker's report event
@@ -484,17 +483,24 @@ async fn emit_task_report_for_identity(
                     _ => None,
                 };
                 if let Some((task_id, success)) = flip {
-                    // Round-2 review F2 — unstamped-row ownership proof:
-                    // the REPORTING card's payload must carry the task id
-                    // as its `idempotency_key` (stamped immutably at
-                    // worker-spawn `prepare_tx` by both the codex and
-                    // terminal adapters). For rows already stamped, the
-                    // `worker_card_id = card` guard inside the flip
-                    // implies the same binding.
+                    // Round-4 review F1 — unstamped-row ownership proof:
+                    // the REPORTING card must be the card the task's
+                    // worker-spawn operation created (immutable op
+                    // target, stamped in the same tx as the card). The
+                    // card payload's `idempotency_key` is NOT proof —
+                    // payloads are patchable via `PATCH /api/cards/{id}`,
+                    // so a forged sibling payload could otherwise steal
+                    // the report-beats-running-stamp window. For rows
+                    // already stamped, the `worker_card_id = card` guard
+                    // inside the flip implies the same binding.
                     let reporter = crate::db::sqlite::TaskReporter::Card {
                         card_id: worker_card_id.as_str(),
-                        owns_key: card_payload.get("idempotency_key").and_then(Value::as_str)
-                            == Some(task_id.as_str()),
+                        owns_key: crate::db::sqlite::worker_op_targets_card_tx(
+                            tx,
+                            &task_id,
+                            &worker_card_id,
+                        )
+                        .await?,
                     };
                     let rows = if success {
                         crate::db::sqlite::task_complete_from_worker_tx(

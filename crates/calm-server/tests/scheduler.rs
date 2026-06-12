@@ -293,9 +293,11 @@ async fn call_tool(
 
 /// Stamp the boot worker card's payload `idempotency_key` to `task_id`
 /// — the binding every scheduler-spawned worker card carries from
-/// `prepare_tx` (round-2 review F2). Tests that exercise reports
-/// against UNSTAMPED rows need it: the report flip's unstamped-row arm
-/// only accepts a card that proves payload ownership of the key.
+/// `prepare_tx`. Round-4 review F1: this payload binding is mutable
+/// (`PATCH /api/cards/{id}`) and therefore NOT the ownership proof —
+/// it only lets the live exit hook and the emit handlers FIND the task.
+/// Tests that exercise unstamped-row reports must also seed the real
+/// proof via [`seed_worker_op_target`].
 async fn bind_worker_card_payload(boot: &Boot, task_id: &str) {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
@@ -304,6 +306,41 @@ async fn bind_worker_card_payload(boot: &Boot, task_id: &str) {
         .execute(&pool)
         .await
         .expect("bind worker card payload");
+}
+
+/// Seed the worker-spawn operation row whose immutable target binds
+/// `card_id` to `task_id` — the shape production leaves behind after
+/// `prepare_tx_and_advance` (op inserted under
+/// `(kind, idempotency_key = task id)`, then `target_type = 'card'` /
+/// `target_id` stamped in the same tx that creates the worker card).
+/// Round-4 review F1/F2: this op target — not the patchable card
+/// payload — is the unstamped-row ownership proof.
+async fn seed_worker_op_target(boot: &Boot, kind: &str, task_id: &str, card_id: &str) {
+    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"));
+    op_repo
+        .insert_operation(
+            kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task_id.to_string()),
+                payload_hash: "seeded-ownership-test".into(),
+            },
+            json!({ "wave_id": boot.wave_id.as_str() }),
+        )
+        .await
+        .expect("seed worker op row");
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query(
+        "UPDATE operations SET target_type = 'card', target_id = ?1, target_json = ?2 \
+         WHERE kind = ?3 AND idempotency_key = ?4",
+    )
+    .bind(card_id)
+    .bind(json!({ "type": "card", "id": card_id }).to_string())
+    .bind(kind)
+    .bind(task_id)
+    .execute(&pool)
+    .await
+    .expect("stamp op target card");
 }
 
 fn worker_identity(boot: &Boot) -> ToolCallIdentity {
@@ -429,9 +466,14 @@ impl ProviderAdapter for CardSpawnAdapter {
 
 /// Fast-worker-report fixture: the spawn side effect itself reports
 /// `calm.task.complete` BEFORE the scheduler's `wait()` can return —
-/// the §3 race, deterministically sequenced.
+/// the §3 race, deterministically sequenced. `prepare_tx` returns the
+/// card-shaped target production worker adapters return (round-4
+/// review F1): the runtime stamps it as the op's immutable target
+/// before `spawn_side_effect` runs, so the in-spawn report carries the
+/// op-target ownership proof exactly like a real fast worker.
 struct FastReportAdapter {
     kind: &'static str,
+    card_id: String,
     handler: calm_server::mcp_server::registry::ToolHandler,
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
@@ -455,7 +497,11 @@ impl ProviderAdapter for FastReportAdapter {
         _input: &Value,
         _op: &Operation,
     ) -> CalmResult<TxOutput> {
-        Ok(TxOutput::new("fast-report", None, json!({ "ok": true })))
+        Ok(TxOutput::new(
+            "card",
+            Some(self.card_id.clone()),
+            json!({ "id": self.card_id }),
+        ))
     }
     async fn app_server_interact(
         &self,
@@ -794,7 +840,10 @@ async fn fast_worker_report_beats_running_stamp() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     // The report lands while the row is dispatched + UNSTAMPED, so the
-    // reporting card must carry the payload binding (round-2 F2).
+    // reporting card must be the op's target card (round-4 F1) — the
+    // FastReportAdapter's card-shaped `prepare_tx` output provides
+    // that, exactly like production; the payload binding mirrors what
+    // the real adapters also stamp.
     bind_worker_card_payload(&boot, &task_id).await;
     let handler = boot
         .registry
@@ -804,6 +853,7 @@ async fn fast_worker_report_beats_running_stamp() {
         &boot,
         vec![Arc::new(FastReportAdapter {
             kind: "terminal-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
             handler,
             ctx: boot.ctx.clone(),
             identity: worker_identity(&boot),
@@ -892,8 +942,17 @@ async fn worker_report_flips_row_inside_emit_tx() {
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    // Unstamped row → the report needs the payload binding (round-2 F2).
+    // Unstamped row → the report needs the op-target ownership proof
+    // (round-4 F1); the payload binding mirrors production but is not
+    // the proof.
     bind_worker_card_payload(&boot, &task_id).await;
+    seed_worker_op_target(
+        &boot,
+        "codex-worker",
+        &task_id,
+        boot.worker_card_id.as_str(),
+    )
+    .await;
 
     call_tool(
         &boot,
@@ -923,6 +982,13 @@ async fn duplicate_report_is_idempotent() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     bind_worker_card_payload(&boot, &task_id).await;
+    seed_worker_op_target(
+        &boot,
+        "codex-worker",
+        &task_id,
+        boot.worker_card_id.as_str(),
+    )
+    .await;
 
     call_tool(
         &boot,
@@ -977,6 +1043,13 @@ async fn gated_row_is_left_alone_on_complete() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     bind_worker_card_payload(&boot, &task_id).await;
+    seed_worker_op_target(
+        &boot,
+        "codex-worker",
+        &task_id,
+        boot.worker_card_id.as_str(),
+    )
+    .await;
 
     call_tool(
         &boot,
@@ -1086,6 +1159,9 @@ async fn terminal_hook_completes_task_on_exit() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    // Unstamped row → exit-hook completion needs the op-target proof
+    // (round-4 F2), exactly what the real spawn leaves behind.
+    seed_worker_op_target(&boot, "terminal-worker", &task_id, card_id.as_str()).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&terminal_id, Some(0), false).await;
@@ -1124,6 +1200,9 @@ async fn terminal_exit_beats_running_stamp() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    // Dispatched + unstamped: only the op-target proof (round-4 F2)
+    // lets the exit hook win this window.
+    seed_worker_op_target(&boot, "terminal-worker", &task_id, card_id.as_str()).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&terminal_id, Some(0), false).await;
@@ -1170,7 +1249,8 @@ async fn terminal_hook_nonzero_exit_fails_task() {
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    let (_card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    seed_worker_op_target(&boot, "terminal-worker", &task_id, card_id.as_str()).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&terminal_id, Some(2), false).await;
@@ -2056,9 +2136,18 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         "rejected reports must not promote Working → Reviewing"
     );
 
-    // The card that DOES carry the binding flips the unstamped row and
-    // stamps itself — the legitimate report-beats-stamp path survives.
+    // The card the task's worker op actually targets flips the
+    // unstamped row and stamps itself — the legitimate
+    // report-beats-stamp path survives (round-4 F1: the op target, not
+    // the payload, is the proof).
     bind_worker_card_payload(&boot, &task_id).await;
+    seed_worker_op_target(
+        &boot,
+        "codex-worker",
+        &task_id,
+        boot.worker_card_id.as_str(),
+    )
+    .await;
     call_tool(
         &boot,
         TOOL_TASK_COMPLETE,
@@ -2073,6 +2162,152 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         row.worker_card_id.as_deref(),
         Some(boot.worker_card_id.as_str())
     );
+}
+
+// ---------------------------------------------------------------------------
+// Review round 4 — F1/F2: card payloads are mutable
+// (`PATCH /api/cards/{id}`), so a payload that CLAIMS the task's key is
+// not ownership — only the worker op's immutable target card is
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn forged_payload_sibling_report_rejected_without_op_target() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    // Dispatched + unstamped: the report-beats-running-stamp window.
+    let mut task = plan_task(&boot.wave_id, "forged", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    // The real spawn's op row targets the boot worker card.
+    seed_worker_op_target(
+        &boot,
+        "codex-worker",
+        &task_id,
+        boot.worker_card_id.as_str(),
+    )
+    .await;
+
+    // Same-wave sibling whose payload was PATCHed to claim THIS task's
+    // idempotency key — the round-2 payload-comparison proof would have
+    // accepted it; no worker op targets it.
+    let sibling = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({ "idempotency_key": task_id }),
+        })
+        .await
+        .expect("forged sibling card");
+    boot.card_role_cache
+        .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    let sibling_identity = ToolCallIdentity {
+        card_id: sibling.id.as_str().to_string(),
+        role: CardRole::Worker,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "forged-thread".into(),
+    };
+
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        sibling_identity.clone(),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect_err("forged payload without an op target must be rejected");
+    let row = task_row(&boot, "forged").await;
+    assert_eq!(row.status, TaskStatus::Dispatched, "row untouched");
+    assert_eq!(row.worker_card_id, None, "no stamp stolen");
+    assert!(
+        event_rows(&boot, "task.completed").await.is_empty(),
+        "rejected forged report persists nothing"
+    );
+
+    call_tool(
+        &boot,
+        TOOL_TASK_FAIL,
+        sibling_identity,
+        json!({ "idempotency_key": task_id, "reason": "forged" }),
+    )
+    .await
+    .expect_err("forged fail report must be rejected");
+    assert_eq!(
+        task_row(&boot, "forged").await.status,
+        TaskStatus::Dispatched
+    );
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        WaveLifecycle::Working,
+        "rejected forged reports must not promote Working → Reviewing"
+    );
+
+    // The card the op actually targets reports fine — no payload
+    // binding needed: ownership comes from the op row alone.
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("op-target card's report");
+    let row = task_row(&boot, "forged").await;
+    assert_eq!(row.status, TaskStatus::Done);
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn forged_payload_terminal_exit_rejected_without_op_target() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "forged-term", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Running;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    // Real worker terminal + its op target.
+    let (real_card_id, real_terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    seed_worker_op_target(&boot, "terminal-worker", &task_id, real_card_id.as_str()).await;
+    // Forged terminal card whose payload claims the same key — round-4
+    // F2: `on_terminal_exit` finds the task from this payload, but no
+    // worker op targets the card, so its exit must prove nothing.
+    let (_forged_card_id, forged_terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+
+    let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    hook.on_terminal_exit(&forged_terminal_id, Some(0), false)
+        .await;
+
+    let row = task_row(&boot, "forged-term").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Running,
+        "forged terminal exit must not terminalize the unstamped row"
+    );
+    assert_eq!(row.worker_card_id, None, "no stamp stolen");
+    assert!(
+        event_rows(&boot, "task.completed").await.is_empty(),
+        "rejected forged exit persists nothing"
+    );
+
+    // The real worker's exit still completes the task.
+    hook.on_terminal_exit(&real_terminal_id, Some(0), false)
+        .await;
+    let row = task_row(&boot, "forged-term").await;
+    assert_eq!(row.status, TaskStatus::Done);
+    assert_eq!(row.worker_card_id.as_deref(), Some(real_card_id.as_str()));
+    assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
 }
 
 // ---------------------------------------------------------------------------
