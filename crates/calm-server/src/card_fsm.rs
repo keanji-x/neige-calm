@@ -1180,18 +1180,25 @@ mod tests {
     #[tokio::test]
     async fn needs_input_overlay_is_idempotent() {
         let (repo, bus, wave_id, card_id) = setup().await;
-        // A SECOND codex card under the same wave, used purely as a
-        // deterministic sentinel (see below). It is created BEFORE the FSM
-        // spawns so the wave's canonical card set already contains it.
-        let card_b = repo
-            .card_create(NewCard {
-                wave_id: wave_id.clone(),
-                kind: "codex".into(),
-                sort: None,
-                payload: Value::Null,
-            })
-            .await
-            .unwrap();
+        // Two more codex cards under the same wave, used as deterministic
+        // sentinels (see below). Created BEFORE the FSM spawns so the wave's
+        // canonical card set already contains them.
+        //   * card B exercises the recompute idempotency path (its
+        //     AwaitingInput leaves the already-true wave aggregate unchanged,
+        //     so a correct `recompute_wave_needs_input` writes nothing).
+        //   * card C is the terminal marker: by in-order processing, C's
+        //     card-`status` overlay cannot appear until B has been handled in
+        //     full — INCLUDING B's recompute — so the count is finalized only
+        //     after the recompute-idempotency path has had its chance to (and
+        //     must not) emit a duplicate wave write.
+        let new_codex_card = || NewCard {
+            wave_id: wave_id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        };
+        let card_b = repo.card_create(new_codex_card()).await.unwrap();
+        let card_c = repo.card_create(new_codex_card()).await.unwrap();
         // Subscribe BEFORE spawn so we capture every overlay event from
         // the moment the FSM is live.
         let mut rx = bus.subscribe();
@@ -1231,32 +1238,40 @@ mod tests {
             },
         );
 
-        // SENTINEL emit → card B goes AwaitingInput. Because the FSM task
-        // processes events strictly in arrival order (single subscriber, one
-        // handler loop, each `handle().await` fully awaited before the next
-        // `recv` — see `spawn`), this event cannot be handled until BOTH of
-        // card A's emits above have been fully processed. card B's commit
-        // ALWAYS writes a card-level `status` overlay (a DISTINCT, observable
-        // OverlaySet on entity_kind="card", entity_id=B) — that is our wait
-        // signal. The wave aggregate is already true (from card A) and stays
-        // true, so card B contributes NO `any_card_needs_input` write.
-        bus.emit(
-            ActorId::AiCodex(card_b.id.clone()),
-            Event::CodexHook {
-                card_id: card_b.id.clone(),
-                kind: "hook.codex.permission_request".into(),
-                hook_idempotency_key: "hook-key".into(),
-                payload: Value::Null,
-            },
-        );
+        // SENTINEL emits → drive card B then card C to AwaitingInput. Because
+        // the FSM processes events strictly in arrival order (single
+        // subscriber, each `handle().await` fully awaited before the next
+        // `recv` — see `spawn`), neither can be handled until card A's two
+        // emits are fully processed, and card C cannot be handled until card B
+        // is fully processed. A first-observation upgrade ALWAYS writes a
+        // card-level `status` overlay; the wave aggregate is already true (from
+        // card A), so B's and C's commits each leave it unchanged.
+        //
+        // We finalize the count on card C's status — NOT B's — on purpose:
+        // `commit()` writes the card `status` overlay BEFORE calling
+        // `recompute_wave_needs_input`, so B's recompute (the true→true
+        // idempotency path this test guards) runs AFTER B's status event.
+        // Breaking on C's status guarantees B's recompute has already run and
+        // any duplicate wave write it might (wrongly) emit is counted first.
+        for sentinel in [&card_b, &card_c] {
+            bus.emit(
+                ActorId::AiCodex(sentinel.id.clone()),
+                Event::CodexHook {
+                    card_id: sentinel.id.clone(),
+                    kind: "hook.codex.permission_request".into(),
+                    hook_idempotency_key: "hook-key".into(),
+                    payload: Value::Null,
+                },
+            );
+        }
 
-        // Block-recv until we observe the sentinel (card B's status overlay),
-        // counting wave-scoped `any_card_needs_input` OverlaySet events along
-        // the way. By in-order processing, by the time B's status event
-        // arrives, every event card A's two emits produced is already in the
-        // channel and has been received first — so this count is complete and
-        // free of phantoms. There must be EXACTLY ONE (the first emit's
-        // false→true flip; the second emit is suppressed by idempotency).
+        // Block-recv until we observe card C's status overlay, counting
+        // wave-scoped `any_card_needs_input` OverlaySet events along the way.
+        // By in-order processing, every event card A's two emits AND card B's
+        // full handling (status + recompute) produced is already received
+        // before C's status arrives, so the count is complete and free of
+        // phantoms. There must be EXACTLY ONE (card A's first-emit false→true
+        // flip; the second emit and B's recompute are both idempotent no-ops).
         //
         // Bounded by an outer timeout so a broken assumption fails as a clean
         // panic instead of hanging the test forever (there is no per-test
@@ -1284,13 +1299,15 @@ mod tests {
                     {
                         writes += 1;
                     }
-                    // Sentinel: card B's status overlay reaching AwaitingInput
-                    // proves card A's two permission_request emits are both
-                    // fully handled (in-order processing). Stop counting here.
+                    // Terminal marker: card C's status overlay. By in-order
+                    // processing this only appears once card A's two emits AND
+                    // card B (status + recompute) are fully handled, so the
+                    // count above already includes any duplicate write B's
+                    // recompute would (wrongly) emit. Stop counting here.
                     Event::OverlaySet(o)
                         if o.kind == "status"
                             && o.entity_kind == "card"
-                            && o.entity_id == card_b.id.to_string()
+                            && o.entity_id == card_c.id.to_string()
                             && o.payload.get("state").and_then(|v| v.as_str())
                                 == Some("AwaitingInput") =>
                     {
@@ -1302,7 +1319,7 @@ mod tests {
             writes
         })
         .await
-        .expect("timed out waiting for sentinel (card B AwaitingInput) overlay");
+        .expect("timed out waiting for terminal marker (card C AwaitingInput) overlay");
         assert_eq!(
             wave_overlay_writes, 1,
             "expected exactly one any_card_needs_input write (idempotent), got {wave_overlay_writes}"
