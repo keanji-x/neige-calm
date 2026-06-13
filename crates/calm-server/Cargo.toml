@@ -193,6 +193,7 @@ automerge = "0.9"
 # the moved types (`pub use calm_types::…`) so external paths are unchanged.
 calm-types = { path = "../calm-types" }
 calm-exec = { path = "../calm-exec" }
+calm-truth = { path = "../calm-truth" }
 calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }
 blake3 = "1.8"

@@ -6,112 +6,119 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 const MIGRATIONS_UP_TO_0027: &[(&str, &str)] = &[
-    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    (
+        "0001_init",
+        include_str!("../../calm-truth/migrations/0001_init.sql"),
+    ),
     (
         "0002_plugins",
-        include_str!("../migrations/0002_plugins.sql"),
+        include_str!("../../calm-truth/migrations/0002_plugins.sql"),
     ),
     (
         "0003_settings",
-        include_str!("../migrations/0003_settings.sql"),
+        include_str!("../../calm-truth/migrations/0003_settings.sql"),
     ),
-    ("0004_events", include_str!("../migrations/0004_events.sql")),
+    (
+        "0004_events",
+        include_str!("../../calm-truth/migrations/0004_events.sql"),
+    ),
     (
         "0005_terminals_pid",
-        include_str!("../migrations/0005_terminals_pid.sql"),
+        include_str!("../../calm-truth/migrations/0005_terminals_pid.sql"),
     ),
     (
         "0006_events_version",
-        include_str!("../migrations/0006_events_version.sql"),
+        include_str!("../../calm-truth/migrations/0006_events_version.sql"),
     ),
     (
         "0007_events_scope",
-        include_str!("../migrations/0007_events_scope.sql"),
+        include_str!("../../calm-truth/migrations/0007_events_scope.sql"),
     ),
     (
         "0008_cards_role",
-        include_str!("../migrations/0008_cards_role.sql"),
+        include_str!("../../calm-truth/migrations/0008_cards_role.sql"),
     ),
     (
         "0009_coves_kind",
-        include_str!("../migrations/0009_coves_kind.sql"),
+        include_str!("../../calm-truth/migrations/0009_coves_kind.sql"),
     ),
     (
         "0010_card_mcp_tokens",
-        include_str!("../migrations/0010_card_mcp_tokens.sql"),
+        include_str!("../../calm-truth/migrations/0010_card_mcp_tokens.sql"),
     ),
     (
         "0011_terminals_card_id_restrict",
-        include_str!("../migrations/0011_terminals_card_id_restrict.sql"),
+        include_str!("../../calm-truth/migrations/0011_terminals_card_id_restrict.sql"),
     ),
     (
         "0012_waves_lifecycle",
-        include_str!("../migrations/0012_waves_lifecycle.sql"),
+        include_str!("../../calm-truth/migrations/0012_waves_lifecycle.sql"),
     ),
     (
         "0013_cards_deletable",
-        include_str!("../migrations/0013_cards_deletable.sql"),
+        include_str!("../../calm-truth/migrations/0013_cards_deletable.sql"),
     ),
     (
         "0014_wave_report_card",
-        include_str!("../migrations/0014_wave_report_card.sql"),
+        include_str!("../../calm-truth/migrations/0014_wave_report_card.sql"),
     ),
     (
         "0015_cove_folders",
-        include_str!("../migrations/0015_cove_folders.sql"),
+        include_str!("../../calm-truth/migrations/0015_cove_folders.sql"),
     ),
     (
         "0016_terminals_theme",
-        include_str!("../migrations/0016_terminals_theme.sql"),
+        include_str!("../../calm-truth/migrations/0016_terminals_theme.sql"),
     ),
     (
         "0017_terminals_theme_not_null",
-        include_str!("../migrations/0017_terminals_theme_not_null.sql"),
+        include_str!("../../calm-truth/migrations/0017_terminals_theme_not_null.sql"),
     ),
     (
         "0018_wave_cwd_terminal_at",
-        include_str!("../migrations/0018_wave_cwd_terminal_at.sql"),
+        include_str!("../../calm-truth/migrations/0018_wave_cwd_terminal_at.sql"),
     ),
     (
         "0019_cards_body_crdt",
-        include_str!("../migrations/0019_cards_body_crdt.sql"),
+        include_str!("../../calm-truth/migrations/0019_cards_body_crdt.sql"),
     ),
     (
         "0020_terminals_exit_code",
-        include_str!("../migrations/0020_terminals_exit_code.sql"),
+        include_str!("../../calm-truth/migrations/0020_terminals_exit_code.sql"),
     ),
     (
         "0021_waves_pinned_at",
-        include_str!("../migrations/0021_waves_pinned_at.sql"),
+        include_str!("../../calm-truth/migrations/0021_waves_pinned_at.sql"),
     ),
     (
         "0022_spec_push_queue",
-        include_str!("../migrations/0022_spec_push_queue.sql"),
+        include_str!("../../calm-truth/migrations/0022_spec_push_queue.sql"),
     ),
     (
         "0023_phase3b_proc_handle",
-        include_str!("../migrations/0023_phase3b_proc_handle.sql"),
+        include_str!("../../calm-truth/migrations/0023_phase3b_proc_handle.sql"),
     ),
     (
         "0024_drop_terminals_daemon_handle",
-        include_str!("../migrations/0024_drop_terminals_daemon_handle.sql"),
+        include_str!("../../calm-truth/migrations/0024_drop_terminals_daemon_handle.sql"),
     ),
     (
         "0025_card_codex_threads",
-        include_str!("../migrations/0025_card_codex_threads.sql"),
+        include_str!("../../calm-truth/migrations/0025_card_codex_threads.sql"),
     ),
     (
         "0026_shared_codex_daemon",
-        include_str!("../migrations/0026_shared_codex_daemon.sql"),
+        include_str!("../../calm-truth/migrations/0026_shared_codex_daemon.sql"),
     ),
     (
         "0027_shared_daemon_env_signature",
-        include_str!("../migrations/0027_shared_daemon_env_signature.sql"),
+        include_str!("../../calm-truth/migrations/0027_shared_daemon_env_signature.sql"),
     ),
 ];
 
-const MIGRATION_0028_SQL: &str = include_str!("../migrations/0028_runtimes.sql");
-const MIGRATION_0030_SQL: &str = include_str!("../migrations/0030_runtimes_backfill.sql");
+const MIGRATION_0028_SQL: &str = include_str!("../../calm-truth/migrations/0028_runtimes.sql");
+const MIGRATION_0030_SQL: &str =
+    include_str!("../../calm-truth/migrations/0030_runtimes_backfill.sql");
 const SQLITE_NOW_MS_SELECT: &str =
     "SELECT CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
 

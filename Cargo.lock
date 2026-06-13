@@ -385,9 +385,11 @@ name = "calm-exec"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "calm-truth-test-harness",
  "calm-types",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -421,6 +423,7 @@ dependencies = [
  "calm-proc-supervisor",
  "calm-server",
  "calm-session",
+ "calm-truth",
  "calm-types",
  "chrono",
  "clap",
@@ -471,6 +474,42 @@ dependencies = [
  "ts-rs",
  "uuid",
  "vte",
+]
+
+[[package]]
+name = "calm-truth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "calm-exec",
+ "calm-types",
+ "chrono",
+ "dashmap",
+ "futures",
+ "hex",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "similar",
+ "sqlx",
+ "subtle",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "calm-truth-test-harness"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "calm-truth",
+ "calm-types",
 ]
 
 [[package]]

@@ -36,6 +36,11 @@ jobs:
       - name: cargo fmt --all --check
         run: cargo fmt --all --check
 
+      - name: single migrations/ dir gate (#679 PR2)
+        run: |
+          count=$(find . -maxdepth 4 -type d -name migrations | wc -l)
+          [ "$count" -eq 1 ] && echo "OK: 1 migrations/ directory" || { echo "::error::expected 1 migrations/ directory, found $count"; exit 1; }
+
       # Soft backstop alongside the cargo-feature gate on
       # `AppState::raw_repo` (see `state.rs` and design doc §1.4.1).
       # The compile gate already blocks production builds from reaching

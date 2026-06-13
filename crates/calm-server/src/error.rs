@@ -222,6 +222,67 @@ impl From<calm_types::error::CoreError> for CalmError {
     }
 }
 
+impl From<calm_truth::TruthError> for CalmError {
+    fn from(err: calm_truth::TruthError) -> Self {
+        use calm_truth::TruthError as Truth;
+        match err {
+            Truth::Core(core) => CalmError::from(core),
+            Truth::Forbidden(m) => CalmError::Forbidden(m),
+            Truth::Db(e) => CalmError::Db(e),
+            Truth::Io(e) => CalmError::Io(e),
+            Truth::Serde(e) => CalmError::Serde(e),
+            Truth::Internal(m) => CalmError::Internal(m),
+        }
+    }
+}
+
+impl From<calm_truth::runtime_repo::RuntimeRepoError> for CalmError {
+    fn from(err: calm_truth::runtime_repo::RuntimeRepoError) -> Self {
+        CalmError::Internal(err.to_string())
+    }
+}
+
+impl From<calm_truth::card_kind::CardKindError> for CalmError {
+    fn from(err: calm_truth::card_kind::CardKindError) -> Self {
+        calm_truth::TruthError::from(err).into()
+    }
+}
+
+impl From<calm_truth::wave_fs_view::WaveFsError> for CalmError {
+    fn from(err: calm_truth::wave_fs_view::WaveFsError) -> Self {
+        calm_truth::TruthError::from(err).into()
+    }
+}
+
+impl From<CalmError> for calm_truth::TruthError {
+    fn from(err: CalmError) -> Self {
+        match err {
+            CalmError::NotFound(m) => calm_types::error::CoreError::NotFound(m).into(),
+            CalmError::Conflict(m) => calm_types::error::CoreError::Conflict(m).into(),
+            CalmError::IdempotencyCollision(m) => {
+                calm_types::error::CoreError::IdempotencyCollision(m).into()
+            }
+            CalmError::BadRequest(m) => calm_types::error::CoreError::BadRequest(m).into(),
+            CalmError::Unauthorized => calm_types::error::CoreError::Unauthorized.into(),
+            CalmError::Forbidden(m) => calm_truth::TruthError::Forbidden(m),
+            CalmError::ServiceUnavailable(m) => {
+                calm_types::error::CoreError::ServiceUnavailable(m).into()
+            }
+            CalmError::Db(e) => calm_truth::TruthError::Db(e),
+            CalmError::Io(e) => calm_truth::TruthError::Io(e),
+            CalmError::Serde(e) => calm_truth::TruthError::Serde(e),
+            CalmError::PluginInstall(m)
+            | CalmError::PluginPermission(m)
+            | CalmError::PluginConflict(m)
+            | CalmError::PluginKernelTooOld(m)
+            | CalmError::SpecResetUnsupportedInSharedMode(m)
+            | CalmError::SpecHarnessDormant(m)
+            | CalmError::CodexAppServer(m)
+            | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),
+        }
+    }
+}
+
 pub type Result<T, E = CalmError> = std::result::Result<T, E>;
 
 #[cfg(test)]

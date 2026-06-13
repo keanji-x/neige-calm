@@ -383,6 +383,10 @@ impl SpecHarness {
     pub async fn set_last_seen_head_for_test(&self, head: Option<String>) {
         *self.inner.last_seen_head.lock().await = head;
     }
+
+    pub async fn last_seen_head_for_test(&self) -> Option<String> {
+        self.inner.last_seen_head.lock().await.clone()
+    }
 }
 
 fn map_observation_send_error(
@@ -1626,7 +1630,7 @@ async fn persist_snapshot_inner(
                 error = %e,
                 "spec harness phase event persist failed; retaining previous phase for retry"
             );
-            return Err(e);
+            return Err(e.into());
         }
         *last_phase = new_phase;
     }

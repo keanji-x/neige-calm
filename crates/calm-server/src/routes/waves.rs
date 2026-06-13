@@ -887,7 +887,7 @@ pub(crate) async fn delete_wave(
                 // Idempotent: tolerate NotFound on each row in case a
                 // racing sweeper tick beat us to it.
                 for tid in &terminal_ids {
-                    match terminal_delete_tx(tx, tid).await {
+                    match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
                         Ok(()) => {}
                         Err(CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),

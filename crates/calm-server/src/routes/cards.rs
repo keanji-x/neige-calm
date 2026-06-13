@@ -1262,7 +1262,7 @@ pub(crate) async fn delete_card(
                 // sweeper may have raced us, or the card had no terminal
                 // to begin with).
                 if let Some(tid) = terminal_id.as_deref() {
-                    match terminal_delete_tx(tx, tid).await {
+                    match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
                         Ok(()) => {}
                         Err(CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),

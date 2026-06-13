@@ -40,6 +40,7 @@ pub(crate) async fn overlay_scope(
     OVERLAY_ENTITY_SCOPE_REGISTRY
         .route_scope(repo, entity_kind, entity_id)
         .await
+        .map_err(Into::into)
 }
 
 pub fn router() -> Router<AppState> {

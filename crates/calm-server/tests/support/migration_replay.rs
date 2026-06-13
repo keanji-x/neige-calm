@@ -32,15 +32,14 @@
 //! diff. When the env var is unset the test self-skips with an explicit
 //! marker, following the codex-e2e self-skip pattern.
 
-use sqlx::migrate::{Migrate, Migrator};
+use sqlx::migrate::Migrate;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// The production migration chain, embedded at compile time. Must stay
-/// pointed at the same dir as `db/sqlite.rs`'s `sqlx::migrate!`.
-pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+/// The production migration chain, embedded by calm-truth.
+pub use calm_truth::MIGRATOR;
 
 /// Every applicable (up) migration version, ascending.
 pub fn migration_versions() -> Vec<i64> {

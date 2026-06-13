@@ -1,0 +1,9 @@
+[package]
+name = "calm-truth-test-harness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1"
+calm-truth = { path = "../calm-truth", features = ["test-helpers"] }
+calm-types = { path = "../calm-types" }
