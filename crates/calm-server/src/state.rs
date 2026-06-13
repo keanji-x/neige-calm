@@ -343,6 +343,10 @@ impl AppState {
         self.raw.as_ref()
     }
 
+    pub(crate) fn sqlite_pool(&self) -> Option<sqlx::SqlitePool> {
+        self.raw.sqlite_pool()
+    }
+
     pub async fn recover_harnesses_on_boot(&self) -> crate::error::Result<usize> {
         crate::harness::recover_harnesses_on_boot(
             self.raw.clone(),
