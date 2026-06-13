@@ -961,6 +961,24 @@ mod tests {
     #[tokio::test]
     async fn upgrade_commits_immediately() {
         let (repo, bus, wave_id, card_id) = setup().await;
+        // A sentinel card driven to Working AFTER the card under test. By the
+        // FSM's strict in-order processing, the sentinel's status overlay
+        // cannot appear until the card under test has been handled in FULL —
+        // card status AND `recompute_wave_needs_input`. `commit()` writes the
+        // card `status` before awaiting the recompute, so waiting on the card
+        // under test's own status would return before its recompute runs and
+        // the wave-overlay regression guard below could assert too early
+        // (issue #698 / codex review). Working leaves the aggregate false, so
+        // the sentinel adds no wave write of its own.
+        let card_b = repo
+            .card_create(NewCard {
+                wave_id: wave_id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            })
+            .await
+            .unwrap();
         spawn(
             repo.clone(),
             bus.clone(),
@@ -972,20 +990,23 @@ mod tests {
         // Give the spawn a tick to subscribe.
         tokio::task::yield_now().await;
 
-        bus.emit(
-            ActorId::AiCodex(card_id.clone()),
-            Event::CodexHook {
-                card_id: card_id.clone(),
-                kind: "hook.codex.pre_tool_use".into(),
-                hook_idempotency_key: "hook-key".into(),
-                payload: Value::Null,
-            },
-        );
+        for c in [&card_id, &card_b.id] {
+            bus.emit(
+                ActorId::AiCodex(c.clone()),
+                Event::CodexHook {
+                    card_id: c.clone(),
+                    kind: "hook.codex.pre_tool_use".into(),
+                    hook_idempotency_key: "hook-key".into(),
+                    payload: Value::Null,
+                },
+            );
+        }
 
-        // Poll until the async handler lands the overlay write, rather than
-        // racing a fixed sleep against the FSM task. Under CPU starvation a
-        // 100ms budget could expire before the commit completes (issue #698).
-        wait_for_card_status(&repo, &card_id, "Working").await;
+        // Wait on the SENTINEL's status, not the card under test's own: by
+        // in-order processing this only lands once the card under test's full
+        // commit (status + recompute) has completed, so the wave-overlay
+        // regression guard below sees the post-recompute state.
+        wait_for_card_status(&repo, &card_b.id, "Working").await;
 
         let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
         let s = card_overlays
