@@ -15,6 +15,8 @@ struct ParityDivergence {
     session_state: Option<String>,
     runtime_thread_id: Option<String>,
     session_thread_id: Option<String>,
+    runtime_session_id: Option<String>,
+    session_agent_session_id: Option<String>,
     runtime_active_turn_id: Option<String>,
     session_active_turn_id: Option<String>,
     runtime_terminal_run_id: Option<String>,
@@ -61,6 +63,8 @@ pub async fn sweep(pool: &SqlitePool, counter: &AtomicU64) -> Result<usize> {
             session_state = ?divergence.session_state,
             runtime_thread_id = ?divergence.runtime_thread_id,
             session_thread_id = ?divergence.session_thread_id,
+            runtime_session_id = ?divergence.runtime_session_id,
+            session_agent_session_id = ?divergence.session_agent_session_id,
             runtime_active_turn_id = ?divergence.runtime_active_turn_id,
             session_active_turn_id = ?divergence.session_active_turn_id,
             runtime_terminal_run_id = ?divergence.runtime_terminal_run_id,
@@ -86,6 +90,8 @@ async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
                   ws.state AS session_state,
                   r.thread_id AS runtime_thread_id,
                   ws.thread_id AS session_thread_id,
+                  r.session_id AS runtime_session_id,
+                  ws.agent_session_id AS session_agent_session_id,
                   r.active_turn_id AS runtime_active_turn_id,
                   ws.active_turn_id AS session_active_turn_id,
                   r.terminal_run_id AS runtime_terminal_run_id,
@@ -103,6 +109,7 @@ async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
            WHERE ws.id IS NULL
               OR ws.state != r.status
               OR NOT (ws.thread_id IS r.thread_id)
+              OR NOT (ws.agent_session_id IS r.session_id)
               OR NOT (ws.active_turn_id IS r.active_turn_id)
               OR NOT (ws.terminal_run_id IS r.terminal_run_id)
               OR NOT (ws.handle_state_json IS r.handle_state_json)
@@ -122,6 +129,8 @@ async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
             session_state: row.get("session_state"),
             runtime_thread_id: row.get("runtime_thread_id"),
             session_thread_id: row.get("session_thread_id"),
+            runtime_session_id: row.get("runtime_session_id"),
+            session_agent_session_id: row.get("session_agent_session_id"),
             runtime_active_turn_id: row.get("runtime_active_turn_id"),
             session_active_turn_id: row.get("session_active_turn_id"),
             runtime_terminal_run_id: row.get("runtime_terminal_run_id"),

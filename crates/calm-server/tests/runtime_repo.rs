@@ -212,10 +212,10 @@ async fn backfill_worker_sessions_from_runtimes_is_idempotent() {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO runtimes
-           (id, card_id, kind, agent_provider, status, thread_id, active_turn_id,
+           (id, card_id, kind, agent_provider, status, thread_id, session_id, active_turn_id,
             created_at_ms, updated_at_ms)
            VALUES (?1, ?2, 'codex', 'codex', 'running', 'thread-backfill',
-                   'turn-backfill', ?3, ?3)"#,
+                   'agent-session-backfill', 'turn-backfill', ?3, ?3)"#,
     )
     .bind(&runtime_id)
     .bind(card.id.as_str())
@@ -241,6 +241,10 @@ async fn backfill_worker_sessions_from_runtimes_is_idempotent() {
         .expect("backfilled worker session");
     assert_eq!(session.state, WorkerSessionState::Running);
     assert_eq!(session.thread_id.as_deref(), Some("thread-backfill"));
+    assert_eq!(
+        session.agent_session_id.as_deref(),
+        Some("agent-session-backfill")
+    );
     assert_eq!(session.active_turn_id.as_deref(), Some("turn-backfill"));
 }
 
@@ -705,6 +709,11 @@ async fn runtime_check_rejects_null_agent_provider_for_non_terminal_kinds() {
     insert_raw_runtime(&repo, card.id.as_str(), "terminal", None)
         .await
         .expect("terminal runtime with null agent_provider should pass");
+    assert_eq!(
+        repo.backfill_worker_sessions_from_runtimes().await.unwrap(),
+        1,
+        "raw terminal runtime inserted for CHECK coverage is backfilled before teardown parity"
+    );
 }
 
 #[tokio::test]
@@ -979,6 +988,17 @@ async fn runtime_start_tx_claude_records_session_when_present() {
     assert!(runtime.thread_status.is_none());
     assert_eq!(stored.payload["terminal_id"], term.id);
     assert_eq!(stored.payload["claude_session_id"], session_id);
+
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+    let session = repo
+        .session_get(&WorkerSessionId(active.id))
+        .await
+        .unwrap()
+        .expect("mirrored worker session");
+    assert_eq!(
+        session.agent_session_id.as_deref(),
+        Some(session_id.as_str())
+    );
 }
 
 #[tokio::test]

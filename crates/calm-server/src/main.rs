@@ -47,6 +47,8 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
+    calm_server::backfill_worker_sessions_from_runtimes_on_boot(&state).await?;
+
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
     // only codex app-server path; failures are logged so boot can still bind
     // and routes surface the daemon failure when a codex card is used.
@@ -62,8 +64,6 @@ async fn main() -> anyhow::Result<()> {
     calm_server::reconcile_supervisor_on_boot(&state).await;
 
     calm_server::runtimes_recover_orphans_on_boot(&state).await;
-
-    calm_server::backfill_worker_sessions_from_runtimes_on_boot(&state).await;
 
     calm_server::recover_operations_on_boot(&state).await?;
 

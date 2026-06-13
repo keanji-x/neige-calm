@@ -18,7 +18,10 @@ default = []
 # `write_with_event_typed` / `log_pure_event` instead. Integration
 # tests under `tests/*.rs` auto-enable this via the `[dev-dependencies]`
 # self-loop below.
-fixtures = ["calm-proc-supervisor/test-support"]
+fixtures = [
+    "calm-proc-supervisor/test-support",
+    "calm-truth/worker-session-parity-drop",
+]
 # Issue #236: opt-in end-to-end test that boots a real `codex` binary
 # (the agent's MCP-client side) and verifies the spec card's daemon
 # has `NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN` in its process env.

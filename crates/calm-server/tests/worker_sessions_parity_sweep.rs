@@ -8,6 +8,8 @@ use serde_json::json;
 #[tokio::test]
 async fn worker_sessions_parity_sweep_detects_unmirrored_runtime() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    // This test deliberately seeds an unmirrored runtime so the sweep can flag it.
+    repo.disable_worker_session_parity_on_drop_for_test();
     let cove = repo
         .cove_create(NewCove {
             name: "parity-sweep".into(),
