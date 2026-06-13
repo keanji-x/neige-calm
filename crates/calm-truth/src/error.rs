@@ -69,5 +69,6 @@ impl From<calm_types::error::CoreError> for TruthError {
     }
 }
 
+/// Migration-readability alias; shadows calm-server's `CalmError` enum.
 pub type CalmError = TruthError;
 pub type Result<T, E = TruthError> = std::result::Result<T, E>;

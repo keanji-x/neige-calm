@@ -256,6 +256,7 @@ impl From<calm_truth::wave_fs_view::WaveFsError> for CalmError {
 
 impl From<CalmError> for calm_truth::TruthError {
     fn from(err: CalmError) -> Self {
+        // Lossy bridge: server-only variants collapse to Internal(500).
         match err {
             CalmError::NotFound(m) => calm_types::error::CoreError::NotFound(m).into(),
             CalmError::Conflict(m) => calm_types::error::CoreError::Conflict(m).into(),

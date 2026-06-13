@@ -3014,6 +3014,116 @@ pub async fn runtime_set_active_turn_tx(
     Ok(())
 }
 
+/// Tolerant harness phase-mirror / compensation write; deliberately skips the
+/// runtime status matrix and emits no event.
+pub async fn runtime_set_harness_observation_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    status: RunStatus,
+    thread_id: Option<&str>,
+    active_turn_id: Option<&str>,
+) -> RuntimeResult<()> {
+    sqlx::query(
+        r#"UPDATE runtimes
+              SET status = ?1,
+                  thread_id = COALESCE(?2, thread_id),
+                  active_turn_id = ?3,
+                  updated_at_ms = ?4
+            WHERE id = ?5"#,
+    )
+    .bind(run_status_to_db(&status))
+    .bind(thread_id)
+    .bind(active_turn_id)
+    .bind(now_ms())
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Tolerant harness phase-mirror / compensation write; deliberately skips the
+/// runtime status matrix and emits no event.
+pub async fn runtime_fail_if_active_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+) -> RuntimeResult<()> {
+    let now = now_ms();
+    sqlx::query(
+        r#"UPDATE runtimes
+              SET status = 'failed',
+                  updated_at_ms = ?1,
+                  completed_at_ms = ?1
+            WHERE id = ?2
+              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Tolerant harness phase-mirror / compensation write; deliberately skips the
+/// runtime status matrix and emits no event.
+pub async fn runtime_mark_superseded_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+) -> RuntimeResult<()> {
+    sqlx::query(
+        r#"UPDATE runtimes
+              SET status = 'superseded',
+                  updated_at_ms = ?1,
+                  completed_at_ms = COALESCE(completed_at_ms, ?1)
+            WHERE id = ?2"#,
+    )
+    .bind(now_ms())
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Tolerant harness phase-mirror / compensation write; deliberately skips the
+/// runtime status matrix and emits no event.
+pub async fn runtime_restore_from_superseded_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    status: RunStatus,
+) -> RuntimeResult<()> {
+    let status_db = run_status_to_db(&status);
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET status = ?1,
+                  updated_at_ms = ?2,
+                  completed_at_ms = NULL
+            WHERE id = ?3
+              AND status = 'superseded'"#,
+    )
+    .bind(status_db)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() > 0 {
+        return Ok(());
+    }
+
+    let current: Option<(String,)> = sqlx::query_as("SELECT status FROM runtimes WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    match current {
+        Some((current,)) if current == status_db => Ok(()),
+        Some((current,)) => Err(runtime_message(format!(
+            "runtime {id} has status {current}; cannot restore old spec harness runtime to {status_db}"
+        ))),
+        None => Err(runtime_message(format!(
+            "runtime {id} missing while restoring old spec harness runtime"
+        ))),
+    }
+}
+
 pub async fn runtime_complete_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,

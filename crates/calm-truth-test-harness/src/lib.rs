@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use calm_truth::card_role_cache::CardRoleCache;
-use calm_truth::db::sqlite::{SqlxRepo, session_insert_tx, session_state_transition_tx};
+use calm_truth::db::sqlite::{
+    SqlxRepo, runtime_set_harness_observation_tx, runtime_start_tx, session_insert_tx,
+    session_state_transition_tx,
+};
 use calm_truth::db::{RepoEventWrite, RepoSyncDomainRaw, write_in_tx_typed};
 use calm_truth::decision_gate::{
     DecisionGate, GateDecision, PermissiveGate, WriteTx, commit_decision,
@@ -17,7 +20,8 @@ use calm_truth::decision_gate::{
 use calm_truth::error::{Result as TruthResult, TruthError};
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::ActorId;
-use calm_truth::model::{NewCove, NewWave, RequestTheme};
+use calm_truth::model::{NewCard, NewCove, NewWave, RequestTheme, new_id, now_ms};
+use calm_truth::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepo};
 use calm_truth::session_repo::SessionRepo;
 use calm_truth::state::WriteContext;
 use calm_truth::test_helpers;
@@ -305,8 +309,78 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
 }
 
 pub async fn invariant_t2_observation_writes_can_skip_events() {
-    // TODO(#679 PR3a): enable when `persist_snapshot` splits its T2
-    // observation watermark from T1 runtime/session status decisions.
+    let (repo, wave_id) = seeded_repo().await;
+    let card = repo
+        .card_create(NewCard {
+            wave_id,
+            kind: "plugin:test:worker".into(),
+            sort: None,
+            payload: Default::default(),
+        })
+        .await
+        .expect("seed card");
+    let runtime_id = new_id();
+
+    write_in_tx_typed(&repo, {
+        let runtime_id = runtime_id.clone();
+        let card_id = card.id.to_string();
+        move |tx| {
+            Box::pin(async move {
+                runtime_start_tx(
+                    tx,
+                    RuntimeInit {
+                        id: runtime_id,
+                        card_id,
+                        kind: RuntimeKind::SharedSpec,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: RunStatus::Idle,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        lease_owner: None,
+                        lease_until_ms: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .map_err(TruthError::from)
+            })
+        }
+    })
+    .await
+    .expect("seed idle runtime");
+
+    let before = repo.events_since(0, None).await.expect("events").len();
+
+    write_in_tx_typed(&repo, {
+        let runtime_id = runtime_id.clone();
+        move |tx| {
+            Box::pin(async move {
+                runtime_set_harness_observation_tx(
+                    tx,
+                    &runtime_id,
+                    RunStatus::TurnPending,
+                    Some("t-1"),
+                    Some("turn-1"),
+                )
+                .await
+                .map_err(TruthError::from)
+            })
+        }
+    })
+    .await
+    .expect("observation write skips status matrix");
+
+    let runtime = repo
+        .runtime_get_by_id(&runtime_id)
+        .await
+        .expect("runtime get")
+        .expect("runtime row");
+    assert_eq!(runtime.status, RunStatus::TurnPending);
+    let after = repo.events_since(0, None).await.expect("events").len();
+    assert_eq!(after, before, "observation write must emit no event");
 }
 
 pub async fn invariant_t3_state_is_not_fold_events<G>(gate: Arc<G>)
