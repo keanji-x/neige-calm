@@ -44,6 +44,31 @@ fn malformed_apply_patch_falls_back_to_single_patch_edit() {
     assert_edit(&changes[0], "<patch>", "update", None, true);
 }
 
+#[test]
+fn apply_patch_normalizer_preserves_end_of_file_marker() {
+    let patch = "\
+*** Begin Patch
+*** Update File: foo.rs
+@@
+-last line
++new last line
+*** End of File
+*** End Patch";
+
+    let changes = normalize_patch(patch);
+
+    assert_eq!(changes.len(), 1);
+    assert_edit(&changes[0], "foo.rs", "update", None, true);
+    assert!(
+        changes[0]
+            .diff
+            .as_deref()
+            .is_some_and(|diff| diff.contains("*** End of File")),
+        "diff = {:?}",
+        changes[0].diff
+    );
+}
+
 fn normalize_patch(input: &str) -> Vec<FileEdit> {
     let value = json!({
         "timestamp": "2026-06-13T00:00:00Z",

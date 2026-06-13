@@ -791,6 +791,14 @@ fn parse_apply_patch(input: &str) -> Result<Vec<FileEdit>, &'static str> {
             break;
         }
 
+        if line == "*** End of File" {
+            let Some(section) = current.as_mut() else {
+                return Err("End of File marker without active section");
+            };
+            section.diff_lines.push(line.to_string());
+            continue;
+        }
+
         if let Some(path) = line.strip_prefix("*** Add File: ") {
             finish_apply_patch_section(&mut changes, current.take());
             current = Some(ApplyPatchSection::new(

@@ -150,17 +150,6 @@ impl CodexRolloutFlowSource {
                 return Ok(());
             }
 
-            // TODO(#704 followup): runtime_complete_for_terminal bypasses event bus; canonicalize via Event emission.
-            if !self.runtime_is_alive().await {
-                tracing::info!(
-                    card_id = %self.runtime.card_id,
-                    runtime_id = %self.runtime.id,
-                    "codex runtime reached terminal status; flushing cursor and exiting tail"
-                );
-                persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
-                return Ok(());
-            }
-
             let read = match read_rollout_lines(&path).await {
                 Ok(read) => read,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -182,6 +171,14 @@ impl CodexRolloutFlowSource {
 
             if lines.is_empty() {
                 persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
+                if !self.runtime_is_alive().await {
+                    tracing::info!(
+                        card_id = %self.runtime.card_id,
+                        runtime_id = %self.runtime.id,
+                        "codex runtime reached terminal status; final drain complete, exiting tail"
+                    );
+                    return Ok(());
+                }
                 sleep_or_cancel(self.options.poll_interval, &self.stop).await?;
                 continue;
             }
@@ -318,12 +315,27 @@ impl CodexRolloutFlowSource {
                 cursor.last_source_uuid = rollout_line_source_uuid(&parsed);
                 cursor.record_index += 1;
                 if cursor.record_index % self.options.cursor_persist_every.max(1) == 0 {
+                    // TODO(#704 followup): item insert + cursor write are two sqlite commits.
+                    // A crash between them re-inserts on restart since worker_flow_items has no
+                    // uniqueness constraint on (card_id, source_path, line). Followup: either
+                    // add a unique partial index in a new migration, OR introduce a combined
+                    // `worker_flow_item_insert_with_cursor` trait method that wraps both writes
+                    // in a single calm-truth transaction.
                     persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
                         .await?;
                 }
             }
 
             persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
+            // TODO(#704 followup): runtime_complete_for_terminal bypasses event bus; canonicalize via Event emission.
+            if !self.runtime_is_alive().await {
+                tracing::info!(
+                    card_id = %self.runtime.card_id,
+                    runtime_id = %self.runtime.id,
+                    "codex runtime reached terminal status; final drain complete, exiting tail"
+                );
+                return Ok(());
+            }
             sleep_or_cancel(self.options.poll_interval, &self.stop).await?;
         }
     }

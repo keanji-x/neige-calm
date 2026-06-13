@@ -30,6 +30,7 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
             wf::assistant_message("a-terminal", "two"),
         ],
     );
+    let poll_interval = Duration::from_millis(50);
 
     let driver = WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
@@ -38,7 +39,7 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
         EventBus::new(),
         CodexRolloutFlowSourceOptions {
             path_override: Some(path.clone()),
-            poll_interval: Duration::from_millis(20),
+            poll_interval,
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
             cursor_persist_every: 1,
@@ -56,13 +57,21 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
     .await;
     wait_for_cursor(&repo, card_id, 3).await;
 
+    wf::append_rollout(
+        &path,
+        &[
+            wf::reasoning("r-terminal-final", "three"),
+            wf::assistant_message("a-terminal-final", "four"),
+        ],
+    );
     repo.runtime_set_status_for_card(card_id, RunStatus::Exited)
         .await
         .unwrap();
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(poll_interval * 2, || {
         let driver = driver.clone();
-        async move { driver.tasks_alive_for_test().await == 0 }
+        let repo = repo.clone();
+        async move { item_count(&repo, card_id).await == 4 && driver.tasks_alive_for_test().await == 0 }
     })
     .await;
 }
