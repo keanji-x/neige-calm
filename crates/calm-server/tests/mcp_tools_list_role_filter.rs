@@ -16,7 +16,6 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.plan.upsert",
         "calm.report.edit",
         "calm.report.write",
-        "calm.task.dispatch",
         "calm.task.verdict",
     ]
 }
@@ -71,6 +70,7 @@ async fn tools_list_for_spec_role_does_not_leak_aliases() {
     let names = tools_list_names_for_role(CardRole::Spec).await;
     for hidden_name in [
         "calm.dispatch_request",
+        "calm.task.dispatch",
         "calm.task_completed",
         "calm.task_failed",
         "calm.get_wave_state",
@@ -141,8 +141,8 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
 
     let names = tool_names_from_response(&resp);
     assert!(
-        names.contains(&"calm.task.dispatch".to_string()),
-        "daemon-trust tools/list without threadId must include task.dispatch, got: {names:?}"
+        !names.contains(&"calm.task.dispatch".to_string()),
+        "daemon-trust tools/list without threadId must hide retired task.dispatch, got: {names:?}"
     );
     assert!(
         names.contains(&"calm.report.write".to_string()),
