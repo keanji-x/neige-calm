@@ -71,7 +71,7 @@ were `worker_kind` / `job_kind` and the current field is a legacy spelling.
 
 | Symbol | Where | Meaning |
 |---|---|---|
-| `Dispatcher` | `crates/calm-server/src/dispatcher.rs` | The **job dispatcher**. A struct + spawned task that subscribes to the event bus, picks up `codex.worker_requested` / `terminal.worker_requested` envelopes, mints worker-roled cards, and spawns backing daemons. Acts as `ActorId::KernelDispatcher`. |
+| `Dispatcher` | `crates/calm-server/src/dispatcher.rs` | The **job dispatcher**. A struct + spawned task that subscribes to task/report/hook/plan/wave events, pushes observations to the spec harness, and pokes the plan scheduler. Worker spawns now flow through scheduler-owned `task.dispatched` operations. Acts as `ActorId::KernelDispatcher`. |
 | plugin callback dispatcher | `crates/calm-server/src/plugin_host/callbacks.rs` (`dispatch()`) | Module-level function, **not** a struct. Resolves each plugin-originated `neige.*` request against the kernel (permission check → repo write → event emit → respond). Identity is injected from `CallbackCtx`, never trusted from the plugin params. |
 
 **Not split into a typed pair.** The issue floated `JobDispatcher` /
