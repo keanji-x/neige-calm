@@ -33,6 +33,7 @@ pub mod aspect;
 pub mod auth;
 pub mod card_kind;
 pub mod harness;
+pub mod worker_flow;
 use crate::runtime_repo::RunStatus;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};

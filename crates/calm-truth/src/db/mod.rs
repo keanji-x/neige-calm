@@ -363,6 +363,13 @@ pub trait RepoRead: Send + Sync + 'static {
         descending: bool,
     ) -> Result<Vec<crate::db::rows::WorkerFlowItemRow>>;
 
+    /// Fetch the passive worker-flow capture cursor for one card/source.
+    async fn worker_flow_cursor_get(
+        &self,
+        card_id: &str,
+        source_kind: &str,
+    ) -> Result<Option<crate::db::rows::WorkerFlowCursor>>;
+
     // ---- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
     /// List every overlay attached to entities of the given `entity_kind`
@@ -787,6 +794,23 @@ pub trait RepoOutOfDomain: RepoRead {
         payload: &str,
         created_at_ms: i64,
     ) -> Result<i64>;
+
+    /// Upsert the passive worker-flow capture cursor for one card/source.
+    ///
+    /// `record_index` may move down when a rollout file is rewritten during
+    /// compaction; callers validate the source identity before taking that
+    /// reset path.
+    #[allow(clippy::too_many_arguments)]
+    async fn worker_flow_cursor_upsert(
+        &self,
+        card_id: &str,
+        source_kind: &str,
+        source_path: &str,
+        record_index: i64,
+        byte_offset: i64,
+        last_source_uuid: Option<&str>,
+        updated_at_ms: i64,
+    ) -> Result<()>;
 
     // ---- plugins (writes)
     //

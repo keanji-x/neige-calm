@@ -1,0 +1,187 @@
+[
+  {
+    "content": [
+      {
+        "text": "hello",
+        "type": "text"
+      }
+    ],
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 2,
+      "provider": "codex",
+      "record_type": "message",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 0,
+    "session_id": "sess-golden",
+    "source_uuid": "msg-user",
+    "timestamp": 1781308801000,
+    "turn": 1,
+    "type": "userMessage"
+  },
+  {
+    "content": [
+      "thinking"
+    ],
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "codex",
+      "record_type": "reasoning",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "redacted": false,
+    "seq": 1,
+    "session_id": "sess-golden",
+    "source_uuid": "rsn-1",
+    "summary": [
+      "thinking"
+    ],
+    "timestamp": 1781308803000,
+    "turn": 1,
+    "type": "reasoning"
+  },
+  {
+    "is_final": true,
+    "phase": "final_answer",
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 4,
+      "provider": "codex",
+      "record_type": "message",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 2,
+    "session_id": "sess-golden",
+    "source_uuid": "msg-assistant",
+    "text": "done",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "agentMessage"
+  },
+  {
+    "aggregated_output": null,
+    "call_id": "call-exec",
+    "command": "bash -lc ls -la",
+    "cwd": "/tmp",
+    "duration_ms": null,
+    "exit_code": null,
+    "parsed_actions": [
+      {
+        "command": "bash -lc ls -la",
+        "type": "unknown"
+      }
+    ],
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 5,
+      "provider": "codex",
+      "record_type": "function_call",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 3,
+    "session_id": "sess-golden",
+    "source": "agent",
+    "source_uuid": "call-exec",
+    "status": "inProgress",
+    "timestamp": 1781308804000,
+    "turn": 1,
+    "type": "commandExecution"
+  },
+  {
+    "call_id": "call-exec",
+    "error": null,
+    "ok": true,
+    "output": [
+      {
+        "text": "total 0",
+        "type": "text"
+      }
+    ],
+    "output_summary": "total 0",
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 6,
+      "provider": "codex",
+      "record_type": "function_call_output",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 4,
+    "session_id": "sess-golden",
+    "source_uuid": "call-exec",
+    "timestamp": 1781308805000,
+    "turn": 1,
+    "type": "toolResult"
+  },
+  {
+    "call_id": "call-patch",
+    "changes": [
+      {
+        "diff": "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** End Patch",
+        "kind": {
+          "move_path": null,
+          "type": "update"
+        },
+        "path": "src/main.rs"
+      }
+    ],
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 7,
+      "provider": "codex",
+      "record_type": "custom_tool_call",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 5,
+    "session_id": "sess-golden",
+    "source_uuid": "call-patch",
+    "status": "completed",
+    "timestamp": 1781308806000,
+    "turn": 1,
+    "type": "fileChange"
+  },
+  {
+    "call_id": "ws-1",
+    "provider": "codex",
+    "provider_extra": null,
+    "query": "rust serde flatten",
+    "raw_ref": {
+      "line": 8,
+      "provider": "codex",
+      "record_type": "web_search_call",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "results_summary": null,
+    "seq": 6,
+    "session_id": "sess-golden",
+    "source_uuid": "ws-1",
+    "timestamp": 1781308807000,
+    "turn": 1,
+    "type": "webSearch"
+  },
+  {
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 9,
+      "provider": "codex",
+      "record_type": "compacted",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "reason": "codex_compacted",
+    "seq": 7,
+    "session_id": "sess-golden",
+    "source_uuid": null,
+    "summary": "summary after compaction",
+    "timestamp": 1781308809000,
+    "turn": 1,
+    "type": "compaction"
+  }
+]

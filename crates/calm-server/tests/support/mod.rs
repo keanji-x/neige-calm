@@ -6,3 +6,5 @@ pub mod migration_replay;
 pub mod parity;
 #[allow(dead_code)]
 pub mod wave_file;
+#[allow(dead_code)]
+pub mod worker_flow;

@@ -27,6 +27,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::shared_codex_home::SharedCodexHome;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
+use crate::worker_flow::WorkerFlowDriver;
 use axum::extract::FromRef;
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -149,6 +150,7 @@ pub struct BootState {
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
+    pub worker_flow: Arc<WorkerFlowDriver>,
 }
 
 impl BootState {
@@ -206,6 +208,7 @@ impl BootState {
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial,
             aspects: self.aspects,
             operation_runtime: self.operation_runtime,
+            worker_flow: self.worker_flow,
             raw: self.repo,
             route,
             worker,
@@ -305,6 +308,7 @@ pub struct AppState {
     /// of aspects is fixed at boot — no runtime mutation.
     pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
+    pub worker_flow: Arc<WorkerFlowDriver>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -579,6 +583,11 @@ impl AppState {
                 Dispatcher::permits_from_env(8),
             ),
         );
+        let worker_flow = WorkerFlowDriver::from_state_parts(
+            repo.clone(),
+            shared_codex_appserver.clone(),
+            events.clone(),
+        );
         BootState {
             repo,
             events,
@@ -605,6 +614,7 @@ impl AppState {
             pending_codex_threads_spawn_serial,
             aspects: build_aspect_registry(),
             operation_runtime,
+            worker_flow,
         }
         .into_app_state()
     }
@@ -620,6 +630,11 @@ impl AppState {
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
         self.shared_codex_appserver = shared.clone();
         self.codex_shell.shared_codex_appserver = shared;
+        self.worker_flow = WorkerFlowDriver::from_state_parts(
+            self.raw.clone(),
+            self.shared_codex_appserver.clone(),
+            self.events.clone(),
+        );
         self.rebuild_operation_runtime();
         self
     }
@@ -1016,6 +1031,11 @@ impl AppState {
         // the rest of the boot path.
         plugin.autospawn_enabled().await;
 
+        let worker_flow = WorkerFlowDriver::from_state_parts(
+            repo.clone(),
+            shared_codex_appserver.clone(),
+            events.clone(),
+        );
         let state = BootState {
             repo,
             events,
@@ -1040,6 +1060,7 @@ impl AppState {
             pending_codex_threads_spawn_serial,
             aspects: build_aspect_registry(),
             operation_runtime,
+            worker_flow,
         };
         let state = state.into_app_state();
 

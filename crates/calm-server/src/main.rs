@@ -65,6 +65,13 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::runtimes_recover_orphans_on_boot(&state).await;
 
+    if let Err(e) = calm_server::worker_flow::start_on_boot(&state).await {
+        tracing::warn!(
+            error = %e,
+            "worker-flow recorder boot start failed; capture stream disabled this boot"
+        );
+    }
+
     calm_server::recover_operations_on_boot(&state).await?;
 
     // Issue #644 PR-B — scheduler boot sweep. Must follow operation
