@@ -70,13 +70,25 @@ async function gotoCove(page: Page, coveName: string): Promise<void> {
 }
 
 async function gotoWaveFromCove(page: Page, waveTitle: string): Promise<void> {
-  // `exact: true` excludes the per-row "Delete \"<title>\"" button
-  // whose accessible name also contains the wave title.
+  // The WaveRow nav button's accessible name is `<title> Wave
+  // lifecycle: <Status>` (the lifecycle pill contributes aria text),
+  // so an `exact: true` match on the bare title finds nothing. Anchor
+  // a regex at the start of the title and require a trailing word
+  // boundary — that pins the row's nav button while still excluding
+  // the sibling `Delete "<title>"` button (whose name starts with
+  // "Delete", not the title) and the `Pin wave` button.
   await page
     .getByRole('region', { name: 'Waves' })
-    .getByRole('button', { name: waveTitle, exact: true })
+    .getByRole('button', { name: new RegExp(`^${escapeRegExp(waveTitle)}\\b`) })
+    .first()
     .click();
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+}
+
+/** Escape regex metacharacters so a literal title (which may contain
+ *  `.` from a Date.now() suffix, etc.) is matched verbatim. */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 test.describe('a11y · wave + cove ops', () => {
@@ -398,11 +410,11 @@ test.describe('a11y · wave + cove ops', () => {
     // bug ever surfaces in this harness (see #288), this assertion
     // is what turns red.
     await expect(
-      page.locator('aside.side').getByRole('button', { name: /SidebarStaleCove/i }),
+      page.locator('aside.side').getByRole('button', { name: 'SidebarStaleCove', exact: true }),
       'old cove name must disappear from sidebar after rename',
     ).toHaveCount(0, { timeout: 1_500 });
     await expect(
-      page.locator('aside.side').getByRole('button', { name: new RegExp(newName, 'i') }),
+      page.locator('aside.side').getByRole('button', { name: newName, exact: true }),
       'new cove name must appear in sidebar after rename',
     ).toBeVisible({ timeout: 1_500 });
   });
@@ -449,6 +461,18 @@ test.describe('a11y · wave + cove ops', () => {
     // the wave page would race the rename request.
     const evt = await waitForEvent(page, 'cove.updated');
     expect((evt.data as { id: string; name: string }).name).toBe(newName);
+
+    // The Tab keypress commits the rename AND moves focus to the next
+    // header control, but the `EditableTitle` input doesn't leave edit
+    // mode until its `onBlur={save}` settles and the header re-renders
+    // in display mode. Wait for that transition (the rename button
+    // carrying the NEW name) before clicking into the wave list — an
+    // immediate click can otherwise land while the still-open editor
+    // overlays the header, leaving `gotoWaveFromCove` waiting on a
+    // wave row click that never registers.
+    await expect(
+      page.getByRole('button', { name: newName, description: 'Rename cove name' }),
+    ).toBeVisible({ timeout: 8_000 });
 
     // Navigate to the wave detail via the cove-page wave list (mirrors
     // user click flow + avoids the cold goto's lazy-WaveGrid compile
@@ -513,7 +537,7 @@ test.describe('a11y · wave + cove ops', () => {
     // new name — either the cove.updated path repaired itself across
     // route changes, or the route boundary forced a re-render.
     await expect(
-      page.locator('aside.side').getByRole('button', { name: new RegExp(newName, 'i') }),
+      page.locator('aside.side').getByRole('button', { name: newName, exact: true }),
     ).toBeVisible({ timeout: 8_000 });
   });
 
@@ -555,7 +579,7 @@ test.describe('a11y · wave + cove ops', () => {
     // Navigate back to the cove page via the sidebar entry.
     await page
       .locator('aside.side')
-      .getByRole('button', { name: /WaveRenameCove/i })
+      .getByRole('button', { name: 'WaveRenameCove', exact: true })
       .click();
     await expect(page).toHaveURL(new RegExp(`/calm/cove/${cove.id}(\\?|$)`));
 
@@ -717,7 +741,7 @@ test.describe('a11y · wave + cove ops', () => {
     // Sidebar must show the new name (anchors the user-visible end of
     // the chain — this is the surface that flashed and reverted).
     await expect(
-      page.locator('aside.side').getByRole('button', { name: new RegExp(newName, 'i') }),
+      page.locator('aside.side').getByRole('button', { name: newName, exact: true }),
     ).toBeVisible();
   });
 
