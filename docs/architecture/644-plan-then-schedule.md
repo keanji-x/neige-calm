@@ -1298,6 +1298,10 @@ rule 8.)
 
 ## 11. Review disposition
 
+PR-D landed the cutover: `calm.task.dispatch` is now a hidden no-write
+shim, live worker spawns flow only through `calm.plan.*` + scheduler, and
+legacy `*.worker_requested` events are retained only for old-log replay.
+
 ### v4 → v5 (parked, with #644 PR-C)
 
 §6.2 and the §8 `verifying` arms were rewritten on the #653

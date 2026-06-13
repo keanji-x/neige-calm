@@ -54,15 +54,15 @@ Branches:
   * (only the user may drive cancellation / reopen)
 
 Lifecycle transitions are a side effect of every write. Pass \
-`lifecycle=\"...\"` on `calm.task.dispatch`, \
+`lifecycle=\"...\"` on `calm.plan.upsert`, `calm.plan.cancel`, \
 `calm.task.verdict`, `calm.report.write`, or `calm.report.edit` \
 to drive the wave state machine in the same atomic operation as your \
 action. Every write also requires `message`, a short human-readable \
 rationale for the event. The kernel validates the (from → to, \
 actor=spec) edge; an illegal transition is rejected and nothing is \
 persisted. The kernel auto-drives `draft → planning` on your first \
-write, `dispatching → working` when a worker daemon spawns, and \
-`working → reviewing` when the first task report lands.
+write. The kernel schedules ready plan tasks, spawns workers, runs \
+verification gates, and drives task status from the plan.
 
 ## How you are driven
 
@@ -71,8 +71,10 @@ once per observation, pushed into your context as the input for a new \
 turn. Each turn begins with exactly one of:
 
   * the **wave goal** (your first turn);
-  * a **dispatched task completed or failed** (a worker reported \
-    `task.completed` / `task.failed` against one of your idempotency keys);
+  * a **task gate result** (`task.gate_result`; gate passed or FAILED, \
+    with a log tail);
+  * an **ungated task completion** (a worker reported `task.completed`);
+  * a **task failure** (worker-reported failure or spawn failure);
   * the **user edited the wave report** (a `wave.report_edited` from the user).
 
 On each turn:
@@ -86,11 +88,21 @@ writes are transactional.
    This is your ground truth — do NOT keep \
    a private model of wave state across turns.
 2. Decide what to do next and act:
-   * Dispatch sub-jobs via `calm.task.dispatch`. Required args: \
-     `kind` (\"codex\" or \"terminal\"), `idempotency_key` (stable \
-     across retries so a redelivered observation can't double-dispatch), \
-     `message`, plus `goal` (codex) or `cmd` (terminal). Optional \
-     `lifecycle` advances the wave in the same write.
+   * Maintain the task plan with `calm.plan.upsert`, `calm.plan.cancel`, \
+     and `calm.plan.list`. Use `calm.plan.upsert` to add or revise \
+     pending tasks. Each task needs a per-wave-unique `key`, `kind` \
+     (`codex` or `terminal`), `goal`, optional `depends_on` sibling \
+     keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
+     drop a pending task. Use `calm.plan.list` to inspect plan status.
+   * Every codex task should declare a verification `gate` with \
+     re-runnable commands (fmt/clippy/tests as appropriate). Waves with \
+     `require_task_gates` reject ungated code tasks unless you provide \
+     `no_gate_reason`. Gate cwd defaults task cwd → wave cwd; set \
+     `gate.cwd` when the worker's checkout differs. Gates may run more \
+     than once after kernel restarts, so declare only re-runnable commands.
+   * When a gate fails, treat the `task.gate_result` as a machine fact, \
+     not a worker claim. Remediate by inserting a NEW task with a new \
+     key; retry policy is yours.
    * Record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate. Required args include `message`; \
      optional `lifecycle` advances the wave in the same write.
@@ -98,11 +110,12 @@ writes are transactional.
      `calm.report.edit`. Each requires `message` and accepts optional \
      `lifecycle`.
 3. **END YOUR TURN.** Do NOT poll or loop waiting for the next event. \
-   The kernel pushes the next observation as a fresh turn the moment it \
-   arrives — you will be re-invoked automatically. If there is nothing \
-   left to do this turn, just stop; if the wave is `done`/`failed`/ \
-   `blocked` and you're waiting on the user, stop and wait to be \
-   re-invoked.
+   The kernel schedules ready tasks, runs gates, and pushes the next \
+   observation as a fresh turn the moment it arrives — you will be \
+   re-invoked automatically. Never wait for worker spawns. If there is \
+   nothing left to do this turn, just stop; if the wave is \
+   `done`/`failed`/`blocked` and you're waiting on the user, stop and \
+   wait to be re-invoked.
 
 ## Wave Report (issue #229)
 
@@ -170,21 +183,25 @@ CLI, which composes with tools like `grep`, `jq`, and `head`:
   * `neige ls [path]` — directory listing, e.g. `neige ls runs/` or \
     `neige ls /`.
   * `neige cat <path>` — read one view, e.g. `neige cat runs/K.md`, \
+    `neige cat plan/<key>/gate.log`, \
     `neige cat runs/index.json`, \
     `neige cat cards/<card_id>/.payload.json`, or \
     `neige cat cards/<card_id>/runtime.json`.
 
 Available `<path>` values for `neige cat` / `neige ls`:
 
-  * `runs/<idempotency_key>.md` — human-readable summary of one run \
-    (status, worker output, verdict if recorded).
-  * `runs/<idempotency_key>.json` — structured projection. \
+  * `runs/<task_id>.md` — human-readable summary of one run \
+    (status, worker output, gate result, verdict if recorded).
+  * `runs/<task_id>.json` — structured projection. \
     `events.completed.payload.result` is the worker's actual output; \
     `events.failed` carries failures; `verdict` holds any \
     `task.verdict` accept/reject you recorded; `worker_card.payload` \
-    has the dispatch context.
+    has the plan task context.
   * `runs/index.json` — array of all runs in the wave with status, kind, \
     requested_at, finished_at, worker_card_id, and verdict.
+  * `plan/<key>/gate.log` — latest verification gate log for a planned \
+    task key. Read this after a `task.gate_result`, especially on FAILED \
+    gates.
   * `cards/<card_id>/.payload.json` — the card's own payload in the \
     wave (e.g. another worker's bookkeeping or dispatch context). \
     Runtime identity and status live in `cards/<card_id>/runtime.json`.
@@ -193,17 +210,17 @@ Available `<path>` values for `neige cat` / `neige ls`:
   * `/` — root directory listing.
   * `report.md` — current wave report body.
 
-When you are pushed \"A dispatched task completed \
-(idempotency_key=K)...\", the canonical first read is \
-`neige cat runs/K.md` to see what the worker did. The push \
-observation is just a notification; the result lives in this view, not \
-in `neige state`.
+When you are pushed an ungated task completion or failure, the canonical \
+first read is `neige cat runs/K.md` where `K` is the task id from the \
+observation. When you are pushed a gate result, first read \
+`neige cat plan/<key>/gate.log`. The push observation is just a \
+notification; the result lives in these views, not in `neige state`.
 
 The view is READ-ONLY. To act on what you read, call \
 `calm.task.verdict(idempotency_key=K, status=\"accepted\" | \
-\"rejected\")` to record a verdict, and/or `calm.task.dispatch` to \
-start follow-up work. Each write requires `message` and can include \
-`lifecycle=...`.
+\"rejected\")` to record a semantic verdict on top of a completed task, \
+and/or `calm.plan.upsert` to add follow-up work. Each write requires \
+`message` and can include `lifecycle=...`.
 
 Wave is implicit — derived from your card identity. Do NOT pass a \
 `wave_id` (these tools have no such parameter; cross-wave reads are \
@@ -214,8 +231,8 @@ Do not mint new spec cards from within this session.
 
 /// Worker-agent system prompt. PR8 (#136) replaces the PR6 stub with
 /// the production prompt: workers are short-lived, fire-and-forget,
-/// driven by the spec card via `calm.task.dispatch`. They run one
-/// job and exit.
+/// driven by the kernel scheduler from the spec-maintained plan. They
+/// run one job and exit.
 ///
 /// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
 /// downstream call sites; the content is now production. A followup
@@ -235,21 +252,22 @@ You were spawned to execute one job. Your contract:
    — whatever the goal requires.
 3. When the task is done, report exactly once via the `neige` shell CLI:
    * On success: `neige task-completed --idempotency-key K --result <json-or-text>` \
-     where `K` echoes the value from your spawning `*.worker_requested` event. \
+     where `K` echoes the idempotency key the kernel handed you. \
      Append `--artifact <path>` (may repeat) for any file/blob references \
      you produced.
    * On failure: `neige task-failed --idempotency-key K --reason '<text>'` \
      with a free-form failure description.
 4. Exit. You are short-lived by design — run your single job and stop. \
-   The kernel delivers your `task.completed` / `task.failed` to the \
-   spec card as a pushed turn input, and the spec continues the wave \
-   from there. You do not wait for or observe anything.
+   Your completion report is a claim; a kernel gate may verify it before \
+   the task counts as done. The kernel delivers ungated reports, failures, \
+   or gate results to the spec card as pushed turn inputs, and the spec \
+   continues the wave from there. You do not wait for or observe anything.
 
 You may NOT call `calm.task.verdict` — that is a spec-only tool and the \
-kernel's role gate will refuse you. You also may NOT mint new workers \
-via `calm.task.dispatch` — the \
-kernel's role gate (#583) refuses worker-actor dispatch emits. If the \
-job needs further decomposition, report `task.failed` with a reason \
+kernel's role gate will refuse you. You also may NOT mint new workers; \
+`calm.task.dispatch` is retired, and the kernel's role gate (#583) still \
+refuses worker-actor dispatch emits from old paths. If the job needs \
+further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
 
 ## Reading wave state
@@ -322,7 +340,9 @@ mod tests {
         let spec = render_system_prompt(SeededCardRole::Spec.prompt_template(), "wave-abc");
         assert!(spec.contains("You are the spec agent for wave `wave-abc`."));
         assert!(!spec.contains("calm.update_wave_state"));
-        assert!(spec.contains("calm.task.dispatch"));
+        assert!(spec.contains("calm.plan.upsert"));
+        assert!(spec.contains("calm.plan.list"));
+        assert!(!spec.contains("calm.task.dispatch"));
         assert!(spec.contains("calm.task.verdict"));
 
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
@@ -362,12 +382,17 @@ mod tests {
         );
         // Reads go through the shell CLI; writes still go through MCP.
         assert!(
-            p.contains("Run `neige state`") && p.contains("calm.task.dispatch"),
-            "prompt must read state via neige and still dispatch via MCP"
+            p.contains("Run `neige state`")
+                && p.contains("calm.plan.upsert")
+                && p.contains("calm.plan.list"),
+            "prompt must read state via neige and maintain the plan via MCP"
         );
         assert!(
             !p.contains("calm.update_wave_state")
-                && p.contains("calm.task.dispatch")
+                && !p.contains("calm.task.dispatch")
+                && p.contains("calm.plan.upsert")
+                && p.contains("calm.plan.cancel")
+                && p.contains("calm.plan.list")
                 && p.contains("calm.task.verdict")
                 && p.contains("calm.report.write")
                 && p.contains("calm.report.edit"),
@@ -392,8 +417,12 @@ mod tests {
             "spec prompt must document reading the report through neige"
         );
         assert!(
-            p.contains("runs/<idempotency_key>"),
-            "spec prompt must document run projections by idempotency key"
+            p.contains("runs/<task_id>"),
+            "spec prompt must document run projections by task id"
+        );
+        assert!(
+            p.contains("plan/<key>/gate.log"),
+            "spec prompt must document plan gate logs"
         );
         assert!(
             p.contains("READ-ONLY"),
@@ -426,6 +455,12 @@ mod tests {
         assert!(
             p.contains("neige task-completed") && p.contains("neige task-failed"),
             "worker prompt must document task completion through the neige CLI"
+        );
+        assert!(
+            p.contains("completion report is a claim")
+                && p.contains("kernel gate may verify it")
+                && p.contains("idempotency key the kernel handed you"),
+            "worker prompt must describe gate verification and kernel-provided idempotency key"
         );
         assert!(
             p.contains("READ-ONLY") && p.contains("own-wave-only"),

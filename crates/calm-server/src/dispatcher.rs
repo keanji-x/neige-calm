@@ -1,35 +1,25 @@
 //! Dispatcher worker.
 //!
-//! Subscribes to `codex.worker_requested` / `terminal.worker_requested` envelopes,
-//! plus the task, report, and hook events that drive spec-harness push
-//! observations.
+//! Subscribes to task, report, hook, plan, and wave events that drive
+//! spec-harness push observations and scheduler pokes.
 //!
-//! Worker requests are thin operation starts: the dispatcher builds the
-//! worker payload and starts an [`OperationRuntime`] operation of kind
-//! `codex-worker` or `terminal-worker`.
-//!
-//! Idempotency is owned by the operations table: `operations.idempotency_key`
-//! is unique per operation kind, so duplicate request envelopes reuse the
-//! existing operation instead of spawning another worker. Rollback is owned
-//! by the worker adapters through `plan_compensation` / `compensate_step`.
+//! Worker spawns are now owned by the plan scheduler: specs maintain
+//! `calm.plan.*`, the scheduler emits `task.dispatched`, and the worker
+//! adapters start `codex-worker` / `terminal-worker` operations from there.
 //!
 //! Terminal process cleanup remains a hard boundary owned by
 //! `terminal_sweeper`; adapter compensation only mirrors the required
 //! reap-before-delete ordering when undoing a failed worker operation.
 
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use crate::db::sqlite::events_append_for_operation_tx;
-use crate::db::{Repo, RouteRepo, write_with_actor_events_typed};
-use crate::error::CalmError;
+use crate::db::{Repo, RouteRepo};
 use crate::event::{
-    BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SYNC_EVENT_VERSION,
-    SubscribeFilter, SubscribeScope,
+    BroadcastEnvelope, EditAuthor, Event, EventBus, SubscribeFilter, SubscribeScope,
 };
 use crate::event_cursor::EventCursorCache;
 use crate::harness::{
@@ -37,25 +27,16 @@ use crate::harness::{
     is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{CardRole, WaveLifecycle};
+use crate::model::CardRole;
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
-use crate::operation::codex_adapter::{
-    CodexAdapter, CodexWorkerAdapter, CodexWorkerOperationPayload,
-};
+use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
-use crate::operation::terminal_adapter::{
-    TerminalAdapter, TerminalWorkerAdapter, TerminalWorkerOperationPayload,
-    normalize_terminal_worker_cwd,
-};
-use crate::operation::{
-    OperationCompletionBus, OperationKey, OperationOutcome, OperationResult, OperationRuntime,
-    SpawnCtx, SqlxOperationRepo,
-};
+use crate::operation::terminal_adapter::{TerminalAdapter, TerminalWorkerAdapter};
+use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
-use crate::routes::terminal_cards::stable_payload_hash;
 use crate::runtime_repo::RuntimeKind;
 use crate::scheduler::{DEFAULT_RECONCILE_SECS, Scheduler, TerminalTaskHook};
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -68,8 +49,6 @@ pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
 const DEFAULT_PERMITS: usize = 8;
-const SQLITE_BUSY_MAX_RETRIES: usize = 5;
-
 pub(crate) fn event_warrants_spec_push(
     event: &Event,
     actor: &ActorId,
@@ -163,68 +142,6 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
             false
         }
     }
-}
-
-async fn promote_dispatching_to_working_or_emit_failure<P, PFut, L, LFut>(
-    idempotency_key: &str,
-    scope: EventScope,
-    mut promote: P,
-    log_failure: L,
-) -> bool
-where
-    P: FnMut() -> PFut,
-    PFut: std::future::Future<Output = crate::error::Result<()>>,
-    L: FnOnce(EventScope, Event) -> LFut,
-    LFut: std::future::Future<Output = crate::error::Result<()>>,
-{
-    let mut promote_backoff = Duration::from_millis(10);
-    let mut promote_err = None;
-    for attempt in 0..=SQLITE_BUSY_MAX_RETRIES {
-        match promote().await {
-            Ok(()) => {
-                promote_err = None;
-                break;
-            }
-            Err(e) if is_sqlite_busy(&e) && attempt < SQLITE_BUSY_MAX_RETRIES => {
-                tracing::debug!(
-                    idempotency_key = %idempotency_key,
-                    attempt,
-                    error = %e,
-                    "dispatcher: transient SQLite contention on promotion; retrying"
-                );
-                tokio::time::sleep(promote_backoff).await;
-                promote_backoff = (promote_backoff * 2).min(Duration::from_millis(200));
-                continue;
-            }
-            Err(e) => {
-                promote_err = Some(e);
-                break;
-            }
-        }
-    }
-
-    if let Some(e) = promote_err {
-        tracing::warn!(
-            idempotency_key = %idempotency_key,
-            error = %e,
-            "dispatcher: lifecycle promotion failed permanently; emitting task.failed without spawning"
-        );
-        let fail_event = Event::TaskFailed {
-            idempotency_key: idempotency_key.to_string(),
-            reason: format!("lifecycle promotion failed: {e}"),
-            agent_message: None,
-        };
-        if let Err(e2) = log_failure(scope, fail_event).await {
-            tracing::warn!(
-                idempotency_key = %idempotency_key,
-                error = %e2,
-                "dispatcher: failed to log lifecycle-promotion task.failed event batch"
-            );
-        }
-        return false;
-    }
-
-    true
 }
 
 #[allow(deprecated, clippy::too_many_arguments)]
@@ -659,10 +576,8 @@ impl Dispatcher {
         ));
         let inner = Arc::new(Inner {
             repo,
-            events: events.clone(),
             write,
             harness,
-            operation_runtime: Arc::downgrade(&operation_runtime),
             scheduler: Arc::clone(&scheduler),
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
             // a SEPARATE instance from anything else: keyed by the spec
@@ -675,13 +590,12 @@ impl Dispatcher {
             semaphore: Arc::clone(&semaphore),
         });
 
-        // Filter: worker request events start operations; push events route
-        // to harness observation delivery. Hook events are coarse-filtered
-        // by `kind_tag()` here; the exact turn-ending hook discriminators are
-        // checked synchronously in the push branch below.
+        // Filter: push events route to harness observation delivery;
+        // scheduler trigger events poke the plan scheduler. Hook events
+        // are coarse-filtered by `kind_tag()` here; the exact turn-ending
+        // hook discriminators are checked synchronously in the push branch
+        // below.
         let kinds: Vec<String> = vec![
-            "codex.worker_requested".into(),
-            "terminal.worker_requested".into(),
             "task.completed".into(),
             "task.failed".into(),
             // Issue #644 PR-C — the gate runner's verdict: pushed to
@@ -693,8 +607,8 @@ impl Dispatcher {
             "codex.hook".into(),
             "claude.hook".into(),
             // Issue #644 PR-B — scheduler triggers (§5.1). These
-            // only poke the scheduler; they never enter the push branch
-            // or the worker-spawn path. `wave.updated` (round-2 review
+            // only poke the scheduler; they never enter the push branch.
+            // `wave.updated` (round-2 review
             // F4) covers budget-changing PATCHes, which emit no
             // lifecycle event when the lifecycle is unchanged.
             "plan.updated".into(),
@@ -731,11 +645,9 @@ impl Dispatcher {
                         });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        // A lag means we missed `n` events; if any of
-                        // them was a `*.Requested`, the request emitter
-                        // is responsible for retrying with the same
-                        // idempotency_key, which we'll handle on the
-                        // next emit. Log and continue.
+                        // A lag means we missed `n` events. The scheduler
+                        // sweep below is the durable backstop for missed
+                        // plan/task trigger events. Log and continue.
                         tracing::warn!(
                             skipped = n,
                             "dispatcher subscriber lagged; missed events may need a retry from the requester"
@@ -794,12 +706,10 @@ impl Dispatcher {
 
 struct Inner {
     repo: Arc<dyn Repo>,
-    events: EventBus,
     write: WriteContext,
     /// Harness-backed shared specs are driven by dispatcher observations
     /// through the active harness registry.
     harness: HarnessRegistry,
-    operation_runtime: Weak<OperationRuntime>,
     /// Issue #644 PR-B — scheduler poked by the subscription arms
     /// (`plan.updated`, `wave.lifecycle_changed`, `wave.updated`, and
     /// the task report kinds after their push handling).
@@ -837,15 +747,11 @@ impl Inner {
         };
 
         // #293 — push branch. The wave-event kinds the filter matches route
-        // HERE (bounded by the same `_permit` the worker-spawn path holds),
-        // never into the `DispatchRequest` extraction below. For
-        // `wave.report_edited` we act ONLY on a User-authored edit —
+        // HERE. For `wave.report_edited` we act ONLY on a User-authored edit —
         // Spec/AI-authored edits are the spec writing its own report, and
         // pushing those back would be a feedback loop. Worker hook events
         // also return from here, even when ignored, because they are
-        // lifecycle notices rather than worker-spawn requests. The
-        // worker-request path (the two `*.worker_requested` kinds) falls through
-        // untouched.
+        // lifecycle notices rather than scheduler requests.
         match &envelope.event {
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
@@ -878,18 +784,15 @@ impl Inner {
                 if let Some(wave_id) = envelope.scope.wave_id().cloned() {
                     self.scheduler.poke(wave_id);
                 }
-                return;
             }
             // Issue #644 PR-B (§5.1 triggers 1 + 4) — scheduler-only
             // arms. They never enter the push branch or the worker-spawn
             // path below.
             Event::PlanUpdated { wave_id, .. } => {
                 self.scheduler.poke(wave_id.clone());
-                return;
             }
             Event::WaveLifecycleChanged { id, .. } => {
                 self.scheduler.poke(id.clone());
-                return;
             }
             // Round-2 review F4 — `PATCH /api/waves` emits only
             // `wave.updated` when it changes `task_budget` without a
@@ -899,7 +802,6 @@ impl Inner {
             // cheap, so no budget diffing.
             Event::WaveUpdated(payload) => {
                 self.scheduler.poke(payload.id.clone());
-                return;
             }
             Event::WaveReportEdited {
                 author, wave_id, ..
@@ -915,7 +817,6 @@ impl Inner {
                         "dispatcher push: ignoring non-user wave.report_edited"
                     );
                 }
-                return;
             }
             Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
                 // Only the precise Stop hooks mean a worker turn truly
@@ -947,141 +848,11 @@ impl Inner {
                         "dispatcher push: ignoring hook event"
                     );
                 }
-                return;
             }
-            // Everything else (the two `*.worker_requested` kinds) falls
-            // through to the worker-spawn path below, unchanged.
-            _ => {}
-        }
-
-        // Extract the request shape we know how to handle. The filter
-        // already narrowed us to two variants; the `_` arm exists for
-        // future-proofing in case the filter ever widens.
-        let req = match &envelope.event {
-            Event::CodexWorkerRequested {
-                idempotency_key,
-                goal,
-                context,
-                acceptance_criteria,
-                ..
-            } => DispatchRequest::Codex {
-                idempotency_key: idempotency_key.clone(),
-                goal: goal.clone(),
-                context: context.clone(),
-                acceptance_criteria: acceptance_criteria.clone(),
-            },
-            Event::TerminalWorkerRequested {
-                idempotency_key,
-                cmd,
-                cwd,
-                ..
-            } => DispatchRequest::Terminal {
-                idempotency_key: idempotency_key.clone(),
-                cmd: cmd.clone(),
-                cwd: cwd.clone(),
-            },
             other => {
                 tracing::warn!(
                     kind = other.kind_tag(),
-                    "dispatcher received non-request event; filter widened unexpectedly",
-                );
-                return;
-            }
-        };
-        let idem = req.idempotency_key().to_string();
-        let scope = envelope.scope.clone();
-
-        // Promote Dispatching -> Working before spawning the worker so a fast
-        // worker's task.completed (which auto-promotes Working -> Reviewing)
-        // never races ahead of the promotion. A permanent promotion failure
-        // aborts the dispatch before the worker starts, otherwise the wave can
-        // remain stuck in Dispatching after the worker finishes.
-        let promote_inner = Arc::clone(&self);
-        let promote_scope = scope.clone();
-        let log_inner = Arc::clone(&self);
-        if !promote_dispatching_to_working_or_emit_failure(
-            &idem,
-            scope.clone(),
-            move || {
-                let promote_inner = Arc::clone(&promote_inner);
-                let promote_scope = promote_scope.clone();
-                async move {
-                    promote_inner
-                        .auto_promote_dispatching_to_working(&promote_scope)
-                        .await
-                }
-            },
-            move |scope, fail_event| {
-                let log_inner = Arc::clone(&log_inner);
-                async move {
-                    log_inner
-                        .log_task_failure_and_maybe_promote_working_to_reviewing(scope, fail_event)
-                        .await
-                }
-            },
-        )
-        .await
-        {
-            return;
-        }
-
-        // Retry on transient SQLite BUSY/locked errors. With more
-        // than one dispatcher in flight (permits > 1), SQLite can
-        // refuse a write with "database is locked" or "deadlocked"
-        // even though no real deadlock exists — sqlx surfaces the
-        // sqlite-3 status code as an io / database error. We retry
-        // a few times with exponential backoff before giving up
-        // and emitting `task.failed`.
-        let mut last_err: Option<crate::error::CalmError> = None;
-        let mut backoff = Duration::from_millis(10);
-        for attempt in 0..=SQLITE_BUSY_MAX_RETRIES {
-            match self
-                .dispatch(req.clone(), scope.clone(), envelope.actor.clone())
-                .await
-            {
-                Ok(()) => {
-                    last_err = None;
-                    break;
-                }
-                Err(e) if is_sqlite_busy(&e) && attempt < SQLITE_BUSY_MAX_RETRIES => {
-                    tracing::debug!(
-                        idempotency_key = %idem,
-                        attempt,
-                        error = %e,
-                        "dispatcher: transient SQLite contention; retrying"
-                    );
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_millis(200));
-                    continue;
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    break;
-                }
-            }
-        }
-        if let Some(e) = last_err {
-            tracing::warn!(
-                idempotency_key = %idem,
-                error = %e,
-                "dispatcher: spawn failed; emitting task.failed"
-            );
-            // Emit TaskFailed and any Working -> Reviewing promotion in one
-            // audited transaction so TaskFailed observers never wake on stale
-            // wave lifecycle state.
-            let fail_event = Event::TaskFailed {
-                idempotency_key: idem.clone(),
-                reason: format!("{e}"),
-                agent_message: None,
-            };
-            let log_result = self
-                .log_task_failure_and_maybe_promote_working_to_reviewing(scope.clone(), fail_event)
-                .await;
-            if let Err(e2) = log_result {
-                tracing::warn!(
-                    idempotency_key = %idem,
-                    error = %e2,
-                    "dispatcher: failed to log task.failed event batch"
+                    "dispatcher received event with no handler; filter widened unexpectedly",
                 );
             }
         }
@@ -1255,253 +1026,6 @@ impl Inner {
             None
         }
     }
-
-    async fn auto_promote_dispatching_to_working(
-        self: &Arc<Self>,
-        scope: &EventScope,
-    ) -> crate::error::Result<()> {
-        self.auto_promote_wave_lifecycle(
-            scope,
-            WaveLifecycle::Dispatching,
-            WaveLifecycle::Working,
-            Some("[auto] worker spawned".to_string()),
-        )
-        .await
-    }
-
-    async fn auto_promote_wave_lifecycle(
-        self: &Arc<Self>,
-        scope: &EventScope,
-        from: WaveLifecycle,
-        to: WaveLifecycle,
-        agent_message: Option<String>,
-    ) -> crate::error::Result<()> {
-        let Some(wave_id) = scope.wave_id().cloned() else {
-            return Ok(());
-        };
-        let cove_id = scope.cove_id().cloned().ok_or_else(|| {
-            CalmError::Internal(format!(
-                "dispatcher: request scope has wave {} but no cove",
-                wave_id.as_str()
-            ))
-        })?;
-        let wave_scope = EventScope::Wave {
-            wave: wave_id.clone(),
-            cove: cove_id,
-        };
-        let pool = self.repo.sqlite_pool().ok_or_else(|| {
-            CalmError::Internal("dispatcher lifecycle auto-promotion requires sqlite repo".into())
-        })?;
-        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        let events = match crate::wave_lifecycle::auto_transition_if_current_in_tx(
-            &mut tx,
-            &wave_id,
-            from,
-            to,
-            &ActorId::KernelDispatcher,
-            agent_message,
-        )
-        .await
-        {
-            Ok(Some(events)) => events,
-            Ok(None) => {
-                let _ = tx.rollback().await;
-                return Ok(());
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        for event in &events {
-            #[allow(deprecated)]
-            if let Err(violation) = crate::role_gate::enforce_role(
-                &ActorId::KernelDispatcher,
-                event,
-                &wave_scope,
-                self.write.role_cache(),
-                self.write.cove_cache(),
-            ) {
-                let _ = tx.rollback().await;
-                return Err(CalmError::Forbidden(violation.to_string()));
-            }
-        }
-
-        let event_ids = match events_append_for_operation_tx(
-            &mut tx,
-            &ActorId::KernelDispatcher,
-            &wave_scope,
-            None,
-            &events,
-        )
-        .await
-        {
-            Ok(ids) => ids,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        let emitted = event_ids.into_iter().zip(events).collect::<Vec<_>>();
-        tx.commit().await?;
-        for (event_id, event) in emitted {
-            self.events.emit_envelope(BroadcastEnvelope {
-                id: event_id,
-                event_version: SYNC_EVENT_VERSION,
-                actor: ActorId::KernelDispatcher,
-                scope: wave_scope.clone(),
-                event,
-            });
-        }
-        Ok(())
-    }
-
-    async fn log_task_failure_and_maybe_promote_working_to_reviewing(
-        self: &Arc<Self>,
-        scope: EventScope,
-        fail_event: Event,
-    ) -> crate::error::Result<()> {
-        let wave_id = scope.wave_id().cloned();
-        let wave_scope = wave_id
-            .clone()
-            .zip(scope.cove_id().cloned())
-            .map(|(wave, cove)| EventScope::Wave { wave, cove });
-
-        write_with_actor_events_typed::<(), _>(
-            self.repo.as_ref(),
-            None,
-            &self.events,
-            &self.write,
-            move |tx| {
-                Box::pin(async move {
-                    let mut events = vec![(ActorId::KernelDispatcher, scope, fail_event)];
-                    if let (Some(wave_id), Some(wave_scope)) = (wave_id, wave_scope)
-                        && let Some(auto_events) =
-                            crate::wave_lifecycle::auto_transition_if_current_in_tx(
-                                tx,
-                                &wave_id,
-                                WaveLifecycle::Working,
-                                WaveLifecycle::Reviewing,
-                                &ActorId::KernelDispatcher,
-                                Some("[auto] worker spawn failed".to_string()),
-                            )
-                            .await?
-                    {
-                        events.extend(
-                            auto_events.into_iter().map(|event| {
-                                (ActorId::KernelDispatcher, wave_scope.clone(), event)
-                            }),
-                        );
-                    }
-                    Ok(((), events))
-                })
-            },
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn dispatch(
-        self: &Arc<Self>,
-        req: DispatchRequest,
-        scope: EventScope,
-        actor: ActorId,
-    ) -> crate::error::Result<()> {
-        // The request envelope must carry a wave (and therefore a cove)
-        // — a dispatcher can't materialize a worker card without a
-        // parent wave. System-scoped requests are rejected.
-        let wave_id = scope
-            .wave_id()
-            .ok_or_else(|| {
-                CalmError::BadRequest(format!(
-                    "dispatcher: *.Requested event has no wave scope (got {scope:?})"
-                ))
-            })?
-            .clone();
-
-        match req {
-            DispatchRequest::Codex {
-                idempotency_key,
-                goal,
-                context,
-                acceptance_criteria,
-            } => {
-                let Some(operation_runtime) = self.operation_runtime.upgrade() else {
-                    tracing::debug!(
-                        idempotency_key = %idempotency_key,
-                        "dispatcher operation runtime dropped; skipping codex worker request"
-                    );
-                    return Ok(());
-                };
-                let payload = serde_json::to_value(CodexWorkerOperationPayload {
-                    actor,
-                    wave_id: wave_id.to_string(),
-                    idempotency_key: idempotency_key.clone(),
-                    goal,
-                    context,
-                    acceptance_criteria,
-                })?;
-                let payload_hash = stable_payload_hash(&payload)?;
-                let op_id = operation_runtime
-                    .start(
-                        "codex-worker",
-                        OperationKey {
-                            operation_key: crate::model::new_id(),
-                            idempotency_key: Some(idempotency_key),
-                            payload_hash,
-                        },
-                        payload,
-                    )
-                    .await?;
-                operation_result_to_dispatch_result(operation_runtime.wait(&op_id).await?)?;
-            }
-            DispatchRequest::Terminal {
-                idempotency_key,
-                cmd,
-                cwd,
-            } => {
-                let Some(operation_runtime) = self.operation_runtime.upgrade() else {
-                    tracing::debug!(
-                        idempotency_key = %idempotency_key,
-                        "dispatcher operation runtime dropped; skipping terminal worker request"
-                    );
-                    return Ok(());
-                };
-                let cwd = Some(normalize_terminal_worker_cwd(cwd));
-                let payload = serde_json::to_value(TerminalWorkerOperationPayload {
-                    actor,
-                    wave_id: wave_id.to_string(),
-                    idempotency_key: idempotency_key.clone(),
-                    cmd,
-                    cwd,
-                })?;
-                let payload_hash = stable_payload_hash(&payload)?;
-                let op_id = operation_runtime
-                    .start(
-                        "terminal-worker",
-                        OperationKey {
-                            operation_key: crate::model::new_id(),
-                            idempotency_key: Some(idempotency_key),
-                            payload_hash,
-                        },
-                        payload,
-                    )
-                    .await?;
-                operation_result_to_dispatch_result(operation_runtime.wait(&op_id).await?)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-fn operation_result_to_dispatch_result(result: OperationResult) -> crate::error::Result<()> {
-    match result.outcome {
-        OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
-            Ok(())
-        }
-        OperationOutcome::Failed { last_error, .. } => Err(CalmError::Internal(last_error)),
-        OperationOutcome::Stuck { reason, .. } => Err(CalmError::Internal(reason)),
-    }
 }
 
 pub(crate) fn harness_observation_from_event(
@@ -1587,61 +1111,6 @@ fn sha256_hex(text: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Returns true when the given error is a transient SQLite BUSY /
-/// LOCKED status that the dispatcher should retry.
-///
-/// See https://www.sqlite.org/rescode.html — code 5 = `SQLITE_BUSY`,
-/// code 6 = `SQLITE_LOCKED`. sqlx reports the code as a string on
-/// `DatabaseError::code()`.
-fn is_sqlite_busy(e: &crate::error::CalmError) -> bool {
-    // Walk the error chain looking for a `sqlx::Error` we own. The
-    // dispatcher's calls funnel through `CalmError::from(sqlx::Error)`
-    // which boxes the original under the `Sql` variant; everything
-    // else (Internal/etc) won't match.
-    let sqlx_err = match e {
-        crate::error::CalmError::Db(inner) => inner,
-        _ => return false,
-    };
-    let Some(db_err) = sqlx_err.as_database_error() else {
-        return false;
-    };
-    // SQLITE_BUSY = 5, SQLITE_LOCKED = 6 — both are transient
-    // contention on the per-connection write lock, retry-safe.
-    matches!(db_err.code().as_deref(), Some("5") | Some("6"))
-}
-
-/// Variant shape extracted from a `*.Requested` envelope. Carrying this
-/// rather than the raw `Event` lets the dispatch path stay variant-
-/// agnostic at the spawn site. `Clone` so the retry loop can re-issue
-/// the dispatch after a transient SQLite contention error.
-#[derive(Clone)]
-enum DispatchRequest {
-    Codex {
-        idempotency_key: String,
-        goal: String,
-        context: serde_json::Value,
-        acceptance_criteria: Option<String>,
-    },
-    Terminal {
-        idempotency_key: String,
-        cmd: String,
-        cwd: Option<String>,
-    },
-}
-
-impl DispatchRequest {
-    fn idempotency_key(&self) -> &str {
-        match self {
-            DispatchRequest::Codex {
-                idempotency_key, ..
-            } => idempotency_key,
-            DispatchRequest::Terminal {
-                idempotency_key, ..
-            } => idempotency_key,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1692,7 +1161,7 @@ mod tests {
     // ---------------------------------------------------------------
 
     use crate::card_role_cache::CardRoleCache;
-    use crate::event::{ArtifactRef, BroadcastEnvelope};
+    use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
     use crate::ids::CoveId;
 
     fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
@@ -1702,88 +1171,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn pre_spawn_promotion_hard_failure_emits_task_failed_and_aborts() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let promote_calls = Arc::new(AtomicUsize::new(0));
-        let logged = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let wave = WaveId::from("wave-promotion-hard-fail");
-        let cove = CoveId::from("cove-promotion-hard-fail");
-        let scope = wave_scope(&wave, &cove);
-
-        let should_spawn = promote_dispatching_to_working_or_emit_failure(
-            "promotion-hard-fail",
-            scope.clone(),
-            {
-                let promote_calls = Arc::clone(&promote_calls);
-                move || {
-                    promote_calls.fetch_add(1, Ordering::SeqCst);
-                    async {
-                        Err::<(), _>(CalmError::Internal("forced promotion failure".to_string()))
-                    }
-                }
-            },
-            {
-                let logged = Arc::clone(&logged);
-                move |scope, event| {
-                    let logged = Arc::clone(&logged);
-                    async move {
-                        logged.lock().await.push((scope, event));
-                        Ok(())
-                    }
-                }
-            },
-        )
-        .await;
-
-        assert!(
-            !should_spawn,
-            "permanent promotion failure must abort before spawning the worker"
-        );
-        assert_eq!(
-            promote_calls.load(Ordering::SeqCst),
-            1,
-            "hard promotion errors should not be retried"
-        );
-
-        let logged = logged.lock().await;
-        assert_eq!(logged.len(), 1, "promotion failure should log TaskFailed");
-        assert_eq!(logged[0].0, scope);
-        match &logged[0].1 {
-            Event::TaskFailed {
-                idempotency_key,
-                reason,
-                agent_message,
-            } => {
-                assert_eq!(idempotency_key, "promotion-hard-fail");
-                assert!(
-                    reason.contains("lifecycle promotion failed"),
-                    "TaskFailed reason should identify promotion failure: {reason}"
-                );
-                assert!(
-                    reason.contains("forced promotion failure"),
-                    "TaskFailed reason should include the original error: {reason}"
-                );
-                assert_eq!(agent_message, &None);
-            }
-            other => panic!("expected TaskFailed for promotion failure, got {other:?}"),
-        }
-    }
-
-    /// The dispatcher's `SubscribeFilter` must now match the push kinds in
-    /// addition to the two worker_requested kinds. We reconstruct the
-    /// exact filter the spawn site builds and assert `matches()` for each
-    /// kind, plus a non-matching kind to prove the list is still a closed
-    /// allowlist (not "match everything").
+    /// The dispatcher's `SubscribeFilter` must match only the push and
+    /// scheduler trigger kinds. We reconstruct the exact filter the spawn
+    /// site builds and assert `matches()` for each kind, plus retired
+    /// request kinds and a non-matching kind to prove the list is still a
+    /// closed allowlist (not "match everything").
     #[test]
     fn dispatcher_filter_matches_push_kinds() {
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
             include_descendants: true,
             kinds: Some(vec![
-                "codex.worker_requested".into(),
-                "terminal.worker_requested".into(),
                 "task.completed".into(),
                 "task.failed".into(),
                 "task.gate_result".into(),
@@ -1807,15 +1205,15 @@ mod tests {
             event: ev,
         };
 
-        // The two worker_requested kinds still match.
-        assert!(filter.matches(&env(Event::CodexWorkerRequested {
+        // The retired worker_requested kinds no longer match.
+        assert!(!filter.matches(&env(Event::CodexWorkerRequested {
             idempotency_key: "k".into(),
             goal: "g".into(),
             context: serde_json::Value::Null,
             acceptance_criteria: None,
             agent_message: None,
         })));
-        assert!(filter.matches(&env(Event::TerminalWorkerRequested {
+        assert!(!filter.matches(&env(Event::TerminalWorkerRequested {
             idempotency_key: "k".into(),
             cmd: "ls".into(),
             cwd: None,

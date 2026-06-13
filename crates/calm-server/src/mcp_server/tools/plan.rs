@@ -2,10 +2,10 @@
 //! (issue #644, PR-A).
 //!
 //! The plan lives in the `tasks` table (migration 0041) and is the
-//! source of truth for the upcoming kernel scheduler (PR-B) and
-//! verification gate (PR-C). In this slice the plan is **inert**:
-//! nothing reads it, no dispatch happens, and `calm.task.dispatch`
-//! is untouched.
+//! source of truth for the kernel scheduler (PR-B) and verification
+//! gate (PR-C). Specs write durable task rows here; the scheduler
+//! claims ready rows, emits `task.dispatched`, and drives worker
+//! operations. `calm.task.dispatch` is now a hidden compatibility shim.
 //!
 //! ## Tool surface
 //!

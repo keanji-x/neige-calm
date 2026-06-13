@@ -584,12 +584,14 @@ pub enum Event {
         payload: Value,
     },
 
-    /// Spec/worker card asks the kernel dispatcher to spawn a codex worker
+    /// Deprecated: retired in #644 PR-D; retained for old-log
+    /// deserialization only.
+    ///
+    /// Spec/worker card asked the kernel dispatcher to spawn a codex worker
     /// card. PR4 of #136 introduced this **schema-only**. PR5's `Dispatcher`
-    /// subscribes to `kinds=["*.requested"]` on the event bus and reacts by
-    /// minting a worker card; the dispatcher's push path (#293) then delivers
-    /// the matching `task.completed` / `task.failed` to the requesting spec
-    /// card as a turn input.
+    /// subscribed to the event bus and reacted by minting a worker card;
+    /// #644 PR-D removed that live dispatch arm. The wire shape remains so
+    /// persisted logs replay.
     ///
     /// `idempotency_key` lets the dispatcher dedupe replays — a retried
     /// MCP call surfaces the same key and the dispatcher short-circuits to
@@ -612,8 +614,12 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Spec card asks the kernel dispatcher to spawn a terminal worker
-    /// card. PR4 schema-only; PR5's `Dispatcher` is the consumer.
+    /// Deprecated: retired in #644 PR-D; retained for old-log
+    /// deserialization only.
+    ///
+    /// Spec card asked the kernel dispatcher to spawn a terminal worker
+    /// card. PR4 schema-only; PR5's `Dispatcher` was the consumer until
+    /// #644 PR-D removed that live dispatch arm.
     ///
     /// `cwd` is `None` when the spec card defers to the wave/cove default
     /// working directory.
