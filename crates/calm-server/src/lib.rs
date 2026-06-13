@@ -38,6 +38,9 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+const ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT_ENV: &str =
+    "NEIGE_ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT";
+
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
 /// daemon binaries at boot. If the supervisor does not know a supposedly
@@ -150,6 +153,55 @@ pub async fn backfill_worker_sessions_from_runtimes_on_boot(
         }
         Ok(_) => Ok(()),
         Err(e) => Err(e.into()),
+    }
+}
+
+pub async fn assert_worker_sessions_parity_on_boot(
+    state: &state::AppState,
+) -> crate::error::Result<()> {
+    if !worker_sessions_parity_assertion_enabled_on_boot() {
+        return Ok(());
+    }
+
+    let pool = state.sqlite_pool().ok_or_else(|| {
+        crate::error::CalmError::Internal(
+            "worker_sessions parity boot assertion requires sqlite-backed Repo".into(),
+        )
+    })?;
+    let divergences = worker_sessions_parity_sweep::diff(&pool).await?;
+    if divergences.is_empty() {
+        tracing::info!(
+            target: "worker_sessions::parity",
+            "worker_sessions parity OK on boot"
+        );
+        return Ok(());
+    }
+
+    let sample_ids = divergences
+        .iter()
+        .take(5)
+        .map(|divergence| divergence.runtime_id())
+        .collect::<Vec<_>>();
+    tracing::error!(
+        target: "worker_sessions::parity",
+        count = divergences.len(),
+        sample_runtime_ids = %sample_ids.join(","),
+        "worker_sessions parity assertion failed on boot"
+    );
+    Err(crate::error::CalmError::Internal(format!(
+        "worker_sessions parity assertion failed on boot: {} divergence(s)",
+        divergences.len()
+    )))
+}
+
+fn worker_sessions_parity_assertion_enabled_on_boot() -> bool {
+    match std::env::var(ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT_ENV) {
+        Ok(value) => {
+            let value = value.trim();
+            !(value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false"))
+        }
+        Err(std::env::VarError::NotPresent) => false,
+        Err(std::env::VarError::NotUnicode(_)) => true,
     }
 }
 

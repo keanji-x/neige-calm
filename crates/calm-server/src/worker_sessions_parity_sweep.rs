@@ -9,7 +9,7 @@ use crate::error::Result;
 const SWEEP_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
-struct ParityDivergence {
+pub(crate) struct ParityDivergence {
     runtime_id: String,
     runtime_status: String,
     session_state: Option<String>,
@@ -29,6 +29,12 @@ struct ParityDivergence {
     session_updated_at_ms: Option<i64>,
     runtime_completed_at_ms: Option<i64>,
     session_completed_at_ms: Option<i64>,
+}
+
+impl ParityDivergence {
+    pub(crate) fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
 }
 
 pub fn spawn(pool: SqlitePool, counter: Arc<AtomicU64>) {
@@ -83,7 +89,9 @@ pub async fn sweep(pool: &SqlitePool, counter: &AtomicU64) -> Result<usize> {
     Ok(divergences.len())
 }
 
-async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
+pub(crate) async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
+    // Layer-2/3 parity is intentionally one-way: runtimes LEFT JOIN
+    // worker_sessions. Orphan worker_sessions rows remain tolerated until PR9b.
     let rows = sqlx::query(
         r#"SELECT r.id AS runtime_id,
                   r.status AS runtime_status,
