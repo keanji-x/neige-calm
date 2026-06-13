@@ -363,7 +363,7 @@ async fn complete_first_turn_and_stamp(boot: &Boot) -> String {
         "first turn must not include a diff block: {text}"
     );
     complete_latest_turn(boot).await;
-    wait_for_any_last_seen_head(boot).await
+    wait_for_in_mem_last_seen_head(boot).await
 }
 
 async fn wait_for_turn_count(daemon: &SharedCodexAppServer, count: usize) {
@@ -398,15 +398,37 @@ async fn wait_for_state(
     }
 }
 
-async fn wait_for_any_last_seen_head(boot: &Boot) -> String {
+// Waits on the harness's IN-MEMORY `last_seen_head` (not the persisted snapshot).
+// The turn-completion path persists the snapshot one await-point BEFORE it stamps
+// the in-memory value (run_loop.rs ~1534 then ~1536), so polling the snapshot can
+// return before the in-memory stamp lands — and a later in-memory stamp would then
+// clobber a test's `set_last_seen_head_raw` override. Waiting on the in-memory
+// value guarantees that stamp has landed, so the override is authoritative for the
+// next turn's diff baseline. See issue #687.
+async fn wait_for_in_mem_last_seen_head(boot: &Boot) -> String {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if let Some(actual) = runtime_snapshot(boot).await.last_seen_head {
+        if let Some(actual) = boot.harness.last_seen_head_for_test().await {
             return actual;
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for last_seen_head"
+            "timed out waiting for in-memory last_seen_head"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_last_seen_head_eq(boot: &Boot, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let actual = boot.harness.last_seen_head_for_test().await;
+        if actual.as_deref() == Some(expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for in-memory last_seen_head == {expected}; last={actual:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -716,7 +738,7 @@ async fn diff_failure_from_bogus_stored_head_does_not_wedge_harness() {
     );
     assert!(text.contains("idempotency_key=bogus-head"));
     complete_latest_turn(&boot).await;
-    assert_eq!(wait_for_any_last_seen_head(&boot).await, current);
+    wait_for_last_seen_head_eq(&boot, &current).await;
     boot.harness.shutdown().await.unwrap();
 }
 

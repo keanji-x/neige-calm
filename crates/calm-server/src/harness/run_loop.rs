@@ -383,6 +383,10 @@ impl SpecHarness {
     pub async fn set_last_seen_head_for_test(&self, head: Option<String>) {
         *self.inner.last_seen_head.lock().await = head;
     }
+
+    pub async fn last_seen_head_for_test(&self) -> Option<String> {
+        self.inner.last_seen_head.lock().await.clone()
+    }
 }
 
 fn map_observation_send_error(
