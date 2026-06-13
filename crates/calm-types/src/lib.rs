@@ -40,3 +40,4 @@ pub mod wave_fs_dto;
 pub mod wave_lifecycle;
 pub mod wave_report;
 pub mod worker;
+pub mod worker_flow;
