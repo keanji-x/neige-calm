@@ -83,32 +83,46 @@ suite down.
 
 ## A11y scripts
 
-The keyboard + axe + spec-chat suites come with their own npm
-scripts, all of which run under the `a11y` Playwright project
-(requires `cargo`):
-
-```sh
-npm run a11y:e2e       # keyboard-only flows (a11y-keyboard.spec.ts)
-npm run a11y:axe       # axe scans       (a11y-axe.spec.ts)
-npm run a11y:spec-chat # spec-chat pins  (a11y-spec-chat-*.spec.ts)
-npm run a11y           # lint + keyboard + axe + spec-chat in sequence
-```
-
 `npm run a11y` is the gate for a11y-touching PRs — CI runs it in
 the `web (build + test + a11y)` job (`.github/workflows/ci.yml`),
-so anything not wired into it does not run in CI.
+so anything not wired into it does not run in CI. The scripts
+(all run under a Playwright project, so they require `cargo`):
+
+```sh
+npm run a11y:e2e       # the WHOLE a11y project (all a11y-*.spec.ts)
+npm run a11y:color     # the color-anchor project (color-system-anchor)
+npm run a11y:axe       # axe scans only   (a11y-axe.spec.ts)
+npm run a11y:spec-chat # spec-chat pins   (a11y-spec-chat-*.spec.ts)
+npm run a11y           # lint + a11y:e2e + a11y:color (the CI gate)
+```
+
+Note (#690): `a11y:e2e` runs the entire `a11y` project via
+`--project=a11y` — its testMatch is `**/a11y-*.spec.ts`, so EVERY
+`a11y-*.spec.ts` is in the gate automatically, including keyboard,
+axe, spec-chat, the wave/cove lifecycle + ops + rename/delete specs,
+cwd-resolve, deep-link-after-reset, sidebar-wave-delete, trace-smoke,
+and the #177 theme-toggle spec (which self-skips when `codex` is
+absent). No per-file registration needed — add an `a11y-*.spec.ts`
+and it's gated. `a11y:axe` / `a11y:spec-chat` are kept as standalone
+dev conveniences for running just those subsets; they are NOT in the
+`a11y` chain (the whole-project `a11y:e2e` already covers them, so
+re-listing them would double-run those files). `a11y:color` runs the
+separate `color-anchor` project (it lives in its own project because
+it boots a custom `color-anchor.html` harness page rather than the
+SPA).
 
 ## Projects
 
-`playwright.config.ts` defines two test projects with different
-backends:
+`playwright.config.ts` defines four projects (two test, two
+setup/teardown helpers):
 
 - **`chromium`** (default): targets the developer `make dev` stack
   on `:4040`. Use for any test that exercises the real seeded
   MockRepo. Specs: `golden-path.spec.ts`, `wave-create.spec.ts`.
   Run with `npx playwright test --project=chromium`.
 
-- **`a11y`**: targets the `cargo run --features fixtures --bin replay -- --serve` binary
+- **`a11y`**: testMatch `**/a11y-*.spec.ts`. Targets the
+  `cargo run --features fixtures --bin replay -- --serve` binary
   spawned by `_setup/replay-server.setup.ts`, preloaded with a
   curated event-trace fixture from
   `crates/calm-server/tests/fixtures/events/`. Each test starts
@@ -117,7 +131,39 @@ backends:
   Run with `npx playwright test --project=a11y`. Requires `cargo`
   on PATH; default fixture override via `NEIGE_FIXTURE=<path>`.
 
-The default `npx playwright test` (no `--project=`) runs both —
-which means cargo must be available. CI runs only the `a11y`
-project, via `npm run a11y` (see "A11y scripts" above); the
-`chromium` project needs the `make dev` stack and stays local.
+- **`color-anchor`**: testMatch `**/color-system-anchor.spec.ts`.
+  Same replay-binary backend as `a11y` (it now declares
+  `dependencies: ['replay-setup']` so a standalone run boots the
+  binary instead of connection-refusing — #690), but drives a
+  dedicated `color-anchor.html` harness page to snapshot computed
+  form-control colors across light/dark. Asserts color-scheme
+  correctness + dark-bg sanity (it regenerates the informational
+  `__snapshots__/color-anchor-baseline.md` on each run; it does NOT
+  diff against the committed baseline, so it isn't environment-
+  fragile). Run with `npx playwright test --project=color-anchor`.
+
+The default `npx playwright test` (no `--project=`) runs everything —
+which means cargo must be available. CI's a11y gate runs the `a11y`
+and `color-anchor` projects via `npm run a11y` (see "A11y scripts"
+above); the `chromium` project needs the `make dev` stack and stays
+local.
+
+### What the a11y gate covers (#690)
+
+Before #690 the gate ran an explicit 6-file list and silently
+skipped 9 specs that the `a11y` glob already owned. The gate now
+runs the whole project, so these previously-ungated specs are live
+in CI:
+
+- `a11y-wave-lifecycle.spec.ts` / `a11y-wave-lifecycle-rejections.spec.ts`
+  — wave lifecycle state machine + rejection edges.
+- `a11y-wave-cove-ops.spec.ts` — wave/cove rename + delete (+ cascade)
+  flows.
+- `a11y-cwd-resolve.spec.ts` — cove-folder cwd resolution.
+- `a11y-deep-link-after-reset.spec.ts` — #290 deep-link-after-reset
+  race.
+- `a11y-sidebar-wave-delete.spec.ts` — sidebar wave-delete affordance.
+- `a11y-trace-smoke.spec.ts` — event-trace ring-buffer smoke.
+- `a11y-177-theme-toggle-no-remount.spec.ts` — #177 XtermView remount
+  guard (self-skips when `codex` is absent, e.g. on CI).
+- `color-system-anchor.spec.ts` — via the `color-anchor` project.

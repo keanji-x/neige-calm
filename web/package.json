@@ -16,10 +16,11 @@
     "e2e": "playwright test",
     "test:e2e": "playwright test",
     "e2e:ui": "playwright test --ui",
-    "a11y:e2e": "playwright test --project=a11y e2e/a11y-keyboard.spec.ts",
+    "a11y:e2e": "playwright test --project=a11y",
     "a11y:axe": "playwright test --project=a11y e2e/a11y-axe.spec.ts",
     "a11y:spec-chat": "playwright test --project=a11y e2e/a11y-spec-chat-seed.spec.ts e2e/a11y-spec-chat-live.spec.ts e2e/a11y-spec-chat-input.spec.ts e2e/a11y-spec-chat-interrupt.spec.ts",
-    "a11y": "npm run lint && npm run a11y:e2e && npm run a11y:axe && npm run a11y:spec-chat",
+    "a11y:color": "playwright test --project=color-anchor",
+    "a11y": "npm run lint && npm run a11y:e2e && npm run a11y:color",
     "gen:api": "cargo test --quiet --manifest-path ../Cargo.toml -p calm-types export_bindings_ && cargo test --quiet --manifest-path ../Cargo.toml -p calm-session export_bindings_ && cargo test --quiet --manifest-path ../Cargo.toml -p calm-editor export_bindings_ && cargo run --quiet --manifest-path ../Cargo.toml --bin emit-openapi > src/api/openapi.json && openapi-typescript src/api/openapi.json -o src/api/generated.ts"
   },
   "dependencies": {

@@ -68,8 +68,12 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     // Sidebar entry should also be live — pin the cross-surface
     // contract so a regression that only fixes the page-local query
     // (but not the WS-driven sidebar cache) still trips the test.
+    // `exact: true` pins the `.cove-nav` button only — the sidebar
+    // cove row also renders "Expand cove <name>" + "Delete cove
+    // <name>" buttons whose accessible names contain the cove name, so
+    // a loose substring match trips strict mode (3 elements).
     await expect(
-      page.locator('aside.side').getByRole('button', { name: /DeepLinkCove/i }),
+      page.locator('aside.side').getByRole('button', { name: 'DeepLinkCove', exact: true }),
     ).toBeVisible({ timeout: 5_000 });
   });
 
@@ -154,8 +158,11 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     // Sidebar entry should be visible — pin the cross-surface
     // contract: the WS resync feeds the React-Query cache the
     // sidebar reads from.
+    // `exact: true` — see the note in the deep-link-to-cove test: the
+    // cove row's "Expand cove" / "Delete cove" buttons also carry the
+    // name, so a loose match resolves to 3 elements under strict mode.
     await expect(
-      page.locator('aside.side').getByRole('button', { name: /StaleCursorCove/i }),
+      page.locator('aside.side').getByRole('button', { name: 'StaleCursorCove', exact: true }),
     ).toBeVisible({ timeout: 5_000 });
   });
 });

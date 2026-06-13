@@ -202,10 +202,23 @@ test.describe('wave lifecycle', () => {
     // dev endpoint that does expose a counter.
     await page.waitForTimeout(500);
 
+    // Scope the assertion to events for THIS wave. The replay binary's
+    // default-cove bootstrap can emit a late `wave.updated` for the
+    // unrelated "Today" wave that drifts into the 500ms window above on
+    // a loaded runner — that's not what idempotency is about. The
+    // kernel's idempotency contract is per-wave, so filter on the
+    // PATCHed wave's id and the assertion stays sharp without the
+    // cross-wave flake.
+    const eventWaveId = (e: { data?: unknown }): string | undefined =>
+      (e.data as { id?: string } | undefined)?.id;
     const trace = await getEventTrace(page);
-    const lifecycleEvts = trace.filter((e) => e.ev === 'wave.lifecycle_changed');
+    const lifecycleEvts = trace.filter(
+      (e) => e.ev === 'wave.lifecycle_changed' && eventWaveId(e) === waveId,
+    );
     expect(lifecycleEvts, 'idempotent PATCH must not emit wave.lifecycle_changed').toEqual([]);
-    const updatedEvts = trace.filter((e) => e.ev === 'wave.updated');
+    const updatedEvts = trace.filter(
+      (e) => e.ev === 'wave.updated' && eventWaveId(e) === waveId,
+    );
     expect(updatedEvts, 'idempotent PATCH must not emit wave.updated').toEqual([]);
   });
 

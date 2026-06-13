@@ -189,9 +189,13 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       # The a11y gate — issue #56 acceptance criterion 5. Runs
-      # `lint && a11y:e2e && a11y:axe`. The replay binary + Vite dev
-      # server are spawned automatically by playwright.config.ts
-      # (`replay-setup` project + `webServer` block respectively).
+      # `lint && a11y:e2e && a11y:color` (#690): `a11y:e2e` is the whole
+      # `a11y` Playwright project (testMatch `a11y-*.spec.ts` — keyboard,
+      # axe, spec-chat, wave/cove lifecycle + ops, cwd-resolve, deep-link,
+      # sidebar-delete, trace-smoke, #177 theme-toggle), and `a11y:color`
+      # is the `color-anchor` project (color-system-anchor snapshot). The
+      # replay binary + Vite dev server are spawned automatically by
+      # playwright.config.ts (`replay-setup` project + `webServer` block).
       - name: npm run a11y
         run: npm run a11y
         env:
