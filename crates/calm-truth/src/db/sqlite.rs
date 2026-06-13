@@ -3537,6 +3537,49 @@ impl RepoRead for SqlxRepo {
         Ok(rows.into_iter().map(HarnessItem::from).collect())
     }
 
+    async fn worker_flow_item_list_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<crate::db::rows::WorkerFlowItemRow>> {
+        // Clamp the page size to a defensible ceiling so a caller passing a
+        // huge (or non-positive) limit cannot scan the whole table.
+        let limit = limit.clamp(1, 500);
+        let (sql, cursor) = if descending {
+            (
+                r#"SELECT id, card_id, runtime_id, wave_id, worker_session_id,
+                          kind, payload, created_at_ms
+                   FROM worker_flow_items
+                   WHERE card_id = ?1 AND id < ?2
+                   ORDER BY id DESC
+                   LIMIT ?3"#,
+                if after_id == 0 { i64::MAX } else { after_id },
+            )
+        } else {
+            (
+                r#"SELECT id, card_id, runtime_id, wave_id, worker_session_id,
+                          kind, payload, created_at_ms
+                   FROM worker_flow_items
+                   WHERE card_id = ?1 AND id > ?2
+                   ORDER BY id ASC
+                   LIMIT ?3"#,
+                after_id,
+            )
+        };
+        let mut rows = sqlx::query_as::<_, crate::db::rows::WorkerFlowItemRow>(sql)
+            .bind(card_id)
+            .bind(cursor)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        if descending {
+            rows.reverse();
+        }
+        Ok(rows)
+    }
+
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
         let row = sqlx::query_as::<
             _,
@@ -4251,6 +4294,58 @@ pub async fn harness_items_delete_by_card_tx(
     Ok(())
 }
 
+/// #695 PR2 — append one `worker_flow_items` row inside an open transaction,
+/// returning the new row id. Free fn (mirroring the harness `_tx` helpers) so
+/// PR3's `WorkerFlowItemSink` can call it from inside `commit_decision`'s
+/// closure. The `RepoOutOfDomain::worker_flow_item_insert` trait method wraps
+/// this in its own short transaction for standalone callers.
+#[allow(clippy::too_many_arguments)]
+pub async fn worker_flow_item_insert_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: Option<&str>,
+    runtime_id: Option<&str>,
+    wave_id: Option<&str>,
+    worker_session_id: Option<&str>,
+    kind: &str,
+    payload: &str,
+    created_at_ms: i64,
+) -> Result<i64> {
+    let row = sqlx::query(
+        r#"INSERT INTO worker_flow_items (
+               card_id, runtime_id, wave_id, worker_session_id,
+               kind, payload, created_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           RETURNING id"#,
+    )
+    .bind(card_id)
+    .bind(runtime_id)
+    .bind(wave_id)
+    .bind(worker_session_id)
+    .bind(kind)
+    .bind(payload)
+    .bind(created_at_ms)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(row.get::<i64, _>("id"))
+}
+
+/// #695 PR2 — hard-delete every `worker_flow_items` row for a card. Mirror of
+/// [`harness_items_delete_by_card_tx`]. Unlike the FK's `ON DELETE SET NULL`
+/// (which preserves the transcript when the *card* is deleted), this is the
+/// explicit "purge this card's captured flow" path a caller can invoke
+/// directly inside a transaction.
+pub async fn worker_flow_items_delete_by_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<()> {
+    sqlx::query("DELETE FROM worker_flow_items WHERE card_id = ?1")
+        .bind(card_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // RepoOutOfDomain — operational writes that intentionally bypass the event
 // log: terminal lifecycle, plugin install/config, app-global settings. See
@@ -4478,6 +4573,35 @@ impl RepoOutOfDomain for SqlxRepo {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get::<i64, _>("id"))
+    }
+
+    // ---- worker message-flow capture (#695 PR2) -------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    async fn worker_flow_item_insert(
+        &self,
+        card_id: Option<&str>,
+        runtime_id: Option<&str>,
+        wave_id: Option<&str>,
+        worker_session_id: Option<&str>,
+        kind: &str,
+        payload: &str,
+        created_at_ms: i64,
+    ) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        let id = worker_flow_item_insert_tx(
+            &mut tx,
+            card_id,
+            runtime_id,
+            wave_id,
+            worker_session_id,
+            kind,
+            payload,
+            created_at_ms,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(id)
     }
 
     // --------------------------------------------------------------- plugins
@@ -5287,5 +5411,186 @@ mod tests {
         for code in ["0", "1", "SQLITE_CONSTRAINT"] {
             assert!(!is_sqlite_busy_code(code), "code {code}");
         }
+    }
+}
+
+#[cfg(test)]
+mod worker_flow_items_tests {
+    //! #695 PR2 — storage-layer tests for `worker_flow_items`. Mirrors the
+    //! harness-item db coverage: insert via the `_tx` free fn, list/page by
+    //! card, delete-by-card, and the durability guarantee that a card delete
+    //! turns `card_id` NULL (FK `ON DELETE SET NULL`) instead of cascading
+    //! the row away.
+    use super::{
+        SqlxRepo, card_create_with_id_tx, cove_create_tx, wave_create_tx,
+        worker_flow_item_insert_tx, worker_flow_items_delete_by_card_tx,
+    };
+    use crate::db::RepoRead;
+    use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme};
+
+    /// Seed a real cove → wave → card chain through the typed `_tx` helpers
+    /// (so the FK targets a genuine `cards` row) and return the card id.
+    async fn seed_card(repo: &SqlxRepo) -> String {
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id.clone(),
+                title: "w".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            "card-1".into(),
+            NewCard {
+                wave_id: wave.id.clone(),
+                kind: "worker".into(),
+                sort: None,
+                payload: serde_json::json!({}),
+            },
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        card.id.to_string()
+    }
+
+    #[tokio::test]
+    async fn insert_list_paging_delete_and_set_null_on_card_delete() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let card_id = seed_card(&repo).await;
+
+        // Insert three flow items for the card via the `_tx` free fn.
+        let mut ids = Vec::new();
+        for (n, kind) in [
+            (1_i64, "user_message"),
+            (2, "assistant_message"),
+            (3, "tool_call"),
+        ] {
+            let mut tx = repo.pool().begin().await.unwrap();
+            let id = worker_flow_item_insert_tx(
+                &mut tx,
+                Some(&card_id),
+                Some("rt-1"),
+                Some("wave-1"),
+                None, // worker_session_id — forward column, unset for now
+                kind,
+                &format!(r#"{{"kind":"{kind}","seq":{n}}}"#),
+                1_000 + n,
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            ids.push(id);
+        }
+
+        // Ascending list returns all three in id order.
+        let asc = repo
+            .worker_flow_item_list_by_card(&card_id, 0, 100, false)
+            .await
+            .unwrap();
+        assert_eq!(asc.iter().map(|r| r.id).collect::<Vec<_>>(), ids);
+        assert_eq!(asc[0].kind, "user_message");
+        assert_eq!(asc[0].card_id.as_deref(), Some(card_id.as_str()));
+        assert_eq!(asc[0].runtime_id.as_deref(), Some("rt-1"));
+        assert!(asc[0].worker_session_id.is_none());
+
+        // Ascending paging: after the first id, limit 1 -> the second row.
+        let page = repo
+            .worker_flow_item_list_by_card(&card_id, ids[0], 1, false)
+            .await
+            .unwrap();
+        assert_eq!(page.iter().map(|r| r.id).collect::<Vec<_>>(), vec![ids[1]]);
+
+        // Descending: newest-first cursor (after_id = 0 -> from the tip),
+        // but rows still come back in ascending id order (reversed in-fn).
+        let desc = repo
+            .worker_flow_item_list_by_card(&card_id, 0, 2, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            desc.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![ids[1], ids[2]]
+        );
+
+        // Durability guarantee: deleting the card must NOT destroy the rows;
+        // `ON DELETE SET NULL` leaves them present with `card_id = NULL`.
+        {
+            let mut tx = repo.pool().begin().await.unwrap();
+            super::card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+        // The card-scoped query no longer matches (card_id is now NULL)...
+        let after_card_delete = repo
+            .worker_flow_item_list_by_card(&card_id, 0, 100, false)
+            .await
+            .unwrap();
+        assert!(
+            after_card_delete.is_empty(),
+            "card_id should be NULL, not match"
+        );
+        // ...but the rows survive with NULL card_id.
+        let (surviving, null_cards): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE card_id IS NULL) FROM worker_flow_items",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(surviving, 3, "rows must survive card delete");
+        assert_eq!(null_cards, 3, "FK ON DELETE SET NULL must null card_id");
+    }
+
+    #[tokio::test]
+    async fn delete_by_card_tx_purges_rows() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let card_id = seed_card(&repo).await;
+        for n in 1..=2 {
+            let mut tx = repo.pool().begin().await.unwrap();
+            worker_flow_item_insert_tx(
+                &mut tx,
+                Some(&card_id),
+                None,
+                None,
+                None,
+                "user_message",
+                &format!(r#"{{"seq":{n}}}"#),
+                n,
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+        }
+        let mut tx = repo.pool().begin().await.unwrap();
+        worker_flow_items_delete_by_card_tx(&mut tx, &card_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let rows = repo
+            .worker_flow_item_list_by_card(&card_id, 0, 100, false)
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "explicit delete-by-card must purge rows");
     }
 }
