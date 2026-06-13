@@ -5,6 +5,11 @@ use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::event::EventBus;
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::worker_flow::WorkerFlowDriver;
+use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;
+use calm_truth::worker_flow_sink::WorkerFlowSink;
 
 use support::worker_flow as wf;
 
@@ -22,7 +27,7 @@ async fn codex_rollout_source_waits_for_lazy_file_creation() {
         &seed,
         codex_home.path(),
     );
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    tokio::time::sleep(Duration::from_millis(15)).await;
     wf::write_rollout(
         &path,
         &[
@@ -44,4 +49,31 @@ async fn codex_rollout_source_waits_for_lazy_file_creation() {
     .await;
     token.cancel();
     handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn codex_rollout_driver_drops_task_after_lazy_file_retry_budget() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    wf::seed_card_and_runtime(&repo, "card-lazy-ghost", Some("ghost")).await;
+
+    let driver = WorkerFlowDriver::new_with_flow_options_for_test(
+        repo.clone(),
+        SharedCodexAppServer::new_stub(repo.clone()),
+        Arc::new(WorkerFlowSink::new(repo)),
+        EventBus::new(),
+        CodexRolloutFlowSourceOptions {
+            path_override: None,
+            poll_interval: Duration::from_millis(20),
+            lazy_retry_delay: Duration::from_millis(50),
+            lazy_retry_attempts: 3,
+            cursor_persist_every: 1,
+        },
+    );
+    driver.start_on_boot().await.unwrap();
+
+    wf::wait_until(Duration::from_millis(500), || {
+        let driver = driver.clone();
+        async move { driver.tasks_alive_for_test().await == 0 }
+    })
+    .await;
 }

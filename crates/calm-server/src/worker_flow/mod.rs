@@ -25,7 +25,7 @@ use crate::model::Card;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::AppState;
 
-use self::codex_rollout::CodexRolloutFlowSource;
+use self::codex_rollout::{CodexRolloutFlowSource, CodexRolloutFlowSourceOptions};
 
 pub struct WorkerFlowDriver {
     repo: Arc<dyn Repo>,
@@ -34,6 +34,7 @@ pub struct WorkerFlowDriver {
     events: EventBus,
     tasks: Mutex<HashMap<String, SourceTask>>,
     subscriber_started: AtomicBool,
+    flow_options: CodexRolloutFlowSourceOptions,
 }
 
 struct SourceTask {
@@ -55,6 +56,26 @@ impl WorkerFlowDriver {
             events,
             tasks: Mutex::new(HashMap::new()),
             subscriber_started: AtomicBool::new(false),
+            flow_options: CodexRolloutFlowSourceOptions::default(),
+        })
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn new_with_flow_options_for_test(
+        repo: Arc<dyn Repo>,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        sink: Arc<dyn WorkerFlowItemSink>,
+        events: EventBus,
+        flow_options: CodexRolloutFlowSourceOptions,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            repo,
+            shared_codex_appserver,
+            sink,
+            events,
+            tasks: Mutex::new(HashMap::new()),
+            subscriber_started: AtomicBool::new(false),
+            flow_options,
         })
     }
 
@@ -89,6 +110,17 @@ impl WorkerFlowDriver {
             .values()
             .filter(|task| !task.stop.is_cancelled() && !task.join.is_finished())
             .count()
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub async fn task_stop_tokens_for_test(&self) -> Vec<CancellationToken> {
+        let tasks = self.tasks.lock().await;
+        tasks.values().map(|task| task.stop.clone()).collect()
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub async fn attach_runtime_for_test(&self, runtime: CardRuntime) -> Result<(), CoreError> {
+        self.attach_runtime(runtime).await
     }
 
     fn start_runtime_subscriber(self: &Arc<Self>) {
@@ -153,6 +185,30 @@ impl WorkerFlowDriver {
             } => {
                 self.cancel_card(&card_id).await;
             }
+            Event::RuntimeStatusChanged {
+                runtime_id,
+                new_status: RunStatus::Running | RunStatus::Idle | RunStatus::TurnPending,
+                ..
+            } => match self.repo.runtime_get_by_id(&runtime_id).await {
+                Ok(Some(runtime))
+                    if runtime.kind == RuntimeKind::CodexCard
+                        && runtime.agent_provider == Some(AgentProvider::Codex) =>
+                {
+                    if let Err(err) = self.attach_runtime(runtime).await {
+                        tracing::warn!(
+                            runtime_id,
+                            error = %err,
+                            "worker-flow runtime-status attach failed"
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => tracing::warn!(
+                    runtime_id,
+                    error = %err,
+                    "worker-flow runtime-status lookup failed"
+                ),
+            },
             Event::RuntimeSuperseded {
                 new_runtime_id,
                 card_id,
@@ -215,11 +271,12 @@ impl WorkerFlowDriver {
             .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
         let session = session_from_runtime(&runtime, &card);
         let stop = CancellationToken::new();
-        let source = CodexRolloutFlowSource::new(
+        let source = CodexRolloutFlowSource::new_with_options(
             self.repo.clone(),
             runtime.clone(),
             self.shared_codex_appserver.codex_home_path().to_path_buf(),
             stop.clone(),
+            self.flow_options.clone(),
         );
         let sink = self.sink.clone();
         let card_id = runtime.card_id.clone();
@@ -242,6 +299,16 @@ impl WorkerFlowDriver {
         let task = self.tasks.lock().await.remove(card_id);
         if let Some(task) = task {
             task.stop.cancel();
+        }
+    }
+}
+
+impl Drop for WorkerFlowDriver {
+    fn drop(&mut self) {
+        if let Ok(tasks) = self.tasks.try_lock() {
+            for task in tasks.values() {
+                task.stop.cancel();
+            }
         }
     }
 }

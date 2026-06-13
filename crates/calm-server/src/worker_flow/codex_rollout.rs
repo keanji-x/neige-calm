@@ -10,7 +10,6 @@ use calm_types::error::CoreError;
 use calm_types::runtime::CardRuntime;
 use calm_types::worker::{WorkerProviderKind, WorkerSession};
 use calm_types::worker_flow::RawRef;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Repo;
@@ -100,34 +99,28 @@ impl CodexRolloutFlowSource {
             return Ok(None);
         };
 
-        let mut warned = false;
-        loop {
-            for _ in 0..self.options.lazy_retry_attempts {
-                if self.stop.is_cancelled() {
-                    return Ok(None);
-                }
-                match find_thread_path_by_id_str(&self.codex_home, thread_id).await {
-                    Ok(Some(path)) => return Ok(Some(path)),
-                    Ok(None) => {
-                        sleep_or_cancel(self.options.lazy_retry_delay, &self.stop).await?;
-                    }
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                        sleep_or_cancel(self.options.lazy_retry_delay, &self.stop).await?;
-                    }
-                    Err(err) => return Err(CoreError::Io(err)),
-                }
+        for _ in 0..self.options.lazy_retry_attempts {
+            if self.stop.is_cancelled() {
+                return Ok(None);
             }
-            if !warned {
-                warned = true;
-                tracing::warn!(
-                    card_id = %self.runtime.card_id,
-                    runtime_id = %self.runtime.id,
-                    thread_id,
-                    "codex rollout file not found after lazy-create retry budget; continuing to probe"
-                );
+            match find_thread_path_by_id_str(&self.codex_home, thread_id).await {
+                Ok(Some(path)) => return Ok(Some(path)),
+                Ok(None) => {
+                    sleep_or_cancel(self.options.lazy_retry_delay, &self.stop).await?;
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    sleep_or_cancel(self.options.lazy_retry_delay, &self.stop).await?;
+                }
+                Err(err) => return Err(CoreError::Io(err)),
             }
-            sleep_or_cancel(Duration::from_secs(1), &self.stop).await?;
         }
+        tracing::warn!(
+            card_id = %self.runtime.card_id,
+            runtime_id = %self.runtime.id,
+            thread_id,
+            "codex rollout file not found after lazy-create retry budget; pausing source until next status change"
+        );
+        Ok(None)
     }
 
     async fn run_tail(
@@ -137,32 +130,43 @@ impl CodexRolloutFlowSource {
         path: PathBuf,
     ) -> Result<(), CoreError> {
         let source_path = path.to_string_lossy().to_string();
+        let mut cursor = cursor::get(
+            self.repo.as_ref(),
+            &self.runtime.card_id,
+            CODEX_ROLLOUT_SOURCE_KIND,
+        )
+        .await?
+        .filter(|c| c.source_path == source_path)
+        .map(|c| CursorState {
+            record_index: c.record_index.max(0) as u64,
+            last_source_uuid: c.last_source_uuid,
+        })
+        .unwrap_or_default();
+        let mut position: Option<Position> = None;
+
         loop {
             if self.stop.is_cancelled() {
                 return Ok(());
             }
 
-            let mut cursor = cursor::get(
-                self.repo.as_ref(),
-                &self.runtime.card_id,
-                CODEX_ROLLOUT_SOURCE_KIND,
-            )
-            .await?
-            .filter(|c| c.source_path == source_path)
-            .map(|c| CursorState {
-                record_index: c.record_index.max(0) as u64,
-                last_source_uuid: c.last_source_uuid,
-            })
-            .unwrap_or_default();
-
-            let lines = match read_rollout_lines(&path).await {
-                Ok(lines) => lines,
+            let read = match read_rollout_lines(&path).await {
+                Ok(read) => read,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
                     sleep_or_cancel(self.options.poll_interval, &self.stop).await?;
                     continue;
                 }
                 Err(err) => return Err(CoreError::Io(err)),
             };
+            let RolloutRead {
+                lines,
+                has_terminator,
+            } = read;
+            if !has_terminator && !lines.is_empty() {
+                tracing::debug!(
+                    source_path,
+                    "codex rollout tail has an unterminated final line; deferring it"
+                );
+            }
 
             if lines.is_empty() {
                 persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
@@ -194,6 +198,7 @@ impl CodexRolloutFlowSource {
                 );
                 cursor.record_index = 0;
                 cursor.last_source_uuid = None;
+                position = None;
             }
 
             if cursor.record_index as usize > lines.len() {
@@ -207,9 +212,14 @@ impl CodexRolloutFlowSource {
                 );
                 cursor.record_index = 0;
                 cursor.last_source_uuid = None;
+                position = None;
             }
 
-            let mut position = reconstruct_position(&lines, cursor.record_index, &source_path);
+            let position = position.get_or_insert_with(|| {
+                // Perf invariant: reconstruct only on cold start/reset, then carry
+                // seq/turn in memory so idle polls do not re-parse the consumed prefix.
+                reconstruct_position(&lines, cursor.record_index, &source_path)
+            });
             while (cursor.record_index as usize) < lines.len() {
                 if self.stop.is_cancelled() {
                     persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
@@ -282,6 +292,11 @@ impl WorkerFlowSource for CodexRolloutFlowSource {
         sink: &dyn WorkerFlowItemSink,
     ) -> Result<(), CoreError> {
         let Some(path) = self.resolve_rollout_path().await? else {
+            tracing::info!(
+                card_id = %self.runtime.card_id,
+                runtime_id = %self.runtime.id,
+                "codex rollout source exiting without resolved rollout path"
+            );
             return Ok(());
         };
         self.run_tail(session, sink, path).await
@@ -393,20 +408,19 @@ async fn sleep_or_cancel(duration: Duration, stop: &CancellationToken) -> Result
     }
 }
 
-async fn read_rollout_lines(path: &Path) -> io::Result<Vec<String>> {
+struct RolloutRead {
+    lines: Vec<String>,
+    has_terminator: bool,
+}
+
+async fn read_rollout_lines(path: &Path) -> io::Result<RolloutRead> {
     if path.extension().and_then(|s| s.to_str()) == Some("zst") {
         return read_zstd_lines(path).await;
     }
-    let file = tokio::fs::File::open(path).await?;
-    let mut lines = BufReader::new(file).lines();
-    let mut out = Vec::new();
-    while let Some(line) = lines.next_line().await? {
-        out.push(line);
-    }
-    Ok(out)
+    split_complete_lines(tokio::fs::read(path).await?)
 }
 
-async fn read_zstd_lines(path: &Path) -> io::Result<Vec<String>> {
+async fn read_zstd_lines(path: &Path) -> io::Result<RolloutRead> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("zstd")
@@ -420,11 +434,31 @@ async fn read_zstd_lines(path: &Path) -> io::Result<Vec<String>> {
                 output.status
             )));
         }
-        let text = String::from_utf8(output.stdout).map_err(io::Error::other)?;
-        Ok(text.lines().map(str::to_string).collect())
+        split_complete_lines(output.stdout)
     })
     .await
     .map_err(io::Error::other)?
+}
+
+fn split_complete_lines(bytes: Vec<u8>) -> io::Result<RolloutRead> {
+    let has_terminator = bytes.last().is_some_and(|byte| *byte == b'\n');
+    let complete_bytes = if has_terminator {
+        bytes.as_slice()
+    } else {
+        match bytes.iter().rposition(|byte| *byte == b'\n') {
+            Some(pos) => &bytes[..=pos],
+            None => &[],
+        }
+    };
+    let text = String::from_utf8(complete_bytes.to_vec()).map_err(io::Error::other)?;
+    let lines = text
+        .split_terminator('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+        .collect();
+    Ok(RolloutRead {
+        lines,
+        has_terminator,
+    })
 }
 
 async fn find_thread_path_by_id_str(
