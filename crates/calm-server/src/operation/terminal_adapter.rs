@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_update_tx, card_with_terminal_create_tx, event_append_for_operation_tx,
+    append_decision_event_in_tx, card_update_tx, card_with_terminal_create_tx,
     runtime_get_active_for_card_tx, runtime_set_status_tx,
 };
 use crate::db::write_with_events_typed;
@@ -23,6 +23,7 @@ use crate::runtime_repo::{RunStatus, RuntimeKind};
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
+use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -274,9 +275,17 @@ impl ProviderAdapter for TerminalAdapter {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
         let event_id =
-            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
-        let runtime_event_id =
-            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
+            append_decision_event_in_tx(tx, &PermissiveGate, &payload.actor, &scope, None, &event)
+                .await?;
+        let runtime_event_id = append_decision_event_in_tx(
+            tx,
+            &PermissiveGate,
+            &payload.actor,
+            &scope,
+            None,
+            &runtime_event,
+        )
+        .await?;
 
         let projected_card = project_terminal_id_for_response(&card, &term.id);
         let mut output = TxOutput::new(

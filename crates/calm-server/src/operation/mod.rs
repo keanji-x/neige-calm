@@ -3070,13 +3070,14 @@ mod tests {
         use crate::card_role_cache::CardRoleCache;
         use crate::db::prelude::*;
         use crate::db::sqlite::{
-            begin_immediate_tx, card_create_with_id_tx, event_append_for_operation_tx,
+            append_decision_event_in_tx, begin_immediate_tx, card_create_with_id_tx,
         };
         use crate::event::{Event, EventScope};
         use crate::ids::{ActorId, CardId};
         use crate::model::{CardRole, NewCard, NewCove, NewWave};
         use crate::routes::theme::RequestTheme;
         use crate::wave_report::WaveReportPayload;
+        use calm_truth::decision_gate::PermissiveGate;
 
         let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
@@ -3124,10 +3125,16 @@ mod tests {
             cove: cove.id.clone(),
         };
         let event = Event::CardAdded(report);
-        let event_id =
-            event_append_for_operation_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
-                .await
-                .unwrap();
+        let event_id = append_decision_event_in_tx(
+            &mut tx,
+            &PermissiveGate,
+            &ActorId::Kernel,
+            &scope,
+            None,
+            &event,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
 
         let head = crate::wave_vcs::head(sqlx_repo.pool(), &wave.id)
