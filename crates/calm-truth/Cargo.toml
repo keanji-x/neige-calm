@@ -12,6 +12,7 @@ edition = "2024"
 [features]
 default = []
 test-helpers = []
+worker-session-parity-drop = []
 
 [dependencies]
 calm-types = { path = "../calm-types" }
@@ -23,7 +24,7 @@ serde_json = "1"
 thiserror = "1"
 tracing = "0.1"
 utoipa = "5"
-tokio = { version = "1", features = ["sync", "time", "fs"] }
+tokio = { version = "1", features = ["sync", "time", "fs", "rt"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate", "chrono", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 

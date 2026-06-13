@@ -652,6 +652,9 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             "DELETE FROM overlays",
             "DELETE FROM terminals",
             "DELETE FROM cards",
+            // `worker_sessions.wave_id` is a NO ACTION FK, so sessions must
+            // leave before their parent waves.
+            "DELETE FROM worker_sessions",
             "DELETE FROM waves",
             "DELETE FROM coves",
             "DELETE FROM plugin_kv",

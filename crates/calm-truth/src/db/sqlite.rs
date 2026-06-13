@@ -30,6 +30,10 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashMap;
 use std::str::FromStr;
+#[cfg(feature = "worker-session-parity-drop")]
+use std::sync::Arc;
+#[cfg(feature = "worker-session-parity-drop")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::{
@@ -58,7 +62,10 @@ use crate::validation::{
 };
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
-use calm_types::worker::{WorkerSession, WorkerSessionId, WorkerSessionState};
+use calm_types::worker::{
+    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
+    WorkerSessionState,
+};
 
 pub struct SqlxRepo {
     pool: SqlitePool,
@@ -84,6 +91,8 @@ pub struct SqlxRepo {
     /// `AppState::new` seeds from the same pool). Both converge on
     /// the persisted `waves` table.
     wave_cove_cache: WaveCoveCache,
+    #[cfg(feature = "worker-session-parity-drop")]
+    worker_session_parity_on_drop: Arc<AtomicBool>,
 }
 
 impl SqlxRepo {
@@ -148,6 +157,8 @@ impl SqlxRepo {
             pool,
             card_role_cache,
             wave_cove_cache,
+            #[cfg(feature = "worker-session-parity-drop")]
+            worker_session_parity_on_drop: Arc::new(AtomicBool::new(true)),
         })
     }
 
@@ -170,6 +181,12 @@ impl SqlxRepo {
     /// `CardRoleCache: Clone` is cheap (`Arc<DashMap<…>>` under the hood).
     pub fn card_role_cache(&self) -> &CardRoleCache {
         &self.card_role_cache
+    }
+
+    #[cfg(feature = "worker-session-parity-drop")]
+    pub fn disable_worker_session_parity_on_drop_for_test(&self) {
+        self.worker_session_parity_on_drop
+            .store(false, Ordering::SeqCst);
     }
 
     /// #234 — borrow the repo's wave→cove cache. Mirrors
@@ -252,6 +269,114 @@ impl SqlxRepo {
         tx.commit().await?;
         Ok(id)
     }
+}
+
+#[cfg(feature = "worker-session-parity-drop")]
+impl Drop for SqlxRepo {
+    fn drop(&mut self) {
+        if std::thread::panicking() || !self.worker_session_parity_on_drop.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let pool = self.pool.clone();
+        let handle = std::thread::Builder::new()
+            .name("worker-session-parity-drop".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("build parity-drop runtime: {e}"))?;
+                rt.block_on(assert_worker_session_parity_for_test(&pool))
+            })
+            .expect("spawn worker-session parity-drop thread");
+
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                panic!(
+                    "runtimes/worker_sessions parity divergence at SqlxRepo teardown:\n{message}"
+                )
+            }
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+}
+
+#[cfg(feature = "worker-session-parity-drop")]
+async fn assert_worker_session_parity_for_test(
+    pool: &SqlitePool,
+) -> std::result::Result<(), String> {
+    let rows = sqlx::query(
+        r#"SELECT r.id AS runtime_id,
+                  r.status AS runtime_status,
+                  ws.state AS session_state,
+                  r.thread_id AS runtime_thread_id,
+                  ws.thread_id AS session_thread_id,
+                  r.session_id AS runtime_session_id,
+                  ws.agent_session_id AS session_agent_session_id,
+                  r.active_turn_id AS runtime_active_turn_id,
+                  ws.active_turn_id AS session_active_turn_id,
+                  r.terminal_run_id AS runtime_terminal_run_id,
+                  ws.terminal_run_id AS session_terminal_run_id,
+                  r.handle_state_json AS runtime_handle_state_json,
+                  ws.handle_state_json AS session_handle_state_json,
+                  r.created_at_ms AS runtime_created_at_ms,
+                  ws.created_at_ms AS session_created_at_ms,
+                  r.updated_at_ms AS runtime_updated_at_ms,
+                  ws.updated_at_ms AS session_updated_at_ms,
+                  r.completed_at_ms AS runtime_completed_at_ms,
+                  ws.completed_at_ms AS session_completed_at_ms
+           FROM runtimes r
+           LEFT JOIN worker_sessions ws ON ws.id = r.id
+           WHERE ws.id IS NULL
+              OR ws.state != r.status
+              OR NOT (ws.thread_id IS r.thread_id)
+              OR NOT (ws.agent_session_id IS r.session_id)
+              OR NOT (ws.active_turn_id IS r.active_turn_id)
+              OR NOT (ws.terminal_run_id IS r.terminal_run_id)
+              OR NOT (ws.handle_state_json IS r.handle_state_json)
+              OR ws.created_at_ms != r.created_at_ms
+              OR ws.updated_at_ms != r.updated_at_ms
+              OR NOT (ws.completed_at_ms IS r.completed_at_ms)
+           ORDER BY r.created_at_ms ASC, r.id ASC"#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("query runtimes/worker_sessions parity: {e}"))?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let details = rows
+        .iter()
+        .map(|row| {
+            format!(
+                "runtime_id={} status={:?}/{:?} thread={:?}/{:?} session={:?}/{:?} turn={:?}/{:?} terminal={:?}/{:?} handle={:?}/{:?} created={:?}/{:?} updated={:?}/{:?} completed={:?}/{:?}",
+                row.get::<String, _>("runtime_id"),
+                row.try_get::<String, _>("runtime_status").ok(),
+                row.try_get::<Option<String>, _>("session_state").ok().flatten(),
+                row.try_get::<Option<String>, _>("runtime_thread_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("session_thread_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("runtime_session_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("session_agent_session_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("runtime_active_turn_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("session_active_turn_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("runtime_terminal_run_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("session_terminal_run_id").ok().flatten(),
+                row.try_get::<Option<String>, _>("runtime_handle_state_json").ok().flatten(),
+                row.try_get::<Option<String>, _>("session_handle_state_json").ok().flatten(),
+                row.try_get::<i64, _>("runtime_created_at_ms").ok(),
+                row.try_get::<Option<i64>, _>("session_created_at_ms").ok().flatten(),
+                row.try_get::<i64, _>("runtime_updated_at_ms").ok(),
+                row.try_get::<Option<i64>, _>("session_updated_at_ms").ok().flatten(),
+                row.try_get::<Option<i64>, _>("runtime_completed_at_ms").ok().flatten(),
+                row.try_get::<Option<i64>, _>("session_completed_at_ms").ok().flatten(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(details)
 }
 
 impl Repo for SqlxRepo {
@@ -602,6 +727,10 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
             .await?;
         // #644 — `tasks` has no FK to `waves`; mirror `wave_delete_tx`.
         sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("DELETE FROM worker_sessions WHERE wave_id = ?1")
             .bind(&wave_id)
             .execute(&mut **tx)
             .await?;
@@ -1449,6 +1578,12 @@ pub async fn wave_delete_tx(
         .bind(id)
         .execute(&mut **tx)
         .await?;
+    // `worker_sessions.wave_id` is a required FK. Card/runtime rows may
+    // cascade below, but sessions must leave before the wave row itself.
+    sqlx::query("DELETE FROM worker_sessions WHERE wave_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
     let res = sqlx::query("DELETE FROM waves WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -1683,6 +1818,13 @@ pub async fn card_delete_tx(
     id: &str,
     card_role_cache: &CardRoleCache,
 ) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM worker_sessions WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?1)",
+    )
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+
     let res = sqlx::query("DELETE FROM cards WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -2309,6 +2451,39 @@ fn run_status_to_db(status: &RunStatus) -> &'static str {
     }
 }
 
+// PR3b-i (#679): derives the provisional NOT NULL worker-session identity
+// from the runtime row's own kind. PR6 overwrites these in place at mint.
+pub(crate) fn derive_session_identity(
+    kind: &RuntimeKind,
+) -> (WorkerProviderKind, SessionMode, WorkerContract) {
+    let provider = match kind {
+        RuntimeKind::Terminal => WorkerProviderKind::Terminal,
+        RuntimeKind::CodexCard | RuntimeKind::SharedSpec => WorkerProviderKind::Codex,
+        RuntimeKind::ClaudeCard => WorkerProviderKind::Claude,
+    };
+    let mode = match provider {
+        WorkerProviderKind::Codex => SessionMode::Resumable,
+        WorkerProviderKind::Claude | WorkerProviderKind::Terminal => SessionMode::Ephemeral,
+    };
+    let contract = match kind {
+        RuntimeKind::SharedSpec => WorkerContract::Planner,
+        _ => WorkerContract::Executor,
+    };
+    (provider, mode, contract)
+}
+
+fn worker_session_state_from_run_status(status: &RunStatus) -> WorkerSessionState {
+    match status {
+        RunStatus::Starting => WorkerSessionState::Starting,
+        RunStatus::Running => WorkerSessionState::Running,
+        RunStatus::Idle => WorkerSessionState::Idle,
+        RunStatus::TurnPending => WorkerSessionState::TurnPending,
+        RunStatus::Failed => WorkerSessionState::Failed,
+        RunStatus::Exited => WorkerSessionState::Exited,
+        RunStatus::Superseded => WorkerSessionState::Superseded,
+    }
+}
+
 fn runtime_message(message: impl Into<String>) -> RuntimeRepoError {
     RuntimeRepoError::Message {
         message: message.into(),
@@ -2523,6 +2698,18 @@ pub async fn session_state_transition_tx(
     id: &WorkerSessionId,
     to: WorkerSessionState,
 ) -> Result<WorkerSession> {
+    let now = now_ms();
+    let completed_at_ms = to.is_terminal().then_some(now);
+    session_state_transition_at_tx(tx, id, to, now, completed_at_ms).await
+}
+
+async fn session_state_transition_at_tx(
+    tx: &mut SessionTx<'_>,
+    id: &WorkerSessionId,
+    to: WorkerSessionState,
+    now: i64,
+    completed_at_ms: Option<i64>,
+) -> Result<WorkerSession> {
     let from = worker_session_current_state_tx(tx, id).await?;
     if !worker_session_status_transition_allowed(from, to) {
         return Err(CalmError::Conflict(format!(
@@ -2532,22 +2719,22 @@ pub async fn session_state_transition_tx(
         )));
     }
 
-    let now = now_ms();
-    let completed = i64::from(to.is_terminal());
+    let completed = i64::from(completed_at_ms.is_some());
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET state = ?1,
                   updated_at_ms = ?2,
                   completed_at_ms = CASE
-                    WHEN ?3 = 1 THEN COALESCE(completed_at_ms, ?2)
+                    WHEN ?3 = 1 THEN ?4
                     ELSE completed_at_ms
                   END
-            WHERE id = ?4
-              AND state = ?5"#,
+            WHERE id = ?5
+              AND state = ?6"#,
     )
     .bind(to.as_db_str())
     .bind(now)
     .bind(completed)
+    .bind(completed_at_ms)
     .bind(id.as_str())
     .bind(from.as_db_str())
     .execute(&mut **tx)
@@ -2574,6 +2761,353 @@ fn ensure_runtime_status_transition(
             id: id.clone(),
             attempted: to.clone(),
         })
+    }
+}
+
+fn runtime_session_error(err: CalmError) -> RuntimeRepoError {
+    runtime_message(err.to_string())
+}
+
+async fn worker_session_wave_id_for_card_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+) -> RuntimeResult<WaveId> {
+    let row = sqlx::query("SELECT wave_id FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(row) = row else {
+        return Err(runtime_message(format!(
+            "card {card_id} missing while mirroring runtime session"
+        )));
+    };
+    Ok(WaveId(row.try_get("wave_id")?))
+}
+
+fn worker_session_from_runtime_init(init: &RuntimeInit, wave_id: WaveId) -> WorkerSession {
+    let (provider, mode, contract) = derive_session_identity(&init.kind);
+    WorkerSession {
+        id: WorkerSessionId(init.id.clone()),
+        wave_id,
+        provider,
+        mode,
+        contract,
+        parent_session_id: None,
+        requester_session_id: None,
+        state: worker_session_state_from_run_status(&init.status),
+        mcp_token_hash: None,
+        thread_id: init.thread_id.clone(),
+        agent_session_id: init.session_id.clone(),
+        active_turn_id: init.active_turn_id.clone(),
+        terminal_run_id: init.terminal_run_id.clone(),
+        handle_state_json: init.handle_state_json.clone(),
+        liveness: LivenessTag::Unknown,
+        liveness_probed_at_ms: None,
+        exit_code: None,
+        exit_interpretation: None,
+        spawn_op_id: None,
+        created_at_ms: init.now_ms,
+        updated_at_ms: init.now_ms,
+        completed_at_ms: None,
+    }
+}
+
+fn worker_session_from_card_runtime(runtime: &CardRuntime, wave_id: WaveId) -> WorkerSession {
+    let (provider, mode, contract) = derive_session_identity(&runtime.kind);
+    WorkerSession {
+        id: WorkerSessionId(runtime.id.clone()),
+        wave_id,
+        provider,
+        mode,
+        contract,
+        parent_session_id: None,
+        requester_session_id: None,
+        state: worker_session_state_from_run_status(&runtime.status),
+        mcp_token_hash: None,
+        thread_id: runtime.thread_id.clone(),
+        agent_session_id: runtime.session_id.clone(),
+        active_turn_id: runtime.active_turn_id.clone(),
+        terminal_run_id: runtime.terminal_run_id.clone(),
+        handle_state_json: runtime.handle_state_json.clone(),
+        liveness: LivenessTag::Unknown,
+        liveness_probed_at_ms: None,
+        exit_code: None,
+        exit_interpretation: None,
+        spawn_op_id: None,
+        created_at_ms: runtime.created_at_ms,
+        updated_at_ms: runtime.updated_at_ms,
+        completed_at_ms: runtime.completed_at_ms,
+    }
+}
+
+async fn session_start_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    init: &RuntimeInit,
+) -> RuntimeResult<WorkerSession> {
+    let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
+    let session = worker_session_from_runtime_init(init, wave_id);
+    session_insert_tx(tx, session)
+        .await
+        .map_err(runtime_session_error)
+}
+
+async fn session_supersede_active_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    now: i64,
+) -> RuntimeResult<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = 'superseded',
+                  updated_at_ms = ?1,
+                  completed_at_ms = COALESCE(completed_at_ms, ?1)
+            WHERE id = ?2
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!(
+            "active worker session {id} not found for supersede"
+        )));
+    }
+    Ok(())
+}
+
+async fn session_set_status_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    status: RunStatus,
+    now: i64,
+) -> RuntimeResult<()> {
+    session_state_transition_at_tx(
+        tx,
+        &WorkerSessionId(id.clone()),
+        worker_session_state_from_run_status(&status),
+        now,
+        None,
+    )
+    .await
+    .map(|_| ())
+    .map_err(runtime_session_error)
+}
+
+async fn session_complete_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    terminal_status: RunStatus,
+    now: i64,
+) -> RuntimeResult<()> {
+    session_state_transition_at_tx(
+        tx,
+        &WorkerSessionId(id.clone()),
+        worker_session_state_from_run_status(&terminal_status),
+        now,
+        Some(now),
+    )
+    .await
+    .map(|_| ())
+    .map_err(runtime_session_error)
+}
+
+async fn session_bind_attribution_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    attr: &ThreadAttribution,
+    now: i64,
+) -> RuntimeResult<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET thread_id = ?1,
+                  agent_session_id = ?2,
+                  active_turn_id = ?3,
+                  updated_at_ms = ?4
+            WHERE id = ?5"#,
+    )
+    .bind(&attr.thread_id)
+    .bind(&attr.session_id)
+    .bind(&attr.active_turn_id)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("worker session {id} not found")));
+    }
+    Ok(())
+}
+
+async fn session_clear_terminal_run_id_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    now: i64,
+) -> RuntimeResult<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET terminal_run_id = NULL,
+                  updated_at_ms = ?1
+            WHERE id = ?2"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("worker session {id} not found")));
+    }
+    Ok(())
+}
+
+async fn session_set_handle_state_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    state_text: &Option<String>,
+    now: i64,
+) -> RuntimeResult<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET handle_state_json = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(state_text)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("worker session {id} not found")));
+    }
+    Ok(())
+}
+
+async fn session_set_active_turn_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    turn_id: Option<&str>,
+    now: i64,
+) -> RuntimeResult<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET active_turn_id = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(turn_id)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("worker session {id} not found")));
+    }
+    Ok(())
+}
+
+async fn session_set_harness_observation_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    status: RunStatus,
+    thread_id: Option<&str>,
+    active_turn_id: Option<&str>,
+    now: i64,
+) -> RuntimeResult<()> {
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = ?1,
+                  thread_id = COALESCE(?2, thread_id),
+                  active_turn_id = ?3,
+                  updated_at_ms = ?4
+            WHERE id = ?5"#,
+    )
+    .bind(worker_session_state_from_run_status(&status).as_db_str())
+    .bind(thread_id)
+    .bind(active_turn_id)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn session_fail_if_active_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    now: i64,
+) -> RuntimeResult<()> {
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = 'failed',
+                  updated_at_ms = ?1,
+                  completed_at_ms = ?1
+            WHERE id = ?2
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn session_mark_superseded_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    now: i64,
+) -> RuntimeResult<()> {
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = 'superseded',
+                  updated_at_ms = ?1,
+                  completed_at_ms = COALESCE(completed_at_ms, ?1)
+            WHERE id = ?2"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn session_restore_from_superseded_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    status: RunStatus,
+    now: i64,
+) -> RuntimeResult<()> {
+    let state_db = worker_session_state_from_run_status(&status).as_db_str();
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = ?1,
+                  updated_at_ms = ?2,
+                  completed_at_ms = NULL
+            WHERE id = ?3
+              AND state = 'superseded'"#,
+    )
+    .bind(state_db)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() > 0 {
+        return Ok(());
+    }
+
+    let current: Option<(String,)> =
+        sqlx::query_as("SELECT state FROM worker_sessions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    match current {
+        Some((current,)) if current == state_db => Ok(()),
+        Some((current,)) => Err(runtime_message(format!(
+            "worker session {id} has state {current}; cannot restore old spec harness session to {state_db}"
+        ))),
+        None => Err(runtime_message(format!(
+            "worker session {id} missing while restoring old spec harness session"
+        ))),
     }
 }
 
@@ -2836,6 +3370,8 @@ pub async fn runtime_start_tx(
     .execute(&mut **tx)
     .await?;
 
+    session_start_mirror_tx(tx, &init).await?;
+
     runtime_get_by_id_tx(tx, &init.id)
         .await?
         .ok_or_else(|| runtime_message(format!("runtime {} missing after insert", init.id)))
@@ -2864,6 +3400,7 @@ pub async fn runtime_supersede_tx(
         )));
     }
 
+    session_supersede_active_tx(tx, id, new_init.now_ms).await?;
     runtime_start_tx(tx, new_init).await
 }
 
@@ -2897,6 +3434,7 @@ pub async fn runtime_set_status_tx(
     if res.rows_affected() == 0 {
         return Err(runtime_message(format!("runtime {id} not found")));
     }
+    session_set_status_mirror_tx(tx, id, status, now).await?;
     Ok(())
 }
 
@@ -2944,6 +3482,7 @@ pub async fn runtime_bind_attribution_tx(
     if res.rows_affected() == 0 {
         return Err(runtime_message(format!("runtime {id} not found")));
     }
+    session_bind_attribution_mirror_tx(tx, id, &attr, now).await?;
     Ok(())
 }
 
@@ -2964,6 +3503,7 @@ pub async fn runtime_clear_terminal_run_id_tx(
     if res.rows_affected() == 0 {
         return Err(runtime_message(format!("runtime {id} not found")));
     }
+    session_clear_terminal_run_id_mirror_tx(tx, id, now).await?;
     Ok(())
 }
 
@@ -2988,6 +3528,7 @@ pub async fn runtime_set_handle_state_tx(
     if res.rows_affected() == 0 {
         return Err(runtime_message(format!("runtime {id} not found")));
     }
+    session_set_handle_state_mirror_tx(tx, id, &state_text, now).await?;
     Ok(())
 }
 
@@ -3011,6 +3552,7 @@ pub async fn runtime_set_active_turn_tx(
     if res.rows_affected() == 0 {
         return Err(runtime_message(format!("runtime {id} not found")));
     }
+    session_set_active_turn_mirror_tx(tx, id, turn_id, now).await?;
     Ok(())
 }
 
@@ -3023,6 +3565,7 @@ pub async fn runtime_set_harness_observation_tx(
     thread_id: Option<&str>,
     active_turn_id: Option<&str>,
 ) -> RuntimeResult<()> {
+    let now = now_ms();
     sqlx::query(
         r#"UPDATE runtimes
               SET status = ?1,
@@ -3034,10 +3577,11 @@ pub async fn runtime_set_harness_observation_tx(
     .bind(run_status_to_db(&status))
     .bind(thread_id)
     .bind(active_turn_id)
-    .bind(now_ms())
+    .bind(now)
     .bind(id)
     .execute(&mut **tx)
     .await?;
+    session_set_harness_observation_tx(tx, id, status, thread_id, active_turn_id, now).await?;
     Ok(())
 }
 
@@ -3060,6 +3604,7 @@ pub async fn runtime_fail_if_active_tx(
     .bind(id)
     .execute(&mut **tx)
     .await?;
+    session_fail_if_active_tx(tx, id, now).await?;
     Ok(())
 }
 
@@ -3069,6 +3614,7 @@ pub async fn runtime_mark_superseded_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
 ) -> RuntimeResult<()> {
+    let now = now_ms();
     sqlx::query(
         r#"UPDATE runtimes
               SET status = 'superseded',
@@ -3076,10 +3622,11 @@ pub async fn runtime_mark_superseded_tx(
                   completed_at_ms = COALESCE(completed_at_ms, ?1)
             WHERE id = ?2"#,
     )
-    .bind(now_ms())
+    .bind(now)
     .bind(id)
     .execute(&mut **tx)
     .await?;
+    session_mark_superseded_tx(tx, id, now).await?;
     Ok(())
 }
 
@@ -3106,6 +3653,7 @@ pub async fn runtime_restore_from_superseded_tx(
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() > 0 {
+        session_restore_from_superseded_tx(tx, id, status, now).await?;
         return Ok(());
     }
 
@@ -3114,7 +3662,9 @@ pub async fn runtime_restore_from_superseded_tx(
         .fetch_optional(&mut **tx)
         .await?;
     match current {
-        Some((current,)) if current == status_db => Ok(()),
+        Some((current,)) if current == status_db => {
+            session_restore_from_superseded_tx(tx, id, status, now).await
+        }
         Some((current,)) => Err(runtime_message(format!(
             "runtime {id} has status {current}; cannot restore old spec harness runtime to {status_db}"
         ))),
@@ -3155,6 +3705,7 @@ pub async fn runtime_complete_tx(
     if res.rows_affected() == 0 {
         return Err(runtime_message(format!("runtime {id} not found")));
     }
+    session_complete_mirror_tx(tx, id, terminal_status, now).await?;
     Ok(())
 }
 
@@ -3199,6 +3750,37 @@ pub async fn runtime_complete_for_terminal_tx(
         return Ok(());
     };
     runtime_complete_tx(tx, &runtime.id, terminal_status).await
+}
+
+pub async fn backfill_worker_sessions_from_runtimes(
+    tx: &mut RuntimeTx<'_>,
+) -> RuntimeResult<usize> {
+    let rows = sqlx::query(
+        r#"SELECT r.id, r.card_id, r.kind, r.agent_provider, r.status, r.terminal_run_id,
+                  r.thread_id, r.session_id, r.active_turn_id, r.handle_state_json,
+                  r.lease_owner, r.lease_until_ms, r.created_at_ms, r.updated_at_ms,
+                  r.completed_at_ms, c.wave_id AS wave_id
+           FROM runtimes r
+           JOIN cards c ON c.id = r.card_id
+           WHERE NOT EXISTS (
+               SELECT 1 FROM worker_sessions ws WHERE ws.id = r.id
+           )
+           ORDER BY r.created_at_ms ASC, r.id ASC"#,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut inserted = 0usize;
+    for row in rows {
+        let runtime = card_runtime_from_row(&row)?;
+        let wave_id = WaveId(row.try_get("wave_id")?);
+        let session = worker_session_from_card_runtime(&runtime, wave_id);
+        session_insert_tx(tx, session)
+            .await
+            .map_err(runtime_session_error)?;
+        inserted += 1;
+    }
+    Ok(inserted)
 }
 
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
@@ -4202,6 +4784,13 @@ impl RuntimeRepo for SqlxRepo {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(card_runtime_from_row).collect()
+    }
+
+    async fn backfill_worker_sessions_from_runtimes(&self) -> RuntimeResult<usize> {
+        let mut tx = self.pool.begin().await?;
+        let inserted = backfill_worker_sessions_from_runtimes(&mut tx).await?;
+        tx.commit().await?;
+        Ok(inserted)
     }
 
     async fn runtimes_recover_harnesses_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
@@ -5511,7 +6100,9 @@ impl RepoEventWrite for SqlxRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::is_sqlite_busy_code;
+    use super::{derive_session_identity, is_sqlite_busy_code};
+    use crate::runtime_repo::RuntimeKind;
+    use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
 
     #[test]
     fn sqlite_busy_code_matches_primary_and_extended_codes() {
@@ -5520,6 +6111,58 @@ mod tests {
         }
         for code in ["0", "1", "SQLITE_CONSTRAINT"] {
             assert!(!is_sqlite_busy_code(code), "code {code}");
+        }
+    }
+
+    #[test]
+    fn derive_session_identity_frozen_table_satisfies_0045_checks() {
+        let cases = [
+            (
+                RuntimeKind::Terminal,
+                (
+                    WorkerProviderKind::Terminal,
+                    SessionMode::Ephemeral,
+                    WorkerContract::Executor,
+                ),
+            ),
+            (
+                RuntimeKind::CodexCard,
+                (
+                    WorkerProviderKind::Codex,
+                    SessionMode::Resumable,
+                    WorkerContract::Executor,
+                ),
+            ),
+            (
+                RuntimeKind::ClaudeCard,
+                (
+                    WorkerProviderKind::Claude,
+                    SessionMode::Ephemeral,
+                    WorkerContract::Executor,
+                ),
+            ),
+            (
+                RuntimeKind::SharedSpec,
+                (
+                    WorkerProviderKind::Codex,
+                    SessionMode::Resumable,
+                    WorkerContract::Planner,
+                ),
+            ),
+        ];
+
+        for (kind, expected) in cases {
+            let actual = derive_session_identity(&kind);
+            assert_eq!(actual, expected, "kind {kind:?}");
+            assert!(matches!(
+                actual.0.as_db_str(),
+                "codex" | "claude" | "terminal"
+            ));
+            assert!(matches!(actual.1.as_db_str(), "ephemeral" | "resumable"));
+            assert!(matches!(
+                actual.2.as_db_str(),
+                "planner" | "executor" | "validator"
+            ));
         }
     }
 }

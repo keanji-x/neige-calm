@@ -1,16 +1,16 @@
 //! Issue #679 PR0-C — pin the CURRENT delete-card CASCADE semantics.
 //!
-//! Today, deleting a card destroys its execution identity in the same
-//! statement, purely through FK cascades:
+//! Today, deleting a card destroys its card-owned execution identity in the
+//! same transaction:
 //!
 //!   * `card_mcp_tokens.card_id`  → `cards(id)` ON DELETE CASCADE (migration 0010)
 //!   * `runtimes.card_id`         → `cards(id)` ON DELETE CASCADE (migration 0028)
 //!
-//! `card_delete_tx` issues only `DELETE FROM cards` — there is no explicit
-//! token/runtime cleanup anywhere on the delete path; the destruction is
-//! entirely the schema's doing. That means deleting a *view* (the card)
-//! silently kills execution *truth* (the worker's MCP credential and its
-//! runtime row), even while the runtime is still active.
+//! `card_delete_tx` deletes same-id `worker_sessions` mirrors before
+//! `DELETE FROM cards`; token/runtime cleanup remains FK-driven. That means
+//! deleting a *view* (the card) silently kills execution *truth* (the worker's
+//! MCP credential and its runtime/session rows), even while the runtime is
+//! still active.
 //!
 //! ⚠ This test pins CURRENT cascade semantics; PR9b of #679 will
 //! consciously flip it (execution identity moves to `worker_sessions` and
@@ -22,11 +22,11 @@
 //!   1. Route layer (`DELETE /api/cards/:id`, same boot shape as
 //!      cards_deletable.rs): real codex worker card minted through
 //!      `card_with_codex_create_tx` (card + terminal + MCP token + runtime
-//!      in one tx), runtime still ACTIVE — delete returns 204 and both the
-//!      token row and the runtime row are gone.
+//!      in one tx), runtime still ACTIVE — delete returns 204 and the token,
+//!      runtime, and mirror session rows are gone.
 //!   2. Repo layer (`terminal_delete_tx` + `card_delete_tx` in one tx, the
-//!      exact statement sequence the route runs): pins that the cascade is
-//!      FK-driven, not route-side compensation.
+//!      exact statement sequence the route runs): pins FK-driven token/runtime
+//!      cleanup plus the explicit same-tx worker-session cleanup.
 
 #![cfg(unix)]
 
@@ -181,9 +181,18 @@ async fn runtime_rows(repo: &SqlxRepo, card_id: &str) -> i64 {
     .await
 }
 
+async fn worker_session_rows(repo: &SqlxRepo, runtime_id: &str) -> i64 {
+    count(
+        repo,
+        "SELECT COUNT(*) FROM worker_sessions WHERE id = ?1",
+        runtime_id,
+    )
+    .await
+}
+
 /// Precondition shared by both tests: the freshly minted card really carries
 /// execution identity — one token row and one still-ACTIVE runtime row.
-async fn assert_identity_present(repo: &SqlxRepo, card_id: &str) {
+async fn assert_identity_present(repo: &SqlxRepo, card_id: &str) -> String {
     assert_eq!(token_rows(repo, card_id).await, 1, "token row minted");
     assert_eq!(runtime_rows(repo, card_id).await, 1, "runtime row minted");
     let active = repo
@@ -192,6 +201,12 @@ async fn assert_identity_present(repo: &SqlxRepo, card_id: &str) {
         .unwrap()
         .expect("runtime is ACTIVE at delete time — the cascade kills a live identity");
     assert_eq!(active.status, RunStatus::Starting);
+    assert_eq!(
+        worker_session_rows(repo, &active.id).await,
+        1,
+        "worker_sessions mirror row minted"
+    );
+    active.id
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +218,7 @@ async fn delete_card_route_cascades_mcp_token_and_runtime() {
     let boot = boot().await;
     let (card, term) = mint_codex_worker(&boot).await;
     let card_id = card.id.to_string();
-    assert_identity_present(&boot.repo, &card_id).await;
+    let runtime_id = assert_identity_present(&boot.repo, &card_id).await;
 
     let resp = boot
         .app
@@ -246,6 +261,11 @@ async fn delete_card_route_cascades_mcp_token_and_runtime() {
         0,
         "runtimes row CASCADE-deleted with the card (migration 0028)"
     );
+    assert_eq!(
+        worker_session_rows(&boot.repo, &runtime_id).await,
+        0,
+        "worker_sessions mirror row deleted by card_delete_tx before the card cascade"
+    );
     // The terminal id no longer resolves a runtime either (the row is gone,
     // not merely detached via the SET NULL terminal_run_id FK).
     assert_eq!(
@@ -269,11 +289,10 @@ async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
     let boot = boot().await;
     let (card, term) = mint_codex_worker(&boot).await;
     let card_id = card.id.to_string();
-    assert_identity_present(&boot.repo, &card_id).await;
+    let runtime_id = assert_identity_present(&boot.repo, &card_id).await;
 
-    // `card_delete_tx` issues only `DELETE FROM cards` (plus overlay sweep +
-    // role-cache evict). The terminal row must go first — terminals.card_id
-    // is ON DELETE RESTRICT (migration 0011) — exactly as the route does it.
+    // The terminal row must go first — terminals.card_id is ON DELETE
+    // RESTRICT (migration 0011) — exactly as the route does it.
     let mut tx = boot.repo.pool().begin().await.unwrap();
     terminal_delete_tx(&mut tx, &term.id).await.unwrap();
     card_delete_tx(&mut tx, card.id.as_ref(), boot.repo.card_role_cache())
@@ -291,5 +310,10 @@ async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
         runtime_rows(&boot.repo, &card_id).await,
         0,
         "runtime row gone with no explicit runtime delete in the tx: pure FK CASCADE"
+    );
+    assert_eq!(
+        worker_session_rows(&boot.repo, &runtime_id).await,
+        0,
+        "worker session mirror row gone via card_delete_tx's explicit same-tx cleanup"
     );
 }

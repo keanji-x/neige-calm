@@ -353,6 +353,9 @@ pub async fn reset_from_fixture(
         // `waves`, so deleting `waves` will NOT cascade here — the wipe
         // must name it explicitly or task rows leak across resets.
         "DELETE FROM tasks",
+        // `worker_sessions.wave_id` is a NO ACTION FK, so sessions must
+        // leave before their parent waves.
+        "DELETE FROM worker_sessions",
         "DELETE FROM waves",
         "DELETE FROM coves",
         "DELETE FROM plugin_kv",

@@ -30,6 +30,7 @@ use crate::wave_cove_cache::WaveCoveCache;
 use axum::extract::FromRef;
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -133,6 +134,7 @@ pub struct BootState {
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
     pub db_instance_id: Arc<String>,
+    pub worker_sessions_parity_divergences: Arc<AtomicU64>,
     pub card_role_cache: CardRoleCache,
     pub wave_cove_cache: WaveCoveCache,
     /// #477 PR5 — kernel card-kind handler registry. Substate placement is
@@ -192,6 +194,7 @@ impl BootState {
             plugin: self.plugin,
             codex: self.codex,
             db_instance_id: self.db_instance_id,
+            worker_sessions_parity_divergences: self.worker_sessions_parity_divergences,
             card_role_cache: self.card_role_cache,
             wave_cove_cache: self.wave_cove_cache,
             card_kind_registry: self.card_kind_registry,
@@ -243,6 +246,7 @@ pub struct AppState {
     /// process = a new instance id, full stop. `Arc<String>` so the value
     /// is cheap to clone across handler dispatches.
     pub db_instance_id: Arc<String>,
+    pub worker_sessions_parity_divergences: Arc<AtomicU64>,
     /// PR3 (#136) — `CardId -> CardRole` cache used by `role_gate::enforce_role`
     /// at every audited write entry. Clone-cheap (`Arc<DashMap<…>>` inside).
     /// Production builds seed this from the cards table during
@@ -583,6 +587,7 @@ impl AppState {
             // which is the right behavior: two tests sharing one binary
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            worker_sessions_parity_divergences: Arc::new(AtomicU64::new(0)),
             card_role_cache,
             wave_cove_cache,
             card_kind_registry,
@@ -1019,6 +1024,7 @@ impl AppState {
             // `main.rs`, so this is the boot-scoped id the rest of the
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            worker_sessions_parity_divergences: Arc::new(AtomicU64::new(0)),
             card_role_cache,
             wave_cove_cache,
             card_kind_registry,
@@ -1040,6 +1046,13 @@ impl AppState {
         // pipeline every other write uses so the cleanup is audited. See
         // `terminal_sweeper` module docs and `docs/sync-engine-design.md` §10.
         crate::terminal_sweeper::spawn(state.clone());
+
+        if let Some(pool) = state.raw.sqlite_pool() {
+            crate::worker_sessions_parity_sweep::spawn(
+                pool,
+                state.worker_sessions_parity_divergences.clone(),
+            );
+        }
 
         // Wave VCS objects are content-addressed and can be shared by multiple
         // waves, so wave/cove deletion only removes refs + commits. Reclaim

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, card_update_tx, runtime_set_status_tx, runtime_start_tx,
-    terminal_create_tx, wave_update_tx,
+    SqlxRepo, card_create_with_id_tx, card_update_tx, runtime_mark_superseded_tx,
+    runtime_set_status_tx, runtime_start_tx, terminal_create_tx, wave_update_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope, WaveUpdatedPayload};
 use calm_server::harness::HarnessSnapshot;
@@ -2259,19 +2259,9 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
     )
     .await
     .expect("runtime start");
-    let superseded_at = now_ms();
-    sqlx::query(
-        r#"UPDATE runtimes
-              SET status = 'superseded',
-                  updated_at_ms = ?1,
-                  completed_at_ms = ?1
-            WHERE id = ?2"#,
-    )
-    .bind(superseded_at)
-    .bind(&runtime.id)
-    .execute(&mut *tx)
-    .await
-    .expect("mark superseded");
+    runtime_mark_superseded_tx(&mut tx, &runtime.id)
+        .await
+        .expect("mark superseded");
     tx.commit().await.expect("commit runtime");
 
     repo.log_pure_event(
