@@ -177,11 +177,37 @@ impl<'a> WaveFsView<'a> {
                         content_json(&hook_events_json(&hook_events))
                     }
                     "conversation.md" => {
-                        let hook_events = self.hook_events_for_card(wave, &card.id).await?;
-                        Ok(content_markdown(conversation_markdown(
-                            &card.id,
-                            &hook_events,
-                        )))
+                        // #695 PR3: prefer the captured worker-flow transcript
+                        // when the sink has populated `worker_flow_items` for
+                        // this card. The SOURCES that feed the table land in
+                        // PR4, so for real cards it is empty today — fall back
+                        // to the existing hook-event projection (no regression).
+                        let rows = self
+                            .repo
+                            .worker_flow_item_list_by_card(card.id.as_str(), 0, 1000, false)
+                            .await
+                            .map_err(|e| {
+                                WaveFsError::Internal(format!(
+                                    "wave_file: worker_flow_item_list_by_card: {e}"
+                                ))
+                            })?;
+                        if rows.is_empty() {
+                            let hook_events = self.hook_events_for_card(wave, &card.id).await?;
+                            Ok(content_markdown(conversation_markdown(
+                                &card.id,
+                                &hook_events,
+                            )))
+                        } else {
+                            // Version-tolerant: a row whose payload fails to
+                            // deserialize (a future variant this binary does
+                            // not know) becomes an `Unknown` placeholder rather
+                            // than failing the whole read.
+                            let items: Vec<calm_types::worker_flow::WorkerFlowItem> = rows
+                                .iter()
+                                .map(|row| deserialize_flow_row(&row.kind, &row.payload))
+                                .collect();
+                            Ok(content_markdown(worker_flow_markdown(&card.id, &items)))
+                        }
                     }
                     _ => Err(path_not_available(path)),
                 }
@@ -988,6 +1014,231 @@ pub(crate) fn conversation_markdown(card_id: &CardId, events: &[HookEventProject
     out
 }
 
+/// Max length of any rendered string fragment before it is elided.
+const FLOW_MD_TRUNCATE: usize = 120;
+
+/// Truncate `s` to ~`FLOW_MD_TRUNCATE` chars (char-boundary safe), appending
+/// an ellipsis when clipped. Multi-line strings collapse to the first line.
+fn flow_truncate(s: &str) -> String {
+    let first = s.lines().next().unwrap_or("").trim();
+    if first.chars().count() <= FLOW_MD_TRUNCATE {
+        return first.to_string();
+    }
+    let head: String = first.chars().take(FLOW_MD_TRUNCATE).collect();
+    format!("{head}…")
+}
+
+/// #695 PR3 — render the captured worker-flow transcript a verifying spec
+/// agent reads via `cards/<id>/conversation.md`. This is the meaningful
+/// transcript (messages, commands + outcomes, file changes, tool calls),
+/// not a bare tool log. Items are grouped by `env().turn` and rendered in
+/// the order given (callers pass them in ascending `seq`).
+pub(crate) fn worker_flow_markdown(
+    card_id: &CardId,
+    items: &[calm_types::worker_flow::WorkerFlowItem],
+) -> String {
+    use calm_types::worker_flow::{
+        FileChangeKind, McpStatus, PlanStatus, ReviewKind, WorkerFlowItem,
+    };
+
+    let mut out = String::new();
+    out.push_str("> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth.\n\n");
+    out.push_str(&format!("# Conversation — card {}\n\n", card_id.as_str()));
+
+    if items.is_empty() {
+        out.push_str("_No worker-flow items recorded._\n");
+        return out;
+    }
+
+    // Pair tool results to their calls so a generic ToolCall can render its
+    // outcome inline; ToolResult rows are then skipped on their own pass.
+    let mut result_for_call: BTreeMap<&str, (bool, Option<String>)> = BTreeMap::new();
+    for item in items {
+        if let WorkerFlowItem::ToolResult {
+            call_id,
+            ok,
+            output_summary,
+            error,
+            ..
+        } = item
+        {
+            let summary = output_summary
+                .clone()
+                .or_else(|| error.as_ref().map(|e| e.message.clone()));
+            result_for_call.insert(call_id.as_str(), (*ok, summary));
+        }
+    }
+
+    let mut last_turn: Option<u32> = None;
+    for item in items {
+        let turn = item.env().turn;
+        if last_turn != Some(turn) {
+            out.push_str(&format!("### Turn {turn}\n\n"));
+            last_turn = Some(turn);
+        }
+
+        match item {
+            WorkerFlowItem::UserMessage { content, .. } => {
+                let text = message_blocks_text(content);
+                out.push_str("## User\n\n");
+                out.push_str(&flow_truncate(&text));
+                out.push_str("\n\n");
+            }
+            WorkerFlowItem::AgentMessage { text, is_final, .. } => {
+                if *is_final {
+                    out.push_str("## Assistant\n\n");
+                    out.push_str(&flow_truncate(text));
+                    out.push_str("\n\n");
+                } else {
+                    out.push_str(&flow_truncate(text));
+                    out.push_str("\n\n");
+                }
+            }
+            WorkerFlowItem::Reasoning { summary, .. } => {
+                if let Some(line) = summary.iter().find(|s| !s.trim().is_empty()) {
+                    out.push_str(&format!("_{}_\n\n", flow_truncate(line)));
+                }
+            }
+            WorkerFlowItem::CommandExecution {
+                command,
+                exit_code,
+                status,
+                aggregated_output,
+                ..
+            } => {
+                out.push_str(&format!("- ran `{}`", flow_truncate(command)));
+                let failed = matches!(status, calm_types::worker_flow::ExecStatus::Failed)
+                    || exit_code.is_some_and(|c| c != 0);
+                if failed {
+                    match exit_code {
+                        Some(code) => out.push_str(&format!(" ✗ exit {code}")),
+                        None => out.push_str(" ✗"),
+                    }
+                    if let Some(o) = aggregated_output
+                        .as_deref()
+                        .filter(|o| !o.trim().is_empty())
+                    {
+                        out.push_str(&format!(" — {}", flow_truncate(o)));
+                    }
+                } else {
+                    out.push_str(" ✓");
+                }
+                out.push('\n');
+            }
+            WorkerFlowItem::FileChange { changes, .. } => {
+                for change in changes {
+                    let verb = match &change.kind {
+                        FileChangeKind::Add => "add",
+                        FileChangeKind::Delete => "delete",
+                        FileChangeKind::Update { .. } => "edit",
+                    };
+                    out.push_str(&format!("- {verb} {}\n", flow_truncate(&change.path)));
+                }
+            }
+            WorkerFlowItem::ToolCall { call_id, name, .. } => {
+                out.push_str(&format!("- {}", flow_truncate(name)));
+                if let Some((ok, summary)) = result_for_call.get(call_id.as_str()) {
+                    out.push_str(if *ok { " ✓" } else { " ✗" });
+                    if let Some(s) = summary.as_deref().filter(|s| !s.trim().is_empty()) {
+                        out.push_str(&format!(" — {}", flow_truncate(s)));
+                    }
+                }
+                out.push('\n');
+            }
+            WorkerFlowItem::ToolResult { .. } => {
+                // Rendered inline with its paired ToolCall above.
+            }
+            WorkerFlowItem::McpToolCall {
+                server,
+                tool,
+                status,
+                ..
+            } => {
+                let name = match server {
+                    Some(s) => format!("{s}.{tool}"),
+                    None => tool.clone(),
+                };
+                out.push_str(&format!("- {}", flow_truncate(&name)));
+                match status {
+                    McpStatus::Completed => out.push_str(" ✓"),
+                    McpStatus::Failed => out.push_str(" ✗"),
+                    McpStatus::InProgress => {}
+                }
+                out.push('\n');
+            }
+            WorkerFlowItem::WebSearch { query, .. } => {
+                let q = query.as_deref().unwrap_or("");
+                out.push_str(&format!("- searched: {}\n", flow_truncate(q)));
+            }
+            WorkerFlowItem::Plan { entries, .. } => {
+                for entry in entries {
+                    let box_ = match entry.status {
+                        PlanStatus::Completed => "[x]",
+                        PlanStatus::Pending | PlanStatus::InProgress => "[ ]",
+                    };
+                    out.push_str(&format!("- {box_} {}\n", flow_truncate(&entry.text)));
+                }
+            }
+            WorkerFlowItem::Subagent { tool, .. } => {
+                let label = tool.as_deref().unwrap_or("task");
+                out.push_str(&format!("- subagent: {}\n", flow_truncate(label)));
+            }
+            WorkerFlowItem::Compaction { .. } => {
+                out.push_str("- _(context compacted)_\n");
+            }
+            WorkerFlowItem::ReviewBoundary { kind, label, .. } => {
+                let verb = match kind {
+                    ReviewKind::Entered => "entered",
+                    ReviewKind::Exited => "exited",
+                };
+                let label = label.as_deref().unwrap_or("review");
+                out.push_str(&format!("- _{} {}_\n", verb, flow_truncate(label)));
+            }
+            WorkerFlowItem::Unknown { raw_type, .. } => {
+                out.push_str(&format!("- ({})\n", flow_truncate(raw_type)));
+            }
+        }
+    }
+    out
+}
+
+/// Deserialize a `worker_flow_items` row payload into a [`WorkerFlowItem`],
+/// degrading to an `Unknown` placeholder (carrying the row's `kind`) when the
+/// payload cannot be parsed by this binary — forward-version tolerance so one
+/// future-shaped row never blanks the whole transcript.
+fn deserialize_flow_row(kind: &str, payload: &str) -> calm_types::worker_flow::WorkerFlowItem {
+    use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
+    use calm_types::worker_flow::{FlowEnvelope, WorkerFlowItem};
+    serde_json::from_str::<WorkerFlowItem>(payload).unwrap_or_else(|_| WorkerFlowItem::Unknown {
+        env: FlowEnvelope {
+            seq: 0,
+            turn: 0,
+            session_id: WorkerSessionId::from(""),
+            provider: WorkerProviderKind::Codex,
+            timestamp: None,
+            source_uuid: None,
+            provider_extra: None,
+            raw_ref: None,
+        },
+        raw_type: kind.to_string(),
+    })
+}
+
+/// Flatten a user message's blocks into a single rendered string.
+fn message_blocks_text(blocks: &[calm_types::worker_flow::MessageBlock]) -> String {
+    use calm_types::worker_flow::MessageBlock;
+    let mut parts = Vec::new();
+    for block in blocks {
+        match block {
+            MessageBlock::Text { text } => parts.push(text.clone()),
+            MessageBlock::Image { .. } => parts.push("[image]".to_string()),
+            MessageBlock::FileRef { path } => parts.push(format!("@{path}")),
+            MessageBlock::Mention { name, .. } => parts.push(format!("@{name}")),
+        }
+    }
+    parts.join(" ")
+}
+
 fn hook_event_is(event: &HookEventProjection, snake_suffix: &str, pascal_name: &str) -> bool {
     event
         .hook_kind
@@ -1603,5 +1854,104 @@ mod tests {
             &hook_events_json(&events),
             &json!(old_hook_events_json(&events)),
         );
+    }
+
+    // ---- #695 PR3: worker-flow markdown projection -------------------------
+
+    fn flow_env(seq: u64, turn: u32) -> calm_types::worker_flow::FlowEnvelope {
+        use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
+        calm_types::worker_flow::FlowEnvelope {
+            seq,
+            turn,
+            session_id: WorkerSessionId::from("sess-1"),
+            provider: WorkerProviderKind::Codex,
+            timestamp: None,
+            source_uuid: None,
+            provider_extra: None,
+            raw_ref: None,
+        }
+    }
+
+    #[test]
+    fn worker_flow_markdown_renders_meaningful_transcript() {
+        use calm_types::worker_flow::{
+            ExecSource, ExecStatus, FileChangeKind, FileEdit, MessageBlock, PatchStatus,
+            ToolCallId, WorkerFlowItem,
+        };
+
+        let items = vec![
+            WorkerFlowItem::UserMessage {
+                env: flow_env(0, 1),
+                content: vec![MessageBlock::Text {
+                    text: "Fix the build".into(),
+                }],
+            },
+            WorkerFlowItem::CommandExecution {
+                env: flow_env(1, 1),
+                call_id: Some(ToolCallId::from("c1")),
+                command: "cargo build".into(),
+                cwd: None,
+                parsed_actions: vec![],
+                aggregated_output: None,
+                exit_code: Some(0),
+                duration_ms: None,
+                status: ExecStatus::Completed,
+                source: ExecSource::Agent,
+            },
+            WorkerFlowItem::CommandExecution {
+                env: flow_env(2, 1),
+                call_id: Some(ToolCallId::from("c2")),
+                command: "cargo test".into(),
+                cwd: None,
+                parsed_actions: vec![],
+                aggregated_output: Some("assertion failed: foo".into()),
+                exit_code: Some(101),
+                duration_ms: None,
+                status: ExecStatus::Failed,
+                source: ExecSource::Agent,
+            },
+            WorkerFlowItem::FileChange {
+                env: flow_env(3, 1),
+                call_id: None,
+                changes: vec![FileEdit {
+                    path: "src/lib.rs".into(),
+                    kind: FileChangeKind::Update { move_path: None },
+                    diff: None,
+                }],
+                status: PatchStatus::Completed,
+            },
+            WorkerFlowItem::AgentMessage {
+                env: flow_env(4, 1),
+                text: "All green now.".into(),
+                is_final: true,
+                phase: None,
+            },
+            WorkerFlowItem::Unknown {
+                env: flow_env(5, 1),
+                raw_type: "future.provider.thing".into(),
+            },
+        ];
+
+        let md = worker_flow_markdown(&CardId::from("card-9"), &items);
+
+        assert!(md.starts_with(
+            "> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth."
+        ));
+        assert!(md.contains("# Conversation — card card-9"));
+        assert!(md.contains("## User\n\nFix the build"));
+        assert!(md.contains("- ran `cargo build` ✓"), "md = {md}");
+        assert!(
+            md.contains("- ran `cargo test` ✗ exit 101 — assertion failed: foo"),
+            "md = {md}"
+        );
+        assert!(md.contains("- edit src/lib.rs"), "md = {md}");
+        assert!(md.contains("## Assistant\n\nAll green now."), "md = {md}");
+        assert!(md.contains("- (future.provider.thing)"), "md = {md}");
+    }
+
+    #[test]
+    fn worker_flow_markdown_empty_reports_no_items() {
+        let md = worker_flow_markdown(&CardId::from("card-0"), &[]);
+        assert!(md.contains("_No worker-flow items recorded._"), "md = {md}");
     }
 }

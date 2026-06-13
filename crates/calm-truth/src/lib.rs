@@ -21,6 +21,7 @@ pub mod validation;
 pub mod wave_cove_cache;
 pub mod wave_fs_view;
 pub mod wave_vcs;
+pub mod worker_flow_sink;
 
 pub mod error;
 pub use error::TruthError;

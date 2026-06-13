@@ -723,6 +723,116 @@ async fn card_conversation_md_reports_no_hook_events() {
 }
 
 #[tokio::test]
+async fn card_conversation_md_renders_worker_flow_when_present() {
+    // #695 PR3: when the worker-flow capture table has rows for a card,
+    // conversation.md projects the captured transcript instead of the hook
+    // events.
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+
+    let user = json!({
+        "type": "userMessage",
+        "seq": 0, "turn": 1,
+        "session_id": "sess-1", "provider": "codex",
+        "timestamp": null, "source_uuid": null,
+        "provider_extra": null, "raw_ref": null,
+        "content": [{ "type": "text", "text": "Run the build" }]
+    });
+    let cmd = json!({
+        "type": "commandExecution",
+        "seq": 1, "turn": 1,
+        "session_id": "sess-1", "provider": "codex",
+        "timestamp": null, "source_uuid": null,
+        "provider_extra": null, "raw_ref": null,
+        "call_id": "c1", "command": "cargo build", "cwd": null,
+        "parsed_actions": [], "aggregated_output": null,
+        "exit_code": 0, "duration_ms": null,
+        "status": "completed", "source": "agent"
+    });
+    let answer = json!({
+        "type": "agentMessage",
+        "seq": 2, "turn": 1,
+        "session_id": "sess-1", "provider": "codex",
+        "timestamp": null, "source_uuid": null,
+        "provider_extra": null, "raw_ref": null,
+        "text": "Build is green.", "is_final": true, "phase": null
+    });
+    for (kind, payload) in [
+        ("userMessage", &user),
+        ("commandExecution", &cmd),
+        ("agentMessage", &answer),
+    ] {
+        boot.repo
+            .worker_flow_item_insert(
+                Some(card_id.as_str()),
+                None,
+                Some(boot.wave_id.as_str()),
+                Some("sess-1"),
+                kind,
+                &serde_json::to_string(payload).unwrap(),
+                now_ms(),
+            )
+            .await
+            .expect("insert worker flow item");
+    }
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read worker-flow projection");
+    assert_eq!(out["content_type"], json!("text/markdown"));
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.starts_with(
+        "> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth."
+    ));
+    assert!(md.contains("## User\n\nRun the build"), "md = {md}");
+    assert!(md.contains("- ran `cargo build` ✓"), "md = {md}");
+    assert!(md.contains("## Assistant\n\nBuild is green."), "md = {md}");
+}
+
+#[tokio::test]
+async fn card_conversation_md_falls_back_to_hooks_when_no_flow_rows() {
+    // #695 PR3 no-regression: with NO worker_flow_items rows, conversation.md
+    // still renders the existing hook-event projection.
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+    log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.user_prompt_submit".into(),
+            hook_idempotency_key: "hook-key".into(),
+            payload: json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "From the hook path."
+            }),
+        },
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read hook projection fallback");
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.contains("## User\n\nFrom the hook path."), "md = {md}");
+    // Worker-flow-only sentinel must NOT appear on the hook path.
+    assert!(
+        !md.contains("_No worker-flow items recorded._"),
+        "md = {md}"
+    );
+}
+
+#[tokio::test]
 async fn ls_card_directory_includes_hook_event_views() {
     let boot = boot().await;
     let card_id = boot.worker_card_id.clone();
