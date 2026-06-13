@@ -346,6 +346,23 @@ pub trait RepoRead: Send + Sync + 'static {
         descending: bool,
     ) -> Result<Vec<HarnessItem>>;
 
+    /// #695 PR2 — page the `worker_flow_items` capture table for a card.
+    ///
+    /// Sibling of [`harness_item_list_by_card`](Self::harness_item_list_by_card)
+    /// with identical paging semantics: `after_id` is the exclusive cursor
+    /// (0 means "from the start" — for `descending` it maps to "from the
+    /// newest"), `limit` is clamped to a sane ceiling, and rows come back in
+    /// ascending `id` order regardless of paging direction so callers can
+    /// always append. Returns the raw [`WorkerFlowItemRow`](crate::db::rows::WorkerFlowItemRow);
+    /// projection into a render shape is PR3's job, not this storage layer's.
+    async fn worker_flow_item_list_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<crate::db::rows::WorkerFlowItemRow>>;
+
     // ---- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
     /// List every overlay attached to entities of the given `entity_kind`
@@ -744,6 +761,31 @@ pub trait RepoOutOfDomain: RepoRead {
         item_type: Option<&str>,
         method: &str,
         params: &str,
+    ) -> Result<i64>;
+
+    // ---- worker message-flow capture (#695 PR2) ------------------------
+    /// Append one captured worker-flow item, returning the new row id.
+    ///
+    /// Sibling of [`harness_item_insert`](Self::harness_item_insert), but the
+    /// scoping columns are all nullable: `card_id` so the row can outlive its
+    /// worker card (the FK is `ON DELETE SET NULL`, #695), and
+    /// `worker_session_id` as a forward column adopted when #679 PR3's
+    /// dual-write lands. `kind` is the `WorkerFlowItem` discriminant and
+    /// `payload` is its JSON-serialized form (+ envelope / provider_extra /
+    /// raw_ref). The repo method delegates to the
+    /// [`worker_flow_item_insert_tx`](sqlite::worker_flow_item_insert_tx)
+    /// free fn so PR3's sink can call the same insert from inside
+    /// `commit_decision`'s transaction.
+    #[allow(clippy::too_many_arguments)]
+    async fn worker_flow_item_insert(
+        &self,
+        card_id: Option<&str>,
+        runtime_id: Option<&str>,
+        wave_id: Option<&str>,
+        worker_session_id: Option<&str>,
+        kind: &str,
+        payload: &str,
+        created_at_ms: i64,
     ) -> Result<i64>;
 
     // ---- plugins (writes)

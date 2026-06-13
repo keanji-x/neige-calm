@@ -182,6 +182,32 @@ impl From<HarnessItemRow> for HarnessItem {
     }
 }
 
+/// Row of the `worker_flow_items` table (#695 PR2).
+///
+/// Sibling of [`HarnessItemRow`], but deliberately *not* a mirror of a
+/// calm-types model entity: it is the raw persistence shape for the
+/// worker message-flow capture table, returned straight to callers
+/// (no `From<…>` projection — PR3's sink/projection owns that).
+///
+/// `card_id` is `Option<String>` because the table's FK is
+/// `REFERENCES cards(id) ON DELETE SET NULL` — a row must survive the
+/// deletion of its worker card (#695), so this column goes NULL rather
+/// than cascading away. `runtime_id` / `wave_id` / `worker_session_id`
+/// are nullable for the same forward-compatibility reasons the DDL
+/// documents. Plain `String` ids (not the typed `CardId` / `WaveId`)
+/// keep the row decode total even for orphaned (`card_id = NULL`) rows.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct WorkerFlowItemRow {
+    pub id: i64,
+    pub card_id: Option<String>,
+    pub runtime_id: Option<String>,
+    pub wave_id: Option<String>,
+    pub worker_session_id: Option<String>,
+    pub kind: String,
+    pub payload: String,
+    pub created_at_ms: i64,
+}
+
 /// Row mirror of [`Overlay`].
 #[derive(Debug, sqlx::FromRow)]
 pub struct OverlayRow {
