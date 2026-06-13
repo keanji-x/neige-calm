@@ -128,7 +128,6 @@ export default defineConfig({
     {
       name: 'color-anchor',
       testMatch: ['**/color-system-anchor.spec.ts'],
-      dependencies: ['replay-setup'],
       use: {
         ...devices['Desktop Chrome'],
         baseURL: REPLAY_BASE_URL,
