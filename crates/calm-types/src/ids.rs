@@ -13,36 +13,47 @@
 //!
 //! ## Wire/storage compatibility
 //!
-//! Each newtype derives `#[serde(transparent)]` and `#[sqlx(transparent)]`.
-//! The first guarantees the JSON wire shape stays a bare string
-//! (`"abc123"`, not `{"0":"abc123"}`); the second makes `.bind()` /
-//! `query_as` decode against a sqlite `TEXT` column without ceremony.
+//! Each newtype derives `#[serde(transparent)]`, which guarantees the JSON
+//! wire shape stays a bare string (`"abc123"`, not `{"0":"abc123"}`).
 //! ts-rs picks them up via `#[ts(export)]` and emits the equivalent of
 //! `export type CoveId = string;` so the frontend's generated TS keeps
 //! working unchanged.
+//!
+//! ## #679 PR1 note — no sqlx here
+//!
+//! These types used to also derive `#[sqlx(transparent)]` while they lived
+//! in calm-server. calm-types is sqlx-free by design (compile firewall), so
+//! DB binds use `.as_str()` and row decodes go through calm-server's
+//! `db::rows` wrappers (`#[sqlx(try_from = "String")]` + the blanket
+//! `TryFrom<String>` each newtype gets via its `From<String>` impl). The
+//! stored TEXT shape is unchanged.
+//!
+//! ## #679 PR1 note — `ActorId` is frozen
+//!
+//! `ActorId` is card-shaped (`AiSpec(CardId)` / `AiCodex(CardId)` /
+//! `AiClaude(CardId)`) and lives in the persisted event log. Evolving it to
+//! session identity is issue #679 hard-problem 1, owned by PR11. PR1 moves
+//! the definition verbatim — the TS-bindings byte gate pins the shape.
 //!
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
 /// kernel treats the value as opaque; never parses it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-#[sqlx(transparent)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct CoveId(pub String);
 
 /// Wave identifier. See [`CoveId`] for the opacity contract.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-#[sqlx(transparent)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct WaveId(pub String);
 
 /// Card identifier. See [`CoveId`] for the opacity contract.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-#[sqlx(transparent)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct CardId(pub String);
 

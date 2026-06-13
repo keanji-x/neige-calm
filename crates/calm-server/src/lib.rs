@@ -468,7 +468,9 @@ pub mod dispatcher;
 pub mod error;
 pub mod event;
 pub mod event_cursor;
-pub mod ids;
+// #679 PR1 — `ids` moved wholesale to calm-types; the re-export keeps every
+// `calm_server::ids::…` / `crate::ids::…` path working unchanged.
+pub use calm_types::ids;
 pub mod mcp_server;
 pub mod model;
 pub mod openapi;
@@ -495,7 +497,8 @@ pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod validation;
 pub mod wave_cove_cache;
-pub mod wave_fs_dto;
+// #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
+pub use calm_types::wave_fs_dto;
 pub mod wave_fs_view;
 pub mod wave_lifecycle;
 pub mod wave_report;

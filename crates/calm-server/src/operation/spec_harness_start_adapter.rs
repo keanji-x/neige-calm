@@ -212,16 +212,17 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = payload.wave_id;
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
-        let card = sqlx::query_as::<_, Card>(
+        let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                  FROM cards
                 WHERE id = ?1
                   AND wave_id = ?2"#,
         )
         .bind(card_id.as_str())
-        .bind(&wave_id)
+        .bind(wave_id.as_str())
         .fetch_optional(&mut **tx)
         .await?
+        .map(Card::from)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
 
         let inherited_snapshot = if defer_runtime_start {

@@ -168,18 +168,12 @@ semver = "1"
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 
-# WS event TS bindings — `ts-rs` walks the `Event` enum + `Cove`/`Wave`/`Card`/
-# `Overlay` and emits a matching TS file. The derive auto-generates a hidden
-# `#[test]` named `export_bindings_<Type>` for every `#[ts(export)]`-tagged
-# type, so `cargo test export_bindings_` writes `web/src/api/generated-events.ts`
-# (driven from `npm run gen:api`). The crate is idle at runtime — emission
-# only runs during the test pass, production builds pay only for the empty
-# trait impls. `serde-json-impl` makes `serde_json::Value` implement `TS` so
-# the `Card`/`Overlay` `payload` fields (overridden to `unknown` via
-# `#[ts(type = "unknown")]`) still satisfy the trait bound on their concrete
-# Rust type. Adjacently-tagged enums (`#[serde(tag, content)]`) are honored
-# natively — see `Event` in `src/event.rs`.
-ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+# WS event TS bindings: ts-rs moved to calm-types together with every
+# `#[ts(export)]`-tagged type (#679 PR1). calm-server deliberately has NO
+# ts-rs dependency — during the shim window no calm-server type may target
+# `web/src/api/generated-events.ts` (issue #679 risk 3); dropping the dep
+# makes that structural. `npm run gen:api` now drives
+# `cargo test -p calm-types export_bindings_`.
 
 # Per-spawn `CODEX_HOME` tempdir owned by `routes::codex`. Moved out of
 # dev-deps so the production binary can use it too.
@@ -195,6 +189,10 @@ tempfile = "3"
 automerge = "0.9"
 
 # Local crates
+# #679 PR1 — vocabulary + execution-contract layers. calm-server re-exports
+# the moved types (`pub use calm_types::…`) so external paths are unchanged.
+calm-types = { path = "../calm-types" }
+calm-exec = { path = "../calm-exec" }
 calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }
 blake3 = "1.8"

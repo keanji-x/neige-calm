@@ -29,7 +29,6 @@ use crate::event::{BroadcastEnvelope, EventBus};
 use crate::model::{new_id, now_ms};
 use crate::proc_identity::{signal_process_group, verify_owned_pid};
 use crate::routes::terminal::spawn_terminal_with_parts;
-use crate::runtime_repo::RuntimeId;
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
 
@@ -188,17 +187,10 @@ impl SpawnCtx {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum SpawnHandle {
-    Terminal {
-        terminal_id: String,
-        renderer_id: String,
-    },
-    Harness {
-        runtime_id: RuntimeId,
-    },
-    NoOp,
-}
+// #679 PR1 — `SpawnHandle` moved to `calm_exec::provider` (it is part of
+// the execution contract: `WorkerProvider::resume` returns it). Re-exported
+// so every `crate::operation::SpawnHandle` path is unchanged.
+pub use calm_exec::SpawnHandle;
 
 pub type ParkedObserver = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 

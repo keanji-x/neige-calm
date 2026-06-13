@@ -381,6 +381,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "calm-exec"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "calm-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "calm-proc-supervisor"
 version = "0.1.0"
 dependencies = [
@@ -407,9 +417,11 @@ dependencies = [
  "axum-extra",
  "base64",
  "blake3",
+ "calm-exec",
  "calm-proc-supervisor",
  "calm-server",
  "calm-session",
+ "calm-types",
  "chrono",
  "clap",
  "criterion",
@@ -438,7 +450,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "ts-rs",
  "utoipa",
  "utoipa-axum",
  "uuid",
@@ -460,6 +471,17 @@ dependencies = [
  "ts-rs",
  "uuid",
  "vte",
+]
+
+[[package]]
+name = "calm-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "ts-rs",
+ "utoipa",
 ]
 
 [[package]]
