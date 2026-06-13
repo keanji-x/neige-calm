@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     card_mcp_token_set_tx, card_update_tx, harness_items_delete_by_card_tx,
-    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_start_tx,
-    runtime_supersede_tx,
+    runtime_bind_attribution_tx, runtime_fail_if_active_tx, runtime_get_active_for_card_tx,
+    runtime_restore_from_superseded_tx, runtime_start_tx, runtime_supersede_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -670,20 +670,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 let runtime_id = step_arg_string(step, "runtime_id")?;
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
-                        let now = now_ms();
-                        sqlx::query(
-                            r#"UPDATE runtimes
-                                  SET status = 'failed',
-                                      updated_at_ms = ?1,
-                                      completed_at_ms = ?1
-                                WHERE id = ?2
-                                  AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
-                        )
-                        .bind(now)
-                        .bind(&runtime_id)
-                        .execute(&mut **tx)
-                        .await?;
-                        Ok(())
+                        runtime_fail_if_active_tx(tx, &runtime_id)
+                            .await
+                            .map_err(CalmError::from)
                     })
                 })
                 .await
@@ -824,41 +813,12 @@ async fn restore_old_runtime_after_spawn_failure(
     old_runtime_id: String,
     status: RunStatus,
 ) -> Result<()> {
-    let status_db = active_run_status_to_db(&status)?;
+    active_run_status_to_db(&status)?;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let now = now_ms();
-            let res = sqlx::query(
-                r#"UPDATE runtimes
-                      SET status = ?1,
-                          updated_at_ms = ?2,
-                          completed_at_ms = NULL
-                    WHERE id = ?3
-                      AND status = 'superseded'"#,
-            )
-            .bind(status_db)
-            .bind(now)
-            .bind(&old_runtime_id)
-            .execute(&mut **tx)
-            .await?;
-            if res.rows_affected() > 0 {
-                return Ok(());
-            }
-
-            let current: Option<(String,)> =
-                sqlx::query_as("SELECT status FROM runtimes WHERE id = ?1")
-                    .bind(&old_runtime_id)
-                    .fetch_optional(&mut **tx)
-                    .await?;
-            match current {
-                Some((current,)) if current == status_db => Ok(()),
-                Some((current,)) => Err(CalmError::Internal(format!(
-                    "runtime {old_runtime_id} has status {current}; cannot restore old spec harness runtime to {status_db}"
-                ))),
-                None => Err(CalmError::Internal(format!(
-                    "runtime {old_runtime_id} missing while restoring old spec harness runtime"
-                ))),
-            }
+            runtime_restore_from_superseded_tx(tx, &old_runtime_id, status)
+                .await
+                .map_err(CalmError::from)
         })
     })
     .await

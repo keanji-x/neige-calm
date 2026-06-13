@@ -25,7 +25,7 @@ The rule is **forward-only, migratable, refuse-on-unknown**. The new binary must
 
 Tier A surfaces in neige-calm today:
 
-- **DB schema.** Managed by `sqlx::migrate!`. Migrations live under `crates/calm-server/migrations/` and run forward-only on startup (`crates/calm-server/src/db/sqlite.rs:68`).
+- **DB schema.** Managed by `sqlx::migrate!`. Migrations live under `crates/calm-truth/migrations/` and run forward-only on startup (`crates/calm-server/src/db/sqlite.rs:68`).
 - **Sync event log payload.** Every row in the `events` table is part of the audit + replay contract from `docs/sync-engine-design.md`. The envelope-level `eventVersion` field tells future binaries which schema applied when the event was written.
 - **Kernel-owned card payloads.** `Card.payload` is `serde_json::Value` (`crates/calm-server/src/model.rs:91`), but for kernel-owned card kinds the payload must carry a per-kind `schemaVersion` and have a local migrator helper so older rows can be lifted to the current shape on read.
 - **Plugin manifest.** `manifest_version` is a hard gate — wrong version, plugin refused. `min_kernel_version` is honored via semver compare; a plugin requiring a newer kernel than the running binary is refused at load.
@@ -120,7 +120,7 @@ The events table is append-only and replay-driven. Every event ever written must
 
 ## Migration policy (Tier A detail)
 
-Schema migrations live under `crates/calm-server/migrations/` and are picked up by `sqlx::migrate!`. Three rules:
+Schema migrations live under `crates/calm-truth/migrations/` and are picked up by `sqlx::migrate!`. Three rules:
 
 1. **Forward-only.** No `down.sql`. Downgrade is not supported; a user who needs to roll back restores from a pre-upgrade backup.
 2. **New binary reads old DB.** Handled automatically: every embedded migration applies in order on first boot of the new binary against the old store.

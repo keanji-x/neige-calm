@@ -17,8 +17,7 @@ use crate::harness::observation::Observation;
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::now_ms;
-use crate::runtime_repo::{RunStatus, RuntimeId};
+use crate::runtime_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
@@ -1566,7 +1565,6 @@ async fn persist_snapshot_inner(
     .map(ToOwned::to_owned);
     let state_for_status = inner.state.lock().await.clone();
     let status = run_status_for(&state_for_status);
-    let status_db = run_status_to_db(&status);
     let new_phase = snapshot.phase;
     let event_runtime_id = runtime_id.clone();
     let event_card_id = inner.card_id.clone();
@@ -1578,20 +1576,13 @@ async fn persist_snapshot_inner(
         Box::pin(async move {
             crate::db::sqlite::runtime_set_handle_state_tx(tx, &runtime_id, Some(snapshot_value))
                 .await?;
-            sqlx::query(
-                r#"UPDATE runtimes
-                      SET status = ?1,
-                          thread_id = COALESCE(?2, thread_id),
-                          active_turn_id = ?3,
-                          updated_at_ms = ?4
-                    WHERE id = ?5"#,
+            crate::db::sqlite::runtime_set_harness_observation_tx(
+                tx,
+                &runtime_id,
+                status,
+                thread_id.as_deref(),
+                active_turn_id.as_deref(),
             )
-            .bind(status_db)
-            .bind(thread_id)
-            .bind(active_turn_id)
-            .bind(now_ms())
-            .bind(&runtime_id)
-            .execute(&mut **tx)
             .await?;
             Ok(())
         })
@@ -1668,18 +1659,6 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
                 .clone()
                 .unwrap_or_else(|| "wedged".into()),
         },
-    }
-}
-
-fn run_status_to_db(status: &RunStatus) -> &'static str {
-    match status {
-        RunStatus::Starting => "starting",
-        RunStatus::Running => "running",
-        RunStatus::Idle => "idle",
-        RunStatus::TurnPending => "turn_pending",
-        RunStatus::Failed => "failed",
-        RunStatus::Exited => "exited",
-        RunStatus::Superseded => "superseded",
     }
 }
 

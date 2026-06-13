@@ -4,10 +4,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::db::Repo;
-use crate::db::sqlite::runtime_get_by_id_tx;
+use crate::db::sqlite::{runtime_get_by_id_tx, runtime_mark_superseded_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
-use crate::model::now_ms;
 use crate::runtime_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
@@ -76,17 +75,7 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
         let runtime = runtime_get_by_id_tx(tx, &payload.runtime_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.runtime_id)))?;
-        sqlx::query(
-            r#"UPDATE runtimes
-                  SET status = 'superseded',
-                      updated_at_ms = ?1,
-                      completed_at_ms = COALESCE(completed_at_ms, ?1)
-                WHERE id = ?2"#,
-        )
-        .bind(now_ms())
-        .bind(&payload.runtime_id)
-        .execute(&mut **tx)
-        .await?;
+        runtime_mark_superseded_tx(tx, &payload.runtime_id).await?;
         let mut output = TxOutput::new(
             "runtime",
             Some(runtime.id.clone()),
