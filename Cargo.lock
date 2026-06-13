@@ -508,8 +508,10 @@ name = "calm-truth-test-harness"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "calm-exec",
  "calm-truth",
  "calm-types",
+ "serde_json",
 ]
 
 [[package]]

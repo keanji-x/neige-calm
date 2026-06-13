@@ -5,6 +5,8 @@
 //! the `calm-exec` tree while the conformance implementation still exercises
 //! real calm-truth SQLite APIs.
 
+pub mod fakes;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -502,3 +504,5 @@ pub async fn t3_state_is_not_fold_events() {
 pub fn t4_no_operations_read_api() {
     invariant_t4_no_operations_read_api();
 }
+
+pub use fakes::*;
