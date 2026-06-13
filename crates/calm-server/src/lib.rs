@@ -136,6 +136,26 @@ pub async fn runtimes_recover_orphans_on_boot(state: &state::AppState) {
     }
 }
 
+pub async fn backfill_worker_sessions_from_runtimes_on_boot(state: &state::AppState) {
+    match state.repo.backfill_worker_sessions_from_runtimes().await {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                target: "worker_sessions::backfill",
+                count,
+                "backfilled worker_sessions mirrors from runtimes"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                target: "worker_sessions::backfill",
+                error = %e,
+                "worker_sessions backfill failed; continuing boot",
+            );
+        }
+    }
+}
+
 pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error::Result<()> {
     let plan = state.operation_runtime.recover_on_boot().await?;
     for item in &plan.items {
@@ -531,7 +551,7 @@ pub async fn recover_harnesses_after_daemon_boot(
 #[cfg(test)]
 mod boot_order_tests {
     #[test]
-    fn main_boot_order_harness_supervisor_runtimes_operations() {
+    fn main_boot_order_harness_supervisor_runtimes_backfill_operations() {
         let main_rs = include_str!("main.rs");
         let boot_harnesses = main_rs
             .find("boot_harnesses(&state).await")
@@ -542,16 +562,20 @@ mod boot_order_tests {
         let runtimes = main_rs
             .find("runtimes_recover_orphans_on_boot(&state).await")
             .expect("main boot calls runtimes_recover_orphans_on_boot");
+        let backfill = main_rs
+            .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await")
+            .expect("main boot calls worker_sessions backfill");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
         assert!(boot_harnesses < reconcile);
         assert!(reconcile < runtimes);
-        assert!(runtimes < recover);
+        assert!(runtimes < backfill);
+        assert!(backfill < recover);
     }
 
     #[test]
-    fn boot_order_calls_runtime_orphan_recovery_between_supervisor_and_operations() {
+    fn boot_order_calls_runtime_orphan_recovery_and_backfill_before_operations() {
         let main_rs = include_str!("main.rs");
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
@@ -559,16 +583,21 @@ mod boot_order_tests {
         let runtimes = main_rs
             .find("runtimes_recover_orphans_on_boot(&state).await")
             .expect("main boot calls runtimes_recover_orphans_on_boot");
+        let backfill = main_rs
+            .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await")
+            .expect("main boot calls worker_sessions backfill");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
         assert!(reconcile < runtimes);
-        assert!(runtimes < recover);
+        assert!(runtimes < backfill);
+        assert!(backfill < recover);
     }
 
     /// Issue #644 PR-B — the scheduler's boot sweep runs AFTER operation
     /// recovery (design §8: harness recovery → supervisor reconcile →
-    /// runtime orphans → operations → scheduler sweep). Operation
+    /// runtime orphans → worker-session backfill → operations → scheduler
+    /// sweep). Operation
     /// recovery is synchronous apply-then-drive, so the sweep's
     /// `dispatched` arm reads already-recovered operation rows instead
     /// of racing the recovery's re-drive.

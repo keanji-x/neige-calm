@@ -63,6 +63,8 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::runtimes_recover_orphans_on_boot(&state).await;
 
+    calm_server::backfill_worker_sessions_from_runtimes_on_boot(&state).await;
+
     calm_server::recover_operations_on_boot(&state).await?;
 
     // Issue #644 PR-B — scheduler boot sweep. Must follow operation

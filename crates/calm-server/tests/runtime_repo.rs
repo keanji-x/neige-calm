@@ -1,9 +1,13 @@
+mod support;
+
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
     runtime_bind_attribution_tx, runtime_complete_for_card_tx, runtime_complete_tx,
-    runtime_get_active_for_card_tx, runtime_get_by_id_tx, runtime_set_status_for_card_tx,
-    runtime_set_status_tx, runtime_start_tx, runtime_supersede_tx,
+    runtime_fail_if_active_tx, runtime_get_active_for_card_tx, runtime_get_by_id_tx,
+    runtime_mark_superseded_tx, runtime_restore_from_superseded_tx, runtime_set_active_turn_tx,
+    runtime_set_handle_state_tx, runtime_set_harness_observation_tx,
+    runtime_set_status_for_card_tx, runtime_set_status_tx, runtime_start_tx, runtime_supersede_tx,
 };
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
@@ -11,7 +15,9 @@ use calm_server::runtime_repo::{
     AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError,
     ThreadAttribution,
 };
+use calm_types::worker::{WorkerSessionId, WorkerSessionState};
 use serde_json::json;
+use support::parity::assert_runtimes_worker_sessions_parity;
 
 async fn fresh_repo() -> SqlxRepo {
     SqlxRepo::open("sqlite::memory:")
@@ -85,6 +91,207 @@ async fn runtime_row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64
     .fetch_one(repo.pool())
     .await
     .expect("runtime row snapshot")
+}
+
+#[tokio::test]
+async fn runtime_entrances_dual_write_worker_session_parity() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_bind_attribution_tx(
+        &mut tx,
+        &runtime.id,
+        ThreadAttribution {
+            runtime_id: runtime.id.clone(),
+            provider: AgentProvider::Codex,
+            thread_id: Some("thread-dual-write".into()),
+            session_id: Some("agent-session-dual-write".into()),
+            active_turn_id: Some("turn-1".into()),
+        },
+    )
+    .await
+    .unwrap();
+    runtime_set_status_tx(&mut tx, &runtime.id, RunStatus::Running)
+        .await
+        .unwrap();
+    runtime_set_active_turn_tx(&mut tx, &runtime.id, Some("turn-2"))
+        .await
+        .unwrap();
+    runtime_set_handle_state_tx(
+        &mut tx,
+        &runtime.id,
+        Some(json!({"phase": "dual-write", "n": 1})),
+    )
+    .await
+    .unwrap();
+    runtime_complete_tx(&mut tx, &runtime.id, RunStatus::Exited)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+    let session = repo
+        .session_get(&WorkerSessionId(runtime.id.clone()))
+        .await
+        .unwrap()
+        .expect("mirrored worker session");
+    assert_eq!(session.state, WorkerSessionState::Exited);
+    assert_eq!(session.thread_id.as_deref(), Some("thread-dual-write"));
+    assert_eq!(
+        session.agent_session_id.as_deref(),
+        Some("agent-session-dual-write")
+    );
+    assert_eq!(session.active_turn_id.as_deref(), Some("turn-2"));
+    assert!(session.completed_at_ms.is_some());
+}
+
+#[tokio::test]
+async fn runtime_tolerant_entrances_dual_write_without_session_matrix() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+            RunStatus::Idle,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_set_harness_observation_tx(
+        &mut tx,
+        &runtime.id,
+        RunStatus::TurnPending,
+        Some("thread-harness"),
+        Some("turn-harness"),
+    )
+    .await
+    .unwrap();
+    runtime_fail_if_active_tx(&mut tx, &runtime.id)
+        .await
+        .unwrap();
+    runtime_mark_superseded_tx(&mut tx, &runtime.id)
+        .await
+        .unwrap();
+    runtime_restore_from_superseded_tx(&mut tx, &runtime.id, RunStatus::Running)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+    let session = repo
+        .session_get(&WorkerSessionId(runtime.id))
+        .await
+        .unwrap()
+        .expect("mirrored worker session");
+    assert_eq!(session.state, WorkerSessionState::Running);
+    assert_eq!(session.thread_id.as_deref(), Some("thread-harness"));
+    assert_eq!(session.active_turn_id.as_deref(), Some("turn-harness"));
+    assert!(session.completed_at_ms.is_none());
+}
+
+#[tokio::test]
+async fn backfill_worker_sessions_from_runtimes_is_idempotent() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let runtime_id = new_id();
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO runtimes
+           (id, card_id, kind, agent_provider, status, thread_id, active_turn_id,
+            created_at_ms, updated_at_ms)
+           VALUES (?1, ?2, 'codex', 'codex', 'running', 'thread-backfill',
+                   'turn-backfill', ?3, ?3)"#,
+    )
+    .bind(&runtime_id)
+    .bind(card.id.as_str())
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(
+        repo.backfill_worker_sessions_from_runtimes().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        repo.backfill_worker_sessions_from_runtimes().await.unwrap(),
+        0
+    );
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+
+    let session = repo
+        .session_get(&WorkerSessionId(runtime_id))
+        .await
+        .unwrap()
+        .expect("backfilled worker session");
+    assert_eq!(session.state, WorkerSessionState::Running);
+    assert_eq!(session.thread_id.as_deref(), Some("thread-backfill"));
+    assert_eq!(session.active_turn_id.as_deref(), Some("turn-backfill"));
+}
+
+#[tokio::test]
+async fn runtime_supersede_tx_mirrors_old_superseded_and_new_starting_same_wave() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let first = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+    let second = runtime_supersede_tx(
+        &mut tx,
+        &first.id,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        r#"SELECT id, state, wave_id
+           FROM worker_sessions
+           WHERE id IN (?1, ?2)
+           ORDER BY id ASC"#,
+    )
+    .bind(&first.id)
+    .bind(&second.id)
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let first_row = rows.iter().find(|(id, _, _)| id == &first.id).unwrap();
+    let second_row = rows.iter().find(|(id, _, _)| id == &second.id).unwrap();
+    assert_eq!(first_row.1, "superseded");
+    assert_eq!(second_row.1, "starting");
+    assert_eq!(first_row.2, second_row.2);
 }
 
 #[tokio::test]
