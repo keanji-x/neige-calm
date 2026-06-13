@@ -1630,7 +1630,7 @@ async fn persist_snapshot_inner(
                 error = %e,
                 "spec harness phase event persist failed; retaining previous phase for retry"
             );
-            return Err(e);
+            return Err(e.into());
         }
         *last_phase = new_phase;
     }

@@ -1155,7 +1155,11 @@ async fn mint_card_mcp_token(ctx: &SpawnCtx, card_id: &str) -> Result<String> {
     write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         let card_id = card_id.clone();
         let hashed = hashed.clone();
-        Box::pin(async move { card_mcp_token_set_tx(tx, &card_id, &hashed).await })
+        Box::pin(async move {
+            card_mcp_token_set_tx(tx, &card_id, &hashed)
+                .await
+                .map_err(Into::into)
+        })
     })
     .await?;
     Ok(token.into_inner())

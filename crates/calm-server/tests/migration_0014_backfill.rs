@@ -39,7 +39,8 @@ use sqlx::SqlitePool;
 /// constant means the test breaks loudly if the migration file
 /// drifts — which is the right outcome (a behavioural change in the
 /// migration should land alongside this test's update).
-const MIGRATION_0014_SQL: &str = include_str!("../migrations/0014_wave_report_card.sql");
+const MIGRATION_0014_SQL: &str =
+    include_str!("../../calm-truth/migrations/0014_wave_report_card.sql");
 
 /// Apply the migration's statements directly against the live pool.
 /// We strip comments first (so the split doesn't slice inside a

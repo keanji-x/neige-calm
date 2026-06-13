@@ -1538,9 +1538,9 @@ async fn open_refuses_unknown_future_migration() {
 
     // Second open: must refuse with the typed error + agreed wording.
     // `SqlxRepo` isn't `Debug`, so `expect_err` is unavailable — match.
-    let err = match SqlxRepo::open(&url).await {
+    let err: CalmError = match SqlxRepo::open(&url).await {
         Ok(_) => panic!("reopen must refuse on unknown future migration"),
-        Err(e) => e,
+        Err(e) => e.into(),
     };
     let msg = err.to_string();
     assert!(

@@ -11,9 +11,7 @@ use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
 use crate::harness::HarnessRegistry;
-use crate::ids::{CardId, CoveId, WaveId};
 use crate::mcp_server::McpServer;
-use crate::model::CardRole;
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
@@ -80,46 +78,7 @@ impl HookIngestCache {
 
 /// #480 PR1 write-surface slice shared by route and worker substates.
 /// Clone-cheap: both caches alias their underlying `Arc<DashMap<...>>`.
-#[derive(Clone)]
-pub struct WriteContext {
-    role_cache: CardRoleCache,
-    cove_cache: WaveCoveCache,
-}
-
-impl WriteContext {
-    pub fn new(role_cache: CardRoleCache, cove_cache: WaveCoveCache) -> Self {
-        Self {
-            role_cache,
-            cove_cache,
-        }
-    }
-
-    /// #480 PR3a — cluster check: card role lookup. None if card unknown.
-    pub fn verify_role(&self, card_id: &CardId) -> Option<CardRole> {
-        self.role_cache.get(card_id)
-    }
-
-    /// #480 PR3a — cluster check: wave's home cove. None if wave unknown.
-    pub fn verify_cove(&self, wave_id: &WaveId) -> Option<CoveId> {
-        self.cove_cache.cove_of(wave_id)
-    }
-
-    #[deprecated(
-        since = "0.1.0",
-        note = "use WriteContext::verify_role / verify_cove (or pass the WriteContext to write_with_event_typed) — raw getters survive only for legacy db chain glue"
-    )]
-    pub fn role_cache(&self) -> &CardRoleCache {
-        &self.role_cache
-    }
-
-    #[deprecated(
-        since = "0.1.0",
-        note = "use WriteContext::verify_role / verify_cove (or pass the WriteContext to write_with_event_typed) — raw getters survive only for legacy db chain glue"
-    )]
-    pub fn cove_cache(&self) -> &WaveCoveCache {
-        &self.cove_cache
-    }
-}
+pub use calm_truth::state::WriteContext;
 
 /// #480 PR1 route-facing state slice for future handler extraction.
 /// Mirrors existing `AppState` handles without changing caller behavior.

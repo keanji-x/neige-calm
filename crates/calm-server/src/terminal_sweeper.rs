@@ -181,7 +181,10 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
                 // the audit event itself only makes sense when there
                 // *was* something to clean up. We tolerate missing-row
                 // here by translating NotFound to Ok(()).
-                match terminal_delete_tx(tx, &terminal_id).await {
+                match terminal_delete_tx(tx, &terminal_id)
+                    .await
+                    .map_err(crate::error::CalmError::from)
+                {
                     Ok(()) => {}
                     Err(crate::error::CalmError::NotFound(_)) => {
                         tracing::debug!(

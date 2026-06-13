@@ -5,7 +5,6 @@
 //! role. Human-facing drill-in goes through `neige diff`, `neige cat-at`, and
 //! `neige log`; spec turns receive the summarized since-last-turn block.
 
-use crate::error::CalmError;
 use crate::ids::WaveId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -273,9 +272,10 @@ fn commit_log_json(commit: CommitLogEntry) -> Value {
     })
 }
 
-fn vcs_error_to_rpc(err: CalmError) -> RpcError {
+fn vcs_error_to_rpc(err: calm_truth::TruthError) -> RpcError {
     match err {
-        CalmError::NotFound(message) | CalmError::BadRequest(message) => {
+        calm_truth::TruthError::Core(calm_types::error::CoreError::NotFound(message))
+        | calm_truth::TruthError::Core(calm_types::error::CoreError::BadRequest(message)) => {
             RpcError::invalid_params(message)
         }
         other => RpcError::internal(format!("{other}")),

@@ -425,7 +425,7 @@ async fn dev_force_wave_lifecycle(
         .repo
         .wave_get(&body.wave_id)
         .await
-        .map_err(internal_err)?
+        .map_err(|e| internal_err(e.into()))?
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,

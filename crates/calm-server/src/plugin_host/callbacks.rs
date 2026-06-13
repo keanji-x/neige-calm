@@ -613,7 +613,10 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         move |tx| {
             Box::pin(async move {
                 if let Some(tid) = terminal_id.as_deref() {
-                    match terminal_delete_tx(tx, tid).await {
+                    match terminal_delete_tx(tx, tid)
+                        .await
+                        .map_err(crate::error::CalmError::from)
+                    {
                         Ok(()) => {}
                         Err(crate::error::CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),

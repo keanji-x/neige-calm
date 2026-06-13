@@ -3,6 +3,8 @@ resolver = "3"
 members = [
     "crates/calm-types",
     "crates/calm-exec",
+    "crates/calm-truth",
+    "crates/calm-truth-test-harness",
     "crates/calm-server",
     "crates/calm-proc-supervisor",
     "crates/calm-session",

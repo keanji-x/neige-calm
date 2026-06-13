@@ -31,70 +31,77 @@ use std::str::FromStr;
 /// backfill+rebuild this test exercises). Order matters — each
 /// migration's SQL assumes the prior ones have applied.
 const MIGRATIONS_UP_TO_0016: &[(&str, &str)] = &[
-    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    (
+        "0001_init",
+        include_str!("../../calm-truth/migrations/0001_init.sql"),
+    ),
     (
         "0002_plugins",
-        include_str!("../migrations/0002_plugins.sql"),
+        include_str!("../../calm-truth/migrations/0002_plugins.sql"),
     ),
     (
         "0003_settings",
-        include_str!("../migrations/0003_settings.sql"),
+        include_str!("../../calm-truth/migrations/0003_settings.sql"),
     ),
-    ("0004_events", include_str!("../migrations/0004_events.sql")),
+    (
+        "0004_events",
+        include_str!("../../calm-truth/migrations/0004_events.sql"),
+    ),
     (
         "0005_terminals_pid",
-        include_str!("../migrations/0005_terminals_pid.sql"),
+        include_str!("../../calm-truth/migrations/0005_terminals_pid.sql"),
     ),
     (
         "0006_events_version",
-        include_str!("../migrations/0006_events_version.sql"),
+        include_str!("../../calm-truth/migrations/0006_events_version.sql"),
     ),
     (
         "0007_events_scope",
-        include_str!("../migrations/0007_events_scope.sql"),
+        include_str!("../../calm-truth/migrations/0007_events_scope.sql"),
     ),
     (
         "0008_cards_role",
-        include_str!("../migrations/0008_cards_role.sql"),
+        include_str!("../../calm-truth/migrations/0008_cards_role.sql"),
     ),
     (
         "0009_coves_kind",
-        include_str!("../migrations/0009_coves_kind.sql"),
+        include_str!("../../calm-truth/migrations/0009_coves_kind.sql"),
     ),
     (
         "0010_card_mcp_tokens",
-        include_str!("../migrations/0010_card_mcp_tokens.sql"),
+        include_str!("../../calm-truth/migrations/0010_card_mcp_tokens.sql"),
     ),
     (
         "0011_terminals_card_id_restrict",
-        include_str!("../migrations/0011_terminals_card_id_restrict.sql"),
+        include_str!("../../calm-truth/migrations/0011_terminals_card_id_restrict.sql"),
     ),
     (
         "0012_waves_lifecycle",
-        include_str!("../migrations/0012_waves_lifecycle.sql"),
+        include_str!("../../calm-truth/migrations/0012_waves_lifecycle.sql"),
     ),
     (
         "0013_cards_deletable",
-        include_str!("../migrations/0013_cards_deletable.sql"),
+        include_str!("../../calm-truth/migrations/0013_cards_deletable.sql"),
     ),
     (
         "0014_wave_report_card",
-        include_str!("../migrations/0014_wave_report_card.sql"),
+        include_str!("../../calm-truth/migrations/0014_wave_report_card.sql"),
     ),
     (
         "0015_cove_folders",
-        include_str!("../migrations/0015_cove_folders.sql"),
+        include_str!("../../calm-truth/migrations/0015_cove_folders.sql"),
     ),
     (
         "0016_terminals_theme",
-        include_str!("../migrations/0016_terminals_theme.sql"),
+        include_str!("../../calm-truth/migrations/0016_terminals_theme.sql"),
     ),
 ];
 
 /// The verbatim SQL from `migrations/0017_terminals_theme_not_null.sql`.
 /// Inlined so the test fails loudly if the migration drifts — a
 /// behavioural change in 0017 should land alongside this test's update.
-const MIGRATION_0017_SQL: &str = include_str!("../migrations/0017_terminals_theme_not_null.sql");
+const MIGRATION_0017_SQL: &str =
+    include_str!("../../calm-truth/migrations/0017_terminals_theme_not_null.sql");
 
 /// Strip `--` line comments then split on top-level `;` and execute
 /// each non-empty statement. Same recipe as `migration_0014_backfill`.

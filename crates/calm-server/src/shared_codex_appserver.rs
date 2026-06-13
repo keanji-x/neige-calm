@@ -1148,6 +1148,7 @@ impl SharedCodexAppServer {
                 daemon_env_signature: Some(daemon_env_signature),
             })
             .await
+            .map_err(Into::into)
     }
 
     async fn poll_connect_initialized(

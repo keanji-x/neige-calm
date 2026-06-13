@@ -1,0 +1,44 @@
+# calm-truth — truth/substrate IO layer for issue #679 PR2.
+#
+# This crate owns SQLite repositories, migrations, the persistent event log
+# entrance, runtime/session storage, and the in-process event bus. It must not
+# depend on transport or CLI crates: forbidden direct dependencies are axum,
+# ts-rs, and clap. `utoipa` core is schema metadata only; keep it feature-plain.
+[package]
+name = "calm-truth"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+test-helpers = []
+
+[dependencies]
+calm-types = { path = "../calm-types" }
+calm-exec = { path = "../calm-exec" }
+
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+utoipa = "5"
+tokio = { version = "1", features = ["sync", "time", "fs"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate", "chrono", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Existing truth-coupled helpers moved with the SQLite repo. These are not
+# transport/API crates and do not pierce the server boundary.
+blake3 = "1.8"
+dashmap = "6"
+futures = "0.3"
+hex = "0.4"
+rand = "0.8"
+sha2 = "0.10"
+similar = "2"
+subtle = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

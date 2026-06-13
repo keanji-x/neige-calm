@@ -151,9 +151,10 @@ async fn role_needed_for_spec_push_filter(
     event: &Event,
 ) -> Result<Option<CardRole>> {
     match event {
-        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {
-            repo.card_role_get(card_id.as_str()).await
-        }
+        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => repo
+            .card_role_get(card_id.as_str())
+            .await
+            .map_err(Into::into),
         _ => Ok(None),
     }
 }

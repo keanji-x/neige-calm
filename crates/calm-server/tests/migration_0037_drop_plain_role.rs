@@ -7,7 +7,7 @@ macro_rules! migration {
     ($name:literal) => {
         (
             $name,
-            include_str!(concat!("../migrations/", $name, ".sql")),
+            include_str!(concat!("../../calm-truth/migrations/", $name, ".sql")),
         )
     };
 }
@@ -51,7 +51,8 @@ const MIGRATIONS_UP_TO_0036: &[(&str, &str)] = &[
     migration!("0036_pr570_clear_pre567_spec_snapshot_last_thread_id"),
 ];
 
-const MIGRATION_0037_SQL: &str = include_str!("../migrations/0037_drop_plain_role.sql");
+const MIGRATION_0037_SQL: &str =
+    include_str!("../../calm-truth/migrations/0037_drop_plain_role.sql");
 const VALIDATION_MESSAGE: &str = "cards.role must be one of worker|spec|reportcard (#585)";
 
 async fn apply_sql(pool: &SqlitePool, name: &str, sql: &str) {

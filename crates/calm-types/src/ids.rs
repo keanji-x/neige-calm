@@ -37,22 +37,23 @@
 //!
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use utoipa::ToSchema;
 
 /// Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
 /// kernel treats the value as opaque; never parses it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct CoveId(pub String);
 
 /// Wave identifier. See [`CoveId`] for the opacity contract.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct WaveId(pub String);
 
 /// Card identifier. See [`CoveId`] for the opacity contract.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct CardId(pub String);
@@ -64,7 +65,7 @@ pub struct CardId(pub String);
 /// `crate::actor::Actor(pub String)` plumbing carries the declared
 /// `X-Calm-Actor` value through the request stack and remains the
 /// audit-log truth until PR3 swaps it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(tag = "kind", content = "id")]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum ActorId {

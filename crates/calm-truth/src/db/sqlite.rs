@@ -26,6 +26,7 @@ use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use sqlx::Transaction;
+use sqlx::sqlite::SqliteRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -51,11 +52,13 @@ use crate::runtime_row::{
     card_runtime_from_row, projectable_runtimes_for_cards_from_rows,
     projectable_runtimes_for_cards_query, run_status_from_db,
 };
+use crate::session_repo::{SessionRepo, Tx as SessionTx};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
 };
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
+use calm_types::worker::{WorkerSession, WorkerSessionId, WorkerSessionState};
 
 pub struct SqlxRepo {
     pool: SqlitePool,
@@ -112,8 +115,6 @@ impl SqlxRepo {
             .connect_with(opts)
             .await?;
 
-        let migrator = sqlx::migrate!("./migrations");
-
         // Tier-A upgrade stability boundary (`docs/upgrade-stability.md`):
         // refuse to boot when the DB carries a migration row that this
         // binary doesn't know about. Downgrade is unsupported — an older
@@ -124,9 +125,9 @@ impl SqlxRepo {
         // (a) the error message wording is owned by us, not sqlx, and (b)
         // sqlx never gets a chance to apply any pending known migration
         // before we've rejected the open.
-        check_no_unknown_future_migrations(&pool, &migrator).await?;
+        check_no_unknown_future_migrations(&pool, &crate::MIGRATOR).await?;
 
-        migrator
+        crate::MIGRATOR
             .run(&pool)
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
@@ -259,7 +260,7 @@ impl Repo for SqlxRepo {
     }
 }
 
-pub(crate) async fn event_append_for_operation_tx(
+pub async fn event_append_for_operation_tx(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &ActorId,
     scope: &EventScope,
@@ -281,7 +282,7 @@ pub(crate) async fn event_append_for_operation_tx(
     Ok(event_id)
 }
 
-pub(crate) async fn events_append_for_operation_tx(
+pub async fn events_append_for_operation_tx(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &ActorId,
     scope: &EventScope,
@@ -306,9 +307,7 @@ pub(crate) async fn events_append_for_operation_tx(
     Ok(event_ids)
 }
 
-pub(crate) async fn begin_immediate_tx<'a>(
-    pool: &'a SqlitePool,
-) -> Result<Transaction<'a, Sqlite>> {
+pub async fn begin_immediate_tx<'a>(pool: &'a SqlitePool) -> Result<Transaction<'a, Sqlite>> {
     const MAX_RETRIES: usize = 6;
     let mut backoff = Duration::from_millis(10);
 
@@ -347,7 +346,7 @@ fn is_sqlite_busy_code(code: &str) -> bool {
         || code.starts_with("SQLITE_LOCKED_")
 }
 
-pub(crate) async fn terminal_get_by_card_tx(
+pub async fn terminal_get_by_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
 ) -> Result<Option<Terminal>> {
@@ -1823,7 +1822,7 @@ pub async fn card_with_terminal_create_tx(
     // alongside the card so every spawn path reads it from the row and
     // stamps consistent `--terminal-fg/-bg` argv (closes the WS auto-
     // revive race observed in PR #193).
-    theme: crate::routes::theme::RequestTheme,
+    theme: RequestTheme,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — schemaVersion is stamped in
     //    step 5 once we have the terminal row.
@@ -1950,12 +1949,12 @@ pub async fn card_with_terminal_rollback_tx(
     // violation if the terminal row still existed.
     match terminal_delete_tx(tx, terminal_id).await {
         Ok(()) => {}
-        Err(CalmError::NotFound(_)) => {}
+        Err(e) if e.is_not_found() => {}
         Err(e) => return Err(e),
     }
     match card_delete_tx(tx, card_id, card_role_cache).await {
         Ok(()) => {}
-        Err(CalmError::NotFound(_)) => {}
+        Err(e) if e.is_not_found() => {}
         Err(e) => return Err(e),
     }
     Ok(())
@@ -2013,7 +2012,7 @@ pub async fn card_with_codex_create_tx(
     // #177 — host browser's theme RGB; written onto the terminal row
     // in the same transaction so the codex daemon's spawn argv is
     // deterministic regardless of which spawn path lands it.
-    theme: crate::routes::theme::RequestTheme,
+    theme: RequestTheme,
 ) -> Result<(Card, Terminal, Option<String>)> {
     // 1. Card row with placeholder payload — schemaVersion and UI hints
     //    are stamped in step 5 once we have the terminal row.
@@ -2113,8 +2112,8 @@ pub async fn card_with_codex_create_tx(
     //    will *always* have a matching token row, and a rolled-back tx
     //    drops both together.
     let mcp_token = if matches!(role, CardRole::Spec | CardRole::Worker) {
-        let token = crate::mcp_server::auth::CardMcpToken::generate();
-        let hashed = crate::mcp_server::auth::hash_token(token.as_str());
+        let token = crate::mcp_auth::CardMcpToken::generate();
+        let hashed = crate::mcp_auth::hash_token(token.as_str());
         card_mcp_token_set_tx(tx, card.id.as_ref(), &hashed).await?;
         Some(token.into_inner())
     } else {
@@ -2163,7 +2162,7 @@ pub async fn card_with_claude_create_tx(
     role: CardRole,
     deletable: bool,
     card_role_cache: &CardRoleCache,
-    theme: crate::routes::theme::RequestTheme,
+    theme: RequestTheme,
 ) -> Result<(Card, Terminal)> {
     let card = card_create_with_id_tx(
         tx,
@@ -2339,6 +2338,228 @@ fn runtime_status_transition_allowed(from: &RunStatus, to: &RunStatus) -> bool {
         }
         RunStatus::Failed | RunStatus::Exited | RunStatus::Superseded => false,
     }
+}
+
+pub fn worker_session_status_transition_allowed(
+    from: WorkerSessionState,
+    to: WorkerSessionState,
+) -> bool {
+    match from {
+        WorkerSessionState::Starting => matches!(
+            to,
+            WorkerSessionState::Running
+                | WorkerSessionState::Idle
+                | WorkerSessionState::TurnPending
+                | WorkerSessionState::Failed
+                | WorkerSessionState::Exited
+        ),
+        WorkerSessionState::Running => matches!(
+            to,
+            WorkerSessionState::Idle | WorkerSessionState::Failed | WorkerSessionState::Exited
+        ),
+        WorkerSessionState::Idle => matches!(
+            to,
+            WorkerSessionState::Running | WorkerSessionState::Failed | WorkerSessionState::Exited
+        ),
+        WorkerSessionState::TurnPending => {
+            matches!(
+                to,
+                WorkerSessionState::Running
+                    | WorkerSessionState::Failed
+                    | WorkerSessionState::Exited
+            )
+        }
+        WorkerSessionState::Failed
+        | WorkerSessionState::Exited
+        | WorkerSessionState::Superseded => false,
+    }
+}
+
+fn worker_session_parse<T>(column: &str, value: String) -> Result<T>
+where
+    T: TryFrom<String, Error = String>,
+{
+    T::try_from(value).map_err(|message| {
+        CalmError::Internal(format!("invalid worker_sessions.{column}: {message}"))
+    })
+}
+
+fn worker_session_from_row(row: &SqliteRow) -> Result<WorkerSession> {
+    let handle_state_json = row
+        .try_get::<Option<String>, _>("handle_state_json")?
+        .map(|json| serde_json::from_str(&json))
+        .transpose()?;
+    Ok(WorkerSession {
+        id: WorkerSessionId(row.try_get("id")?),
+        wave_id: WaveId(row.try_get("wave_id")?),
+        provider: worker_session_parse("provider", row.try_get("provider")?)?,
+        mode: worker_session_parse("mode", row.try_get("mode")?)?,
+        contract: worker_session_parse("contract", row.try_get("contract")?)?,
+        parent_session_id: row
+            .try_get::<Option<String>, _>("parent_session_id")?
+            .map(WorkerSessionId),
+        requester_session_id: row
+            .try_get::<Option<String>, _>("requester_session_id")?
+            .map(WorkerSessionId),
+        state: worker_session_parse("state", row.try_get("state")?)?,
+        mcp_token_hash: row.try_get("mcp_token_hash")?,
+        thread_id: row.try_get("thread_id")?,
+        agent_session_id: row.try_get("agent_session_id")?,
+        active_turn_id: row.try_get("active_turn_id")?,
+        terminal_run_id: row.try_get("terminal_run_id")?,
+        handle_state_json,
+        liveness: worker_session_parse("liveness", row.try_get("liveness")?)?,
+        liveness_probed_at_ms: row.try_get("liveness_probed_at_ms")?,
+        exit_code: row.try_get("exit_code")?,
+        exit_interpretation: row.try_get("exit_interpretation")?,
+        spawn_op_id: row.try_get("spawn_op_id")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+        completed_at_ms: row.try_get("completed_at_ms")?,
+    })
+}
+
+pub async fn session_get_tx(
+    tx: &mut SessionTx<'_>,
+    id: &WorkerSessionId,
+) -> Result<Option<WorkerSession>> {
+    let row = sqlx::query(
+        r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+                  requester_session_id, state, mcp_token_hash, thread_id,
+                  agent_session_id, active_turn_id, terminal_run_id,
+                  handle_state_json, liveness, liveness_probed_at_ms,
+                  exit_code, exit_interpretation, spawn_op_id, created_at_ms,
+                  updated_at_ms, completed_at_ms
+           FROM worker_sessions
+           WHERE id = ?1"#,
+    )
+    .bind(id.as_str())
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(worker_session_from_row).transpose()
+}
+
+pub async fn session_insert_tx(
+    tx: &mut SessionTx<'_>,
+    session: WorkerSession,
+) -> Result<WorkerSession> {
+    let handle_state_json = session
+        .handle_state_json
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    sqlx::query(
+        r#"INSERT INTO worker_sessions (
+               id, wave_id, provider, mode, contract, parent_session_id,
+               requester_session_id, state, mcp_token_hash, thread_id,
+               agent_session_id, active_turn_id, terminal_run_id,
+               handle_state_json, liveness, liveness_probed_at_ms, exit_code,
+               exit_interpretation, spawn_op_id, created_at_ms, updated_at_ms,
+               completed_at_ms
+           )
+           VALUES (
+               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+               ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+           )"#,
+    )
+    .bind(session.id.as_str())
+    .bind(session.wave_id.as_str())
+    .bind(session.provider.as_db_str())
+    .bind(session.mode.as_db_str())
+    .bind(session.contract.as_db_str())
+    .bind(
+        session
+            .parent_session_id
+            .as_ref()
+            .map(WorkerSessionId::as_str),
+    )
+    .bind(
+        session
+            .requester_session_id
+            .as_ref()
+            .map(WorkerSessionId::as_str),
+    )
+    .bind(session.state.as_db_str())
+    .bind(&session.mcp_token_hash)
+    .bind(&session.thread_id)
+    .bind(&session.agent_session_id)
+    .bind(&session.active_turn_id)
+    .bind(&session.terminal_run_id)
+    .bind(&handle_state_json)
+    .bind(session.liveness.as_db_str())
+    .bind(session.liveness_probed_at_ms)
+    .bind(session.exit_code)
+    .bind(&session.exit_interpretation)
+    .bind(&session.spawn_op_id)
+    .bind(session.created_at_ms)
+    .bind(session.updated_at_ms)
+    .bind(session.completed_at_ms)
+    .execute(&mut **tx)
+    .await?;
+    session_get_tx(tx, &session.id).await?.ok_or_else(|| {
+        CalmError::Internal(format!(
+            "worker session {} missing after insert",
+            session.id
+        ))
+    })
+}
+
+async fn worker_session_current_state_tx(
+    tx: &mut SessionTx<'_>,
+    id: &WorkerSessionId,
+) -> Result<WorkerSessionState> {
+    let row = sqlx::query("SELECT state FROM worker_sessions WHERE id = ?1")
+        .bind(id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(row) = row else {
+        return Err(CalmError::NotFound(format!("worker session {id}")));
+    };
+    worker_session_parse("state", row.try_get("state")?)
+}
+
+pub async fn session_state_transition_tx(
+    tx: &mut SessionTx<'_>,
+    id: &WorkerSessionId,
+    to: WorkerSessionState,
+) -> Result<WorkerSession> {
+    let from = worker_session_current_state_tx(tx, id).await?;
+    if !worker_session_status_transition_allowed(from, to) {
+        return Err(CalmError::Conflict(format!(
+            "illegal worker session state transition {id}: {} -> {}",
+            from.as_db_str(),
+            to.as_db_str()
+        )));
+    }
+
+    let now = now_ms();
+    let completed = i64::from(to.is_terminal());
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = ?1,
+                  updated_at_ms = ?2,
+                  completed_at_ms = CASE
+                    WHEN ?3 = 1 THEN COALESCE(completed_at_ms, ?2)
+                    ELSE completed_at_ms
+                  END
+            WHERE id = ?4
+              AND state = ?5"#,
+    )
+    .bind(to.as_db_str())
+    .bind(now)
+    .bind(completed)
+    .bind(id.as_str())
+    .bind(from.as_db_str())
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::Conflict(format!(
+            "worker session {id} changed during state transition"
+        )));
+    }
+    session_get_tx(tx, id)
+        .await?
+        .ok_or_else(|| CalmError::Internal(format!("worker session {id} missing after transition")))
 }
 
 fn ensure_runtime_status_transition(
@@ -2913,7 +3134,7 @@ pub async fn overlay_delete_tx(
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() == 0 {
-        return Err(CalmError::NotFound("overlay".into()));
+        return Err(CalmError::NotFound("overlay"));
     }
     Ok(())
 }
@@ -3856,10 +4077,65 @@ impl RuntimeRepo for SqlxRepo {
             .collect::<RuntimeResult<Vec<_>>>()?;
         for runtime in &runtimes {
             if let Some(value) = runtime.handle_state_json.clone() {
-                crate::harness::HarnessSnapshot::from_value_strict(value);
+                let _ = value;
             }
         }
         Ok(runtimes)
+    }
+}
+
+#[async_trait]
+impl SessionRepo for SqlxRepo {
+    async fn session_insert_tx(
+        &self,
+        tx: &mut SessionTx<'_>,
+        session: WorkerSession,
+    ) -> Result<WorkerSession> {
+        session_insert_tx(tx, session).await
+    }
+
+    async fn session_get(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
+        let row = sqlx::query(
+            r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+                      requester_session_id, state, mcp_token_hash, thread_id,
+                      agent_session_id, active_turn_id, terminal_run_id,
+                      handle_state_json, liveness, liveness_probed_at_ms,
+                      exit_code, exit_interpretation, spawn_op_id, created_at_ms,
+                      updated_at_ms, completed_at_ms
+               FROM worker_sessions
+               WHERE id = ?1"#,
+        )
+        .bind(id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(worker_session_from_row).transpose()
+    }
+
+    async fn session_state_transition_tx(
+        &self,
+        tx: &mut SessionTx<'_>,
+        id: &WorkerSessionId,
+        to: WorkerSessionState,
+    ) -> Result<WorkerSession> {
+        session_state_transition_tx(tx, id, to).await
+    }
+
+    async fn session_list_by_wave(&self, wave_id: &WaveId) -> Result<Vec<WorkerSession>> {
+        let rows = sqlx::query(
+            r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+                      requester_session_id, state, mcp_token_hash, thread_id,
+                      agent_session_id, active_turn_id, terminal_run_id,
+                      handle_state_json, liveness, liveness_probed_at_ms,
+                      exit_code, exit_interpretation, spawn_op_id, created_at_ms,
+                      updated_at_ms, completed_at_ms
+               FROM worker_sessions
+               WHERE wave_id = ?1
+               ORDER BY created_at_ms ASC, id ASC"#,
+        )
+        .bind(wave_id.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(worker_session_from_row).collect()
     }
 }
 

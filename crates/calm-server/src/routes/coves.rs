@@ -344,7 +344,7 @@ pub(crate) async fn delete_cove(
                 // Drop terminal rows first; tolerate NotFound on each
                 // (a racing sweeper tick may have beaten us to one).
                 for tid in &terminal_ids {
-                    match terminal_delete_tx(tx, tid).await {
+                    match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
                         Ok(()) => {}
                         Err(CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),
