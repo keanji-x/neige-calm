@@ -182,15 +182,13 @@ impl<'a> WaveFsView<'a> {
                         // this card. The SOURCES that feed the table land in
                         // PR4, so for real cards it is empty today — fall back
                         // to the existing hook-event projection (no regression).
-                        let rows = self
-                            .repo
-                            .worker_flow_item_list_by_card(card.id.as_str(), 0, 1000, false)
-                            .await
-                            .map_err(|e| {
-                                WaveFsError::Internal(format!(
-                                    "wave_file: worker_flow_item_list_by_card: {e}"
-                                ))
-                            })?;
+                        //
+                        // Page through ALL rows: the db layer clamps `limit` to
+                        // 500, so a single call would drop the tail (including
+                        // the final answer) for sessions with >500 flow items.
+                        // The hook path renders the full transcript uncapped, so
+                        // this path must too.
+                        let rows = worker_flow_rows_all(self.repo, card.id.as_str()).await?;
                         if rows.is_empty() {
                             let hook_events = self.hook_events_for_card(wave, &card.id).await?;
                             Ok(content_markdown(conversation_markdown(
@@ -1042,7 +1040,7 @@ pub(crate) fn worker_flow_markdown(
     };
 
     let mut out = String::new();
-    out.push_str("> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth.\n\n");
+    out.push_str("> READ-ONLY PROJECTION: derived from persisted worker flow items. This is not the source of truth.\n\n");
     out.push_str(&format!("# Conversation — card {}\n\n", card_id.as_str()));
 
     if items.is_empty() {
@@ -1206,6 +1204,38 @@ pub(crate) fn worker_flow_markdown(
 /// degrading to an `Unknown` placeholder (carrying the row's `kind`) when the
 /// payload cannot be parsed by this binary — forward-version tolerance so one
 /// future-shaped row never blanks the whole transcript.
+/// Page through EVERY `worker_flow_items` row for a card in ascending `id`
+/// order. The db layer clamps `limit` to 500 (see `worker_flow_item_list_by_card`),
+/// so a single call would silently drop the tail of a long session — including
+/// the final `AgentMessage{is_final:true}` answer. We advance the exclusive
+/// cursor by the last row's id and stop on a short page (table exhausted),
+/// preserving order and turn grouping. Mirrors the hook path's
+/// render-everything contract (no artificial bound).
+async fn worker_flow_rows_all(
+    repo: &dyn RouteRepo,
+    card_id: &str,
+) -> Result<Vec<crate::db::rows::WorkerFlowItemRow>, WaveFsError> {
+    let mut all_rows = Vec::new();
+    let mut after_id = 0i64;
+    loop {
+        let page = repo
+            .worker_flow_item_list_by_card(card_id, after_id, 500, false)
+            .await
+            .map_err(|e| {
+                WaveFsError::Internal(format!("wave_file: worker_flow_item_list_by_card: {e}"))
+            })?;
+        let n = page.len();
+        if let Some(last) = page.last() {
+            after_id = last.id;
+        }
+        all_rows.extend(page);
+        if n < 500 {
+            break; // short page = exhausted
+        }
+    }
+    Ok(all_rows)
+}
+
 fn deserialize_flow_row(kind: &str, payload: &str) -> calm_types::worker_flow::WorkerFlowItem {
     use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
     use calm_types::worker_flow::{FlowEnvelope, WorkerFlowItem};
@@ -1935,7 +1965,7 @@ mod tests {
         let md = worker_flow_markdown(&CardId::from("card-9"), &items);
 
         assert!(md.starts_with(
-            "> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth."
+            "> READ-ONLY PROJECTION: derived from persisted worker flow items. This is not the source of truth."
         ));
         assert!(md.contains("# Conversation — card card-9"));
         assert!(md.contains("## User\n\nFix the build"));
@@ -1953,5 +1983,161 @@ mod tests {
     fn worker_flow_markdown_empty_reports_no_items() {
         let md = worker_flow_markdown(&CardId::from("card-0"), &[]);
         assert!(md.contains("_No worker-flow items recorded._"), "md = {md}");
+    }
+
+    /// Regression for #695 PR3: a worker session with >500 flow items must
+    /// render the WHOLE transcript. The db layer clamps `limit` to 500, so a
+    /// single `worker_flow_item_list_by_card(.., 0, 1000, false)` returns only
+    /// the OLDEST 500 rows (ascending) and DROPS the tail — including the final
+    /// `AgentMessage{is_final:true}` answer. `worker_flow_rows_all` (the same
+    /// paging path the `conversation.md` cat branch uses) must page through all
+    /// of them. Without the fix this test fails: the final answer (highest id)
+    /// lands past row 500 and never reaches the rendered markdown.
+    #[tokio::test]
+    async fn conversation_md_paging_renders_full_transcript_over_500_items() {
+        use crate::db::sqlite::{
+            SqlxRepo, card_create_with_id_tx, cove_create_tx, wave_create_tx,
+            worker_flow_item_insert_tx,
+        };
+        use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+        use calm_types::worker_flow::{MessageBlock, WorkerFlowItem};
+
+        const FIRST_USER: &str = "FIRST-USER-MESSAGE-MARKER";
+        const FINAL_ANSWER: &str = "FINAL-ANSWER-MARKER-TAIL-NOT-DROPPED";
+
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+
+        // Seed a real cove → wave → card chain (FK target) and bulk-insert
+        // 600 flow items in ONE transaction for speed: a UserMessage first,
+        // 598 CommandExecution rows, then the final AgentMessage LAST (highest
+        // id). `flow_env(seq, turn)` keeps every item in turn 1.
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id.clone(),
+                title: "w".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            "card-big".into(),
+            NewCard {
+                wave_id: wave.id.clone(),
+                kind: "worker".into(),
+                sort: None,
+                payload: serde_json::json!({}),
+            },
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        let card_id = card.id.to_string();
+
+        // First user message (lowest id).
+        let first = WorkerFlowItem::UserMessage {
+            env: flow_env(0, 1),
+            content: vec![MessageBlock::Text {
+                text: FIRST_USER.into(),
+            }],
+        };
+        worker_flow_item_insert_tx(
+            &mut tx,
+            Some(&card_id),
+            None,
+            None,
+            None,
+            "user_message",
+            &serde_json::to_string(&first).unwrap(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // 598 command executions in the middle.
+        for n in 0..598u64 {
+            let item = WorkerFlowItem::CommandExecution {
+                env: flow_env(n + 1, 1),
+                call_id: None,
+                command: format!("echo {n}"),
+                cwd: None,
+                parsed_actions: vec![],
+                aggregated_output: None,
+                exit_code: Some(0),
+                duration_ms: None,
+                status: calm_types::worker_flow::ExecStatus::Completed,
+                source: calm_types::worker_flow::ExecSource::Agent,
+            };
+            worker_flow_item_insert_tx(
+                &mut tx,
+                Some(&card_id),
+                None,
+                None,
+                None,
+                "command_execution",
+                &serde_json::to_string(&item).unwrap(),
+                (2 + n) as i64,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Final answer LAST (highest id) — well past row 500.
+        let final_item = WorkerFlowItem::AgentMessage {
+            env: flow_env(599, 1),
+            text: FINAL_ANSWER.into(),
+            is_final: true,
+            phase: None,
+        };
+        worker_flow_item_insert_tx(
+            &mut tx,
+            Some(&card_id),
+            None,
+            None,
+            None,
+            "assistant_message",
+            &serde_json::to_string(&final_item).unwrap(),
+            600,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Render through the SAME paging path the cat branch uses.
+        let rows = worker_flow_rows_all(&repo, &card_id).await.unwrap();
+        assert_eq!(rows.len(), 600, "all 600 rows must be paged in");
+        let items: Vec<WorkerFlowItem> = rows
+            .iter()
+            .map(|row| deserialize_flow_row(&row.kind, &row.payload))
+            .collect();
+        let md = worker_flow_markdown(&card.id, &items);
+
+        assert!(
+            md.contains(FIRST_USER),
+            "first user message must be rendered"
+        );
+        assert!(
+            md.contains(FINAL_ANSWER),
+            "final answer (tail past row 500) must NOT be dropped"
+        );
     }
 }

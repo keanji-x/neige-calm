@@ -787,7 +787,7 @@ async fn card_conversation_md_renders_worker_flow_when_present() {
     assert_eq!(out["content_type"], json!("text/markdown"));
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.starts_with(
-        "> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth."
+        "> READ-ONLY PROJECTION: derived from persisted worker flow items. This is not the source of truth."
     ));
     assert!(md.contains("## User\n\nRun the build"), "md = {md}");
     assert!(md.contains("- ran `cargo build` ✓"), "md = {md}");
