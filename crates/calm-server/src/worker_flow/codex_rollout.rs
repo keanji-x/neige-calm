@@ -23,7 +23,8 @@ use crate::worker_flow::cursor::{self, CODEX_ROLLOUT_SOURCE_KIND};
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_LAZY_RETRY_DELAY: Duration = Duration::from_millis(100);
 const DEFAULT_LAZY_RETRY_ATTEMPTS: usize = 30;
-const DEFAULT_CURSOR_PERSIST_EVERY: u64 = 20;
+// Keep the cursor within one record of worker_flow_items so crash-resume cannot re-insert.
+const DEFAULT_CURSOR_PERSIST_EVERY: u64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct CodexRolloutFlowSourceOptions {
@@ -199,6 +200,45 @@ impl CodexRolloutFlowSource {
                 return Ok(());
             }
 
+            // If the last consumed record had no uuid, skip the narrow uuidless-prefix rewrite edge.
+            if let Some(expected) = cursor.last_source_uuid.clone()
+                && cursor.record_index > 0
+                && (cursor.record_index as usize) <= lines.len()
+            {
+                let last_consumed_index = cursor.record_index - 1;
+                match parse_line(
+                    &lines[last_consumed_index as usize],
+                    last_consumed_index,
+                    &source_path,
+                ) {
+                    Ok(line) => {
+                        let actual = rollout_line_source_uuid(&line);
+                        if actual.as_deref() != Some(expected.as_str()) {
+                            tracing::warn!(
+                                card_id = %self.runtime.card_id,
+                                runtime_id = %self.runtime.id,
+                                source_path,
+                                record_index = cursor.record_index,
+                                last_consumed_index,
+                                expected_source_uuid = expected,
+                                actual_source_uuid = actual.as_deref().unwrap_or("<missing>"),
+                                "codex rollout consumed prefix identity changed after rewrite; resetting to start"
+                            );
+                            reset_cursor(&mut cursor, &mut position);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            source_path,
+                            record_index = cursor.record_index,
+                            last_consumed_index,
+                            "codex rollout consumed prefix line is malformed; skipping prefix identity check"
+                        );
+                    }
+                }
+            }
+
             if cursor.record_index as usize > lines.len() {
                 tracing::warn!(
                     card_id = %self.runtime.card_id,
@@ -208,9 +248,7 @@ impl CodexRolloutFlowSource {
                     lines = lines.len(),
                     "codex rollout cursor passed EOF after rewrite; resetting to start"
                 );
-                cursor.record_index = 0;
-                cursor.last_source_uuid = None;
-                position = None;
+                reset_cursor(&mut cursor, &mut position);
             }
 
             let position = position.get_or_insert_with(|| {
@@ -236,6 +274,7 @@ impl CodexRolloutFlowSource {
                             line = line_index,
                             "skipping malformed codex rollout line"
                         );
+                        cursor.last_source_uuid = None;
                         cursor.record_index += 1;
                         continue;
                     }
@@ -243,6 +282,7 @@ impl CodexRolloutFlowSource {
 
                 if is_turn_context(&parsed) {
                     position.turn = position.turn.saturating_add(1);
+                    cursor.last_source_uuid = None;
                     cursor.record_index += 1;
                     continue;
                 }
@@ -311,6 +351,12 @@ struct CursorState {
 struct Position {
     seq: u64,
     turn: u32,
+}
+
+fn reset_cursor(cursor: &mut CursorState, position: &mut Option<Position>) {
+    cursor.record_index = 0;
+    cursor.last_source_uuid = None;
+    *position = None;
 }
 
 fn row_ctx(session: &WorkerSession, runtime: &CardRuntime) -> FlowRowCtx {

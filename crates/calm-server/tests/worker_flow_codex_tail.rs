@@ -60,7 +60,7 @@ async fn codex_rollout_tail_records_and_resumes_from_cursor() {
         async move { item_count(&repo, "card-tail").await == 6 }
     })
     .await;
-    assert_cursor(&repo, "card-tail", 7).await;
+    wait_for_cursor(&repo, "card-tail", 7).await;
     token.cancel();
     handle.await.unwrap().unwrap();
 }
@@ -79,4 +79,14 @@ async fn assert_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
         .unwrap()
         .unwrap();
     assert_eq!(cursor.record_index, record_index);
+}
+
+async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
+    wf::wait_until(Duration::from_millis(120), || async {
+        repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
+            .await
+            .unwrap()
+            .is_some_and(|cursor| cursor.record_index == record_index)
+    })
+    .await;
 }
