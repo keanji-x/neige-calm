@@ -912,6 +912,42 @@ mod tests {
         (repo, bus, wave.id, card.id)
     }
 
+    async fn wait_for_wave_needs_input(repo: &Arc<dyn Repo>, wave_id: &WaveId, want: bool) {
+        for _ in 0..80 {
+            let got = repo
+                .overlays_for("wave", wave_id.as_str())
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|o| o.kind == "any_card_needs_input")
+                .and_then(|o| o.payload.get("value").cloned());
+            if got == Some(Value::Bool(want)) {
+                return;
+            }
+            tokio::time::sleep(StdDuration::from_millis(25)).await;
+        }
+        let rows = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
+        panic!("timed out waiting for any_card_needs_input={want}; overlays={rows:?}");
+    }
+
+    async fn wait_for_card_status(repo: &Arc<dyn Repo>, card_id: &CardId, want: &str) {
+        for _ in 0..80 {
+            let got = repo
+                .overlays_for("card", card_id.as_str())
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|o| o.kind == "status")
+                .and_then(|o| o.payload.get("state").cloned());
+            if got == Some(Value::String(want.to_string())) {
+                return;
+            }
+            tokio::time::sleep(StdDuration::from_millis(25)).await;
+        }
+        let rows = repo.overlays_for("card", card_id.as_str()).await.unwrap();
+        panic!("timed out waiting for card status {want}; overlays={rows:?}");
+    }
+
     #[tokio::test]
     async fn upgrade_commits_immediately() {
         let (repo, bus, wave_id, card_id) = setup().await;
@@ -984,7 +1020,7 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        wait_for_card_status(&repo, &card_id, "Working").await;
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -994,15 +1030,8 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
-
-        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
-        let s = card_overlays
-            .iter()
-            .find(|o| o.kind == "status")
-            .expect("status overlay");
         // BUG-FIX BASELINE: permission_request → AwaitingInput, not Idle.
-        assert_eq!(s.payload["state"], "AwaitingInput");
+        wait_for_card_status(&repo, &card_id, "AwaitingInput").await;
     }
 
     #[tokio::test]
@@ -1030,7 +1059,7 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        wait_for_card_status(&repo, &card_id, "Working").await;
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1043,9 +1072,7 @@ mod tests {
 
         // Past the old debounce window — still Working, never flickers.
         tokio::time::sleep(StdDuration::from_millis(900)).await;
-        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
-        let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
-        assert_eq!(s.payload["state"], "Working");
+        wait_for_card_status(&repo, &card_id, "Working").await;
 
         // stop → AwaitingInput commits the turn boundary.
         bus.emit(
@@ -1057,10 +1084,7 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
-        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
-        let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
-        assert_eq!(s.payload["state"], "AwaitingInput");
+        wait_for_card_status(&repo, &card_id, "AwaitingInput").await;
     }
 
     // ----- #254 wave-scoped `any_card_needs_input` aggregator ----------------
@@ -1087,11 +1111,13 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
 
-        let wave_overlays = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
-        let o = wave_overlays
-            .iter()
+        wait_for_wave_needs_input(&repo, &wave_id, true).await;
+        let o = repo
+            .overlays_for("wave", wave_id.as_str())
+            .await
+            .unwrap()
+            .into_iter()
             .find(|o| o.kind == "any_card_needs_input")
             .expect("any_card_needs_input overlay written");
         assert_eq!(o.payload["value"], Value::Bool(true));
@@ -1121,22 +1147,12 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
         // Sanity: overlay is true.
-        let v = repo
-            .overlays_for("wave", wave_id.as_str())
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|o| o.kind == "any_card_needs_input")
-            .unwrap()
-            .payload["value"]
-            .clone();
-        assert_eq!(v, Value::Bool(true));
+        wait_for_wave_needs_input(&repo, &wave_id, true).await;
 
         // pre_tool_use is an upgrade from AwaitingInput? No — Working
         // has lower severity than AwaitingInput. The 750ms downgrade
-        // window holds it. Sleep past the window.
+        // window holds it.
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1146,18 +1162,7 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(1100)).await;
-
-        let v = repo
-            .overlays_for("wave", wave_id.as_str())
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|o| o.kind == "any_card_needs_input")
-            .unwrap()
-            .payload["value"]
-            .clone();
-        assert_eq!(v, Value::Bool(false));
+        wait_for_wave_needs_input(&repo, &wave_id, false).await;
     }
 
     #[tokio::test]
@@ -1293,17 +1298,7 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(200)).await;
-        let v = repo
-            .overlays_for("wave", wave.id.as_str())
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|o| o.kind == "any_card_needs_input")
-            .expect("overlay present")
-            .payload["value"]
-            .clone();
-        assert_eq!(v, Value::Bool(true));
+        wait_for_wave_needs_input(&repo, &wave.id, true).await;
 
         // Flip B back to Working — past the 750ms downgrade window.
         bus.emit(
@@ -1315,16 +1310,6 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(1100)).await;
-        let v = repo
-            .overlays_for("wave", wave.id.as_str())
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|o| o.kind == "any_card_needs_input")
-            .unwrap()
-            .payload["value"]
-            .clone();
-        assert_eq!(v, Value::Bool(false));
+        wait_for_wave_needs_input(&repo, &wave.id, false).await;
     }
 }

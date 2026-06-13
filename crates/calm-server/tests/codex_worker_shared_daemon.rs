@@ -9,9 +9,12 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::dispatcher::Dispatcher;
-use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{NewCove, NewWave, new_id};
+use calm_server::event::{Event, EventBus};
+use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::mcp_server::registry::AppContext;
+use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
+use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
 use calm_server::operation::{
     Operation, OperationCompletionBus, OperationKey, OperationOutcome, Phase, PhaseTag,
@@ -43,11 +46,13 @@ struct Boot {
     cache: CardRoleCache,
     wcc: calm_server::wave_cove_cache::WaveCoveCache,
     wave_id: WaveId,
-    cove_id: CoveId,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
     renderer: Arc<TerminalRendererRegistry>,
     shared: Arc<SharedCodexAppServer>,
+    ctx: Arc<AppContext>,
+    registry: Arc<ToolRegistry>,
+    spec_card_id: CardId,
     _tmp: TempDir,
 }
 
@@ -73,9 +78,19 @@ async fn boot(start_shared: bool) -> Boot {
         })
         .await
         .unwrap();
+    let spec_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "spec".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .unwrap();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
+    cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wcc).await.unwrap();
 
@@ -111,17 +126,31 @@ async fn boot(start_shared: bool) -> Boot {
         shared.start_or_takeover().await.unwrap();
     }
 
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let ctx = Arc::new(AppContext {
+        repo: route_repo,
+        wave_vcs_pool: repo.sqlite_pool(),
+        events: events.clone(),
+        write: WriteContext::new(cache.clone(), wcc.clone()),
+        daemon_token_hash: None,
+        gate_logs_dir: tmp.path().join("gate-logs"),
+    });
+    let mut registry = ToolRegistry::new();
+    calm_server::mcp_server::tools::register_default_tools(&mut registry);
+
     Boot {
         repo,
         events,
         cache,
         wcc,
         wave_id: wave.id,
-        cove_id: cove.id,
         codex,
         daemon,
         renderer,
         shared,
+        ctx,
+        registry: Arc::new(registry),
+        spec_card_id: spec_card.id,
         _tmp: tmp,
     }
 }
@@ -144,36 +173,41 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
     )
 }
 
-fn codex_req(idem: &str, goal: &str) -> Event {
-    Event::CodexWorkerRequested {
-        idempotency_key: idem.into(),
-        goal: goal.into(),
-        context: json!({"from": "worker-shared-test"}),
-        acceptance_criteria: Some("finish".into()),
-        agent_message: None,
+fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.spec_card_id.as_str().to_string(),
+        role: CardRole::Spec,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "spec-thread".into(),
     }
 }
 
-fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
-    EventScope::Wave {
-        wave: wave.clone(),
-        cove: cove.clone(),
-    }
+fn task_id(boot: &Boot, key: &str) -> String {
+    format!("{}:{key}", boot.wave_id.as_str())
 }
 
-async fn dispatch(boot: &Boot, idem: &str, goal: &str) {
-    boot.repo
-        .log_pure_event(
-            ActorId::User,
-            wave_scope(&boot.wave_id, &boot.cove_id),
-            None,
-            &boot.events,
-            &boot.cache,
-            &boot.wcc,
-            codex_req(idem, goal),
-        )
-        .await
-        .unwrap();
+async fn plan_codex_task(boot: &Boot, key: &str, goal: &str) {
+    let handler = boot
+        .registry
+        .lookup(TOOL_PLAN_UPSERT)
+        .expect("plan upsert registered");
+    handler(
+        boot.ctx.clone(),
+        spec_identity(boot),
+        json!({
+            "tasks": [{
+                "key": key,
+                "kind": "codex",
+                "goal": goal,
+                "context": { "from": "worker-shared-test" },
+                "acceptance_criteria": "finish",
+                "no_gate_reason": "shared daemon spawn coverage"
+            }],
+            "message": "plan shared worker task"
+        }),
+    )
+    .await
+    .expect("plan codex task");
 }
 
 async fn wait_for<F, Fut, T>(timeout: Duration, mut f: F) -> Option<T>
@@ -295,21 +329,22 @@ async fn worker_via_shared_daemon_dedupes_same_idempotency_key() {
     let boot = boot(true).await;
     let _dispatcher = spawn_dispatcher(&boot);
 
-    let idem = "shared-dup-key";
-    dispatch(&boot, idem, "dedup shared worker").await;
-    dispatch(&boot, idem, "dedup shared worker").await;
+    let key = "shared-dup-key";
+    let idempotency_key = task_id(&boot, key);
+    plan_codex_task(&boot, key, "dedup shared worker").await;
+    plan_codex_task(&boot, key, "dedup shared worker").await;
 
     wait_for(Duration::from_secs(5), || async {
-        (worker_card_count_by_idem(&boot, idem).await == 1).then_some(())
+        (worker_card_count_by_idem(&boot, &idempotency_key).await == 1).then_some(())
     })
     .await
     .expect("first shared worker card minted");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     assert_eq!(
-        worker_card_count_by_idem(&boot, idem).await,
+        worker_card_count_by_idem(&boot, &idempotency_key).await,
         1,
-        "duplicate shared-worker idempotency_key must create exactly one card"
+        "duplicate scheduler task idempotency_key must create exactly one card"
     );
 }
 
@@ -317,25 +352,27 @@ async fn worker_via_shared_daemon_dedupes_same_idempotency_key() {
 async fn worker_via_shared_daemon_dedupes_under_real_concurrent_race() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(true).await;
-    let _dispatcher = spawn_dispatcher(&boot);
+    let dispatcher = spawn_dispatcher(&boot);
 
-    let idem = "shared-race-key";
+    let key = "shared-race-key";
+    let idempotency_key = task_id(&boot, key);
+    plan_codex_task(&boot, key, "race shared worker").await;
     tokio::join!(
-        dispatch(&boot, idem, "race shared worker"),
-        dispatch(&boot, idem, "race shared worker"),
+        async { dispatcher.scheduler().poke(boot.wave_id.clone()) },
+        async { dispatcher.scheduler().poke(boot.wave_id.clone()) },
     );
 
     wait_for(Duration::from_secs(5), || async {
-        (worker_card_count_by_idem(&boot, idem).await == 1).then_some(())
+        (worker_card_count_by_idem(&boot, &idempotency_key).await == 1).then_some(())
     })
     .await
     .expect("one shared worker card minted after concurrent duplicate requests");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     assert_eq!(
-        worker_card_count_by_idem(&boot, idem).await,
+        worker_card_count_by_idem(&boot, &idempotency_key).await,
         1,
-        "concurrent duplicate shared-worker dispatches must not both mint cards"
+        "concurrent scheduler pokes must not both mint cards for one task"
     );
 }
 
@@ -575,12 +612,12 @@ async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
     let held_permit = sem.clone().acquire_owned().await.unwrap();
 
     for i in 0..2 {
-        dispatch(&boot, &format!("shared-cap-{i}"), "cap shared worker").await;
+        plan_codex_task(&boot, &format!("shared-cap-{i}"), "cap shared worker").await;
     }
 
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
-        worker_card_count_with_prefix(&boot, "shared-cap-").await,
+        worker_card_count_with_prefix(&boot, boot.wave_id.as_str()).await,
         0,
         "shared workers must wait while the only permit is occupied"
     );
@@ -589,7 +626,7 @@ async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
     drop(held_permit);
 
     wait_for(Duration::from_secs(10), || async {
-        (worker_card_count_with_prefix(&boot, "shared-cap-").await >= 1).then_some(())
+        (worker_card_count_with_prefix(&boot, boot.wave_id.as_str()).await >= 1).then_some(())
     })
     .await
     .expect("a queued shared worker should mint after the permit is released");
@@ -605,7 +642,9 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     }
     let boot = boot(true).await;
     let _dispatcher = spawn_dispatcher(&boot);
-    dispatch(&boot, "shared-worker-1", "do shared worker thing").await;
+    let key = "shared-worker-1";
+    let idempotency_key = task_id(&boot, key);
+    plan_codex_task(&boot, key, "do shared worker thing").await;
     let card = wait_for(Duration::from_secs(5), || async {
         let mut cards = boot
             .repo
@@ -616,7 +655,10 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
             .await
             .unwrap();
         cards.into_iter().find(|c| {
-            c.payload.get("idempotency_key").and_then(Value::as_str) == Some("shared-worker-1")
+            c.payload.get("idempotency_key").and_then(Value::as_str)
+                == Some(idempotency_key.as_str())
+                && c.payload.get("codex_thread_id").and_then(Value::as_str)
+                    == Some("fake-thread-0001")
         })
     })
     .await
@@ -703,14 +745,16 @@ async fn worker_shared_daemon_stopped_rolls_back_card() {
     let boot = boot(false).await;
     let _dispatcher = spawn_dispatcher(&boot);
     let mut rx = boot.events.subscribe();
-    dispatch(&boot, "shared-stopped-1", "shared daemon stopped").await;
+    let key = "shared-stopped-1";
+    let idempotency_key = task_id(&boot, key);
+    plan_codex_task(&boot, key, "shared daemon stopped").await;
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
             if let Event::TaskFailed {
                 idempotency_key, ..
             } = env.event
-                && idempotency_key == "shared-stopped-1"
+                && idempotency_key == task_id(&boot, key)
             {
                 break;
             }
@@ -726,7 +770,8 @@ async fn worker_shared_daemon_stopped_rolls_back_card() {
         .unwrap();
     assert!(
         cards.iter().all(|card| {
-            card.payload.get("idempotency_key").and_then(Value::as_str) != Some("shared-stopped-1")
+            card.payload.get("idempotency_key").and_then(Value::as_str)
+                != Some(idempotency_key.as_str())
         }),
         "failed shared worker spawn must roll back orphan worker card"
     );
@@ -741,14 +786,16 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     let boot = boot(true).await;
     let _dispatcher = spawn_dispatcher(&boot);
     let mut rx = boot.events.subscribe();
-    dispatch(&boot, "turn-fail-1", "turn start should fail").await;
+    let key = "turn-fail-1";
+    let idempotency_key = task_id(&boot, key);
+    plan_codex_task(&boot, key, "turn start should fail").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
             if let Event::TaskFailed {
                 idempotency_key, ..
             } = env.event
-                && idempotency_key == "turn-fail-1"
+                && idempotency_key == task_id(&boot, key)
             {
                 break;
             }
@@ -774,7 +821,8 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
             .await
             .unwrap();
         let any_left = cards.into_iter().any(|c| {
-            c.payload.get("idempotency_key").and_then(Value::as_str) == Some("turn-fail-1")
+            c.payload.get("idempotency_key").and_then(Value::as_str)
+                == Some(idempotency_key.as_str())
         });
         if any_left { None } else { Some(()) }
     })
@@ -797,14 +845,16 @@ async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
     let boot = boot(true).await;
     let _dispatcher = spawn_dispatcher(&boot);
     let mut rx = boot.events.subscribe();
-    dispatch(&boot, "pty-fail-1", "turn starts but pty fails").await;
+    let key = "pty-fail-1";
+    let idempotency_key = task_id(&boot, key);
+    plan_codex_task(&boot, key, "turn starts but pty fails").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
             if let Event::TaskFailed {
                 idempotency_key, ..
             } = env.event
-                && idempotency_key == "pty-fail-1"
+                && idempotency_key == task_id(&boot, key)
             {
                 break;
             }
@@ -834,7 +884,8 @@ async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
             .await
             .unwrap();
         let any_left = cards.into_iter().any(|c| {
-            c.payload.get("idempotency_key").and_then(Value::as_str) == Some("pty-fail-1")
+            c.payload.get("idempotency_key").and_then(Value::as_str)
+                == Some(idempotency_key.as_str())
         });
         if any_left { None } else { Some(()) }
     })

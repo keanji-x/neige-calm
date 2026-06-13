@@ -50,10 +50,11 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, task_insert_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCove, NewWave, Overlay};
+use calm_server::model::{NewCove, NewWave, Overlay, Task, TaskKind, TaskStatus, WaveLifecycle};
+use calm_server::model::{WavePatch, now_ms};
 use calm_server::replay::{self, Fixture};
 use calm_server::routes;
 use calm_server::ws;
@@ -236,7 +237,7 @@ async fn replay_wave_grid_layout_trace() {
 
 #[tokio::test]
 async fn replay_router_terminal_card_create_persists_without_supervisor() {
-    let (repo, events, state) = replay::boot_in_memory()
+    let (repo, _events, state) = replay::boot_in_memory()
         .await
         .expect("boot in-memory replay state");
     let cove = repo
@@ -258,35 +259,63 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         })
         .await
         .expect("create wave");
-    let wave_id = wave.id.to_string();
-
-    let worker_idempotency_key = "replay-terminal-worker-hook";
-    repo.log_pure_event(
-        ActorId::User,
-        EventScope::Wave {
-            wave: wave.id.clone(),
-            cove: cove.id.clone(),
-        },
-        None,
-        &events,
-        &state.card_role_cache,
-        &state.wave_cove_cache,
-        Event::TerminalWorkerRequested {
-            idempotency_key: worker_idempotency_key.into(),
-            cmd: "printf replay-worker".into(),
-            cwd: Some(String::new()),
-            agent_message: None,
+    state
+        .wave_cove_cache
+        .insert(wave.id.clone(), cove.id.clone());
+    repo.wave_update(
+        wave.id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Dispatching),
+            ..Default::default()
         },
     )
     .await
-    .expect("emit replay terminal worker request");
+    .expect("open scheduler lifecycle");
+    let wave_id = wave.id.to_string();
+
+    let worker_key = "replay-terminal-worker-hook";
+    let worker_idempotency_key = format!("{wave_id}:{worker_key}");
+    let now = now_ms();
+    let task = Task {
+        id: worker_idempotency_key.clone(),
+        wave_id: wave_id.clone(),
+        key: worker_key.into(),
+        kind: TaskKind::Terminal,
+        goal: "printf replay-worker".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: None,
+        status: TaskStatus::Pending,
+        status_detail: None,
+        worker_card_id: None,
+        gate_result_json: None,
+        gate_attempt: 0,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        finished_at_ms: None,
+    };
+    let mut tx = repo.pool().begin().await.expect("begin task insert");
+    task_insert_tx(&mut tx, &task).await.expect("insert task");
+    tx.commit().await.expect("commit task insert");
+
+    state
+        .dispatcher
+        .scheduler()
+        .schedule_wave(wave.id.clone())
+        .await;
 
     let worker_card = timeout(Duration::from_secs(2), async {
         loop {
             let cards = repo.cards_by_wave(&wave_id).await.expect("list wave cards");
             if let Some(card) = cards.into_iter().find(|card| {
                 card.payload.get("idempotency_key").and_then(Value::as_str)
-                    == Some(worker_idempotency_key)
+                    == Some(worker_idempotency_key.as_str())
             }) {
                 break card;
             }

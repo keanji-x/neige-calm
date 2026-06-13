@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx, task_insert_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, EventScope};
@@ -46,7 +46,8 @@ use calm_server::harness::{
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::model::{
-    Card, CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+    Card, CardRole, NewCard, NewCove, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
+    WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -543,6 +544,7 @@ async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_p
 /// `calm.task.complete` / failing visibly.
 struct SilentSpawnAdapter {
     spawned: Arc<tokio::sync::Notify>,
+    card_id: String,
 }
 
 const SILENT_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
@@ -567,7 +569,11 @@ impl ProviderAdapter for SilentSpawnAdapter {
         _input: &Value,
         _op: &Operation,
     ) -> CalmResult<TxOutput> {
-        Ok(TxOutput::new("silent-spawn", None, json!({"ok": true})))
+        Ok(TxOutput::new(
+            "silent-spawn",
+            None,
+            json!({ "id": self.card_id }),
+        ))
     }
 
     async fn app_server_interact(
@@ -664,6 +670,38 @@ async fn dead_worker_never_reporting_stalls_wave_in_working() {
     .await
     .unwrap();
 
+    let key = "dead-worker-pin";
+    let task_id = format!("{}:{key}", wave.id.as_str());
+    let now = now_ms();
+    let task = Task {
+        id: task_id.clone(),
+        wave_id: wave.id.as_str().to_string(),
+        key: key.into(),
+        kind: TaskKind::Terminal,
+        goal: "worker-that-never-reports".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: None,
+        status: TaskStatus::Pending,
+        status_detail: None,
+        worker_card_id: None,
+        gate_result_json: None,
+        gate_attempt: 0,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        finished_at_ms: None,
+    };
+    let pool = repo.sqlite_pool().expect("sqlite-backed repo");
+    let mut tx = pool.begin().await.unwrap();
+    task_insert_tx(&mut tx, &task).await.unwrap();
+    tx.commit().await.unwrap();
+
     // The dead worker's card exists in the wave (the projection a real
     // spawn would have left behind) — it just never reports anything.
     let worker_card = repo
@@ -671,7 +709,7 @@ async fn dead_worker_never_reporting_stalls_wave_in_working() {
             wave_id: wave.id.clone(),
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"idempotency_key": "dead-worker-pin"}),
+            payload: json!({"idempotency_key": task_id}),
         })
         .await
         .unwrap();
@@ -699,12 +737,13 @@ async fn dead_worker_never_reporting_stalls_wave_in_working() {
         operation_repo,
         vec![Arc::new(SilentSpawnAdapter {
             spawned: spawned.clone(),
+            card_id: worker_card.id.to_string(),
         })],
         events.clone(),
         completion,
         spawn_ctx,
     ));
-    let _dispatcher = Dispatcher::spawn_with_operation_runtime(
+    let dispatcher = Dispatcher::spawn_with_operation_runtime(
         repo.clone(),
         events.clone(),
         WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
@@ -720,25 +759,7 @@ async fn dead_worker_never_reporting_stalls_wave_in_working() {
     );
 
     let mut rx = events.subscribe();
-    repo.log_pure_event(
-        ActorId::User,
-        EventScope::Wave {
-            wave: wave.id.clone(),
-            cove: cove.id.clone(),
-        },
-        None,
-        &events,
-        &role_cache,
-        &wave_cove_cache,
-        Event::TerminalWorkerRequested {
-            idempotency_key: "dead-worker-pin".into(),
-            cmd: "worker-that-never-reports".into(),
-            cwd: None,
-            agent_message: None,
-        },
-    )
-    .await
-    .unwrap();
+    dispatcher.scheduler().schedule_wave(wave.id.clone()).await;
 
     // Positive sync points: the worker "spawn" ran, and the dispatcher
     // promoted Dispatching → Working first.
