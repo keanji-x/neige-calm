@@ -961,15 +961,13 @@ mod tests {
     #[tokio::test]
     async fn upgrade_commits_immediately() {
         let (repo, bus, wave_id, card_id) = setup().await;
-        // A sentinel card driven to Working AFTER the card under test. By the
-        // FSM's strict in-order processing, the sentinel's status overlay
-        // cannot appear until the card under test has been handled in FULL —
-        // card status AND `recompute_wave_needs_input`. `commit()` writes the
-        // card `status` before awaiting the recompute, so waiting on the card
-        // under test's own status would return before its recompute runs and
-        // the wave-overlay regression guard below could assert too early
-        // (issue #698 / codex review). Working leaves the aggregate false, so
-        // the sentinel adds no wave write of its own.
+        // A sentinel card driven to Working AFTER the card under test, used as
+        // an order-based barrier. By the FSM's strict in-order processing
+        // (single subscriber, each `handle().await` fully awaited before the
+        // next `recv` — see `spawn`), the sentinel cannot be handled until the
+        // card under test has been handled in FULL — card `status` AND
+        // `recompute_wave_needs_input`. Working leaves the aggregate false, so
+        // the sentinel writes no wave overlay of its own.
         let card_b = repo
             .card_create(NewCard {
                 wave_id: wave_id.clone(),
@@ -979,6 +977,8 @@ mod tests {
             })
             .await
             .unwrap();
+        // Subscribe BEFORE spawn so we observe every overlay event in order.
+        let mut rx = bus.subscribe();
         spawn(
             repo.clone(),
             bus.clone(),
@@ -1002,33 +1002,70 @@ mod tests {
             );
         }
 
-        // Wait on the SENTINEL's status, not the card under test's own: by
-        // in-order processing this only lands once the card under test's full
-        // commit (status + recompute) has completed, so the wave-overlay
-        // regression guard below sees the post-recompute state.
-        wait_for_card_status(&repo, &card_b.id, "Working").await;
-
-        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
-        let s = card_overlays
-            .iter()
-            .find(|o| o.kind == "status")
-            .expect("status overlay written");
-        assert_eq!(s.payload["state"], "Working");
-
-        // Regression guard from #248: the per-card FSM commit must not
-        // write a wave-level overlay of `kind == "status"` (the old union
-        // projection that #248 deleted — it was a dual source of truth
-        // with `WaveLifecycle`, owned by the Spec Agent). PR #260 (issue
-        // #254) re-introduces a narrower wave-level overlay
-        // `kind == "any_card_needs_input"`, which is expected here — this
-        // test asserts only that the deleted `"status"` projection has
-        // not silently returned.
-        let wave_overlays = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
-        assert!(
-            wave_overlays.iter().all(|o| o.kind != "status"),
-            "card_fsm must not write wave-level status overlays; found: {:?}",
-            wave_overlays.iter().map(|o| &o.kind).collect::<Vec<_>>()
-        );
+        // Read overlay events IN ORDER until the sentinel's status. This checks
+        // three things deterministically (no wall-clock budget, so it is
+        // immune to CPU starvation — issue #698):
+        //   1. IMMEDIACY (the test's namesake): a first-observation `Working`
+        //      upgrade commits inline, so card A's `status=Working` event must
+        //      arrive BEFORE the sentinel's. If the upgrade were wrongly
+        //      scheduled behind the 750ms downgrade timer, A's status would be
+        //      emitted by a detached task AFTER the sentinel — `seen_a_working`
+        //      would be false when B's status arrives.
+        //   2. #248 guard: the per-card commit must NOT write a wave-level
+        //      `kind == "status"` overlay (the deleted dual-source-of-truth
+        //      projection; the narrower `any_card_needs_input` from #254 is
+        //      fine). Because A's recompute runs before B's status (in-order),
+        //      a reintroduced wave-status write is observed here, not missed.
+        //   3. The card under test reaches `Working` (not some other state).
+        let timed = tokio::time::timeout(StdDuration::from_secs(15), async {
+            let mut seen_a_working = false;
+            loop {
+                let env = match rx.recv().await {
+                    Ok(env) => env,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        panic!("overlay event receiver lagged ({n} frames) before sentinel");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("bus closed before sentinel overlay observed");
+                    }
+                };
+                match &env.event {
+                    Event::OverlaySet(o) if o.kind == "status" && o.entity_kind == "wave" => {
+                        panic!(
+                            "card_fsm must not write wave-level status overlays; got {:?}",
+                            o
+                        );
+                    }
+                    Event::OverlaySet(o)
+                        if o.kind == "status"
+                            && o.entity_kind == "card"
+                            && o.entity_id == card_id.to_string() =>
+                    {
+                        assert_eq!(
+                            o.payload.get("state").and_then(|v| v.as_str()),
+                            Some("Working")
+                        );
+                        seen_a_working = true;
+                    }
+                    Event::OverlaySet(o)
+                        if o.kind == "status"
+                            && o.entity_kind == "card"
+                            && o.entity_id == card_b.id.to_string() =>
+                    {
+                        assert!(
+                            seen_a_working,
+                            "upgrade was not immediate: sentinel committed before the card \
+                             under test's Working status (a first-observation upgrade must \
+                             commit inline, not behind the downgrade timer)"
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        timed.expect("timed out waiting for sentinel (card B Working) overlay");
     }
 
     #[tokio::test]
