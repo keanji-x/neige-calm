@@ -1011,6 +1011,18 @@ mod tests {
         //      scheduled behind the 750ms downgrade timer, A's status would be
         //      emitted by a detached task AFTER the sentinel — `seen_a_working`
         //      would be false when B's status arrives.
+        //      NOTE on scope: this order-based check catches an *asymmetric*
+        //      deferral (the realistic regression — the card under test routed
+        //      to the timer while a sibling commits inline). It would NOT catch
+        //      a regression that defers EVERY upgrade uniformly (A and B both
+        //      delayed preserve their relative order). The only deterministic
+        //      way to catch that is a paused virtual clock asserting elapsed <
+        //      DOWNGRADE_QUIET_MS — but `tokio::time::pause` is incompatible
+        //      with this test's sqlx in-memory pool (its connect/acquire path
+        //      uses real timers and panics under a paused clock), and a
+        //      wall-clock budget would reintroduce the #698 starvation flake.
+        //      We accept the asymmetric-only coverage rather than reintroduce
+        //      flakiness for an unlikely uniform regression.
         //   2. #248 guard: the per-card commit must NOT write a wave-level
         //      `kind == "status"` overlay (the deleted dual-source-of-truth
         //      projection; the narrower `any_card_needs_input` from #254 is
