@@ -26,6 +26,7 @@ pub async fn upsert<R>(
     record_index: i64,
     byte_offset: i64,
     last_source_uuid: Option<&str>,
+    last_line_hash: Option<&str>,
     updated_at_ms: i64,
 ) -> Result<(), CoreError>
 where
@@ -38,6 +39,7 @@ where
         record_index,
         byte_offset,
         last_source_uuid,
+        last_line_hash,
         updated_at_ms,
     )
     .await

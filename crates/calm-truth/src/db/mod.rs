@@ -809,6 +809,7 @@ pub trait RepoOutOfDomain: RepoRead {
         record_index: i64,
         byte_offset: i64,
         last_source_uuid: Option<&str>,
+        last_line_hash: Option<&str>,
         updated_at_ms: i64,
     ) -> Result<()>;
 

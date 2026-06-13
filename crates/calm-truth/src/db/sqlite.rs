@@ -4284,7 +4284,7 @@ impl RepoRead for SqlxRepo {
     ) -> Result<Option<crate::db::rows::WorkerFlowCursor>> {
         let row = sqlx::query_as::<_, crate::db::rows::WorkerFlowCursor>(
             r#"SELECT card_id, source_kind, source_path, record_index,
-                      byte_offset, last_source_uuid, updated_at_ms
+                      byte_offset, last_source_uuid, last_line_hash, updated_at_ms
                FROM worker_flow_cursors
                WHERE card_id = ?1 AND source_kind = ?2"#,
         )
@@ -5335,19 +5335,21 @@ impl RepoOutOfDomain for SqlxRepo {
         record_index: i64,
         byte_offset: i64,
         last_source_uuid: Option<&str>,
+        last_line_hash: Option<&str>,
         updated_at_ms: i64,
     ) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO worker_flow_cursors (
                    card_id, source_kind, source_path, record_index,
-                   byte_offset, last_source_uuid, updated_at_ms
+                   byte_offset, last_source_uuid, last_line_hash, updated_at_ms
                )
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                ON CONFLICT(card_id, source_kind) DO UPDATE SET
                    source_path = excluded.source_path,
                    record_index = excluded.record_index,
                    byte_offset = excluded.byte_offset,
                    last_source_uuid = excluded.last_source_uuid,
+                   last_line_hash = excluded.last_line_hash,
                    updated_at_ms = excluded.updated_at_ms"#,
         )
         .bind(card_id)
@@ -5356,6 +5358,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(record_index)
         .bind(byte_offset)
         .bind(last_source_uuid)
+        .bind(last_line_hash)
         .bind(updated_at_ms)
         .execute(&self.pool)
         .await?;
@@ -6470,6 +6473,7 @@ mod worker_flow_cursor_tests {
             10,
             0,
             Some("uuid-a"),
+            Some("hash-a"),
             100,
         )
         .await
@@ -6481,6 +6485,7 @@ mod worker_flow_cursor_tests {
             .unwrap();
         assert_eq!(first.record_index, 10);
         assert_eq!(first.last_source_uuid.as_deref(), Some("uuid-a"));
+        assert_eq!(first.last_line_hash.as_deref(), Some("hash-a"));
 
         repo.worker_flow_cursor_upsert(
             &card_id,
@@ -6488,6 +6493,7 @@ mod worker_flow_cursor_tests {
             "/tmp/rollout-b.jsonl",
             3,
             0,
+            None,
             None,
             200,
         )
@@ -6501,6 +6507,7 @@ mod worker_flow_cursor_tests {
         assert_eq!(reset.source_path, "/tmp/rollout-b.jsonl");
         assert_eq!(reset.record_index, 3);
         assert!(reset.last_source_uuid.is_none());
+        assert!(reset.last_line_hash.is_none());
         assert_eq!(reset.updated_at_ms, 200);
 
         repo.worker_flow_cursor_upsert(
@@ -6510,6 +6517,7 @@ mod worker_flow_cursor_tests {
             14,
             0,
             Some("uuid-b"),
+            Some("hash-b"),
             300,
         )
         .await

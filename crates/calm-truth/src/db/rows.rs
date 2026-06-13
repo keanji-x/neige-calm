@@ -217,6 +217,7 @@ pub struct WorkerFlowCursor {
     pub record_index: i64,
     pub byte_offset: i64,
     pub last_source_uuid: Option<String>,
+    pub last_line_hash: Option<String>,
     pub updated_at_ms: i64,
 }
 

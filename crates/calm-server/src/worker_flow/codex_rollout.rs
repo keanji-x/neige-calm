@@ -141,6 +141,7 @@ impl CodexRolloutFlowSource {
         .map(|c| CursorState {
             record_index: c.record_index.max(0) as u64,
             last_source_uuid: c.last_source_uuid,
+            last_line_hash: c.last_line_hash,
         })
         .unwrap_or_default();
         let mut position: Option<Position> = None;
@@ -208,42 +209,34 @@ impl CodexRolloutFlowSource {
                 return Ok(());
             }
 
-            // If the last consumed record had no uuid, skip the narrow uuidless-prefix rewrite edge.
-            if let Some(expected) = cursor.last_source_uuid.clone()
-                && cursor.record_index > 0
-                && (cursor.record_index as usize) <= lines.len()
-            {
-                let last_consumed_index = cursor.record_index - 1;
-                match parse_line(
-                    &lines[last_consumed_index as usize],
-                    last_consumed_index,
-                    &source_path,
-                ) {
-                    Ok(line) => {
-                        let actual = rollout_line_source_uuid(&line);
-                        if actual.as_deref() != Some(expected.as_str()) {
-                            tracing::warn!(
-                                card_id = %self.runtime.card_id,
-                                runtime_id = %self.runtime.id,
-                                source_path,
-                                record_index = cursor.record_index,
-                                last_consumed_index,
-                                expected_source_uuid = expected,
-                                actual_source_uuid = actual.as_deref().unwrap_or("<missing>"),
-                                "codex rollout consumed prefix identity changed after rewrite; resetting to start"
-                            );
-                            reset_cursor(&mut cursor, &mut position);
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            source_path,
-                            record_index = cursor.record_index,
-                            last_consumed_index,
-                            "codex rollout consumed prefix line is malformed; skipping prefix identity check"
-                        );
-                    }
+            if cursor.record_index > 0 && (cursor.record_index as usize) <= lines.len() {
+                let prior_index = (cursor.record_index - 1) as usize;
+                let prior_raw = &lines[prior_index];
+                let uuid_mismatch = cursor
+                    .last_source_uuid
+                    .as_deref()
+                    .map(|expected| {
+                        let actual = parse_line(prior_raw, cursor.record_index - 1, &source_path)
+                            .ok()
+                            .and_then(|line| rollout_line_source_uuid(&line));
+                        actual.as_deref() != Some(expected)
+                    })
+                    .unwrap_or(false);
+                let hash_mismatch = cursor
+                    .last_line_hash
+                    .as_deref()
+                    .map(|expected| hash_line(prior_raw) != expected)
+                    .unwrap_or(false);
+
+                if uuid_mismatch || hash_mismatch {
+                    tracing::warn!(
+                        card_id = %self.runtime.card_id,
+                        runtime_id = %self.runtime.id,
+                        source_path,
+                        record_index = cursor.record_index,
+                        "codex rollout prefix mismatch (uuid or hash); resetting cursor to re-ingest"
+                    );
+                    reset_cursor(&mut cursor, &mut position);
                 }
             }
 
@@ -283,6 +276,7 @@ impl CodexRolloutFlowSource {
                             "skipping malformed codex rollout line"
                         );
                         cursor.last_source_uuid = None;
+                        cursor.last_line_hash = Some(hash_line(&lines[line_index as usize]));
                         cursor.record_index += 1;
                         continue;
                     }
@@ -291,6 +285,7 @@ impl CodexRolloutFlowSource {
                 if is_turn_context(&parsed) {
                     position.turn = position.turn.saturating_add(1);
                     cursor.last_source_uuid = None;
+                    cursor.last_line_hash = Some(hash_line(&lines[line_index as usize]));
                     cursor.record_index += 1;
                     continue;
                 }
@@ -313,6 +308,7 @@ impl CodexRolloutFlowSource {
                 }
 
                 cursor.last_source_uuid = rollout_line_source_uuid(&parsed);
+                cursor.last_line_hash = Some(hash_line(&lines[line_index as usize]));
                 cursor.record_index += 1;
                 if cursor.record_index % self.options.cursor_persist_every.max(1) == 0 {
                     // TODO(#704 followup): item insert + cursor write are two sqlite commits.
@@ -387,6 +383,7 @@ impl WorkerFlowSource for CodexRolloutFlowSource {
 struct CursorState {
     record_index: u64,
     last_source_uuid: Option<String>,
+    last_line_hash: Option<String>,
 }
 
 #[derive(Default)]
@@ -398,6 +395,7 @@ struct Position {
 fn reset_cursor(cursor: &mut CursorState, position: &mut Option<Position>) {
     cursor.record_index = 0;
     cursor.last_source_uuid = None;
+    cursor.last_line_hash = None;
     *position = None;
 }
 
@@ -443,9 +441,21 @@ async fn persist_cursor(
         cursor.record_index as i64,
         0,
         cursor.last_source_uuid.as_deref(),
+        cursor.last_line_hash.as_deref(),
         now_ms(),
     )
     .await
+}
+
+fn hash_line(raw: &str) -> String {
+    use std::fmt::Write as _;
+
+    let digest = blake3::hash(raw.as_bytes());
+    let mut hash = String::with_capacity(16);
+    for byte in &digest.as_bytes()[..8] {
+        write!(&mut hash, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    hash
 }
 
 fn reconstruct_position(lines: &[String], record_index: u64, source_path: &str) -> Position {
