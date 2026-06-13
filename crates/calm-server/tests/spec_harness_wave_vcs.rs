@@ -412,6 +412,35 @@ async fn wait_for_any_last_seen_head(boot: &Boot) -> String {
     }
 }
 
+async fn wait_for_head_path(boot: &Boot, path: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut last_head = "none".to_string();
+    loop {
+        if let Some(head) = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+            .await
+            .expect("head query")
+        {
+            match wave_vcs::tree_at(boot.repo.pool(), &head)
+                .await
+                .expect("tree query")
+            {
+                Some(tree) if tree.entries.contains_key(path) => return head,
+                Some(tree) => {
+                    last_head = format!("{head} ({} paths)", tree.entries.len());
+                }
+                None => {
+                    last_head = format!("{head} (tree missing)");
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for wave-vcs head containing path {path}; last_head={last_head}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn wait_for_runtime_snapshot(
     boot: &Boot,
     pred: impl Fn(&HarnessSnapshot) -> bool,
@@ -740,10 +769,7 @@ async fn ai_actor_attribution_flows_into_diff_block() {
         json!({"schemaVersion": 1, "idempotency_key": "ai-attribution"}),
     )
     .await;
-    let before = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let before = wait_for_head_path(&boot, "runs/ai-attribution.json").await;
     set_last_seen_head_raw(&boot, &before).await;
 
     let worker_id = worker.id.clone();
