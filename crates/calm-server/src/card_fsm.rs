@@ -912,8 +912,18 @@ mod tests {
         (repo, bus, wave.id, card.id)
     }
 
+    // Overlay-poll ceiling for the FSM tests. 25ms * 600 = ~15s, matching the
+    // repo's other wait-for helpers (e.g. spec_harness_wave_vcs). The old 80
+    // (2s) ceiling was below the real settle floor for DOWNGRADE assertions —
+    // a downgrade is held `DOWNGRADE_QUIET_MS` (750ms) on a detached timer
+    // before its commit even starts, so under CI scheduler starvation the 2s
+    // budget could be exhausted before the projection arrived (issue #694).
+    // The poll returns the instant the value matches, so a generous ceiling
+    // only changes how long a genuinely-stuck test waits before failing.
+    const OVERLAY_POLL_ATTEMPTS: usize = 600;
+
     async fn wait_for_wave_needs_input(repo: &Arc<dyn Repo>, wave_id: &WaveId, want: bool) {
-        for _ in 0..80 {
+        for _ in 0..OVERLAY_POLL_ATTEMPTS {
             let got = repo
                 .overlays_for("wave", wave_id.as_str())
                 .await
@@ -931,7 +941,7 @@ mod tests {
     }
 
     async fn wait_for_card_status(repo: &Arc<dyn Repo>, card_id: &CardId, want: &str) {
-        for _ in 0..80 {
+        for _ in 0..OVERLAY_POLL_ATTEMPTS {
             let got = repo
                 .overlays_for("card", card_id.as_str())
                 .await
