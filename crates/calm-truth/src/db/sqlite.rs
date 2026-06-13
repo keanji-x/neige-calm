@@ -43,6 +43,7 @@ use super::{
 };
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
+use crate::decision_gate::DecisionGate;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, WaveId};
@@ -385,13 +386,15 @@ impl Repo for SqlxRepo {
     }
 }
 
-pub async fn event_append_for_operation_tx(
+pub async fn append_decision_event_in_tx<G: DecisionGate + ?Sized>(
     tx: &mut Transaction<'_, Sqlite>,
+    gate: &G,
     actor: &ActorId,
     scope: &EventScope,
     correlation: Option<&str>,
     event: &Event,
 ) -> Result<i64> {
+    gate.decide(tx, actor, scope, event).await?.into_result()?;
     let event_id = SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?;
     if let Some(wave_id) = scope.wave_id() {
         wave_vcs::commit_in_tx(
@@ -407,8 +410,9 @@ pub async fn event_append_for_operation_tx(
     Ok(event_id)
 }
 
-pub async fn events_append_for_operation_tx(
+pub async fn append_decision_events_in_tx<G: DecisionGate + ?Sized>(
     tx: &mut Transaction<'_, Sqlite>,
+    gate: &G,
     actor: &ActorId,
     scope: &EventScope,
     correlation: Option<&str>,
@@ -416,6 +420,7 @@ pub async fn events_append_for_operation_tx(
 ) -> Result<Vec<i64>> {
     let mut event_ids = Vec::with_capacity(events.len());
     for event in events {
+        gate.decide(tx, actor, scope, event).await?.into_result()?;
         event_ids.push(SqlxRepo::event_append_in_tx(tx, actor, scope, correlation, event).await?);
     }
     if let (Some(wave_id), Some(event_id)) = (scope.wave_id(), event_ids.last()) {

@@ -9,6 +9,11 @@ async fn t1_decision_write_couples_state_and_event() {
 }
 
 #[tokio::test]
+async fn t1_saga_in_tx_decision_write_couples_state_and_event() {
+    calm_truth_test_harness::t1_saga_in_tx_decision_write_couples_state_and_event().await;
+}
+
+#[tokio::test]
 async fn t1_denied_decision_rolls_back_state_and_event() {
     calm_truth_test_harness::t1_denied_decision_rolls_back_state_and_event().await;
 }
@@ -29,7 +34,6 @@ async fn t3_state_is_not_fold_events() {
 }
 
 #[test]
-#[ignore = "TODO(#679 PR4): assert final no-operations-read public API firewall"]
 fn t4_no_operations_read_api() {
     calm_truth_test_harness::t4_no_operations_read_api();
 }

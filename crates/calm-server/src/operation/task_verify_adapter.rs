@@ -43,7 +43,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
 use crate::db::sqlite::{
-    begin_immediate_tx, events_append_for_operation_tx, task_apply_gate_result_tx,
+    append_decision_events_in_tx, begin_immediate_tx, task_apply_gate_result_tx,
     task_gate_attempt_bump_tx, task_get_tx,
 };
 use crate::error::{CalmError, Result};
@@ -54,6 +54,7 @@ use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
+use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     CompensationStateVersioned, CompensationStep, Operation, OperationCompletionBus, OperationKey,
@@ -233,8 +234,15 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
     {
         events.extend(auto_events);
     }
-    let ids = events_append_for_operation_tx(tx, &ActorId::KernelDispatcher, &scope, None, &events)
-        .await?;
+    let ids = append_decision_events_in_tx(
+        tx,
+        &PermissiveGate,
+        &ActorId::KernelDispatcher,
+        &scope,
+        None,
+        &events,
+    )
+    .await?;
     Ok(ids
         .into_iter()
         .zip(events)

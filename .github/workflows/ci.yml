@@ -46,6 +46,11 @@ jobs:
           hits=$(grep -rniE "update[[:space:]]+runtimes" crates/calm-server/src/harness crates/calm-server/src/operation/spec_harness_start_adapter.rs crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs | wc -l)
           [ "$hits" -eq 0 ] && echo "OK: no raw runtimes UPDATE in harness paths" || { echo "::error::raw UPDATE runtimes survives in harness paths ($hits)"; grep -rniE "update[[:space:]]+runtimes" crates/calm-server/src/harness crates/calm-server/src/operation/spec_harness_start_adapter.rs crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs; exit 1; }
 
+      - name: no parallel operation-event entrance (#679 PR4)
+        run: |
+          hits=$(grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/ | wc -l)
+          [ "$hits" -eq 0 ] && echo OK || { echo "::error::parallel operation-event entrance survives"; grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/; exit 1; }
+
       # Soft backstop alongside the cargo-feature gate on
       # `AppState::raw_repo` (see `state.rs` and design doc §1.4.1).
       # The compile gate already blocks production builds from reaching

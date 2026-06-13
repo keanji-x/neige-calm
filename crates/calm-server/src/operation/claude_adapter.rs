@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_with_claude_create_tx, event_append_for_operation_tx, runtime_get_active_for_card_tx,
+    append_decision_event_in_tx, card_with_claude_create_tx, runtime_get_active_for_card_tx,
     runtime_set_status_tx,
 };
 use crate::db::write_with_events_typed;
@@ -24,6 +24,7 @@ use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
+use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -360,9 +361,17 @@ impl ProviderAdapter for ClaudeAdapter {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
         let event_id =
-            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
-        let runtime_event_id =
-            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
+            append_decision_event_in_tx(tx, &PermissiveGate, &payload.actor, &scope, None, &event)
+                .await?;
+        let runtime_event_id = append_decision_event_in_tx(
+            tx,
+            &PermissiveGate,
+            &payload.actor,
+            &scope,
+            None,
+            &runtime_event,
+        )
+        .await?;
 
         let mut output = TxOutput::new(
             "runtime",

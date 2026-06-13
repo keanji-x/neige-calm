@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    event_append_for_operation_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
+    append_decision_event_in_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
     runtime_set_status_tx, runtime_start_tx, terminal_get_by_card_tx,
 };
 use crate::db::write_with_events_typed;
@@ -23,6 +23,7 @@ use crate::runtime_lookup::resolve_claude_session_for_card;
 use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::state::{CodexClient, WriteContext};
 use crate::wave_cove_cache::WaveCoveCache;
+use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -207,8 +208,15 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
-        let runtime_event_id =
-            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
+        let runtime_event_id = append_decision_event_in_tx(
+            tx,
+            &PermissiveGate,
+            &payload.actor,
+            &scope,
+            None,
+            &runtime_event,
+        )
+        .await?;
 
         // Preserve the previous exit row so compensation can restore the
         // Restart affordance if the replacement spawn fails.

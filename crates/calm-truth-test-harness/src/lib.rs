@@ -10,8 +10,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use calm_truth::card_role_cache::CardRoleCache;
 use calm_truth::db::sqlite::{
-    SqlxRepo, runtime_set_harness_observation_tx, runtime_start_tx, session_insert_tx,
-    session_state_transition_tx,
+    SqlxRepo, append_decision_event_in_tx, begin_immediate_tx, runtime_set_harness_observation_tx,
+    runtime_start_tx, session_insert_tx, session_state_transition_tx,
 };
 use calm_truth::db::{RepoEventWrite, RepoSyncDomainRaw, write_in_tx_typed};
 use calm_truth::decision_gate::{
@@ -182,6 +182,38 @@ where
     assert!(event_id > 0);
     assert!(
         repo.session_get(&WorkerSessionId::from("ws-t1"))
+            .await
+            .expect("session get")
+            .is_some()
+    );
+    let after = repo.events_since(0, None).await.expect("event count");
+    assert_eq!(after.len(), before + 1);
+}
+
+pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
+    let (repo, wave_id) = seeded_repo().await;
+    let state = session("ws-t1-saga", wave_id);
+    let actor = ActorId::Kernel;
+    let scope = EventScope::System;
+    let before = repo.events_since(0, None).await.expect("event count").len();
+    let event = conformance_event("t1-saga");
+
+    let mut tx = begin_immediate_tx(repo.pool())
+        .await
+        .expect("begin saga tx");
+    let inserted = session_insert_tx(&mut tx, state)
+        .await
+        .expect("insert session in saga tx");
+    let event_id =
+        append_decision_event_in_tx(&mut tx, &PermissiveGate, &actor, &scope, None, &event)
+            .await
+            .expect("append decision event in saga tx");
+    tx.commit().await.expect("commit saga tx");
+
+    assert_eq!(inserted.id.as_str(), "ws-t1-saga");
+    assert!(event_id > 0);
+    assert!(
+        repo.session_get(&WorkerSessionId::from("ws-t1-saga"))
             .await
             .expect("session get")
             .is_some()
@@ -437,14 +469,18 @@ where
 }
 
 pub fn invariant_t4_no_operations_read_api() {
-    // TODO(#679 PR4): make this a compile-level firewall once operation
-    // event paths are absorbed and the public truth API is final. PR2 keeps
-    // legacy saga helpers visible for migration, so asserting the final
-    // firewall here would be dishonest.
+    // #679 PR4 T4 is a doc/grep firewall: operation sagas have no public
+    // truth-layer event append entrance that skips DecisionGate. CI enforces
+    // that the retired operation-only append symbols do not exist under
+    // `crates/`; saga appends must use `append_decision_event(s)_in_tx`.
 }
 
 pub async fn t1_decision_write_couples_state_and_event() {
     invariant_t1_decision_write_couples_state_and_event(Arc::new(PermissiveGate)).await;
+}
+
+pub async fn t1_saga_in_tx_decision_write_couples_state_and_event() {
+    invariant_t1_saga_in_tx_decision_write_couples_state_and_event().await;
 }
 
 pub async fn t1_denied_decision_rolls_back_state_and_event() {

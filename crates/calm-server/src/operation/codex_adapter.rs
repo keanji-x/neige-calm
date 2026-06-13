@@ -9,9 +9,9 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
-    card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
-    event_append_for_operation_tx, runtime_bind_attribution_tx, runtime_get_active_for_card_tx,
-    runtime_get_by_id_tx, runtime_set_status_tx,
+    append_decision_event_in_tx, card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
+    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_get_by_id_tx,
+    runtime_set_status_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -35,6 +35,7 @@ use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParam
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
+use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -347,9 +348,17 @@ impl ProviderAdapter for CodexAdapter {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
         let event_id =
-            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &event).await?;
-        let runtime_event_id =
-            event_append_for_operation_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
+            append_decision_event_in_tx(tx, &PermissiveGate, &payload.actor, &scope, None, &event)
+                .await?;
+        let runtime_event_id = append_decision_event_in_tx(
+            tx,
+            &PermissiveGate,
+            &payload.actor,
+            &scope,
+            None,
+            &runtime_event,
+        )
+        .await?;
 
         let mut output = TxOutput::new(
             "runtime",
