@@ -35,10 +35,12 @@
 //! these traits in PR5; calm-provider implements them in PR6; the reaper
 //! drives them in PR8.
 
+pub mod flow;
 pub mod observation;
 pub mod provider;
 pub mod reaction;
 
+pub use flow::{FlowRowCtx, WorkerFlowItemSink, WorkerFlowSource};
 pub use observation::ObservationSink;
 pub use provider::{SpawnCtx, SpawnHandle, WorkerProvider};
 pub use reaction::{AgentReactor, DecisionIntent, DecisionSink};
