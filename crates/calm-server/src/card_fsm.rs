@@ -982,8 +982,10 @@ mod tests {
             },
         );
 
-        // Wait a beat for the async handler to land the overlay write.
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        // Poll until the async handler lands the overlay write, rather than
+        // racing a fixed sleep against the FSM task. Under CPU starvation a
+        // 100ms budget could expire before the commit completes (issue #698).
+        wait_for_card_status(&repo, &card_id, "Working").await;
 
         let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
         let s = card_overlays
@@ -1178,6 +1180,18 @@ mod tests {
     #[tokio::test]
     async fn needs_input_overlay_is_idempotent() {
         let (repo, bus, wave_id, card_id) = setup().await;
+        // A SECOND codex card under the same wave, used purely as a
+        // deterministic sentinel (see below). It is created BEFORE the FSM
+        // spawns so the wave's canonical card set already contains it.
+        let card_b = repo
+            .card_create(NewCard {
+                wave_id: wave_id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            })
+            .await
+            .unwrap();
         // Subscribe BEFORE spawn so we capture every overlay event from
         // the moment the FSM is live.
         let mut rx = bus.subscribe();
@@ -1191,7 +1205,8 @@ mod tests {
         );
         tokio::task::yield_now().await;
 
-        // First emit → card goes AwaitingInput, wave overlay flips to true.
+        // First emit → card A goes AwaitingInput, wave overlay flips to true
+        // (false → true is a VALUE CHANGE → exactly ONE wave write).
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1201,11 +1216,11 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
 
-        // Second emit → STILL AwaitingInput (same severity, no actual
-        // transition), wave aggregate is unchanged. The idempotency
-        // guard should suppress the second overlay write.
+        // Second emit → card A STILL AwaitingInput (same severity, no actual
+        // transition), wave aggregate is unchanged (true → true). The
+        // idempotency guard in `recompute_wave_needs_input` must suppress the
+        // wave write (no value change → no OverlaySet).
         bus.emit(
             ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
@@ -1215,20 +1230,79 @@ mod tests {
                 payload: Value::Null,
             },
         );
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
 
-        // Drain the receiver and count wave-scoped `any_card_needs_input`
-        // OverlaySet events. There should be exactly ONE.
-        let mut wave_overlay_writes = 0usize;
-        while let Ok(env) = rx.try_recv() {
-            if let Event::OverlaySet(ref o) = env.event
-                && o.kind == "any_card_needs_input"
-                && o.entity_kind == "wave"
-                && o.entity_id == wave_id.to_string()
-            {
-                wave_overlay_writes += 1;
+        // SENTINEL emit → card B goes AwaitingInput. Because the FSM task
+        // processes events strictly in arrival order (single subscriber, one
+        // handler loop, each `handle().await` fully awaited before the next
+        // `recv` — see `spawn`), this event cannot be handled until BOTH of
+        // card A's emits above have been fully processed. card B's commit
+        // ALWAYS writes a card-level `status` overlay (a DISTINCT, observable
+        // OverlaySet on entity_kind="card", entity_id=B) — that is our wait
+        // signal. The wave aggregate is already true (from card A) and stays
+        // true, so card B contributes NO `any_card_needs_input` write.
+        bus.emit(
+            ActorId::AiCodex(card_b.id.clone()),
+            Event::CodexHook {
+                card_id: card_b.id.clone(),
+                kind: "hook.codex.permission_request".into(),
+                hook_idempotency_key: "hook-key".into(),
+                payload: Value::Null,
+            },
+        );
+
+        // Block-recv until we observe the sentinel (card B's status overlay),
+        // counting wave-scoped `any_card_needs_input` OverlaySet events along
+        // the way. By in-order processing, by the time B's status event
+        // arrives, every event card A's two emits produced is already in the
+        // channel and has been received first — so this count is complete and
+        // free of phantoms. There must be EXACTLY ONE (the first emit's
+        // false→true flip; the second emit is suppressed by idempotency).
+        //
+        // Bounded by an outer timeout so a broken assumption fails as a clean
+        // panic instead of hanging the test forever (there is no per-test
+        // timeout). 15s matches the repo's other wait-for bounds.
+        let wave_overlay_writes = tokio::time::timeout(StdDuration::from_secs(15), async {
+            let mut writes = 0usize;
+            loop {
+                let env = match rx.recv().await {
+                    Ok(env) => env,
+                    // A lagged broadcast receiver dropped frames; the count
+                    // would be unreliable, so fail loudly rather than assert a
+                    // wrong number.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        panic!("overlay event receiver lagged ({n} frames) before sentinel");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("bus closed before sentinel overlay observed");
+                    }
+                };
+                match &env.event {
+                    Event::OverlaySet(o)
+                        if o.kind == "any_card_needs_input"
+                            && o.entity_kind == "wave"
+                            && o.entity_id == wave_id.to_string() =>
+                    {
+                        writes += 1;
+                    }
+                    // Sentinel: card B's status overlay reaching AwaitingInput
+                    // proves card A's two permission_request emits are both
+                    // fully handled (in-order processing). Stop counting here.
+                    Event::OverlaySet(o)
+                        if o.kind == "status"
+                            && o.entity_kind == "card"
+                            && o.entity_id == card_b.id.to_string()
+                            && o.payload.get("state").and_then(|v| v.as_str())
+                                == Some("AwaitingInput") =>
+                    {
+                        break;
+                    }
+                    _ => {}
+                }
             }
-        }
+            writes
+        })
+        .await
+        .expect("timed out waiting for sentinel (card B AwaitingInput) overlay");
         assert_eq!(
             wave_overlay_writes, 1,
             "expected exactly one any_card_needs_input write (idempotent), got {wave_overlay_writes}"
