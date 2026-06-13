@@ -94,6 +94,96 @@
     "type": "commandExecution"
   },
   {
+    "aggregated_output": "total 0",
+    "call_id": "call-exec",
+    "command": "bash -lc ls -la",
+    "cwd": "/tmp",
+    "duration_ms": 42,
+    "exit_code": 0,
+    "parsed_actions": [
+      {
+        "command": "bash -lc ls -la",
+        "type": "unknown"
+      }
+    ],
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 7,
+      "provider": "codex",
+      "record_type": "event_msg",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 4,
+    "session_id": "sess-golden",
+    "source": "agent",
+    "source_uuid": "call-exec",
+    "status": "completed",
+    "timestamp": 1781308805000,
+    "turn": 1,
+    "type": "commandExecution"
+  },
+  {
+    "aggregated_output": null,
+    "call_id": "call-fail",
+    "command": "bash -lc false",
+    "cwd": "/tmp",
+    "duration_ms": null,
+    "exit_code": null,
+    "parsed_actions": [
+      {
+        "command": "bash -lc false",
+        "type": "unknown"
+      }
+    ],
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 8,
+      "provider": "codex",
+      "record_type": "function_call",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 5,
+    "session_id": "sess-golden",
+    "source": "agent",
+    "source_uuid": "call-fail",
+    "status": "inProgress",
+    "timestamp": 1781308804000,
+    "turn": 1,
+    "type": "commandExecution"
+  },
+  {
+    "aggregated_output": "boom",
+    "call_id": "call-fail",
+    "command": "bash -lc false",
+    "cwd": "/tmp",
+    "duration_ms": 7,
+    "exit_code": 1,
+    "parsed_actions": [
+      {
+        "command": "bash -lc false",
+        "type": "unknown"
+      }
+    ],
+    "provider": "codex",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 9,
+      "provider": "codex",
+      "record_type": "event_msg",
+      "source_path": "/tmp/rollout-golden.jsonl"
+    },
+    "seq": 6,
+    "session_id": "sess-golden",
+    "source": "agent",
+    "source_uuid": "call-fail",
+    "status": "failed",
+    "timestamp": 1781308805000,
+    "turn": 1,
+    "type": "commandExecution"
+  },
+  {
     "call_id": "call-exec",
     "error": null,
     "ok": true,
@@ -107,12 +197,12 @@
     "provider": "codex",
     "provider_extra": null,
     "raw_ref": {
-      "line": 6,
+      "line": 10,
       "provider": "codex",
       "record_type": "function_call_output",
       "source_path": "/tmp/rollout-golden.jsonl"
     },
-    "seq": 4,
+    "seq": 7,
     "session_id": "sess-golden",
     "source_uuid": "call-exec",
     "timestamp": 1781308805000,
@@ -134,12 +224,12 @@
     "provider": "codex",
     "provider_extra": null,
     "raw_ref": {
-      "line": 7,
+      "line": 11,
       "provider": "codex",
       "record_type": "custom_tool_call",
       "source_path": "/tmp/rollout-golden.jsonl"
     },
-    "seq": 5,
+    "seq": 8,
     "session_id": "sess-golden",
     "source_uuid": "call-patch",
     "status": "completed",
@@ -153,13 +243,13 @@
     "provider_extra": null,
     "query": "rust serde flatten",
     "raw_ref": {
-      "line": 8,
+      "line": 12,
       "provider": "codex",
       "record_type": "web_search_call",
       "source_path": "/tmp/rollout-golden.jsonl"
     },
     "results_summary": null,
-    "seq": 6,
+    "seq": 9,
     "session_id": "sess-golden",
     "source_uuid": "ws-1",
     "timestamp": 1781308807000,
@@ -170,13 +260,13 @@
     "provider": "codex",
     "provider_extra": null,
     "raw_ref": {
-      "line": 9,
+      "line": 13,
       "provider": "codex",
       "record_type": "compacted",
       "source_path": "/tmp/rollout-golden.jsonl"
     },
     "reason": "codex_compacted",
-    "seq": 7,
+    "seq": 10,
     "session_id": "sess-golden",
     "source_uuid": null,
     "summary": "summary after compaction",

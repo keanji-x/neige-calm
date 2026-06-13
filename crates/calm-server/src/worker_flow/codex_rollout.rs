@@ -194,11 +194,9 @@ impl CodexRolloutFlowSource {
                     runtime_id = %self.runtime.id,
                     expected_thread_id = thread_id,
                     actual_thread_id = session_meta_id(&first).unwrap_or("<missing>"),
-                    "codex rollout SessionMeta id mismatch; resetting cursor and re-reading from start"
+                    "codex rollout SessionMeta id mismatch; exiting source without consuming wrong file"
                 );
-                cursor.record_index = 0;
-                cursor.last_source_uuid = None;
-                position = None;
+                return Ok(());
             }
 
             if cursor.record_index as usize > lines.len() {

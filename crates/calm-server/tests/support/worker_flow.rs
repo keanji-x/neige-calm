@@ -234,6 +234,49 @@ pub fn function_output(call_id: &str, text: &str) -> Value {
     })
 }
 
+pub fn exec_command_begin(call_id: &str) -> Value {
+    json!({
+        "timestamp": "2026-06-13T00:00:05Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "exec_command_begin",
+            "call_id": call_id,
+            "command": ["bash", "-lc", "echo hi"],
+            "cwd": "/tmp",
+            "source": "agent"
+        }
+    })
+}
+
+pub fn exec_command_end(
+    call_id: &str,
+    status: &str,
+    exit_code: i32,
+    aggregated_output: &str,
+    duration_ms: i64,
+    command: &[&str],
+) -> Value {
+    json!({
+        "timestamp": "2026-06-13T00:00:05Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "exec_command_end",
+            "call_id": call_id,
+            "command": command,
+            "cwd": "/tmp",
+            "parsed_cmd": [],
+            "aggregated_output": aggregated_output,
+            "exit_code": exit_code,
+            "duration": {
+                "secs": duration_ms / 1_000,
+                "nanos": (duration_ms % 1_000) * 1_000_000
+            },
+            "status": status,
+            "source": "agent"
+        }
+    })
+}
+
 pub fn custom_patch(call_id: &str) -> Value {
     json!({
         "timestamp": "2026-06-13T00:00:06Z",

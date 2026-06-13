@@ -20,7 +20,7 @@ pub enum RolloutItem {
     ResponseItem(ResponseItem),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
-    EventMsg(Value),
+    EventMsg(EventMsg),
     #[serde(other)]
     Other,
 }
@@ -45,6 +45,55 @@ pub struct CompactedItem {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_history: Option<Vec<ResponseItem>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EventMsg {
+    ExecCommandBegin {},
+    ExecCommandEnd(ExecCommandEndEvent),
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExecCommandEndEvent {
+    pub call_id: String,
+    pub command: Vec<String>,
+    pub cwd: std::path::PathBuf,
+    #[serde(default)]
+    pub parsed_cmd: Vec<ParsedCommand>,
+    pub aggregated_output: String,
+    pub exit_code: i32,
+    #[serde(default)]
+    pub duration: Option<Value>,
+    pub status: ExecCommandStatus,
+    #[serde(default)]
+    pub source: ExecCommandSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ParsedCommand(Value);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecCommandStatus {
+    Completed,
+    Failed,
+    Declined,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecCommandSource {
+    Agent,
+    UserShell,
+    UnifiedExecStartup,
+    UnifiedExecInteraction,
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -235,8 +284,23 @@ pub fn normalize_rollout_line(
     };
 
     match &line.item {
-        RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) | RolloutItem::EventMsg(_) => {
-            None
+        RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => None,
+        RolloutItem::EventMsg(EventMsg::ExecCommandBegin { .. })
+        | RolloutItem::EventMsg(EventMsg::Other) => None,
+        RolloutItem::EventMsg(EventMsg::ExecCommandEnd(event)) => {
+            let command = event.command.join(" ");
+            Some(WorkerFlowItem::CommandExecution {
+                env,
+                call_id: Some(ToolCallId::from(event.call_id.clone())),
+                command: command.clone(),
+                cwd: Some(event.cwd.to_string_lossy().to_string()),
+                parsed_actions: parsed_actions_from_parsed_cmd(&event.parsed_cmd, &command),
+                aggregated_output: Some(event.aggregated_output.clone()),
+                exit_code: Some(event.exit_code),
+                duration_ms: event.duration.as_ref().and_then(duration_ms_from_value),
+                status: exec_status_from_event(&event.status),
+                source: exec_source_from_event(&event.source),
+            })
         }
         RolloutItem::Compacted(item) => Some(WorkerFlowItem::Compaction {
             env,
@@ -282,6 +346,7 @@ pub fn rollout_line_source_uuid(line: &RolloutLine) -> Option<String> {
             id.clone().or_else(|| Some(call_id.clone()))
         }
         RolloutItem::ResponseItem(ResponseItem::WebSearchCall { id, .. }) => id.clone(),
+        RolloutItem::EventMsg(EventMsg::ExecCommandEnd(event)) => Some(event.call_id.clone()),
         _ => None,
     }
 }
@@ -509,6 +574,24 @@ fn exec_status_from_local_shell(status: &LocalShellStatus) -> ExecStatus {
     }
 }
 
+fn exec_status_from_event(status: &ExecCommandStatus) -> ExecStatus {
+    match status {
+        ExecCommandStatus::Completed => ExecStatus::Completed,
+        ExecCommandStatus::Failed => ExecStatus::Failed,
+        ExecCommandStatus::Declined => ExecStatus::Declined,
+    }
+}
+
+fn exec_source_from_event(source: &ExecCommandSource) -> ExecSource {
+    match source {
+        ExecCommandSource::Agent => ExecSource::Agent,
+        ExecCommandSource::UserShell => ExecSource::UserShell,
+        ExecCommandSource::UnifiedExecStartup
+        | ExecCommandSource::UnifiedExecInteraction
+        | ExecCommandSource::Unknown => ExecSource::Unknown,
+    }
+}
+
 fn is_shell_function(name: &str, namespace: Option<&str>) -> bool {
     let lower = name.to_ascii_lowercase();
     let namespace = namespace.unwrap_or_default().to_ascii_lowercase();
@@ -531,6 +614,9 @@ fn shell_command_from_arguments(arguments: &str) -> String {
             .collect::<Vec<_>>()
             .join(" ");
     }
+    if let Some(cmd) = value.get("cmd").and_then(Value::as_str) {
+        return cmd.to_string();
+    }
     if let Some(cmd) = value.get("argv").and_then(Value::as_array) {
         return cmd
             .iter()
@@ -546,8 +632,10 @@ fn shell_command_from_arguments(arguments: &str) -> String {
 }
 
 fn cwd_from_arguments(arguments: &str) -> Option<String> {
-    parse_json_or_string(arguments)
+    let value = parse_json_or_string(arguments);
+    value
         .get("cwd")
+        .or_else(|| value.get("workdir"))
         .and_then(Value::as_str)
         .map(str::to_string)
 }
@@ -576,6 +664,51 @@ fn parse_command_actions(command: &str) -> Vec<CommandAction> {
             command: trimmed.to_string(),
         }],
     }
+}
+
+fn parsed_actions_from_parsed_cmd(
+    parsed_cmd: &[ParsedCommand],
+    fallback_command: &str,
+) -> Vec<CommandAction> {
+    for parsed in parsed_cmd {
+        if let Some(command) = parsed
+            .0
+            .get("command")
+            .or_else(|| parsed.0.get("cmd"))
+            .and_then(Value::as_str)
+        {
+            return parse_command_actions(command);
+        }
+    }
+
+    // TODO(#704): map Codex ParsedCommand variants directly once that schema is
+    // imported; the raw command parser is the durable fallback for now.
+    parse_command_actions(fallback_command)
+}
+
+fn duration_ms_from_value(value: &Value) -> Option<i64> {
+    if let Some(ms) = value.as_i64() {
+        return Some(ms);
+    }
+    if let Some(ms) = value.as_f64() {
+        return Some(ms.round() as i64);
+    }
+    if let Some(text) = value.as_str() {
+        return text.parse::<i64>().ok();
+    }
+
+    let object = value.as_object()?;
+    if let Some(ms) = object
+        .get("millis")
+        .or_else(|| object.get("milliseconds"))
+        .and_then(Value::as_i64)
+    {
+        return Some(ms);
+    }
+
+    let secs = object.get("secs").and_then(Value::as_i64).unwrap_or(0);
+    let nanos = object.get("nanos").and_then(Value::as_i64).unwrap_or(0);
+    Some(secs.saturating_mul(1_000) + nanos / 1_000_000)
 }
 
 fn tool_result_blocks(output: &FunctionCallOutputPayload) -> Vec<ToolResultBlock> {
@@ -653,5 +786,36 @@ fn patch_status(status: Option<&str>) -> PatchStatus {
         Some("failed" | "error") => PatchStatus::Failed,
         Some("declined" | "rejected") => PatchStatus::Declined,
         _ => PatchStatus::InProgress,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn shell_arguments_accept_cmd_array_string_and_legacy_command() {
+        let array = serde_json::to_string(&json!({
+            "cmd": ["bash", "-lc", "echo hi"],
+            "workdir": "/tmp"
+        }))
+        .unwrap();
+        assert_eq!(shell_command_from_arguments(&array), "bash -lc echo hi");
+        assert_eq!(cwd_from_arguments(&array), Some("/tmp".to_string()));
+
+        let string = serde_json::to_string(&json!({
+            "cmd": "pwd",
+            "workdir": "/tmp"
+        }))
+        .unwrap();
+        assert_eq!(shell_command_from_arguments(&string), "pwd");
+        assert_eq!(cwd_from_arguments(&string), Some("/tmp".to_string()));
+
+        let legacy = serde_json::to_string(&json!({
+            "command": "uname -a"
+        }))
+        .unwrap();
+        assert_eq!(shell_command_from_arguments(&legacy), "uname -a");
     }
 }
