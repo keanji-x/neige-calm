@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calm_exec::flow::{FlowRowCtx, WorkerFlowItemSink, WorkerFlowSource};
 use calm_types::error::CoreError;
-use calm_types::runtime::CardRuntime;
+use calm_types::runtime::{CardRuntime, RunStatus};
 use calm_types::worker::{WorkerProviderKind, WorkerSession};
 use calm_types::worker_flow::RawRef;
 use tokio_util::sync::CancellationToken;
@@ -147,6 +147,17 @@ impl CodexRolloutFlowSource {
 
         loop {
             if self.stop.is_cancelled() {
+                return Ok(());
+            }
+
+            // TODO(#704 followup): runtime_complete_for_terminal bypasses event bus; canonicalize via Event emission.
+            if !self.runtime_is_alive().await {
+                tracing::info!(
+                    card_id = %self.runtime.card_id,
+                    runtime_id = %self.runtime.id,
+                    "codex runtime reached terminal status; flushing cursor and exiting tail"
+                );
+                persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
                 return Ok(());
             }
 
@@ -314,6 +325,25 @@ impl CodexRolloutFlowSource {
 
             persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
             sleep_or_cancel(self.options.poll_interval, &self.stop).await?;
+        }
+    }
+
+    async fn runtime_is_alive(&self) -> bool {
+        match self.repo.runtime_get_by_id(&self.runtime.id).await {
+            Ok(Some(runtime)) => !matches!(
+                runtime.status,
+                RunStatus::Exited | RunStatus::Failed | RunStatus::Superseded
+            ),
+            Ok(None) => true,
+            Err(err) => {
+                tracing::warn!(
+                    card_id = %self.runtime.card_id,
+                    runtime_id = %self.runtime.id,
+                    error = %err,
+                    "codex runtime liveness lookup failed; keeping tail alive"
+                );
+                true
+            }
         }
     }
 }

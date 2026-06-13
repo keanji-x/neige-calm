@@ -105,7 +105,7 @@ pub enum ResponseItem {
         role: String,
         content: Vec<ContentItem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        phase: Option<MessagePhase>,
+        phase: Option<String>,
     },
     AgentMessage {
         author: String,
@@ -167,22 +167,6 @@ pub enum ResponseItem {
     },
     #[serde(other)]
     Other,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessagePhase {
-    Commentary,
-    FinalAnswer,
-}
-
-impl MessagePhase {
-    fn as_str(&self) -> &'static str {
-        match self {
-            MessagePhase::Commentary => "commentary",
-            MessagePhase::FinalAnswer => "final_answer",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -381,8 +365,8 @@ fn normalize_response_item(item: &ResponseItem, env: FlowEnvelope) -> Option<Wor
         } if role == "assistant" => Some(WorkerFlowItem::AgentMessage {
             env,
             text: text_from_content(content),
-            is_final: true,
-            phase: phase.as_ref().map(|p| p.as_str().to_string()),
+            is_final: is_final_message_phase(phase.as_deref()),
+            phase: phase.clone(),
         }),
         ResponseItem::Message { role, .. } => Some(WorkerFlowItem::Unknown {
             env,
@@ -485,11 +469,7 @@ fn normalize_response_item(item: &ResponseItem, env: FlowEnvelope) -> Option<Wor
         } if is_file_change(name, input) => Some(WorkerFlowItem::FileChange {
             env,
             call_id: Some(ToolCallId::from(call_id.clone())),
-            changes: vec![FileEdit {
-                path: file_change_path(input).unwrap_or_else(|| "<patch>".to_string()),
-                kind: FileChangeKind::Update { move_path: None },
-                diff: Some(input.clone()),
-            }],
+            changes: parse_apply_patch_or_fallback(input),
             status: patch_status(status.as_deref()),
         }),
         ResponseItem::CustomToolCall {
@@ -564,6 +544,13 @@ fn text_from_content(content: &[ContentItem]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn is_final_message_phase(phase: Option<&str>) -> bool {
+    matches!(
+        phase,
+        Some("FinalAnswer") | Some("final_answer") | Some("final")
+    )
 }
 
 fn exec_status_from_local_shell(status: &LocalShellStatus) -> ExecStatus {
@@ -765,19 +752,164 @@ fn is_file_change(name: &str, input: &str) -> bool {
         || input.contains("*** Delete File:")
 }
 
-fn file_change_path(input: &str) -> Option<String> {
-    for prefix in [
-        "*** Update File: ",
-        "*** Add File: ",
-        "*** Delete File: ",
-        "--- ",
-        "+++ ",
-    ] {
-        if let Some(line) = input.lines().find(|line| line.starts_with(prefix)) {
-            return Some(line.trim_start_matches(prefix).trim().to_string());
+fn parse_apply_patch_or_fallback(input: &str) -> Vec<FileEdit> {
+    match parse_apply_patch(input) {
+        Ok(changes) => changes,
+        Err(error) => {
+            tracing::warn!(
+                error,
+                "failed to parse codex apply_patch input; falling back to single file edit"
+            );
+            vec![FileEdit {
+                path: "<patch>".to_string(),
+                kind: FileChangeKind::Update { move_path: None },
+                diff: Some(input.to_string()),
+            }]
         }
     }
-    None
+}
+
+fn parse_apply_patch(input: &str) -> Result<Vec<FileEdit>, &'static str> {
+    let mut saw_begin = false;
+    let mut saw_end = false;
+    let mut current: Option<ApplyPatchSection> = None;
+    let mut changes = Vec::new();
+
+    for line in input.lines() {
+        if !saw_begin {
+            if line == "*** Begin Patch" {
+                saw_begin = true;
+            } else if !line.trim().is_empty() {
+                return Err("missing Begin Patch header");
+            }
+            continue;
+        }
+
+        if line == "*** End Patch" {
+            finish_apply_patch_section(&mut changes, current.take());
+            saw_end = true;
+            break;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            finish_apply_patch_section(&mut changes, current.take());
+            current = Some(ApplyPatchSection::new(
+                path,
+                ApplyPatchSectionKind::Add,
+                line,
+            )?);
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            finish_apply_patch_section(&mut changes, current.take());
+            current = Some(ApplyPatchSection::new(
+                path,
+                ApplyPatchSectionKind::Delete,
+                line,
+            )?);
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            finish_apply_patch_section(&mut changes, current.take());
+            current = Some(ApplyPatchSection::new(
+                path,
+                ApplyPatchSectionKind::Update,
+                line,
+            )?);
+            continue;
+        }
+
+        if let Some(move_path) = line.strip_prefix("*** Move to: ") {
+            let Some(section) = current.as_mut() else {
+                return Err("Move to header without active section");
+            };
+            if section.kind != ApplyPatchSectionKind::Update {
+                return Err("Move to header outside update section");
+            }
+            let move_path = move_path.trim();
+            if move_path.is_empty() {
+                return Err("empty Move to path");
+            }
+            section.move_path = Some(move_path.to_string());
+            section.diff_lines.push(line.to_string());
+            continue;
+        }
+
+        if line.starts_with("*** ") {
+            return Err("malformed patch header");
+        }
+
+        let Some(section) = current.as_mut() else {
+            if line.trim().is_empty() {
+                continue;
+            }
+            return Err("patch content before file section");
+        };
+        section.diff_lines.push(line.to_string());
+    }
+
+    if !saw_begin {
+        return Err("missing Begin Patch header");
+    }
+    if !saw_end {
+        return Err("missing End Patch header");
+    }
+    if changes.is_empty() {
+        return Err("patch contained no file sections");
+    }
+    Ok(changes)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ApplyPatchSectionKind {
+    Add,
+    Delete,
+    Update,
+}
+
+struct ApplyPatchSection {
+    path: String,
+    kind: ApplyPatchSectionKind,
+    move_path: Option<String>,
+    diff_lines: Vec<String>,
+}
+
+impl ApplyPatchSection {
+    fn new(path: &str, kind: ApplyPatchSectionKind, header: &str) -> Result<Self, &'static str> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err("empty file path");
+        }
+        Ok(Self {
+            path: path.to_string(),
+            kind,
+            move_path: None,
+            diff_lines: vec![header.to_string()],
+        })
+    }
+}
+
+fn finish_apply_patch_section(changes: &mut Vec<FileEdit>, section: Option<ApplyPatchSection>) {
+    let Some(section) = section else {
+        return;
+    };
+    let (kind, diff) = match section.kind {
+        ApplyPatchSectionKind::Add => (FileChangeKind::Add, Some(section.diff_lines.join("\n"))),
+        ApplyPatchSectionKind::Delete => (FileChangeKind::Delete, None),
+        ApplyPatchSectionKind::Update => (
+            FileChangeKind::Update {
+                move_path: section.move_path,
+            },
+            Some(section.diff_lines.join("\n")),
+        ),
+    };
+    changes.push(FileEdit {
+        path: section.path,
+        kind,
+        diff,
+    });
 }
 
 fn patch_status(status: Option<&str>) -> PatchStatus {
@@ -793,6 +925,51 @@ fn patch_status(status: Option<&str>) -> PatchStatus {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn normalize_assistant_message(phase: Option<&str>) -> WorkerFlowItem {
+        let mut payload = json!({
+            "timestamp": "2026-06-13T00:00:00Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-assistant",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "done" }]
+            }
+        });
+        if let Some(phase) = phase {
+            payload["payload"]["phase"] = json!(phase);
+        }
+        let line: RolloutLine = serde_json::from_value(payload).unwrap();
+        normalize_rollout_line(
+            &line,
+            0,
+            0,
+            &WorkerSessionId::from("sess"),
+            RawRef {
+                provider: WorkerProviderKind::Codex,
+                source_path: Some("/tmp/rollout.jsonl".to_string()),
+                line: Some(0),
+                record_type: Some("message".to_string()),
+            },
+        )
+        .unwrap()
+    }
+
+    fn assert_agent_phase(
+        item: WorkerFlowItem,
+        expected_final: bool,
+        expected_phase: Option<&str>,
+    ) {
+        let WorkerFlowItem::AgentMessage {
+            is_final, phase, ..
+        } = item
+        else {
+            panic!("expected agent message");
+        };
+        assert_eq!(is_final, expected_final);
+        assert_eq!(phase.as_deref(), expected_phase);
+    }
 
     #[test]
     fn shell_arguments_accept_cmd_array_string_and_legacy_command() {
@@ -817,5 +994,28 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(shell_command_from_arguments(&legacy), "uname -a");
+    }
+
+    #[test]
+    fn assistant_final_answer_phase_marks_final() {
+        assert_agent_phase(
+            normalize_assistant_message(Some("FinalAnswer")),
+            true,
+            Some("FinalAnswer"),
+        );
+    }
+
+    #[test]
+    fn assistant_commentary_phase_is_not_final() {
+        assert_agent_phase(
+            normalize_assistant_message(Some("Commentary")),
+            false,
+            Some("Commentary"),
+        );
+    }
+
+    #[test]
+    fn assistant_missing_phase_is_not_final() {
+        assert_agent_phase(normalize_assistant_message(None), false, None);
     }
 }

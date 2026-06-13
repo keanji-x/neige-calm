@@ -42,6 +42,12 @@ pub async fn seed_card_and_runtime_with_status(
     thread_id: Option<&str>,
     status: RunStatus,
 ) -> SeededRuntime {
+    let card = seed_codex_card(repo, card_id).await;
+    let runtime = seed_runtime_for_card_with_status(repo, &card, thread_id, status).await;
+    SeededRuntime { card, runtime }
+}
+
+pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
     let mut tx = repo.pool().begin().await.unwrap();
     let cove = cove_create_tx(
         &mut tx,
@@ -82,10 +88,21 @@ pub async fn seed_card_and_runtime_with_status(
     )
     .await
     .unwrap();
+    tx.commit().await.unwrap();
+    card
+}
+
+pub async fn seed_runtime_for_card_with_status(
+    repo: &Arc<SqlxRepo>,
+    card: &Card,
+    thread_id: Option<&str>,
+    status: RunStatus,
+) -> CardRuntime {
+    let mut tx = repo.pool().begin().await.unwrap();
     let runtime = runtime_start_tx(
         &mut tx,
         RuntimeInit {
-            id: format!("rt-{card_id}"),
+            id: format!("rt-{}", card.id),
             card_id: card.id.as_str().to_string(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
@@ -103,8 +120,7 @@ pub async fn seed_card_and_runtime_with_status(
     .await
     .unwrap();
     tx.commit().await.unwrap();
-
-    SeededRuntime { card, runtime }
+    runtime
 }
 
 pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {

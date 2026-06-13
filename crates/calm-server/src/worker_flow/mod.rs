@@ -209,6 +209,33 @@ impl WorkerFlowDriver {
                     "worker-flow runtime-status lookup failed"
                 ),
             },
+            Event::CardAdded(card) if card.kind == "codex" => {
+                let card_id = card.id.to_string();
+                match self.repo.runtime_get_active_for_card(&card_id).await {
+                    Ok(Some(runtime))
+                        if runtime.kind == RuntimeKind::CodexCard
+                            && runtime.agent_provider == Some(AgentProvider::Codex) =>
+                    {
+                        if let Err(err) = self.attach_runtime(runtime).await {
+                            tracing::warn!(
+                                card_id = %card_id,
+                                error = %err,
+                                "worker-flow card-added attach failed"
+                            );
+                        }
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => tracing::warn!(
+                        card_id = %card_id,
+                        "worker-flow codex CardAdded event had no active runtime row"
+                    ),
+                    Err(err) => tracing::warn!(
+                        card_id = %card_id,
+                        error = %err,
+                        "worker-flow card-added runtime lookup failed"
+                    ),
+                }
+            }
             Event::RuntimeSuperseded {
                 new_runtime_id,
                 card_id,

@@ -213,7 +213,7 @@
     "call_id": "call-patch",
     "changes": [
       {
-        "diff": "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** End Patch",
+        "diff": "*** Update File: src/main.rs\n@@\n-old\n+new",
         "kind": {
           "move_path": null,
           "type": "update"
