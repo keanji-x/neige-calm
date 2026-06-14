@@ -3,7 +3,7 @@
 -- worker_sessions(id) == runtimes(id), so the source-side change in
 -- session_from_runtime now writes the correct value.
 --
--- This migration recreates the table to add NOT NULL + FK. The table is
+-- This migration recreates the table to add the worker_sessions FK. The table is
 -- empty in any current deployment (no worker_flow_items rows existed before
 -- the orchestrator restarted with the latest code), so no backfill is needed.
 
@@ -14,8 +14,8 @@ CREATE TABLE worker_flow_items_new (
   card_id           TEXT REFERENCES cards(id) ON DELETE SET NULL,
   runtime_id        TEXT,
   wave_id           TEXT,
-  worker_session_id TEXT NOT NULL
-                    REFERENCES worker_sessions(id) ON DELETE CASCADE,
+  worker_session_id TEXT
+                    REFERENCES worker_sessions(id) ON DELETE SET NULL,  -- nullable on purpose: row must survive session+card delete (#695)
   kind              TEXT NOT NULL,
   payload           TEXT NOT NULL,
   created_at_ms     INTEGER NOT NULL
