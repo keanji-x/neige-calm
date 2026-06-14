@@ -5,6 +5,15 @@
 //! established that PTY spawn order matches `thread/started` notification
 //! order, so this registry FIFO-binds the next shared-daemon thread start to
 //! the oldest pending card.
+//!
+//! A `PendingEntry` represents one codex spawn awaiting its `thread/started`.
+//! Its identity is the spawn: `terminal_id` and `runtime_id` are each unique
+//! per spawn, with `runtime_id == worker_session.id`. `card_id` is not unique
+//! in the queue because a card can be rapidly re-spawned, queuing multiple
+//! entries. Therefore every per-spawn operation (register-dedup, bind,
+//! dead-terminal expiry, stale-drop cleanup, compensation-remove) must key on
+//! the spawn (`runtime_id` / `terminal_id`), never on `card_id`. `card_id` in
+//! this registry is informational for logging and scope only.
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -16,7 +25,7 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     runtime_bind_attribution_tx, runtime_clear_terminal_run_id_tx, runtime_complete_tx,
-    runtime_get_active_for_card_tx, runtime_set_status_tx,
+    runtime_get_by_id_tx, runtime_set_status_tx,
 };
 use crate::db::{Repo, RepoEventWrite, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -39,6 +48,7 @@ pub struct PendingEntry {
     pub role: CardRole,
     pub wave_id: Option<String>,
     pub terminal_id: String,
+    pub runtime_id: String,
     /// PTY pid (best-effort, for debug logs). Not used for attribution.
     pub pty_pid: Option<i32>,
     pub registered_at: Instant,
@@ -48,12 +58,18 @@ pub struct PendingEntry {
 }
 
 impl PendingEntry {
-    pub fn new(card_id: String, wave_id: Option<String>, terminal_id: String) -> Self {
+    pub fn new(
+        card_id: String,
+        wave_id: Option<String>,
+        terminal_id: String,
+        runtime_id: String,
+    ) -> Self {
         Self {
             card_id,
             role: CardRole::Worker,
             wave_id,
             terminal_id,
+            runtime_id,
             pty_pid: None,
             registered_at: Instant::now(),
             belt_and_suspenders_attribution_via_tools_call: false,
@@ -79,13 +95,13 @@ impl PendingThreadStartRegistry {
         let card_id = entry.card_id.clone();
         let wave_id = entry.wave_id.clone();
         let terminal_id = entry.terminal_id.clone();
+        let runtime_id = entry.runtime_id.clone();
         let pty_pid = entry.pty_pid;
         let (queue_len_after, already_registered) = {
             let mut queue = self.queue.lock().await;
-            if queue
-                .iter()
-                .any(|pending| pending.card_id == card_id.as_str())
-            {
+            if queue.iter().any(|pending| {
+                pending.card_id == card_id.as_str() && pending.runtime_id == runtime_id.as_str()
+            }) {
                 (queue.len(), true)
             } else {
                 queue.push_back(entry);
@@ -97,6 +113,7 @@ impl PendingThreadStartRegistry {
             %card_id,
             ?wave_id,
             %terminal_id,
+            %runtime_id,
             ?pty_pid,
             queue_len_after,
             already_registered,
@@ -105,9 +122,12 @@ impl PendingThreadStartRegistry {
         Ok(())
     }
 
-    pub async fn remove_by_card(&self, card_id: &str) -> bool {
+    pub async fn remove_by_runtime(&self, runtime_id: &str) -> bool {
         let mut queue = self.queue.lock().await;
-        let Some(index) = queue.iter().position(|entry| entry.card_id == card_id) else {
+        let Some(index) = queue
+            .iter()
+            .position(|entry| entry.runtime_id == runtime_id)
+        else {
             return false;
         };
         queue.remove(index).is_some()
@@ -175,8 +195,8 @@ impl PendingThreadStartRegistry {
 
             let age_ms = entry.registered_at.elapsed().as_millis();
             let card_id = entry.card_id.clone();
-            match self.bind_entry(&card_id, thread_id).await {
-                Ok(()) => {
+            match self.bind_entry(&entry, thread_id).await {
+                Ok(BindEntryOutcome::Bound) => {
                     tracing::info!(
                         target = "shared_codex_daemon::pending_bind",
                         %thread_id,
@@ -185,6 +205,17 @@ impl PendingThreadStartRegistry {
                         "bound pending shared codex empty-card thread start"
                     );
                     return Ok(Some(card_id));
+                }
+                Ok(BindEntryOutcome::Orphan { reason }) => {
+                    self.drop_stale_entry(entry, reason).await;
+                    tracing::warn!(
+                        target = "shared_codex_daemon::pending_orphan_thread_started",
+                        %thread_id,
+                        %card_id,
+                        reason,
+                        "registered runtime missing or inactive; treating thread_id as orphan"
+                    );
+                    return Ok(None);
                 }
                 Err(err) => {
                     let mut queue = self.queue.lock().await;
@@ -234,7 +265,7 @@ impl PendingThreadStartRegistry {
                 .collect::<Vec<_>>()
         };
 
-        let mut dead_card_ids = HashSet::new();
+        let mut dead_terminals = HashSet::new();
         for (card_id, terminal_id) in snapshot {
             let terminal = match self.repo.terminal_get(&terminal_id).await {
                 Ok(terminal) => terminal,
@@ -254,11 +285,11 @@ impl PendingThreadStartRegistry {
                 Some(terminal) => terminal.exit_code.is_some() || terminal.signal_killed,
             };
             if is_dead {
-                dead_card_ids.insert(card_id);
+                dead_terminals.insert(terminal_id);
             }
         }
 
-        if dead_card_ids.is_empty() {
+        if dead_terminals.is_empty() {
             return 0;
         }
 
@@ -267,7 +298,7 @@ impl PendingThreadStartRegistry {
             let mut queue = self.queue.lock().await;
             let mut kept = VecDeque::with_capacity(queue.len());
             while let Some(entry) = queue.pop_front() {
-                if dead_card_ids.contains(&entry.card_id) {
+                if dead_terminals.contains(&entry.terminal_id) {
                     expired.push(entry);
                 } else {
                     kept.push_back(entry);
@@ -301,10 +332,14 @@ impl PendingThreadStartRegistry {
     }
 
     async fn drop_stale_entry(&self, entry: PendingEntry, reason: &str) {
-        let payload_cleared =
-            card_payload_clear_pending_status(self.repo.as_ref(), &self.events, &entry.card_id)
-                .await
-                .is_ok();
+        let payload_cleared = card_payload_clear_pending_status(
+            self.repo.as_ref(),
+            &self.events,
+            &entry.card_id,
+            &entry.runtime_id,
+        )
+        .await
+        .is_ok();
         tracing::warn!(
             target = "shared_codex_daemon::pending_drop_stale",
             card_id = %entry.card_id,
@@ -316,7 +351,8 @@ impl PendingThreadStartRegistry {
         );
     }
 
-    async fn bind_entry(&self, card_id: &str, thread_id: &str) -> Result<()> {
+    async fn bind_entry(&self, entry: &PendingEntry, thread_id: &str) -> Result<BindEntryOutcome> {
+        let card_id = &entry.card_id;
         let card = self
             .repo
             .card_get(card_id)
@@ -330,12 +366,13 @@ impl PendingThreadStartRegistry {
         )
         .await?;
         let card_id_for_tx = card_id.to_string();
+        let runtime_id_for_tx = entry.runtime_id.clone();
         let thread_id_for_tx = thread_id.to_string();
         let card_for_event = card;
         let card_role_cache = CardRoleCache::default();
         let wave_cove_cache = WaveCoveCache::default();
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
-        let (_updated, _event_ids) = write_with_events_typed(
+        let result = write_with_events_typed(
             self.repo.as_ref(),
             ActorId::Kernel,
             None,
@@ -343,13 +380,25 @@ impl PendingThreadStartRegistry {
             &write,
             move |tx| {
                 Box::pin(async move {
-                    let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                    let runtime = runtime_get_by_id_tx(tx, &runtime_id_for_tx)
                         .await?
                         .ok_or_else(|| {
-                            CalmError::Internal(format!(
-                                "no active runtime for card {card_id_for_tx} during pending thread bind"
-                            ))
+                            pending_runtime_orphan_error(
+                                PENDING_RUNTIME_ORPHAN_MISSING,
+                                &runtime_id_for_tx,
+                            )
                         })?;
+                    if !runtime_status_is_active(&runtime.status) {
+                        return Err(pending_runtime_orphan_error(
+                            PENDING_RUNTIME_ORPHAN_NOT_ACTIVE,
+                            &runtime_id_for_tx,
+                        ));
+                    }
+                    assert_eq!(
+                        runtime.card_id.as_str(),
+                        card_id_for_tx.as_str(),
+                        "pending runtime/card mismatch during pending thread bind"
+                    );
                     let old_status = runtime.status.clone();
                     let runtime_id = runtime.id.clone();
                     runtime_bind_attribution_tx(
@@ -388,15 +437,64 @@ impl PendingThreadStartRegistry {
                 })
             },
         )
-        .await?;
-        Ok(())
+        .await;
+        match result {
+            Ok((_updated, _event_ids)) => Ok(BindEntryOutcome::Bound),
+            Err(err) => {
+                if let Some(reason) = pending_runtime_orphan_reason(&err) {
+                    Ok(BindEntryOutcome::Orphan { reason })
+                } else {
+                    Err(err)
+                }
+            }
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindEntryOutcome {
+    Bound,
+    Orphan { reason: &'static str },
+}
+
+const PENDING_RUNTIME_ORPHAN_PREFIX: &str = "__pending_codex_runtime_orphan__";
+const PENDING_RUNTIME_ORPHAN_MISSING: &str = "thread_started_runtime_missing";
+const PENDING_RUNTIME_ORPHAN_NOT_ACTIVE: &str = "thread_started_runtime_not_active";
+
+fn pending_runtime_orphan_error(reason: &'static str, runtime_id: &str) -> CalmError {
+    CalmError::Internal(format!(
+        "{PENDING_RUNTIME_ORPHAN_PREFIX}:{reason}:{runtime_id}"
+    ))
+}
+
+fn pending_runtime_orphan_reason(err: &CalmError) -> Option<&'static str> {
+    let CalmError::Internal(message) = err else {
+        return None;
+    };
+    let reason = message
+        .strip_prefix(PENDING_RUNTIME_ORPHAN_PREFIX)?
+        .strip_prefix(':')?
+        .split(':')
+        .next()?;
+    match reason {
+        PENDING_RUNTIME_ORPHAN_MISSING => Some(PENDING_RUNTIME_ORPHAN_MISSING),
+        PENDING_RUNTIME_ORPHAN_NOT_ACTIVE => Some(PENDING_RUNTIME_ORPHAN_NOT_ACTIVE),
+        _ => None,
+    }
+}
+
+fn runtime_status_is_active(status: &RunStatus) -> bool {
+    matches!(
+        status,
+        RunStatus::Starting | RunStatus::Running | RunStatus::Idle | RunStatus::TurnPending
+    )
 }
 
 pub(crate) async fn card_payload_clear_pending_status(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
     card_id: &str,
+    runtime_id: &str,
 ) -> Result<()> {
     let card = repo
         .card_get(card_id)
@@ -404,7 +502,7 @@ pub(crate) async fn card_payload_clear_pending_status(
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
     let scope =
         crate::routes::cards::card_scope(repo, card.id.clone(), card.wave_id.clone()).await?;
-    let card_id_for_tx = card_id.to_string();
+    let runtime_id_for_tx = runtime_id.to_string();
     let card_for_event = card;
     let card_role_cache = CardRoleCache::default();
     let wave_cove_cache = WaveCoveCache::default();
@@ -418,7 +516,9 @@ pub(crate) async fn card_payload_clear_pending_status(
         &write,
         move |tx| {
             Box::pin(async move {
-                if let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? {
+                if let Some(runtime) = runtime_get_by_id_tx(tx, &runtime_id_for_tx).await?
+                    && runtime_status_is_active(&runtime.status)
+                {
                     runtime_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
                 }
                 let card = card_for_event;
@@ -431,7 +531,7 @@ pub(crate) async fn card_payload_clear_pending_status(
 }
 
 fn same_pending_entry(a: &PendingEntry, b: &PendingEntry) -> bool {
-    a.card_id == b.card_id && a.terminal_id == b.terminal_id
+    a.runtime_id == b.runtime_id && a.terminal_id == b.terminal_id
 }
 
 pub fn spawn_periodic_expire_task(
@@ -500,18 +600,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bind_errors_when_no_active_runtime() {
+    async fn bind_orphans_when_registered_runtime_missing() {
         let (repo, events, card_id) = seed_card_without_runtime().await;
         let registry = PendingThreadStartRegistry::new(repo, events);
+        let entry = PendingEntry::new(
+            card_id,
+            None,
+            "terminal-missing-runtime".to_string(),
+            "runtime-missing".to_string(),
+        );
 
-        let err = registry.bind_entry(&card_id, "T-missing-runtime").await;
+        let outcome = registry.bind_entry(&entry, "T-missing-runtime").await;
 
-        match err {
-            Err(CalmError::Internal(message)) => assert_eq!(
-                message,
-                format!("no active runtime for card {card_id} during pending thread bind")
-            ),
-            other => panic!("expected missing-runtime internal error, got {other:?}"),
-        }
+        assert_eq!(
+            outcome.unwrap(),
+            BindEntryOutcome::Orphan {
+                reason: PENDING_RUNTIME_ORPHAN_MISSING,
+            }
+        );
     }
 }

@@ -136,7 +136,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
         })
         .await
         .expect("create spec card");
-    calm_server::db::write_in_tx_typed(repo.as_ref(), {
+    let runtime = calm_server::db::write_in_tx_typed(repo.as_ref(), {
         let card_id = spec_card.id.to_string();
         move |tx| {
             Box::pin(async move {
@@ -182,6 +182,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
                 spec_card.id.to_string(),
                 Some(wave_id.to_string()),
                 terminal.id.to_string(),
+                runtime.id.clone(),
             )
             .with_role(calm_server::model::CardRole::Spec),
         )
@@ -230,7 +231,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
 }
 
 #[tokio::test]
-async fn dispatcher_pending_thread_bind_failure_does_not_broadcast_or_mutate() {
+async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pending() {
     let (repo, events, _cache, _wcc, wave_id, _cove_id) = boot().await;
     let spec_card = repo
         .card_create(NewCard {
@@ -258,6 +259,7 @@ async fn dispatcher_pending_thread_bind_failure_does_not_broadcast_or_mutate() {
                 spec_card.id.to_string(),
                 Some(wave_id.to_string()),
                 terminal.id.to_string(),
+                "missing-runtime".to_string(),
             )
             .with_role(calm_server::model::CardRole::Spec),
         )
@@ -269,10 +271,10 @@ async fn dispatcher_pending_thread_bind_failure_does_not_broadcast_or_mutate() {
         pending
             .on_thread_started("thread-that-cannot-persist")
             .await
-            .expect("missing runtime re-parks pending entry"),
+            .expect("missing runtime is consumed as an orphan"),
         None
     );
-    assert_eq!(pending.pending_count().await, 1);
+    assert_eq!(pending.pending_count().await, 0);
 
     let unchanged = repo
         .card_get(spec_card.id.as_str())
@@ -283,11 +285,11 @@ async fn dispatcher_pending_thread_bind_failure_does_not_broadcast_or_mutate() {
         unchanged.payload,
         serde_json::json!(["corrupt-payload-shape"])
     );
-    let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
-    assert!(
-        no_event.is_err(),
-        "failed initial-prompt backfill must not broadcast CardUpdated; got {no_event:?}"
-    );
+    let envelope = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("stale pending clear broadcasts CardUpdated")
+        .expect("event bus open");
+    assert!(matches!(envelope.event, Event::CardUpdated(_)));
 }
 
 /// Poll a predicate every 20ms until it returns Some(...) or the

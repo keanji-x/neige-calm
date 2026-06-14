@@ -488,6 +488,7 @@ impl ProviderAdapter for CodexAdapter {
         let terminal_id = output_string(output, "terminal_id")?;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
+        let runtime_id = output_string(output, "runtime_id")?;
         let cwd = output_string(output, "cwd")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
@@ -518,6 +519,7 @@ impl ProviderAdapter for CodexAdapter {
                     card_id,
                     Some(wave_id),
                     terminal_id.clone(),
+                    runtime_id.clone(),
                 ))
                 .await?;
 
@@ -572,9 +574,10 @@ impl ProviderAdapter for CodexAdapter {
                 json!({ "card_id": card_id }),
             ));
         } else {
+            let runtime_id = output_string(output, "runtime_id")?;
             steps.push(step(
                 "pending_codex_threads_remove_by_card",
-                json!({ "card_id": card_id.clone() }),
+                json!({ "card_id": card_id.clone(), "runtime_id": runtime_id }),
             ));
             steps.push(step(
                 "card_payload_clear_pending_status",
@@ -593,7 +596,7 @@ impl ProviderAdapter for CodexAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
+        output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
@@ -646,16 +649,20 @@ impl ProviderAdapter for CodexAdapter {
                 Ok(())
             }
             "pending_codex_threads_remove_by_card" => {
-                let card_id = step_arg_string(step, "card_id")?;
-                self.pending_codex_threads.remove_by_card(&card_id).await;
+                let runtime_id = output_string(output, "runtime_id")?;
+                self.pending_codex_threads
+                    .remove_by_runtime(&runtime_id)
+                    .await;
                 Ok(())
             }
             "card_payload_clear_pending_status" => {
                 let card_id = step_arg_string(step, "card_id")?;
+                let runtime_id = output_string(output, "runtime_id")?;
                 match crate::pending_codex_threads::card_payload_clear_pending_status(
                     ctx.repo.as_ref(),
                     &ctx.events,
                     &card_id,
+                    &runtime_id,
                 )
                 .await
                 {
