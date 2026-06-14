@@ -103,7 +103,7 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
         role: String,
-        content: Vec<ContentItem>,
+        content: Vec<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         phase: Option<String>,
     },
@@ -167,22 +167,6 @@ pub enum ResponseItem {
     },
     #[serde(other)]
     Other,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentItem {
-    InputText {
-        text: String,
-    },
-    InputImage {
-        image_url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,
-    },
-    OutputText {
-        text: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -355,7 +339,7 @@ fn normalize_response_item(item: &ResponseItem, env: FlowEnvelope) -> Option<Wor
             ..
         } if role == "user" => Some(WorkerFlowItem::UserMessage {
             env,
-            content: content.iter().map(message_block_from_content).collect(),
+            content: message_blocks_from_content(content),
         }),
         ResponseItem::Message {
             role,
@@ -521,29 +505,81 @@ fn parse_timestamp_ms(timestamp: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_millis())
 }
 
-fn message_block_from_content(item: &ContentItem) -> MessageBlock {
-    match item {
-        ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-            MessageBlock::Text { text: text.clone() }
+const UNRECOGNIZED_MESSAGE_CONTENT: &str = "[message with unrecognized content]";
+
+fn message_blocks_from_content(content: &[Value]) -> Vec<MessageBlock> {
+    let mut blocks = content
+        .iter()
+        .map(message_block_from_content)
+        .collect::<Vec<_>>();
+    if blocks.is_empty() {
+        blocks.push(MessageBlock::Text {
+            text: UNRECOGNIZED_MESSAGE_CONTENT.to_string(),
+        });
+    }
+    blocks
+}
+
+fn message_block_from_content(item: &Value) -> MessageBlock {
+    let raw_type = content_type(item).unwrap_or("unknown");
+    match raw_type {
+        "input_text" | "output_text" | "text" => field_as_string(item, &["text"])
+            .map(|text| MessageBlock::Text { text })
+            .unwrap_or_else(|| unsupported_content_block(raw_type)),
+        "input_image" | "image" | "image_url" => {
+            let url = field_as_string(item, &["image_url", "url"]);
+            let path = field_as_string(item, &["path"]);
+            if url.is_some() || path.is_some() {
+                MessageBlock::Image { url, path }
+            } else {
+                unsupported_content_block(raw_type)
+            }
         }
-        ContentItem::InputImage { image_url, .. } => MessageBlock::Image {
-            url: Some(image_url.clone()),
-            path: None,
-        },
+        "file_ref" => field_as_string(item, &["path", "file_path"])
+            .map(|path| MessageBlock::FileRef { path })
+            .unwrap_or_else(|| unsupported_content_block(raw_type)),
+        "mention" => field_as_string(item, &["name", "text"])
+            .or_else(|| field_as_string(item, &["path"]))
+            .map(|name| MessageBlock::Mention {
+                name,
+                path: field_as_string(item, &["path"]),
+            })
+            .unwrap_or_else(|| unsupported_content_block(raw_type)),
+        _ => unsupported_content_block(raw_type),
     }
 }
 
-fn text_from_content(content: &[ContentItem]) -> String {
-    content
-        .iter()
-        .filter_map(|item| match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                Some(text.as_str())
-            }
-            ContentItem::InputImage { .. } => None,
+fn unsupported_content_block(raw_type: &str) -> MessageBlock {
+    MessageBlock::Text {
+        text: format!("[unsupported content block: {raw_type}]"),
+    }
+}
+
+fn content_type(item: &Value) -> Option<&str> {
+    item.get("type").and_then(Value::as_str)
+}
+
+fn field_as_string(item: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| item.get(*key).and_then(Value::as_str).map(str::to_string))
+}
+
+fn text_from_content(content: &[Value]) -> String {
+    let text = message_blocks_from_content(content)
+        .into_iter()
+        .filter_map(|block| match block {
+            MessageBlock::Text { text } => Some(text),
+            MessageBlock::Image { .. }
+            | MessageBlock::FileRef { .. }
+            | MessageBlock::Mention { .. } => None,
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    if text.is_empty() {
+        UNRECOGNIZED_MESSAGE_CONTENT.to_string()
+    } else {
+        text
+    }
 }
 
 fn is_final_message_phase(phase: Option<&str>) -> bool {

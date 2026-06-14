@@ -127,26 +127,30 @@ impl WorkerFlowDriver {
         if self.subscriber_started.swap(true, Ordering::SeqCst) {
             return;
         }
-        let driver = Arc::clone(self);
+        let weak = Arc::downgrade(self);
         tokio::spawn(async move {
-            driver.run_runtime_subscriber().await;
-        });
-    }
-
-    async fn run_runtime_subscriber(self: Arc<Self>) {
-        let mut rx = self.events.subscribe_filtered();
-        loop {
-            match rx.recv().await {
-                Ok(env) => self.handle_event(env.event).await,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(
-                        skipped,
-                        "worker-flow runtime subscriber lagged; future runtime events remain idempotent"
-                    );
+            let mut rx = match weak.upgrade() {
+                Some(driver) => driver.events.subscribe_filtered(),
+                None => return,
+            };
+            loop {
+                match rx.recv().await {
+                    Ok(env) => {
+                        let Some(driver) = weak.upgrade() else {
+                            return;
+                        };
+                        driver.handle_event(env.event).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "worker-flow runtime subscriber lagged; future runtime events remain idempotent"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
-        }
+        });
     }
 
     async fn handle_event(&self, event: Event) {
