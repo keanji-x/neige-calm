@@ -604,7 +604,15 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
         .await
         .unwrap()
         .expect("new runtime");
+    assert_eq!(new_runtime.status, RunStatus::TurnPending);
     assert_eq!(new_runtime.thread_id, None);
+    let active_runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("active respawned runtime");
+    assert_eq!(active_runtime.id, r2);
+    assert_eq!(active_runtime.status, RunStatus::TurnPending);
     let new_session = repo
         .session_get(&WorkerSessionId::from(r2.clone()))
         .await

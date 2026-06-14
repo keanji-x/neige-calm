@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     runtime_bind_attribution_tx, runtime_clear_terminal_run_id_tx, runtime_complete_tx,
-    runtime_get_active_for_card_tx, runtime_get_by_id_tx, runtime_set_status_tx,
+    runtime_get_by_id_tx, runtime_set_status_tx,
 };
 use crate::db::{Repo, RepoEventWrite, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -321,10 +321,14 @@ impl PendingThreadStartRegistry {
     }
 
     async fn drop_stale_entry(&self, entry: PendingEntry, reason: &str) {
-        let payload_cleared =
-            card_payload_clear_pending_status(self.repo.as_ref(), &self.events, &entry.card_id)
-                .await
-                .is_ok();
+        let payload_cleared = card_payload_clear_pending_status(
+            self.repo.as_ref(),
+            &self.events,
+            &entry.card_id,
+            &entry.runtime_id,
+        )
+        .await
+        .is_ok();
         tracing::warn!(
             target = "shared_codex_daemon::pending_drop_stale",
             card_id = %entry.card_id,
@@ -479,6 +483,7 @@ pub(crate) async fn card_payload_clear_pending_status(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
     card_id: &str,
+    runtime_id: &str,
 ) -> Result<()> {
     let card = repo
         .card_get(card_id)
@@ -486,7 +491,7 @@ pub(crate) async fn card_payload_clear_pending_status(
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
     let scope =
         crate::routes::cards::card_scope(repo, card.id.clone(), card.wave_id.clone()).await?;
-    let card_id_for_tx = card_id.to_string();
+    let runtime_id_for_tx = runtime_id.to_string();
     let card_for_event = card;
     let card_role_cache = CardRoleCache::default();
     let wave_cove_cache = WaveCoveCache::default();
@@ -500,7 +505,9 @@ pub(crate) async fn card_payload_clear_pending_status(
         &write,
         move |tx| {
             Box::pin(async move {
-                if let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await? {
+                if let Some(runtime) = runtime_get_by_id_tx(tx, &runtime_id_for_tx).await?
+                    && runtime_status_is_active(&runtime.status)
+                {
                     runtime_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
                 }
                 let card = card_for_event;

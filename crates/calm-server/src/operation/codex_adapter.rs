@@ -595,7 +595,7 @@ impl ProviderAdapter for CodexAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
+        output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
@@ -654,10 +654,12 @@ impl ProviderAdapter for CodexAdapter {
             }
             "card_payload_clear_pending_status" => {
                 let card_id = step_arg_string(step, "card_id")?;
+                let runtime_id = output_string(output, "runtime_id")?;
                 match crate::pending_codex_threads::card_payload_clear_pending_status(
                     ctx.repo.as_ref(),
                     &ctx.events,
                     &card_id,
+                    &runtime_id,
                 )
                 .await
                 {
