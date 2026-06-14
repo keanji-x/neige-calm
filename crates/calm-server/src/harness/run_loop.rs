@@ -1090,6 +1090,22 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
+    let refresh_repo = Arc::clone(&inner.repo);
+    let refresh_wave_id = inner.wave_id.clone();
+    let _refresh_head =
+        write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                wave_vcs::snapshot_transcripts_for_cards_in_wave(
+                    tx,
+                    &refresh_wave_id,
+                    None,
+                    wave_vcs::MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .map_err(CalmError::from)
+            })
+        })
+        .await?;
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,

@@ -553,7 +553,16 @@ pub async fn snapshot_transcripts_for_cards_in_wave(
     event_id: Option<i64>,
     manifest_schema_version: i64,
 ) -> Result<CommitHash> {
-    let cards = cards_for_wave_tx(tx, wave_id, &CardVisibility::announced_only()).await?;
+    let card_visibility = match head_in_tx(tx, wave_id).await? {
+        Some(parent) => {
+            let parent_manifest = tree_at_in_tx(tx, &parent).await?.ok_or_else(|| {
+                CalmError::Internal(format!("wave-vcs: missing tree for {parent}"))
+            })?;
+            CardVisibility::from_manifest(&parent_manifest)
+        }
+        None => CardVisibility::announced_only(),
+    };
+    let cards = cards_for_wave_tx(tx, wave_id, &card_visibility).await?;
     let mut delta = PathDelta::default();
     for card in cards {
         add_card_event_paths(&mut delta, &card.card.id);
@@ -1783,9 +1792,7 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
             delta.add("report.md");
             add_card_payload_path(&mut delta, card_id.as_str());
         }
-        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {
-            add_card_event_paths(&mut delta, card_id);
-        }
+        Event::CodexHook { .. } | Event::ClaudeHook { .. } => {}
         Event::CodexWorkerRequested {
             idempotency_key, ..
         }
