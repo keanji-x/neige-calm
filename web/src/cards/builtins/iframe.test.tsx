@@ -130,10 +130,14 @@ describe('IframeCard rendering', () => {
     expect(frame).toHaveAttribute('src', 'https://example.com');
   });
 
-  it('sandboxes the iframe without same-origin access', () => {
-    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+  it('same-origin target stays opaque (no allow-same-origin)', () => {
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: `${window.location.origin}/api/plugins/foo/resources/bar`,
+    });
 
-    const frame = screen.getByTitle('Embedded page: https://example.com');
+    const frame = screen.getByTitle(/Embedded page:/);
     const sandbox = frame.getAttribute('sandbox');
     expect(sandbox).toBeTruthy();
     expect(sandbox).toContain('allow-scripts');
@@ -141,6 +145,19 @@ describe('IframeCard rendering', () => {
     expect(sandbox).toContain('allow-forms');
     expect(sandbox).toContain('allow-popups-to-escape-sandbox');
     expect(sandbox).not.toContain('allow-same-origin');
+  });
+
+  it('cross-origin target gets allow-same-origin', () => {
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+
+    const frame = screen.getByTitle(/Embedded page:/);
+    const sandbox = frame.getAttribute('sandbox');
+    expect(sandbox).toBeTruthy();
+    expect(sandbox).toContain('allow-scripts');
+    expect(sandbox).toContain('allow-popups');
+    expect(sandbox).toContain('allow-forms');
+    expect(sandbox).toContain('allow-popups-to-escape-sandbox');
+    expect(sandbox).toContain('allow-same-origin');
   });
 
   it('URL bar reflects current URL', () => {

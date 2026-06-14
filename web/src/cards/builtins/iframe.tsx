@@ -33,6 +33,20 @@ const iframePayloadSchema = z.object({
 
 const warnedInvalidPayloads = new Set<string>();
 
+export function iframeSandbox(rawUrl: string): string {
+  const base =
+    'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
+  try {
+    const u = new URL(rawUrl, window.location.href);
+    if (u.origin !== window.location.origin) {
+      return `${base} allow-same-origin`;
+    }
+  } catch {
+    /* unparseable - keep the locked-down default */
+  }
+  return base;
+}
+
 function IframeCard({
   card,
   onClose,
@@ -97,18 +111,20 @@ function IframeCard({
         </button>
       </form>
       {[
-        // No allow-same-origin: forces an opaque origin even on same-origin URLs,
-        // so an /api/plugins/... target can't read parent cookies. Keeping the
-        // iframe in a keyed child list makes the reload epoch participate in
-        // reconciliation, which remounts the DOM node instead of only updating
-        // attributes on the existing element.
+        // Same-origin targets (for example, /api/plugins/...) stay opaque so they
+        // can't read parent cookies. Cross-origin targets get allow-same-origin
+        // so they run under their own origin, still can't reach parent cookies,
+        // and can use localStorage / non-null Origin WebSockets (noVNC-style apps).
+        // Keeping the iframe in a keyed child list makes the reload epoch
+        // participate in reconciliation, which remounts the DOM node instead of
+        // only updating attributes on the existing element.
         <iframe
           key={epoch}
           className="iframe-frame"
           src={currentUrl}
           title={`Embedded page: ${currentUrl}`}
           referrerPolicy="no-referrer"
-          sandbox="allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox"
+          sandbox={iframeSandbox(currentUrl)}
         />,
       ]}
     </div>
