@@ -315,7 +315,9 @@ mod tests {
         ToolCallIdentity {
             card_id: "card-1".to_string(),
             role,
+            session_id: "session-1".to_string(),
             wave_id: Some("wave-1".to_string()),
+            cove_id: "cove-1".to_string(),
             thread_id: "thread-1".to_string(),
         }
     }

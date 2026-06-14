@@ -4,11 +4,11 @@
 //! the kernel via [`crate::mcp_server::transport`] and immediately sends
 //! an `initialize` JSON-RPC request. The kernel:
 //!
-//!   1. Reads the per-card token from `params._meta["dev.neige/auth"].token`
+//!   1. Reads the per-session token from `params._meta["dev.neige/auth"].token`
 //!      (matching the slot the codex CLI populates from
 //!      `NEIGE_MCP_TOKEN`).
 //!   2. Hashes it (SHA-256 hex) and looks the hash up in
-//!      `card_mcp_tokens`.
+//!      `worker_sessions`.
 //!   3. Verifies via constant-time compare (defense-in-depth over the
 //!      `WHERE hashed_token = ?` lookup) — see
 //!      [`crate::mcp_server::auth::verify_token`].
@@ -16,13 +16,13 @@
 //!      one of two modes:
 //!      * daemon token match → [`ConnectionIdentity::DaemonTrust`], which
 //!        has no bound card and requires `_meta.threadId` per call;
-//!      * per-card token match → [`ConnectionIdentity::CardBound`], which
+//!      * per-session token match → [`ConnectionIdentity::CardBound`], which
 //!        may omit `_meta.threadId` and otherwise must resolve it back to
-//!        the bound card.
+//!        the bound session.
 //!
 //! Any failure short-circuits to an MCP-spec `initialize` error response
 //! (`InvalidParams` for malformed `_meta`, `InternalError` for repo
-//! lookup failures, custom `-32401` for "card not found / token mismatch").
+//! lookup failures, custom `-32401` for "session not found / token mismatch").
 //!
 //! ## Why we don't read the token from the env at the kernel side
 //!
@@ -30,17 +30,18 @@
 //! daemon, then `neige-mcp-stdio-shim` see it, and they pass the token
 //! through the wire in `params._meta`. The kernel side is otherwise
 //! oblivious to *which* card is on the other end of the socket. The
-//! token + `card_mcp_tokens` lookup is only connection identity in PR3b.
+//! token + active `worker_sessions` lookup is the connection credential.
 
 use crate::db::RouteRepo;
 use crate::mcp_server::auth;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{CardIdentity, ConnectionIdentity};
+use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Custom JSON-RPC error code for "presented MCP token did not resolve
-/// to a known card". Distinct from `InvalidParams` (the params were
+/// to a known session". Distinct from `InvalidParams` (the params were
 /// well-formed but the credential was wrong); distinct from
 /// `InternalError` (no kernel-side fault). `-32401` mirrors HTTP 401's
 /// "unauthorized" sense in JSON-RPC's `-324xx` reserved range for
@@ -80,7 +81,7 @@ pub async fn handle_initialize(
         .and_then(|t| t.as_str())
         .ok_or_else(|| {
             RpcError::invalid_params(
-                "initialize: missing _meta[\"dev.neige/auth\"].token (per-card MCP token required)",
+                "initialize: missing _meta[\"dev.neige/auth\"].token (per-session MCP token required)",
             )
         })?;
 
@@ -95,61 +96,58 @@ pub async fn handle_initialize(
         });
     }
 
-    // 2. Hash + lookup. The lookup is a `WHERE hashed_token = ?`
-    //    against the indexed column, so it's a single B-tree probe.
-    //    PR7a.1 (#136 followup) — the repo returns `(card_id,
-    //    stored_hash)` so step 3 can actually run the constant-time
-    //    compare promised in the doc above.
+    // 2. Hash + lookup. The lookup is a `WHERE mcp_token_hash = ?`
+    //    against active worker sessions, so stale/exited/superseded
+    //    sessions collapse to the same auth failure as an unknown token.
     let hashed = auth::hash_token(token);
-    let (card_id_str, stored_hash) = repo
-        .card_mcp_token_lookup_by_hash(&hashed)
+    let session = repo
+        .session_get_by_active_token_hash(&hashed)
         .await
         .map_err(|e| RpcError::internal(format!("token lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::custom(
-                TOKEN_NOT_RECOGNIZED_CODE,
-                "initialize: presented MCP token did not resolve to a known card",
-            )
-        })?;
+        .ok_or_else(token_not_recognized)?;
 
     // 3. Defense-in-depth verify. The SELECT above already filtered on
-    //    `hashed_token = ?`, but `verify_token` re-derives the hash and
+    //    `mcp_token_hash = ?`, but `verify_token` re-derives the hash and
     //    runs a constant-time compare against the persisted value —
     //    catches a truncated-hash migration or a malformed token row
-    //    that somehow slipped through the index. PR7a.1 (#136 followup)
-    //    wired this in: a mismatch returns the same `-32401`
-    //    "TOKEN_NOT_RECOGNIZED" error code as the lookup miss so
-    //    timing analysis can't distinguish "no row" from "row but
-    //    hash drifted".
-    if !auth::verify_token(token, &stored_hash) {
-        return Err(RpcError::custom(
-            TOKEN_NOT_RECOGNIZED_CODE,
-            "initialize: presented MCP token did not resolve to a known card",
-        ));
+    //    that somehow slipped through the index. A mismatch returns the
+    //    same `-32401` as a lookup miss so timing analysis can't
+    //    distinguish "no row" from "row but hash drifted".
+    let stored_hash = session
+        .mcp_token_hash
+        .as_deref()
+        .ok_or_else(token_not_recognized)?;
+    if !auth::verify_token(token, stored_hash) {
+        return Err(token_not_recognized());
     }
 
+    // 4. Recover the card-derived actor identity from the authenticated
+    //    session. The persisted event actor remains card-shaped; the
+    //    session Principal is threaded alongside it for the PR7 gate work.
     let card = repo
-        .card_get(&card_id_str)
+        .card_identity_get_by_session(session.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("card-bound card lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::custom(
-                TOKEN_NOT_RECOGNIZED_CODE,
-                "initialize: presented MCP token did not resolve to a known card",
-            )
-        })?;
-    let role = repo
-        .card_role_get(&card_id_str)
-        .await
-        .map_err(|e| RpcError::internal(format!("card-bound card role lookup: {e}")))?
-        .ok_or_else(|| RpcError::internal("card-bound card role lookup: missing role"))?;
-    let connection_identity = ConnectionIdentity::CardBound(CardIdentity {
-        card_id: card.id,
-        role,
-        wave_id: Some(card.wave_id.as_str().to_string()),
-    });
+        .map_err(|e| RpcError::internal(format!("session-bound card lookup: {e}")))?
+        .ok_or_else(token_not_recognized)?;
+    if card.wave_id != session.wave_id {
+        return Err(token_not_recognized());
+    }
+    let principal = Principal::Agent {
+        session_id: WorkerSessionId::from(session.id.as_str()),
+        wave_id: session.wave_id.clone(),
+        cove_id: card.cove_id.clone(),
+    };
+    let card_identity = CardIdentity {
+        card_id: card.card_id,
+        role: card.role,
+        session_id: session.id.as_str().to_string(),
+        wave_id: Some(session.wave_id.as_str().to_string()),
+        cove_id: card.cove_id.as_str().to_string(),
+    };
+    debug_assert_eq!(card_identity.to_principal(), Some(principal));
+    let connection_identity = ConnectionIdentity::CardBound(card_identity);
 
-    // 4. Build the success payload. The shape mirrors what the kernel's
+    // 5. Build the success payload. The shape mirrors what the kernel's
     //    own MCP *client* sends in its `initialize` request — same
     //    `protocolVersion` echo + a minimal `capabilities` block
     //    advertising `tools`. The exact contents of `serverInfo` are
@@ -158,6 +156,13 @@ pub async fn handle_initialize(
         connection_identity,
         result_payload,
     })
+}
+
+fn token_not_recognized() -> RpcError {
+    RpcError::custom(
+        TOKEN_NOT_RECOGNIZED_CODE,
+        "initialize: presented MCP token did not resolve to a known session",
+    )
 }
 
 fn initialize_result_payload(protocol_version_advertised: &str) -> Value {

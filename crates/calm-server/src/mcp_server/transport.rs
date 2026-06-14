@@ -41,7 +41,6 @@ use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
 };
 use crate::model::CardRole;
-use crate::runtime_lookup::resolve_card_for_thread as resolve_card_for_thread_runtime;
 use crate::runtime_repo::AgentProvider;
 use crate::state::WriteContext;
 use serde_json::{Value, json};
@@ -412,11 +411,11 @@ async fn dispatch_request(
                         .await
                         .ok()
                     {
-                        Some(identity) if same_bound_card(&identity, bound) => {
+                        Some(identity) if same_bound_session(&identity, bound) => {
                             registry.descriptors_for_role(identity.role)
                         }
                         Some(identity) => {
-                            warn_cross_card_reject(tid, &identity, bound);
+                            warn_cross_session_reject(tid, &identity, bound);
                             Vec::new()
                         }
                         _ => Vec::new(),
@@ -483,9 +482,9 @@ async fn dispatch_tools_call(
         ConnectionIdentity::CardBound(bound) => match thread_id {
             Some(tid) => {
                 let identity = resolve_thread_identity(ctx, Some(tid), name).await?;
-                if !same_bound_card(&identity, bound) {
-                    warn_cross_card_reject(tid, &identity, bound);
-                    return Err(cross_card_thread_error(tid, bound));
+                if !same_bound_session(&identity, bound) {
+                    warn_cross_session_reject(tid, &identity, bound);
+                    return Err(cross_session_thread_error(tid, bound));
                 }
                 identity
             }
@@ -513,31 +512,37 @@ fn card_bound_tool_identity(bound: &CardIdentity) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: bound.card_id.as_str().to_string(),
         role: bound.role,
+        session_id: bound.session_id.clone(),
         wave_id: bound.wave_id.clone(),
+        cove_id: bound.cove_id.clone(),
         thread_id: "card-bound".to_string(),
     }
 }
 
-fn same_bound_card(identity: &ToolCallIdentity, bound: &CardIdentity) -> bool {
-    identity.card_id == bound.card_id.as_str()
+fn same_bound_session(identity: &ToolCallIdentity, bound: &CardIdentity) -> bool {
+    identity.session_id.as_str() == bound.session_id.as_str()
 }
 
-fn warn_cross_card_reject(thread_id: &str, identity: &ToolCallIdentity, bound: &CardIdentity) {
+fn warn_cross_session_reject(thread_id: &str, identity: &ToolCallIdentity, bound: &CardIdentity) {
     let resolved_card_id = identity.card_id.as_str();
     let bound_card_id = bound.card_id.as_str();
+    let resolved_session_id = identity.session_id.as_str();
+    let bound_session_id = bound.session_id.as_str();
     tracing::warn!(
-        target: "mcp_server::cross_card_reject",
+        target: "mcp_server::cross_session_reject",
         thread_id = %thread_id,
         resolved_card_id = %resolved_card_id,
         bound_card_id = %bound_card_id,
-        "mcp_server: cross-card _meta.threadId rejected"
+        resolved_session_id = %resolved_session_id,
+        bound_session_id = %bound_session_id,
+        "mcp_server: cross-session _meta.threadId rejected"
     );
 }
 
-fn cross_card_thread_error(thread_id: &str, bound: &CardIdentity) -> RpcError {
+fn cross_session_thread_error(thread_id: &str, bound: &CardIdentity) -> RpcError {
     RpcError::invalid_params(format!(
-        "tools/call: _meta.threadId `{thread_id}` resolves to a card other than this connection's bound card `{}`",
-        bound.card_id.as_str()
+        "tools/call: _meta.threadId `{thread_id}` resolves to a session other than this connection's bound session `{}`",
+        bound.session_id
     ))
 }
 
@@ -548,35 +553,40 @@ async fn resolve_thread_identity(
 ) -> Result<ToolCallIdentity, RpcError> {
     let thread_id =
         thread_id.ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
-    let card_id =
-        resolve_card_for_thread_runtime(ctx.repo.as_ref(), AgentProvider::Codex, thread_id)
-            .await
-            .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
-            .ok_or_else(|| {
-                tracing::warn!(
-                    target: "shared_codex_daemon::mcp_identity_miss",
-                    thread_id,
-                    tool = %tool_name,
-                    "mcp_server: tools/call thread id did not resolve to a card"
-                );
-                RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
-            })?;
+    let runtime = ctx
+        .repo
+        .runtime_get_active_by_thread(AgentProvider::Codex, thread_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
+        .ok_or_else(|| {
+            tracing::warn!(
+                target: "shared_codex_daemon::mcp_identity_miss",
+                thread_id,
+                tool = %tool_name,
+                "mcp_server: tools/call thread id did not resolve to a session"
+            );
+            RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
+        })?;
     let card = ctx
         .repo
-        .card_get(&card_id)
+        .card_identity_get_by_session(&runtime.id)
         .await
-        .map_err(|e| RpcError::internal(format!("tools/call card lookup: {e}")))?
-        .ok_or_else(|| RpcError::method_not_found(&format!("unknown card_id: {card_id}")))?;
-    let role = ctx
-        .repo
-        .card_role_get(&card_id)
-        .await
-        .map_err(|e| RpcError::internal(format!("tools/call card role lookup: {e}")))?
-        .ok_or_else(|| RpcError::method_not_found(&format!("unknown card_id: {card_id}")))?;
+        .map_err(|e| RpcError::internal(format!("tools/call session card lookup: {e}")))?
+        .ok_or_else(|| {
+            RpcError::method_not_found(&format!("unknown session_id: {}", runtime.id))
+        })?;
+    if card.card_id.as_str() != runtime.card_id {
+        return Err(RpcError::method_not_found(&format!(
+            "unknown session_id: {}",
+            runtime.id
+        )));
+    }
     Ok(ToolCallIdentity {
-        card_id,
-        role,
-        wave_id: Some(card.wave_id.to_string()),
+        card_id: card.card_id.as_str().to_string(),
+        role: card.role,
+        session_id: runtime.id.clone(),
+        wave_id: Some(card.wave_id.as_str().to_string()),
+        cove_id: card.cove_id.as_str().to_string(),
         thread_id: thread_id.to_string(),
     })
 }

@@ -1,6 +1,6 @@
 pub use calm_truth::db::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
-    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn,
+    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn,
     WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
 };
 
@@ -82,6 +82,10 @@ pub trait ServerRepoReadExt {
         &self,
         hashed_token: &str,
     ) -> Result<Option<(String, String)>>;
+    async fn card_identity_get_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionCardIdentity>>;
     async fn session_get_by_active_token_hash(
         &self,
         hashed_token: &str,
@@ -289,6 +293,14 @@ where
         hashed_token: &str,
     ) -> Result<Option<(String, String)>> {
         calm_truth::db::RepoRead::card_mcp_token_lookup_by_hash(self, hashed_token)
+            .await
+            .map_err(Into::into)
+    }
+    async fn card_identity_get_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionCardIdentity>> {
+        calm_truth::db::RepoRead::card_identity_get_by_session(self, session_id)
             .await
             .map_err(Into::into)
     }

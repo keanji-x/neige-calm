@@ -51,13 +51,20 @@ jobs:
           hits=$(grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/ | wc -l)
           [ "$hits" -eq 0 ] && echo OK || { echo "::error::parallel operation-event entrance survives"; grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/; exit 1; }
 
-      - name: token authority audit gate (#679 PR6b)
+      - name: token authority audit gate (#679 PR7b-i)
         run: |
-          hits=$(grep -rnE "worker_sessions|mcp_token_hash|session_mcp_token|agent_session_id" \
-            crates/calm-server/src/mcp_server/ crates/calm-truth/src/role_gate.rs crates/calm-truth/src/mcp_auth.rs 2>/dev/null | wc -l)
-          [ "$hits" -eq 0 ] && echo "OK: no session-table auth reference on the handshake/role_gate path" \
-            || { echo "::error::session-table reference on the auth path (token authority window breach risk)"; \
-                 grep -rnE "worker_sessions|mcp_token_hash|session_mcp_token|agent_session_id" crates/calm-server/src/mcp_server/ crates/calm-truth/src/role_gate.rs crates/calm-truth/src/mcp_auth.rs; exit 1; }
+          set -euo pipefail
+          grep -q "session_get_by_active_token_hash" crates/calm-server/src/mcp_server/handshake.rs \
+            || { echo "::error::handshake must authenticate through active worker_sessions"; exit 1; }
+          if grep -n "card_mcp_token_lookup_by_hash" crates/calm-server/src/mcp_server/handshake.rs; then
+            echo "::error::handshake must not authenticate through card_mcp_tokens"
+            exit 1
+          fi
+          if grep -nE "\.card_get\(|\.card_role_get\(" crates/calm-server/src/mcp_server/transport.rs; then
+            echo "::error::transport auth path must not resolve per-call identity through card_get/card_role_get"
+            exit 1
+          fi
+          echo "OK: MCP token authority is session-bound and transport per-call auth is session-derived"
 
       # Soft backstop alongside the cargo-feature gate on
       # `AppState::raw_repo` (see `state.rs` and design doc §1.4.1).

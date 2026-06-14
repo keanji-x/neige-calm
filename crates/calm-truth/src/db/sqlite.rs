@@ -37,16 +37,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::{
-    Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonRecord,
-    SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
-    WriteWithEventsFn,
+    Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SessionCardIdentity,
+    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn,
+    WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn,
 };
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
 use crate::decision_gate::DecisionGate;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, WaveId};
+use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::*;
 use crate::runtime_repo::{
     AgentProvider, CardId as RuntimeCardId, CardRuntime, Result as RuntimeResult, RunStatus,
@@ -4804,6 +4804,39 @@ impl RepoRead for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    async fn card_identity_get_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionCardIdentity>> {
+        let rows = sqlx::query(
+            r#"SELECT c.id, c.role, c.wave_id, w.cove_id
+               FROM cards c
+               JOIN waves w ON w.id = c.wave_id
+              WHERE c.session_id = ?1
+              ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC
+              LIMIT 2"#,
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [row] => {
+                let role = CardRole::try_from(row.try_get::<String, _>("role")?)
+                    .map_err(|e| CalmError::Internal(format!("cards.role decode: {e}")))?;
+                Ok(Some(SessionCardIdentity {
+                    card_id: CardId(row.try_get("id")?),
+                    role,
+                    wave_id: WaveId(row.try_get("wave_id")?),
+                    cove_id: CoveId(row.try_get("cove_id")?),
+                }))
+            }
+            _ => Err(CalmError::Internal(format!(
+                "multiple cards linked to worker session {session_id}"
+            ))),
+        }
     }
 
     async fn session_get_by_active_token_hash(

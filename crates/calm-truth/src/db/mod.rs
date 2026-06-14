@@ -91,7 +91,7 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
-use crate::ids::ActorId;
+use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::*;
 use crate::runtime_repo::RuntimeRepo;
 use crate::session_repo::SessionRepo;
@@ -226,6 +226,19 @@ pub struct SharedCodexDaemonRecord {
     pub restart_count: i64,
     pub last_error: Option<String>,
     pub daemon_env_signature: Option<String>,
+}
+
+/// Internal MCP auth identity recovered from `cards.session_id`.
+///
+/// Deliberately narrower than [`Card`]: `cards.session_id` is not part of
+/// the public card wire model, but the MCP transport needs this card-derived
+/// actor data while session identity is the credential authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionCardIdentity {
+    pub card_id: CardId,
+    pub role: CardRole,
+    pub wave_id: WaveId,
+    pub cove_id: CoveId,
 }
 
 #[derive(Debug, Clone)]
@@ -444,6 +457,15 @@ pub trait RepoRead: Send + Sync + 'static {
         &self,
         hashed_token: &str,
     ) -> Result<Option<(String, String)>>;
+
+    /// PR7b-i Unit 2 (#679) — recover the card-derived actor identity for
+    /// an authenticated worker session. This is intentionally keyed by
+    /// `cards.session_id` so persisted events continue to use card-shaped
+    /// actors while the token authority comes from `worker_sessions`.
+    async fn card_identity_get_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionCardIdentity>>;
 
     /// PR7b-i Unit 1 (#679) — look up the active worker session bound to
     /// a presented MCP token's `SHA-256` hash. Mirrors

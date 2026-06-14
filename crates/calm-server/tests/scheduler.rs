@@ -30,7 +30,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, task_insert_tx};
 use calm_server::error::Result as CalmResult;
 use calm_server::event::EventBus;
-use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
@@ -62,6 +62,7 @@ struct Boot {
     card_role_cache: CardRoleCache,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
+    cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
@@ -152,6 +153,7 @@ async fn boot() -> Boot {
         card_role_cache,
         ctx,
         registry: Arc::new(registry),
+        cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -390,7 +392,9 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "worker-thread".into(),
     }
 }
@@ -399,7 +403,9 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
 }
@@ -1555,7 +1561,9 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
+        session_id: "sibling-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "sibling-thread".into(),
     };
 
@@ -2238,7 +2246,9 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
+        session_id: "sibling-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "sibling-thread".into(),
     };
 
@@ -2354,7 +2364,9 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
+        session_id: "forged-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "forged-thread".into(),
     };
 

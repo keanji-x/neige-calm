@@ -39,6 +39,8 @@ struct Boot {
     gate_logs_dir: std::path::PathBuf,
     cove_id: CoveId,
     wave_id: WaveId,
+    other_cove_id: CoveId,
+    other_wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
     report_card_id: CardId,
@@ -183,6 +185,8 @@ async fn boot() -> Boot {
         gate_logs_dir,
         cove_id: cove.id,
         wave_id: wave.id,
+        other_cove_id: cove2.id,
+        other_wave_id: wave2.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
         report_card_id: report_card.id,
@@ -208,7 +212,9 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -217,7 +223,9 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }
@@ -226,7 +234,9 @@ fn other_spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.other_spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
-        wave_id: Some("other-wave".to_string()),
+        session_id: "other-spec-session".to_string(),
+        wave_id: Some(boot.other_wave_id.as_str().to_string()),
+        cove_id: boot.other_cove_id.as_str().to_string(),
         thread_id: "other-spec-thread".to_string(),
     }
 }

@@ -414,6 +414,8 @@ async fn remint_updates_one_worker_session_hash_row() {
 
 async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> TokenCard {
     let token = auth::CardMcpToken::generate();
+    let token_hash = auth::hash_token(token.as_str());
+    let runtime_id = calm_server::model::new_id();
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
     let card = calm_server::model::NewCard {
         wave_id: boot.wave_id.as_str().into(),
@@ -431,7 +433,30 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
     )
     .await
     .unwrap();
-    card_mcp_token_set_tx(&mut tx, card_id, &auth::hash_token(token.as_str()))
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    card_mcp_token_set_tx(&mut tx, card_id, &token_hash)
+        .await
+        .unwrap();
+    session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -585,8 +610,8 @@ async fn cardbound_with_cross_card_thread_id_rejects() {
     assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
     let err_msg = resp["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        err_msg.contains("bound card") && err_msg.contains(&boot.spec_card_id),
-        "cross-card rejection should explain the bound card mismatch: {resp:#?}"
+        err_msg.contains("bound session"),
+        "cross-card rejection should explain the bound session mismatch: {resp:#?}"
     );
     assert!(
         !err_msg.contains(&boot.worker_card_id),

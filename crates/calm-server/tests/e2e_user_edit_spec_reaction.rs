@@ -49,7 +49,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, EventBus, SubscribeFilter, SubscribeScope};
-use calm_server::ids::{CardId, WaveId};
+use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_READ, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -76,6 +76,7 @@ struct Boot {
     auth_state: AuthState,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
+    cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
     report_card_id: CardId,
@@ -192,6 +193,7 @@ async fn boot() -> Boot {
         auth_state,
         ctx,
         registry,
+        cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         report_card_id: report_card.id,
@@ -203,7 +205,9 @@ fn spec_identity(b: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: b.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        session_id: "spec-session".to_string(),
         wave_id: Some(b.wave_id.as_str().to_string()),
+        cove_id: b.cove_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
