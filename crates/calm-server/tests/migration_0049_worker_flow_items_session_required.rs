@@ -44,7 +44,8 @@ async fn stage_pre_0049_schema(pool: &SqlitePool) {
         CREATE TABLE runtimes (
           id TEXT PRIMARY KEY,
           thread_id TEXT NULL,
-          session_id TEXT NULL
+          session_id TEXT NULL,
+          created_at_ms INTEGER NOT NULL
         );
         CREATE TABLE worker_sessions (id TEXT PRIMARY KEY);
         CREATE TABLE worker_flow_items (
@@ -104,12 +105,12 @@ async fn migration_0049_translates_agent_session_keys_and_preserves_orphans() {
     stage_pre_0049_schema(&pool).await;
 
     sqlx::query(
-        r#"INSERT INTO runtimes (id, thread_id, session_id)
+        r#"INSERT INTO runtimes (id, thread_id, session_id, created_at_ms)
            VALUES
-             ('runtime-codex', 'thread-old', NULL),
-             ('runtime-claude', NULL, 'session-old'),
-             ('runtime-no-worker-session', 'thread-no-worker-session', NULL),
-             ('runtime-existing', 'different-thread', NULL)"#,
+             ('runtime-codex', 'thread-old', NULL, 100),
+             ('runtime-claude', NULL, 'session-old', 200),
+             ('runtime-no-worker-session', 'thread-no-worker-session', NULL, 300),
+             ('runtime-existing', 'different-thread', NULL, 400)"#,
     )
     .execute(&pool)
     .await
@@ -224,4 +225,58 @@ async fn migration_0049_translates_agent_session_keys_and_preserves_orphans() {
     assert_eq!(fk.get::<String, _>("table"), "worker_sessions");
     assert_eq!(fk.get::<String, _>("to"), "id");
     assert_eq!(fk.get::<String, _>("on_delete"), "SET NULL");
+}
+
+#[tokio::test]
+async fn migration_0049_picks_newer_runtime_when_agent_session_key_is_shared() {
+    let pool = fresh_pool().await;
+    stage_pre_0049_schema(&pool).await;
+
+    sqlx::query(
+        r#"INSERT INTO runtimes (id, thread_id, session_id, created_at_ms)
+           VALUES
+             ('runtime-older', 'shared-thread', NULL, 100),
+             ('runtime-newer', 'shared-thread', NULL, 200)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO worker_sessions (id)
+           VALUES ('runtime-older'), ('runtime-newer')"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    seed_flow_item(
+        &pool,
+        1,
+        "card-shared-thread",
+        None,
+        Some("shared-thread"),
+        "codex",
+    )
+    .await;
+
+    apply_sql(
+        &pool,
+        "0049_worker_flow_items_session_required",
+        MIGRATION_0049_SQL,
+    )
+    .await;
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_flow_items")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let row =
+        sqlx::query("SELECT runtime_id, worker_session_id FROM worker_flow_items WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row.get::<String, _>("runtime_id"), "runtime-newer");
+    assert_eq!(row.get::<String, _>("worker_session_id"), "runtime-newer");
 }

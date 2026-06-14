@@ -24,24 +24,39 @@ CREATE TABLE worker_flow_items_new (
 -- Defensive copy of any existing rows. If a row still carries the old agent
 -- session string, resolve it to the runtime id used by worker_sessions(id).
 -- Rows with no runtime/session match keep their payload and receive NULL FKs.
+WITH translated AS (
+    SELECT w.id,
+           w.card_id,
+           COALESCE(
+               w.runtime_id,
+               (SELECT r.id
+                  FROM runtimes r
+                 WHERE r.thread_id = w.worker_session_id
+                    OR r.session_id = w.worker_session_id
+                 ORDER BY r.created_at_ms DESC, r.id DESC
+                 LIMIT 1)
+           ) AS resolved_runtime_id,
+           w.wave_id,
+           w.kind,
+           w.payload,
+           w.created_at_ms
+      FROM worker_flow_items w
+)
 INSERT INTO worker_flow_items_new
     (id, card_id, runtime_id, wave_id, worker_session_id, kind, payload, created_at_ms)
-SELECT w.id,
-       w.card_id,
-       COALESCE(w.runtime_id, r.id),
-       w.wave_id,
+SELECT t.id,
+       t.card_id,
+       t.resolved_runtime_id,
+       t.wave_id,
        CASE
-         WHEN EXISTS (SELECT 1 FROM worker_sessions ws2 WHERE ws2.id = COALESCE(w.runtime_id, r.id))
-           THEN COALESCE(w.runtime_id, r.id)
+         WHEN EXISTS (SELECT 1 FROM worker_sessions ws2 WHERE ws2.id = t.resolved_runtime_id)
+           THEN t.resolved_runtime_id
          ELSE NULL
        END AS worker_session_id,
-       w.kind,
-       w.payload,
-       w.created_at_ms
-FROM worker_flow_items w
-LEFT JOIN runtimes r
-       ON r.thread_id = w.worker_session_id
-       OR r.session_id = w.worker_session_id;
+       t.kind,
+       t.payload,
+       t.created_at_ms
+  FROM translated t;
 
 DROP TABLE worker_flow_items;
 ALTER TABLE worker_flow_items_new RENAME TO worker_flow_items;
