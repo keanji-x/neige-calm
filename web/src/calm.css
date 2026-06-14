@@ -4279,6 +4279,16 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   cursor: pointer;
 }
 .iframe-url-go:hover { opacity: 0.9; }
+.iframe-url-trust {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
 .iframe-frame {
   flex: 1 1 0;
   min-height: 0;

@@ -16,6 +16,7 @@ export interface IframeCardData {
   type: 'iframe';
   id: string;
   url: string;
+  trusted?: boolean;
 }
 
 export function isAllowedIframeUrl(raw: string): boolean {
@@ -29,20 +30,29 @@ export function isAllowedIframeUrl(raw: string): boolean {
 
 const iframePayloadSchema = z.object({
   url: z.string().min(1).refine(isAllowedIframeUrl),
+  trusted: z.boolean().optional(),
 });
 
 const warnedInvalidPayloads = new Set<string>();
 
-export function iframeSandbox(rawUrl: string): string {
-  const base =
-    'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
+export function isCrossOriginUrl(rawUrl: string): boolean {
   try {
     const u = new URL(rawUrl, window.location.href);
-    if (u.origin !== window.location.origin) {
-      return `${base} allow-same-origin`;
-    }
+    return u.origin !== window.location.origin;
   } catch {
-    /* unparseable - keep the locked-down default */
+    return false;
+  }
+}
+
+export function iframeSandbox(rawUrl: string, trusted: boolean): string {
+  const base =
+    'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
+  if (!trusted) return base;
+  try {
+    const u = new URL(rawUrl, window.location.href);
+    if (u.origin !== window.location.origin) return `${base} allow-same-origin`;
+  } catch {
+    /* unparseable - keep locked-down default */
   }
   return base;
 }
@@ -56,6 +66,7 @@ function IframeCard({
 }) {
   const [currentUrl, setCurrentUrl] = useState(card.url);
   const [draftUrl, setDraftUrl] = useState(card.url);
+  const [trusted, setTrusted] = useState(card.trusted ?? false);
   const epoch = useCardSlotValue<number>('epoch', 0);
   const pendingUrlRef = useRef<string | null>(null);
 
@@ -66,8 +77,9 @@ function IframeCard({
     }
     setCurrentUrl(card.url);
     setDraftUrl(card.url);
+    setTrusted(card.trusted ?? false);
     pendingUrlRef.current = null;
-  }, [card.url]);
+  }, [card.trusted, card.url]);
 
   const submitUrl = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -82,11 +94,19 @@ function IframeCard({
     pendingUrlRef.current = nextUrl;
     setCurrentUrl(nextUrl);
     setDraftUrl(nextUrl);
-    void api.updateCard(card.id, { payload: { url: nextUrl } }).catch((err: unknown) => {
-      // eslint-disable-next-line no-console
-      console.warn(`[cards] iframe URL persistence failed for ${card.id}:`, err);
-    });
+    setTrusted(false);
+    void api
+      .updateCard(card.id, { payload: { url: nextUrl, trusted: false } })
+      .catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[cards] iframe URL persistence failed for ${card.id}:`,
+          err,
+        );
+      });
   };
+
+  const sandboxPolicy = iframeSandbox(currentUrl, trusted);
 
   return (
     <div className="iframe-card">
@@ -109,22 +129,48 @@ function IframeCard({
         <button className="iframe-url-go" type="submit">
           Go
         </button>
+        {isCrossOriginUrl(currentUrl) ? (
+          <label
+            className="iframe-url-trust"
+            title="Some apps (e.g. noVNC) need this to load. Only enable for apps you trust."
+          >
+            <input
+              type="checkbox"
+              checked={trusted}
+              aria-label="Allow same-origin access for this app"
+              onChange={() => {
+                const next = !trusted;
+                setTrusted(next);
+                void api
+                  .updateCard(card.id, {
+                    payload: { url: currentUrl, trusted: next },
+                  })
+                  .catch((err: unknown) => {
+                    // eslint-disable-next-line no-console
+                    console.warn(
+                      `[cards] iframe URL persistence failed for ${card.id}:`,
+                      err,
+                    );
+                  });
+              }}
+            />
+            Trust app
+          </label>
+        ) : null}
       </form>
       {[
-        // Same-origin targets (for example, /api/plugins/...) stay opaque so they
-        // can't read parent cookies. Cross-origin targets get allow-same-origin
-        // so they run under their own origin, still can't reach parent cookies,
-        // and can use localStorage / non-null Origin WebSockets (noVNC-style apps).
-        // Keeping the iframe in a keyed child list makes the reload epoch
-        // participate in reconciliation, which remounts the DOM node instead of
-        // only updating attributes on the existing element.
+        // Same-origin targets are always opaque (no allow-same-origin);
+        // cross-origin targets get allow-same-origin ONLY when the user has
+        // explicitly trusted this card; keying by the sandbox policy remounts the
+        // frame whenever the policy changes so a navigation never starts under a
+        // stale policy.
         <iframe
-          key={epoch}
+          key={`${epoch}::${sandboxPolicy}`}
           className="iframe-frame"
           src={currentUrl}
           title={`Embedded page: ${currentUrl}`}
           referrerPolicy="no-referrer"
-          sandbox={iframeSandbox(currentUrl)}
+          sandbox={sandboxPolicy}
         />,
       ]}
     </div>
@@ -183,6 +229,7 @@ export const IframeEntry: CardEntry<IframeCardData> = {
       type: 'iframe',
       id: k.id,
       url: parsed.data.url,
+      trusted: parsed.data.trusted ?? false,
     };
   },
   addPanel: {

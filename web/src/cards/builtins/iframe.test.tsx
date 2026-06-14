@@ -62,6 +62,14 @@ function iframeNode(): HTMLIFrameElement {
   return screen.getByTitle(/Embedded page:/) as HTMLIFrameElement;
 }
 
+function expectBaseSandboxTokens(sandbox: string | null) {
+  expect(sandbox).toBeTruthy();
+  expect(sandbox).toContain('allow-scripts');
+  expect(sandbox).toContain('allow-popups');
+  expect(sandbox).toContain('allow-forms');
+  expect(sandbox).toContain('allow-popups-to-escape-sandbox');
+}
+
 describe('IframeEntry.fromKernel', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -79,6 +87,7 @@ describe('IframeEntry.fromKernel', () => {
       type: 'iframe',
       id: 'iframe_1',
       url: 'https://example.com',
+      trusted: false,
     });
     expect(warnSpy).not.toHaveBeenCalled();
   });
@@ -130,33 +139,95 @@ describe('IframeCard rendering', () => {
     expect(frame).toHaveAttribute('src', 'https://example.com');
   });
 
-  it('same-origin target stays opaque (no allow-same-origin)', () => {
+  it('keeps same-origin targets opaque, even when trusted', () => {
+    const sameOriginUrl = `${window.location.origin}/api/plugins/foo/resources/bar`;
+    const { unmount } = renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: sameOriginUrl,
+    });
+
+    let frame = iframeNode();
+    let sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).not.toContain('allow-same-origin');
+
+    unmount();
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: sameOriginUrl,
+      trusted: true,
+    });
+
+    frame = iframeNode();
+    sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).not.toContain('allow-same-origin');
+  });
+
+  it('keeps cross-origin targets opaque by default', () => {
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+
+    const frame = iframeNode();
+    const sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).not.toContain('allow-same-origin');
+  });
+
+  it('allows same-origin access for trusted cross-origin targets', () => {
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+      trusted: true,
+    });
+
+    const frame = iframeNode();
+    const sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).toContain('allow-same-origin');
+  });
+
+  it('shows the trust checkbox only for cross-origin URLs', () => {
+    const { unmount } = renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+    });
+
+    expect(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    ).toBeInTheDocument();
+
+    unmount();
     renderIframe({
       type: 'iframe',
       id: 'iframe_1',
       url: `${window.location.origin}/api/plugins/foo/resources/bar`,
     });
 
-    const frame = screen.getByTitle(/Embedded page:/);
-    const sandbox = frame.getAttribute('sandbox');
-    expect(sandbox).toBeTruthy();
-    expect(sandbox).toContain('allow-scripts');
-    expect(sandbox).toContain('allow-popups');
-    expect(sandbox).toContain('allow-forms');
-    expect(sandbox).toContain('allow-popups-to-escape-sandbox');
-    expect(sandbox).not.toContain('allow-same-origin');
+    expect(
+      screen.queryByLabelText('Allow same-origin access for this app'),
+    ).not.toBeInTheDocument();
   });
 
-  it('cross-origin target gets allow-same-origin', () => {
+  it('persists cross-origin trust and updates the iframe sandbox', async () => {
     renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
-    const frame = screen.getByTitle(/Embedded page:/);
+    fireEvent.click(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    );
+
+    await waitFor(() => {
+      expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
+        payload: { url: 'https://example.com', trusted: true },
+      });
+    });
+
+    const frame = iframeNode();
     const sandbox = frame.getAttribute('sandbox');
-    expect(sandbox).toBeTruthy();
-    expect(sandbox).toContain('allow-scripts');
-    expect(sandbox).toContain('allow-popups');
-    expect(sandbox).toContain('allow-forms');
-    expect(sandbox).toContain('allow-popups-to-escape-sandbox');
+    expectBaseSandboxTokens(sandbox);
     expect(sandbox).toContain('allow-same-origin');
   });
 
@@ -184,7 +255,7 @@ describe('IframeCard rendering', () => {
     expect(input).toHaveValue('https://docs.mintlify.com/');
     await waitFor(() => {
       expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
-        payload: { url: 'https://docs.mintlify.com/' },
+        payload: { url: 'https://docs.mintlify.com/', trusted: false },
       });
     });
   });
@@ -275,7 +346,7 @@ describe('IframeCard rendering', () => {
     expect(input).toHaveValue('https://example.com');
     await waitFor(() => {
       expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
-        payload: { url: 'https://example.com' },
+        payload: { url: 'https://example.com', trusted: false },
       });
     });
   });
