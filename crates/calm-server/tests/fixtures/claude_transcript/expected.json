@@ -264,6 +264,105 @@
     "type": "commandExecution"
   },
   {
+    "call_id": "toolu-edit",
+    "error": null,
+    "ok": true,
+    "output": [
+      {
+        "text": "Applied edit",
+        "type": "text"
+      }
+    ],
+    "output_summary": "Applied edit",
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 11,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "toolResult"
+  },
+  {
+    "call_id": "toolu-edit",
+    "changes": [
+      {
+        "diff": "old_string: old\nnew_string: new",
+        "kind": {
+          "move_path": null,
+          "type": "update"
+        },
+        "path": "src/main.rs"
+      }
+    ],
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 12,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "status": "completed",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "fileChange"
+  },
+  {
+    "call_id": "toolu-web",
+    "error": null,
+    "ok": true,
+    "output": [
+      {
+        "text": "Found serde documentation",
+        "type": "text"
+      }
+    ],
+    "output_summary": "Found serde documentation",
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 13,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "toolResult"
+  },
+  {
+    "call_id": "toolu-web",
+    "provider": "claude",
+    "provider_extra": null,
+    "query": "rust serde",
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "results_summary": "Found serde documentation",
+    "seq": 14,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "webSearch"
+  },
+  {
     "provider": "claude",
     "provider_extra": null,
     "raw_ref": {
@@ -273,7 +372,7 @@
       "source_path": "/tmp/claude-golden.jsonl"
     },
     "raw_type": "attachment/PostToolUse",
-    "seq": 11,
+    "seq": 15,
     "session_id": "sess-claude-golden",
     "source_uuid": "attachment-golden",
     "timestamp": 1781308804000,
@@ -290,7 +389,7 @@
       "source_path": "/tmp/claude-golden.jsonl"
     },
     "raw_type": "queue_operation/enqueue",
-    "seq": 12,
+    "seq": 16,
     "session_id": "sess-claude-golden",
     "source_uuid": "queue-golden",
     "timestamp": 1781308805000,

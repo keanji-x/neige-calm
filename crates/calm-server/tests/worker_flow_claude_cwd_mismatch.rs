@@ -5,76 +5,93 @@ use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::{Event, EventBus};
-use calm_server::ids::ActorId;
-use calm_server::runtime_repo::RunStatus;
-use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::worker_flow::WorkerFlowDriver;
-use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
-use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;
-use calm_truth::worker_flow_sink::WorkerFlowSink;
+use calm_server::worker_flow::claude_transcript::slug_for_projects;
+use serde_json::json;
 
 use support::worker_flow as wf;
 
 #[tokio::test]
-async fn claude_transcript_cwd_mismatch_exits_without_ingesting_wrong_file() {
+async fn claude_transcript_path_slug_mismatch_exits_without_ingesting_wrong_file() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let events = EventBus::new();
     let seed = wf::seed_claude_card_and_runtime(
         &repo,
-        "card-claude-wrong-cwd",
-        "session-claude-wrong-cwd",
+        "card-claude-wrong-slug",
+        "session-claude-wrong-slug",
         "/tmp/claude-right",
     )
     .await;
-    let transcript_dir = tempfile::tempdir().unwrap();
-    let path = transcript_dir.path().join("session-claude-wrong-cwd.jsonl");
+    let transcript_root = tempfile::tempdir().unwrap();
+    let path = transcript_path(
+        transcript_root.path(),
+        &slug_for_projects("/tmp/claude-wrong"),
+        "session-claude-wrong-slug",
+    );
     wf::write_transcript(
         &path,
         &[
-            wf::claude_system("sys-1", "/tmp/claude-wrong"),
+            json!({
+                "type": "permission-mode",
+                "uuid": "perm-1",
+                "timestamp": "2026-06-13T00:00:00Z"
+            }),
             wf::claude_user_string("user-1", "wrong file"),
         ],
     );
 
-    let driver = WorkerFlowDriver::new_with_source_options_for_test(
-        repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
-        Arc::new(WorkerFlowSink::new(repo.clone())),
-        events.clone(),
-        CodexRolloutFlowSourceOptions::default(),
-        ClaudeTranscriptFlowSourceOptions {
-            path_override: Some(path.clone()),
-            poll_interval: Duration::from_millis(20),
-            lazy_retry_delay: Duration::from_millis(10),
-            lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
-        },
-    );
-    driver.start_on_boot().await.unwrap();
+    let (_token, handle) =
+        wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
+    handle.await.unwrap().unwrap();
 
-    wf::wait_until(Duration::from_millis(500), || {
-        let driver = driver.clone();
-        async move { driver.tasks_alive_for_test().await == 0 }
+    assert_eq!(item_count(&repo, "card-claude-wrong-slug").await, 0);
+}
+
+#[tokio::test]
+async fn claude_transcript_inband_cwd_mismatch_warns_but_keeps_flowing() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let seed = wf::seed_claude_card_and_runtime(
+        &repo,
+        "card-claude-inband-cwd",
+        "session-claude-inband-cwd",
+        "/tmp/claude-right",
+    )
+    .await;
+    let transcript_root = tempfile::tempdir().unwrap();
+    let path = transcript_path(
+        transcript_root.path(),
+        &slug_for_projects("/tmp/claude-right"),
+        "session-claude-inband-cwd",
+    );
+    wf::write_transcript(
+        &path,
+        &[
+            json!({
+                "type": "permission-mode",
+                "uuid": "perm-1",
+                "timestamp": "2026-06-13T00:00:00Z"
+            }),
+            wf::claude_system("sys-1", "/tmp/claude-wrong"),
+            wf::claude_user_string("user-1", "records keep flowing"),
+        ],
+    );
+
+    let (token, handle) =
+        wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
+    wf::wait_until(Duration::from_secs(1), || {
+        let repo = repo.clone();
+        async move { item_count(&repo, "card-claude-inband-cwd").await == 3 }
     })
     .await;
-    assert_eq!(item_count(&repo, "card-claude-wrong-cwd").await, 0);
+    token.cancel();
+    handle.await.unwrap().unwrap();
 
-    events.emit(
-        ActorId::Kernel,
-        Event::RuntimeStatusChanged {
-            runtime_id: seed.runtime.id.clone(),
-            card_id: seed.runtime.card_id.clone(),
-            old_status: RunStatus::Idle,
-            new_status: RunStatus::Running,
-        },
-    );
-    wf::wait_until(Duration::from_millis(500), || {
-        let driver = driver.clone();
-        async move { driver.tasks_alive_for_test().await == 0 }
-    })
-    .await;
-    assert_eq!(item_count(&repo, "card-claude-wrong-cwd").await, 0);
+    assert_eq!(item_count(&repo, "card-claude-inband-cwd").await, 3);
+}
+
+fn transcript_path(root: &std::path::Path, slug: &str, session_id: &str) -> std::path::PathBuf {
+    root.join(".claude")
+        .join("projects")
+        .join(slug)
+        .join(format!("{session_id}.jsonl"))
 }
 
 async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {

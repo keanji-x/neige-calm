@@ -42,11 +42,15 @@ fn claude_transcript_normalizer_matches_golden() {
         ),
         wf::claude_user_blocks(
             "result-golden",
-            vec![wf::claude_tool_result(
-                "toolu-bash",
-                "<stdout>total 0</stdout><stderr></stderr><exit_code>0</exit_code>",
-                false,
-            )],
+            vec![
+                wf::claude_tool_result(
+                    "toolu-bash",
+                    "<stdout>total 0</stdout><stderr></stderr><exit_code>0</exit_code>",
+                    false,
+                ),
+                wf::claude_tool_result("toolu-edit", "Applied edit", false),
+                wf::claude_tool_result("toolu-web", "Found serde documentation", false),
+            ],
         ),
         wf::claude_attachment("attachment-golden", cwd),
         json!({

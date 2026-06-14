@@ -90,6 +90,7 @@ impl ClaudeTranscriptFlowSource {
     }
 
     async fn resolve_transcript_path(&self) -> Result<Option<PathBuf>, CoreError> {
+        let expected_slug = slug_for_projects(&self.card_cwd);
         let path = if let Some(path) = &self.options.path_override {
             path.clone()
         } else {
@@ -105,9 +106,27 @@ impl ClaudeTranscriptFlowSource {
                 .map_err(|e| CoreError::Internal(format!("HOME not set: {e}")))?;
             PathBuf::from(home)
                 .join(".claude/projects")
-                .join(slug_for_projects(&self.card_cwd))
+                .join(&expected_slug)
                 .join(format!("{session_id}.jsonl"))
         };
+
+        if should_check_transcript_slug(&path) {
+            let actual_slug = path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str());
+            if actual_slug != Some(expected_slug.as_str()) {
+                tracing::warn!(
+                    card_id = %self.runtime.card_id,
+                    runtime_id = %self.runtime.id,
+                    expected_slug = %expected_slug,
+                    actual_slug = actual_slug.unwrap_or("<missing>"),
+                    source_path = %path.display(),
+                    "claude transcript slug mismatch (claude-code may use a different slug rule); exiting source"
+                );
+                return Ok(None);
+            }
+        }
 
         for _ in 0..self.options.lazy_retry_attempts {
             if self.stop.is_cancelled() {
@@ -151,20 +170,22 @@ impl ClaudeTranscriptFlowSource {
             last_line_hash: c.last_line_hash,
         })
         .unwrap_or_default();
-        let mut position = reconstruct_position(&path, cursor.byte_offset, &source_path, session)
-            .await
-            .unwrap_or_else(|err| {
-                tracing::warn!(
-                    card_id = %self.runtime.card_id,
-                    runtime_id = %self.runtime.id,
-                    error = %err,
-                    "failed to reconstruct claude transcript position; starting at cursor seq zero"
-                );
-                Position::default()
-            });
-        let mut state = reconstruct_state(&path, cursor.byte_offset, &source_path, session)
-            .await
-            .unwrap_or_default();
+        let (mut position, mut state) = reconstruct_prefix_once(
+            &path,
+            cursor.byte_offset,
+            &source_path,
+            session,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                card_id = %self.runtime.card_id,
+                runtime_id = %self.runtime.id,
+                error = %err,
+                "failed to reconstruct claude transcript prefix; starting at cursor seq zero"
+            );
+            (Position::default(), ClaudeNormalizerState::default())
+        });
         let mut cwd_checked = false;
 
         loop {
@@ -250,9 +271,8 @@ impl ClaudeTranscriptFlowSource {
                             actual_slug = actual,
                             card_cwd = %self.card_cwd,
                             inband_cwd,
-                            "claude transcript cwd slug mismatch; exiting source without consuming wrong file"
+                            "claude transcript in-band cwd slug mismatch; continuing after path-time transcript slug matched"
                         );
-                        return Ok(());
                     }
                 }
 
@@ -406,38 +426,15 @@ async fn persist_cursor(
     .await
 }
 
-async fn reconstruct_position(
+async fn reconstruct_prefix_once(
     path: &Path,
     byte_offset: u64,
     source_path: &str,
     session: &WorkerSession,
-) -> Result<Position, CoreError> {
+) -> Result<(Position, ClaudeNormalizerState), CoreError> {
     let mut state = ClaudeNormalizerState::default();
-    let (position, _) =
-        reconstruct_prefix(path, byte_offset, source_path, session, &mut state).await?;
-    Ok(position)
-}
-
-async fn reconstruct_state(
-    path: &Path,
-    byte_offset: u64,
-    source_path: &str,
-    session: &WorkerSession,
-) -> Result<ClaudeNormalizerState, CoreError> {
-    let mut state = ClaudeNormalizerState::default();
-    reconstruct_prefix(path, byte_offset, source_path, session, &mut state).await?;
-    Ok(state)
-}
-
-async fn reconstruct_prefix(
-    path: &Path,
-    byte_offset: u64,
-    source_path: &str,
-    session: &WorkerSession,
-    state: &mut ClaudeNormalizerState,
-) -> Result<(Position, u64), CoreError> {
     if byte_offset == 0 {
-        return Ok((Position::default(), 0));
+        return Ok((Position::default(), state));
     }
     let file = tokio::fs::File::open(path).await?;
     let mut bytes = Vec::new();
@@ -465,12 +462,24 @@ async fn reconstruct_prefix(
             position.turn,
             &session.id,
             raw_ref,
-            state,
+            &mut state,
         );
         position.seq = position.seq.saturating_add(items.len() as u64);
         record_index = record_index.saturating_add(1);
     }
-    Ok((position, record_index))
+    Ok((position, state))
+}
+
+fn should_check_transcript_slug(path: &Path) -> bool {
+    let Some(projects_dir) = path.parent().and_then(|slug_dir| slug_dir.parent()) else {
+        return false;
+    };
+    projects_dir.file_name().and_then(|name| name.to_str()) == Some("projects")
+        && projects_dir
+            .parent()
+            .and_then(|claude_dir| claude_dir.file_name())
+            .and_then(|name| name.to_str())
+            == Some(".claude")
 }
 
 fn parse_line(raw: &str, line_index: u64, source_path: &str) -> Result<Value, CoreError> {

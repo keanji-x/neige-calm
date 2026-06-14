@@ -10,6 +10,8 @@ use serde_json::Value;
 #[derive(Default)]
 pub struct ClaudeNormalizerState {
     pending_commands: HashMap<String, PendingCommand>,
+    pending_file_changes: HashMap<String, PendingFileChange>,
+    pending_web_searches: HashMap<String, PendingWebSearch>,
 }
 
 #[derive(Clone)]
@@ -17,6 +19,16 @@ struct PendingCommand {
     command: String,
     cwd: Option<String>,
     parsed_actions: Vec<CommandAction>,
+}
+
+#[derive(Clone)]
+struct PendingFileChange {
+    changes: Vec<FileEdit>,
+}
+
+#[derive(Clone)]
+struct PendingWebSearch {
+    query: Option<String>,
 }
 
 pub fn normalize_record(
@@ -97,7 +109,7 @@ pub fn normalize_record_with_state(
                             let env = env_for(record, next_seq, turn, session_id, raw_ref.clone());
                             out.push(tool_result_item(block, env));
                             next_seq = next_seq.saturating_add(1);
-                            if let Some(item) = command_completion_item(
+                            if let Some(item) = tool_completion_item(
                                 block,
                                 record,
                                 next_seq,
@@ -271,21 +283,39 @@ fn tool_use_item(
                 source: ExecSource::Agent,
             })
         }
-        "Edit" | "Write" | "MultiEdit" => Some(WorkerFlowItem::FileChange {
-            env,
-            call_id: Some(ToolCallId::from(call_id)),
-            changes: vec![file_edit_from_tool_input(&name, &input)],
-            status: PatchStatus::InProgress,
-        }),
-        "WebSearch" => Some(WorkerFlowItem::WebSearch {
-            env,
-            call_id: Some(ToolCallId::from(call_id)),
-            query: input
+        "Edit" | "Write" | "MultiEdit" => {
+            let changes = vec![file_edit_from_tool_input(&name, &input)];
+            state.pending_file_changes.insert(
+                call_id.clone(),
+                PendingFileChange {
+                    changes: changes.clone(),
+                },
+            );
+            Some(WorkerFlowItem::FileChange {
+                env,
+                call_id: Some(ToolCallId::from(call_id)),
+                changes,
+                status: PatchStatus::InProgress,
+            })
+        }
+        "WebSearch" => {
+            let query = input
                 .get("query")
                 .and_then(Value::as_str)
-                .map(str::to_string),
-            results_summary: None,
-        }),
+                .map(str::to_string);
+            state.pending_web_searches.insert(
+                call_id.clone(),
+                PendingWebSearch {
+                    query: query.clone(),
+                },
+            );
+            Some(WorkerFlowItem::WebSearch {
+                env,
+                call_id: Some(ToolCallId::from(call_id)),
+                query,
+                results_summary: None,
+            })
+        }
         "Read" | "Grep" | "Glob" => Some(WorkerFlowItem::ToolCall {
             env,
             call_id: ToolCallId::from(call_id),
@@ -352,11 +382,7 @@ fn file_edit_from_tool_input(name: &str, input: &Value) -> FileEdit {
 
 fn tool_result_item(block: &Value, env: FlowEnvelope) -> WorkerFlowItem {
     let call_id = string_field(block, &["tool_use_id", "id"]).unwrap_or_default();
-    let ok = !block
-        .get("is_error")
-        .or_else(|| block.get("isError"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let ok = !tool_result_is_error(block);
     let output = tool_result_blocks(block.get("content").unwrap_or(&Value::Null));
     let output_text = output_text(&output);
     WorkerFlowItem::ToolResult {
@@ -374,6 +400,28 @@ fn tool_result_item(block: &Value, env: FlowEnvelope) -> WorkerFlowItem {
             })
         },
     }
+}
+
+fn tool_completion_item(
+    block: &Value,
+    record: &Value,
+    seq: u64,
+    turn: u32,
+    session_id: &WorkerSessionId,
+    raw_ref: RawRef,
+    state: &mut ClaudeNormalizerState,
+) -> Option<WorkerFlowItem> {
+    let call_id = string_field(block, &["tool_use_id", "id"])?;
+    if state.pending_commands.contains_key(&call_id) {
+        return command_completion_item(block, record, seq, turn, session_id, raw_ref, state);
+    }
+    if state.pending_file_changes.contains_key(&call_id) {
+        return file_change_completion_item(block, record, seq, turn, session_id, raw_ref, state);
+    }
+    if state.pending_web_searches.contains_key(&call_id) {
+        return web_search_completion_item(block, record, seq, turn, session_id, raw_ref, state);
+    }
+    None
 }
 
 fn command_completion_item(
@@ -405,6 +453,59 @@ fn command_completion_item(
         status,
         source: ExecSource::Agent,
     })
+}
+
+fn file_change_completion_item(
+    block: &Value,
+    record: &Value,
+    seq: u64,
+    turn: u32,
+    session_id: &WorkerSessionId,
+    raw_ref: RawRef,
+    state: &mut ClaudeNormalizerState,
+) -> Option<WorkerFlowItem> {
+    let call_id = string_field(block, &["tool_use_id", "id"])?;
+    let pending = state.pending_file_changes.remove(&call_id)?;
+    let status = if tool_result_is_error(block) {
+        PatchStatus::Failed
+    } else {
+        PatchStatus::Completed
+    };
+    Some(WorkerFlowItem::FileChange {
+        env: env_for(record, seq, turn, session_id, raw_ref),
+        call_id: Some(ToolCallId::from(call_id)),
+        changes: pending.changes,
+        status,
+    })
+}
+
+fn web_search_completion_item(
+    block: &Value,
+    record: &Value,
+    seq: u64,
+    turn: u32,
+    session_id: &WorkerSessionId,
+    raw_ref: RawRef,
+    state: &mut ClaudeNormalizerState,
+) -> Option<WorkerFlowItem> {
+    let call_id = string_field(block, &["tool_use_id", "id"])?;
+    let pending = state.pending_web_searches.remove(&call_id)?;
+    let output = tool_result_blocks(block.get("content").unwrap_or(&Value::Null));
+    let output_text = output_text(&output);
+    Some(WorkerFlowItem::WebSearch {
+        env: env_for(record, seq, turn, session_id, raw_ref),
+        call_id: Some(ToolCallId::from(call_id)),
+        query: pending.query,
+        results_summary: Some(summary(&output_text)),
+    })
+}
+
+fn tool_result_is_error(block: &Value) -> bool {
+    block
+        .get("is_error")
+        .or_else(|| block.get("isError"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 struct BashResult {
