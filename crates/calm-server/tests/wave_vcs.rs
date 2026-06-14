@@ -1874,6 +1874,185 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
 }
 
 #[tokio::test]
+async fn snapshot_transcripts_helper_produces_live_identical_blobs() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "snapshot-transcripts"}),
+    )
+    .await;
+
+    for seq in 0..5 {
+        repo.log_pure_event(
+            ActorId::Kernel,
+            EventScope::Card {
+                card: worker.id.clone(),
+                wave: wave.id.clone(),
+                cove: cove.id.clone(),
+            },
+            None,
+            &bus,
+            &roles,
+            &coves,
+            Event::CodexHook {
+                card_id: worker.id.clone(),
+                kind: "hook.codex.user_prompt_submit".into(),
+                hook_idempotency_key: format!("snapshot-hook-{seq}"),
+                payload: json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": format!("snapshot prompt {seq}"),
+                    "seq": seq,
+                }),
+            },
+        )
+        .await
+        .expect("hook event");
+    }
+
+    let mut tx = repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin transcript snapshot");
+    let commit = wave_vcs::snapshot_transcripts_for_cards_in_wave(
+        &mut tx,
+        &wave.id,
+        None,
+        MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("snapshot transcripts");
+    tx.commit().await.expect("commit transcript snapshot");
+
+    let manifest = wave_vcs::tree_at(repo.pool(), &commit)
+        .await
+        .expect("tree query")
+        .expect("tree");
+    let view = WaveFsView::new(&repo, &write);
+    for path in [
+        format!("cards/{}/events.json", worker.id.as_str()),
+        format!("cards/{}/conversation.md", worker.id.as_str()),
+    ] {
+        let vcs = blob_text(
+            &repo,
+            &manifest
+                .entries
+                .get(&path)
+                .unwrap_or_else(|| panic!("{path} entry"))
+                .blob_hash,
+        )
+        .await;
+        let fs = view
+            .cat(&wave, &path)
+            .await
+            .unwrap_or_else(|_| panic!("live {path}"))
+            .content;
+        assert_eq!(vcs, fs, "path {path}");
+    }
+}
+
+#[tokio::test]
+async fn snapshot_transcripts_helper_is_deterministic_noop_on_unchanged() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "snapshot-transcripts-noop"}),
+    )
+    .await;
+
+    for seq in 0..3 {
+        repo.log_pure_event(
+            ActorId::Kernel,
+            EventScope::Card {
+                card: worker.id.clone(),
+                wave: wave.id.clone(),
+                cove: cove.id.clone(),
+            },
+            None,
+            &bus,
+            &roles,
+            &coves,
+            Event::CodexHook {
+                card_id: worker.id.clone(),
+                kind: "hook.codex.user_prompt_submit".into(),
+                hook_idempotency_key: format!("snapshot-noop-hook-{seq}"),
+                payload: json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": format!("noop prompt {seq}"),
+                    "seq": seq,
+                }),
+            },
+        )
+        .await
+        .expect("hook event");
+    }
+
+    let mut tx = repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin first transcript snapshot");
+    let first = wave_vcs::snapshot_transcripts_for_cards_in_wave(
+        &mut tx,
+        &wave.id,
+        None,
+        MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("first transcript snapshot");
+    tx.commit().await.expect("commit first transcript snapshot");
+    let first_record = wave_vcs::commit_record(repo.pool(), &first)
+        .await
+        .expect("first commit record")
+        .expect("first commit");
+
+    let mut tx = repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin second transcript snapshot");
+    let second = wave_vcs::snapshot_transcripts_for_cards_in_wave(
+        &mut tx,
+        &wave.id,
+        None,
+        MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("second transcript snapshot");
+    tx.commit()
+        .await
+        .expect("commit second transcript snapshot");
+    let second_record = wave_vcs::commit_record(repo.pool(), &second)
+        .await
+        .expect("second commit record")
+        .expect("second commit");
+
+    assert_eq!(second_record.tree_hash, first_record.tree_hash);
+}
+
+#[tokio::test]
 async fn hook_event_transcript_is_capped_to_recent_events_with_live_vcs_parity() {
     const EXPECTED_CAP: usize = 500;
     const EXTRA_EVENTS: usize = 50;
