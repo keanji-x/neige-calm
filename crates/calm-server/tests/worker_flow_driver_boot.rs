@@ -7,21 +7,64 @@ use calm_server::db::sqlite::{SqlxRepo, runtime_bind_attribution_tx, runtime_set
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::worker_flow::WorkerFlowDriver;
+use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
+use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;
+use calm_truth::worker_flow_sink::WorkerFlowSink;
 
 use support::worker_flow as wf;
 
 #[tokio::test]
-async fn worker_flow_driver_boot_enumerates_active_codex_runtimes() {
+async fn worker_flow_driver_boot_enumerates_active_codex_and_claude_runtimes() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     wf::seed_card_and_runtime(&repo, "card-driver-live", Some("thread-driver-live")).await;
     wf::seed_card_and_runtime(&repo, "card-driver-no-thread", None).await;
+    wf::seed_claude_card_and_runtime(
+        &repo,
+        "card-driver-claude-live",
+        "session-driver-claude-live",
+        "/tmp/driver-claude",
+    )
+    .await;
 
-    let state = wf::app_state(repo, EventBus::new());
-    state.worker_flow.start_on_boot().await.unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    let codex_path = wf::rollout_path(codex_home.path(), "thread-driver-live");
+    wf::write_rollout(&codex_path, &[wf::session_meta("thread-driver-live")]);
+    let transcript_dir = tempfile::tempdir().unwrap();
+    let transcript_path = transcript_dir
+        .path()
+        .join("session-driver-claude-live.jsonl");
+    wf::write_transcript(
+        &transcript_path,
+        &[wf::claude_system("sys-driver", "/tmp/driver-claude")],
+    );
+
+    let driver = WorkerFlowDriver::new_with_source_options_for_test(
+        repo.clone(),
+        SharedCodexAppServer::new_stub(repo.clone()),
+        Arc::new(WorkerFlowSink::new(repo)),
+        EventBus::new(),
+        CodexRolloutFlowSourceOptions {
+            path_override: Some(codex_path),
+            poll_interval: Duration::from_millis(20),
+            lazy_retry_delay: Duration::from_millis(10),
+            lazy_retry_attempts: 3,
+            cursor_persist_every: 1,
+        },
+        ClaudeTranscriptFlowSourceOptions {
+            path_override: Some(transcript_path),
+            poll_interval: Duration::from_millis(20),
+            lazy_retry_delay: Duration::from_millis(10),
+            lazy_retry_attempts: 3,
+            cursor_persist_every: 1,
+        },
+    );
+    driver.start_on_boot().await.unwrap();
 
     wf::wait_until(Duration::from_secs(1), || {
-        let driver = state.worker_flow.clone();
-        async move { driver.tasks_alive_for_test().await == 1 }
+        let driver = driver.clone();
+        async move { driver.tasks_alive_for_test().await == 2 }
     })
     .await;
 }

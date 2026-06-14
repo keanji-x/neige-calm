@@ -1,3 +1,5 @@
+pub mod claude_normalizer;
+pub mod claude_transcript;
 pub mod codex_normalizer;
 pub mod codex_rollout;
 pub mod cursor;
@@ -25,6 +27,7 @@ use crate::model::Card;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::AppState;
 
+use self::claude_transcript::{ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions};
 use self::codex_rollout::{CodexRolloutFlowSource, CodexRolloutFlowSourceOptions};
 
 pub struct WorkerFlowDriver {
@@ -35,6 +38,7 @@ pub struct WorkerFlowDriver {
     tasks: Mutex<HashMap<String, SourceTask>>,
     subscriber_started: AtomicBool,
     flow_options: CodexRolloutFlowSourceOptions,
+    claude_flow_options: ClaudeTranscriptFlowSourceOptions,
 }
 
 struct SourceTask {
@@ -57,6 +61,7 @@ impl WorkerFlowDriver {
             tasks: Mutex::new(HashMap::new()),
             subscriber_started: AtomicBool::new(false),
             flow_options: CodexRolloutFlowSourceOptions::default(),
+            claude_flow_options: ClaudeTranscriptFlowSourceOptions::default(),
         })
     }
 
@@ -76,6 +81,28 @@ impl WorkerFlowDriver {
             tasks: Mutex::new(HashMap::new()),
             subscriber_started: AtomicBool::new(false),
             flow_options,
+            claude_flow_options: ClaudeTranscriptFlowSourceOptions::default(),
+        })
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn new_with_source_options_for_test(
+        repo: Arc<dyn Repo>,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        sink: Arc<dyn WorkerFlowItemSink>,
+        events: EventBus,
+        flow_options: CodexRolloutFlowSourceOptions,
+        claude_flow_options: ClaudeTranscriptFlowSourceOptions,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            repo,
+            shared_codex_appserver,
+            sink,
+            events,
+            tasks: Mutex::new(HashMap::new()),
+            subscriber_started: AtomicBool::new(false),
+            flow_options,
+            claude_flow_options,
         })
     }
 
@@ -89,11 +116,19 @@ impl WorkerFlowDriver {
     }
 
     pub async fn start_on_boot(self: &Arc<Self>) -> Result<(), CoreError> {
-        let runtimes = self
+        let mut runtimes = self
             .repo
             .runtimes_active_for_kind(RuntimeKind::CodexCard)
             .await
-            .map_err(|e| CoreError::Internal(format!("runtimes_active_for_kind: {e}")))?;
+            .map_err(|e| CoreError::Internal(format!("runtimes_active_for_kind codex: {e}")))?;
+        runtimes.extend(
+            self.repo
+                .runtimes_active_for_kind(RuntimeKind::ClaudeCard)
+                .await
+                .map_err(|e| {
+                    CoreError::Internal(format!("runtimes_active_for_kind claude: {e}"))
+                })?,
+        );
         for runtime in runtimes {
             if let Err(err) = self.attach_runtime(runtime).await {
                 tracing::warn!(error = %err, "worker-flow boot attach failed");
@@ -160,7 +195,7 @@ impl WorkerFlowDriver {
                 kind,
                 agent_provider,
                 ..
-            } if kind == RuntimeKind::CodexCard && agent_provider == Some(AgentProvider::Codex) => {
+            } if is_supported_runtime_pair(&kind, agent_provider.as_ref()) => {
                 match self.repo.runtime_get_by_id(&runtime_id).await {
                     Ok(Some(runtime)) => {
                         if let Err(err) = self.attach_runtime(runtime).await {
@@ -194,10 +229,7 @@ impl WorkerFlowDriver {
                 new_status: RunStatus::Running | RunStatus::Idle | RunStatus::TurnPending,
                 ..
             } => match self.repo.runtime_get_by_id(&runtime_id).await {
-                Ok(Some(runtime))
-                    if runtime.kind == RuntimeKind::CodexCard
-                        && runtime.agent_provider == Some(AgentProvider::Codex) =>
-                {
+                Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
                     if let Err(err) = self.attach_runtime(runtime).await {
                         tracing::warn!(
                             runtime_id,
@@ -213,13 +245,10 @@ impl WorkerFlowDriver {
                     "worker-flow runtime-status lookup failed"
                 ),
             },
-            Event::CardAdded(card) if card.kind == "codex" => {
+            Event::CardAdded(card) if card.kind == "codex" || card.kind == "claude" => {
                 let card_id = card.id.to_string();
                 match self.repo.runtime_get_active_for_card(&card_id).await {
-                    Ok(Some(runtime))
-                        if runtime.kind == RuntimeKind::CodexCard
-                            && runtime.agent_provider == Some(AgentProvider::Codex) =>
-                    {
+                    Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
                         if let Err(err) = self.attach_runtime(runtime).await {
                             tracing::warn!(
                                 card_id = %card_id,
@@ -231,7 +260,7 @@ impl WorkerFlowDriver {
                     Ok(Some(_)) => {}
                     Ok(None) => tracing::warn!(
                         card_id = %card_id,
-                        "worker-flow codex CardAdded event had no active runtime row"
+                        "worker-flow CardAdded event had no active runtime row"
                     ),
                     Err(err) => tracing::warn!(
                         card_id = %card_id,
@@ -247,10 +276,7 @@ impl WorkerFlowDriver {
             } => {
                 self.cancel_card(&card_id).await;
                 match self.repo.runtime_get_by_id(&new_runtime_id).await {
-                    Ok(Some(runtime))
-                        if runtime.kind == RuntimeKind::CodexCard
-                            && runtime.agent_provider == Some(AgentProvider::Codex) =>
-                    {
+                    Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
                         if let Err(err) = self.attach_runtime(runtime).await {
                             tracing::warn!(
                                 runtime_id = %new_runtime_id,
@@ -272,18 +298,27 @@ impl WorkerFlowDriver {
     }
 
     async fn attach_runtime(&self, runtime: CardRuntime) -> Result<(), CoreError> {
-        if runtime.agent_provider != Some(AgentProvider::Codex)
-            || runtime.kind != RuntimeKind::CodexCard
-        {
+        let Some(source_kind) = source_kind_for_runtime(&runtime) else {
             return Ok(());
-        }
-        if runtime.thread_id.is_none() {
-            tracing::warn!(
-                card_id = %runtime.card_id,
-                runtime_id = %runtime.id,
-                "worker-flow codex runtime has no thread_id; skipping rollout attach"
-            );
-            return Ok(());
+        };
+        match source_kind {
+            FlowSourceKind::Codex if runtime.thread_id.is_none() => {
+                tracing::warn!(
+                    card_id = %runtime.card_id,
+                    runtime_id = %runtime.id,
+                    "worker-flow codex runtime has no thread_id; skipping rollout attach"
+                );
+                return Ok(());
+            }
+            FlowSourceKind::Claude if runtime.session_id.is_none() => {
+                tracing::warn!(
+                    card_id = %runtime.card_id,
+                    runtime_id = %runtime.id,
+                    "worker-flow claude runtime has no session_id; skipping transcript attach"
+                );
+                return Ok(());
+            }
+            _ => {}
         }
 
         {
@@ -302,24 +337,46 @@ impl WorkerFlowDriver {
             .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
         let session = session_from_runtime(&runtime, &card);
         let stop = CancellationToken::new();
-        let source = CodexRolloutFlowSource::new_with_options(
-            self.repo.clone(),
-            runtime.clone(),
-            self.shared_codex_appserver.codex_home_path().to_path_buf(),
-            stop.clone(),
-            self.flow_options.clone(),
-        );
         let sink = self.sink.clone();
         let card_id = runtime.card_id.clone();
-        let join = tokio::spawn(async move {
-            if let Err(err) = source.capture(&session, sink.as_ref()).await {
-                tracing::warn!(
-                    card_id = %card_id,
-                    error = %err,
-                    "worker-flow codex rollout source stopped with error"
+        let join = match source_kind {
+            FlowSourceKind::Codex => {
+                let source = CodexRolloutFlowSource::new_with_options(
+                    self.repo.clone(),
+                    runtime.clone(),
+                    self.shared_codex_appserver.codex_home_path().to_path_buf(),
+                    stop.clone(),
+                    self.flow_options.clone(),
                 );
+                tokio::spawn(async move {
+                    if let Err(err) = source.capture(&session, sink.as_ref()).await {
+                        tracing::warn!(
+                            card_id = %card_id,
+                            error = %err,
+                            "worker-flow codex rollout source stopped with error"
+                        );
+                    }
+                })
             }
-        });
+            FlowSourceKind::Claude => {
+                let source = ClaudeTranscriptFlowSource::new_with_options(
+                    self.repo.clone(),
+                    runtime.clone(),
+                    card_cwd(&card),
+                    stop.clone(),
+                    self.claude_flow_options.clone(),
+                );
+                tokio::spawn(async move {
+                    if let Err(err) = source.capture(&session, sink.as_ref()).await {
+                        tracing::warn!(
+                            card_id = %card_id,
+                            error = %err,
+                            "worker-flow claude transcript source stopped with error"
+                        );
+                    }
+                })
+            }
+        };
 
         let mut tasks = self.tasks.lock().await;
         tasks.insert(runtime.card_id.clone(), SourceTask { stop, join });
@@ -344,6 +401,41 @@ impl Drop for WorkerFlowDriver {
     }
 }
 
+#[derive(Clone, Copy)]
+enum FlowSourceKind {
+    Codex,
+    Claude,
+}
+
+fn source_kind_for_runtime(runtime: &CardRuntime) -> Option<FlowSourceKind> {
+    match (&runtime.kind, runtime.agent_provider.as_ref()) {
+        (RuntimeKind::CodexCard, Some(AgentProvider::Codex)) => Some(FlowSourceKind::Codex),
+        (RuntimeKind::ClaudeCard, Some(AgentProvider::Claude)) => Some(FlowSourceKind::Claude),
+        _ => None,
+    }
+}
+
+fn is_supported_runtime(runtime: &CardRuntime) -> bool {
+    source_kind_for_runtime(runtime).is_some()
+}
+
+fn is_supported_runtime_pair(kind: &RuntimeKind, provider: Option<&AgentProvider>) -> bool {
+    matches!(
+        (kind, provider),
+        (RuntimeKind::CodexCard, Some(AgentProvider::Codex))
+            | (RuntimeKind::ClaudeCard, Some(AgentProvider::Claude))
+    )
+}
+
+fn card_cwd(card: &Card) -> String {
+    card.payload
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .filter(|cwd| !cwd.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(crate::routes::codex_cards::default_cwd)
+}
+
 pub async fn start_on_boot(state: &AppState) -> Result<(), CoreError> {
     state.worker_flow.start_on_boot().await
 }
@@ -357,7 +449,7 @@ fn session_from_runtime(runtime: &CardRuntime, card: &Card) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
         wave_id: card.wave_id.clone(),
-        provider: WorkerProviderKind::Codex,
+        provider: worker_provider_from_runtime(runtime),
         mode: SessionMode::Resumable,
         contract: WorkerContract::Executor,
         parent_session_id: None,
@@ -377,6 +469,13 @@ fn session_from_runtime(runtime: &CardRuntime, card: &Card) -> WorkerSession {
         created_at_ms: runtime.created_at_ms,
         updated_at_ms: runtime.updated_at_ms,
         completed_at_ms: runtime.completed_at_ms,
+    }
+}
+
+fn worker_provider_from_runtime(runtime: &CardRuntime) -> WorkerProviderKind {
+    match runtime.agent_provider.as_ref() {
+        Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
+        Some(AgentProvider::Codex) | None => WorkerProviderKind::Codex,
     }
 }
 
