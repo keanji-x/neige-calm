@@ -42,6 +42,7 @@ pub struct WorkerFlowDriver {
 }
 
 struct SourceTask {
+    runtime_id: String,
     stop: CancellationToken,
     join: JoinHandle<()>,
 }
@@ -151,6 +152,12 @@ impl WorkerFlowDriver {
     pub async fn task_stop_tokens_for_test(&self) -> Vec<CancellationToken> {
         let tasks = self.tasks.lock().await;
         tasks.values().map(|task| task.stop.clone()).collect()
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub async fn task_runtime_ids_for_test(&self) -> Vec<String> {
+        let tasks = self.tasks.lock().await;
+        tasks.values().map(|task| task.runtime_id.clone()).collect()
     }
 
     #[cfg(any(test, feature = "fixtures"))]
@@ -324,8 +331,21 @@ impl WorkerFlowDriver {
         {
             let mut tasks = self.tasks.lock().await;
             tasks.retain(|_, task| !task.join.is_finished() && !task.stop.is_cancelled());
-            if tasks.contains_key(&runtime.card_id) {
-                return Ok(());
+            match tasks.get(&runtime.card_id) {
+                Some(task) if task.runtime_id == runtime.id => return Ok(()),
+                Some(_) => {
+                    let task = tasks
+                        .remove(&runtime.card_id)
+                        .expect("task existed for card");
+                    task.stop.cancel();
+                    tracing::info!(
+                        card_id = %runtime.card_id,
+                        old_runtime_id = %task.runtime_id,
+                        new_runtime_id = %runtime.id,
+                        "worker-flow card runtime changed; cancelling stale tail task before attaching new one"
+                    );
+                }
+                None => {}
             }
         }
 
@@ -380,7 +400,14 @@ impl WorkerFlowDriver {
         };
 
         let mut tasks = self.tasks.lock().await;
-        tasks.insert(runtime.card_id.clone(), SourceTask { stop, join });
+        tasks.insert(
+            runtime.card_id.clone(),
+            SourceTask {
+                runtime_id: runtime.id.clone(),
+                stop,
+                join,
+            },
+        );
         Ok(())
     }
 
