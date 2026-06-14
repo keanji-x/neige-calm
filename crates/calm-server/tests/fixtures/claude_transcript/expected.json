@@ -1,0 +1,399 @@
+[
+  {
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 0,
+      "provider": "claude",
+      "record_type": "system/init",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "raw_type": "system/init",
+    "seq": 0,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "sys-golden",
+    "timestamp": 1781308800000,
+    "turn": 0,
+    "type": "unknown"
+  },
+  {
+    "content": [
+      {
+        "text": "hello",
+        "type": "text"
+      }
+    ],
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 1,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 1,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "user-golden",
+    "timestamp": 1781308801000,
+    "turn": 1,
+    "type": "userMessage"
+  },
+  {
+    "content": [
+      "thinking"
+    ],
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 2,
+      "provider": "claude",
+      "record_type": "assistant",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "redacted": false,
+    "seq": 2,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "assistant-golden",
+    "summary": [
+      "thinking"
+    ],
+    "timestamp": 1781308803000,
+    "turn": 1,
+    "type": "reasoning"
+  },
+  {
+    "is_final": false,
+    "phase": null,
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 2,
+      "provider": "claude",
+      "record_type": "assistant",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 3,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "assistant-golden",
+    "text": "done",
+    "timestamp": 1781308803000,
+    "turn": 1,
+    "type": "agentMessage"
+  },
+  {
+    "aggregated_output": null,
+    "call_id": "toolu-bash",
+    "command": "ls -la",
+    "cwd": "/tmp/claude-golden",
+    "duration_ms": null,
+    "exit_code": null,
+    "parsed_actions": [
+      {
+        "command": "ls -la",
+        "path": "-la",
+        "type": "listFiles"
+      }
+    ],
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 2,
+      "provider": "claude",
+      "record_type": "assistant",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 4,
+    "session_id": "sess-claude-golden",
+    "source": "agent",
+    "source_uuid": "assistant-golden",
+    "status": "inProgress",
+    "timestamp": 1781308803000,
+    "turn": 1,
+    "type": "commandExecution"
+  },
+  {
+    "call_id": "toolu-edit",
+    "changes": [
+      {
+        "diff": "old_string: old\nnew_string: new",
+        "kind": {
+          "move_path": null,
+          "type": "update"
+        },
+        "path": "src/main.rs"
+      }
+    ],
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 2,
+      "provider": "claude",
+      "record_type": "assistant",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 5,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "assistant-golden",
+    "status": "inProgress",
+    "timestamp": 1781308803000,
+    "turn": 1,
+    "type": "fileChange"
+  },
+  {
+    "call_id": "toolu-read",
+    "input": {
+      "file_path": "src/main.rs"
+    },
+    "input_summary": "{\"file_path\":\"src/main.rs\"}",
+    "name": "Read",
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 2,
+      "provider": "claude",
+      "record_type": "assistant",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 6,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "assistant-golden",
+    "timestamp": 1781308803000,
+    "turn": 1,
+    "type": "toolCall"
+  },
+  {
+    "call_id": "toolu-web",
+    "provider": "claude",
+    "provider_extra": null,
+    "query": "rust serde",
+    "raw_ref": {
+      "line": 2,
+      "provider": "claude",
+      "record_type": "assistant",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "results_summary": null,
+    "seq": 7,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "assistant-golden",
+    "timestamp": 1781308803000,
+    "turn": 1,
+    "type": "webSearch"
+  },
+  {
+    "arguments": {
+      "arg": "value"
+    },
+    "call_id": "toolu-mcp",
+    "duration_ms": null,
+    "error": null,
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 2,
+      "provider": "claude",
+      "record_type": "assistant",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "result": null,
+    "seq": 8,
+    "server": "server",
+    "session_id": "sess-claude-golden",
+    "source_uuid": "assistant-golden",
+    "status": "inProgress",
+    "timestamp": 1781308803000,
+    "tool": "tool",
+    "turn": 1,
+    "type": "mcpToolCall"
+  },
+  {
+    "call_id": "toolu-bash",
+    "error": null,
+    "ok": true,
+    "output": [
+      {
+        "text": "<stdout>total 0</stdout><stderr></stderr><exit_code>0</exit_code>",
+        "type": "text"
+      }
+    ],
+    "output_summary": "<stdout>total 0</stdout><stderr></stderr><exit_code>0</exit_code>",
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 9,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "toolResult"
+  },
+  {
+    "aggregated_output": "total 0",
+    "call_id": "toolu-bash",
+    "command": "ls -la",
+    "cwd": "/tmp/claude-golden",
+    "duration_ms": null,
+    "exit_code": 0,
+    "parsed_actions": [
+      {
+        "command": "ls -la",
+        "path": "-la",
+        "type": "listFiles"
+      }
+    ],
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 10,
+    "session_id": "sess-claude-golden",
+    "source": "agent",
+    "source_uuid": "result-golden",
+    "status": "completed",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "commandExecution"
+  },
+  {
+    "call_id": "toolu-edit",
+    "error": null,
+    "ok": true,
+    "output": [
+      {
+        "text": "Applied edit",
+        "type": "text"
+      }
+    ],
+    "output_summary": "Applied edit",
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 11,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "toolResult"
+  },
+  {
+    "call_id": "toolu-edit",
+    "changes": [
+      {
+        "diff": "old_string: old\nnew_string: new",
+        "kind": {
+          "move_path": null,
+          "type": "update"
+        },
+        "path": "src/main.rs"
+      }
+    ],
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 12,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "status": "completed",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "fileChange"
+  },
+  {
+    "call_id": "toolu-web",
+    "error": null,
+    "ok": true,
+    "output": [
+      {
+        "text": "Found serde documentation",
+        "type": "text"
+      }
+    ],
+    "output_summary": "Found serde documentation",
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "seq": 13,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "toolResult"
+  },
+  {
+    "call_id": "toolu-web",
+    "provider": "claude",
+    "provider_extra": null,
+    "query": "rust serde",
+    "raw_ref": {
+      "line": 3,
+      "provider": "claude",
+      "record_type": "user",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "results_summary": "Found serde documentation",
+    "seq": 14,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "result-golden",
+    "timestamp": 1781308802000,
+    "turn": 1,
+    "type": "webSearch"
+  },
+  {
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 4,
+      "provider": "claude",
+      "record_type": "attachment/PostToolUse",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "raw_type": "attachment/PostToolUse",
+    "seq": 15,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "attachment-golden",
+    "timestamp": 1781308804000,
+    "turn": 1,
+    "type": "unknown"
+  },
+  {
+    "provider": "claude",
+    "provider_extra": null,
+    "raw_ref": {
+      "line": 5,
+      "provider": "claude",
+      "record_type": "queue_operation/enqueue",
+      "source_path": "/tmp/claude-golden.jsonl"
+    },
+    "raw_type": "queue_operation/enqueue",
+    "seq": 16,
+    "session_id": "sess-claude-golden",
+    "source_uuid": "queue-golden",
+    "timestamp": 1781308805000,
+    "turn": 1,
+    "type": "unknown"
+  }
+]

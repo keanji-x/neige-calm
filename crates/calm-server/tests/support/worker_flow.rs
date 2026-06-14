@@ -12,6 +12,9 @@ use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, RequestTheme
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
+use calm_server::worker_flow::claude_transcript::{
+    ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions,
+};
 use calm_server::worker_flow::codex_rollout::{
     CodexRolloutFlowSource, CodexRolloutFlowSourceOptions,
 };
@@ -44,6 +47,28 @@ pub async fn seed_card_and_runtime_with_status(
 ) -> SeededRuntime {
     let card = seed_codex_card(repo, card_id).await;
     let runtime = seed_runtime_for_card_with_status(repo, &card, thread_id, status).await;
+    SeededRuntime { card, runtime }
+}
+
+pub async fn seed_claude_card_and_runtime(
+    repo: &Arc<SqlxRepo>,
+    card_id: &str,
+    session_id: &str,
+    cwd: &str,
+) -> SeededRuntime {
+    seed_claude_card_and_runtime_with_status(repo, card_id, session_id, cwd, RunStatus::Running)
+        .await
+}
+
+pub async fn seed_claude_card_and_runtime_with_status(
+    repo: &Arc<SqlxRepo>,
+    card_id: &str,
+    session_id: &str,
+    cwd: &str,
+    status: RunStatus,
+) -> SeededRuntime {
+    let card = seed_claude_card(repo, card_id, cwd).await;
+    let runtime = seed_claude_runtime_for_card_with_status(repo, &card, session_id, status).await;
     SeededRuntime { card, runtime }
 }
 
@@ -92,6 +117,51 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
     card
 }
 
+pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) -> Card {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let cove = cove_create_tx(
+        &mut tx,
+        NewCove {
+            name: "cove".into(),
+            color: "#fff".into(),
+            sort: None,
+        },
+    )
+    .await
+    .unwrap();
+    let wave = wave_create_tx(
+        &mut tx,
+        NewWave {
+            cove_id: cove.id.clone(),
+            title: "wave".into(),
+            sort: None,
+            cwd: cwd.into(),
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        },
+        repo.wave_cove_cache(),
+    )
+    .await
+    .unwrap();
+    let card = card_create_with_id_tx(
+        &mut tx,
+        card_id.to_string(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            kind: "claude".into(),
+            sort: None,
+            payload: json!({ "schemaVersion": 1, "cwd": cwd }),
+        },
+        CardRole::Worker,
+        true,
+        repo.card_role_cache(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    card
+}
+
 pub async fn seed_runtime_for_card_with_status(
     repo: &Arc<SqlxRepo>,
     card: &Card,
@@ -123,6 +193,37 @@ pub async fn seed_runtime_for_card_with_status(
     runtime
 }
 
+pub async fn seed_claude_runtime_for_card_with_status(
+    repo: &Arc<SqlxRepo>,
+    card: &Card,
+    session_id: &str,
+    status: RunStatus,
+) -> CardRuntime {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: format!("rt-{}", card.id),
+            card_id: card.id.as_str().to_string(),
+            kind: RuntimeKind::ClaudeCard,
+            agent_provider: Some(AgentProvider::Claude),
+            status,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: Some(session_id.to_string()),
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    runtime
+}
+
 pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
     let status = seed.runtime.status.clone();
     WorkerSession {
@@ -134,7 +235,10 @@ pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
                 .unwrap_or_else(|| seed.runtime.id.clone()),
         ),
         wave_id: seed.card.wave_id.clone(),
-        provider: WorkerProviderKind::Codex,
+        provider: match seed.runtime.agent_provider.as_ref() {
+            Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
+            Some(AgentProvider::Codex) | None => WorkerProviderKind::Codex,
+        },
         mode: SessionMode::Resumable,
         contract: WorkerContract::Executor,
         parent_session_id: None,
@@ -169,6 +273,102 @@ pub fn rollout_path(codex_home: &Path, thread_id: &str) -> PathBuf {
     codex_home
         .join("sessions/2026/06/13")
         .join(format!("rollout-2026-06-13T00-00-00-{thread_id}.jsonl"))
+}
+
+pub fn claude_card_cwd(seed: &SeededRuntime) -> String {
+    seed.card
+        .payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .unwrap_or("/tmp")
+        .to_string()
+}
+
+pub fn claude_system(uuid: &str, cwd: &str) -> Value {
+    json!({
+        "type": "system",
+        "subtype": "init",
+        "uuid": uuid,
+        "timestamp": "2026-06-13T00:00:00Z",
+        "cwd": cwd
+    })
+}
+
+pub fn claude_user_string(uuid: &str, text: &str) -> Value {
+    json!({
+        "type": "user",
+        "uuid": uuid,
+        "timestamp": "2026-06-13T00:00:01Z",
+        "message": {
+            "role": "user",
+            "content": text
+        }
+    })
+}
+
+pub fn claude_user_blocks(uuid: &str, blocks: Vec<Value>) -> Value {
+    json!({
+        "type": "user",
+        "uuid": uuid,
+        "timestamp": "2026-06-13T00:00:02Z",
+        "message": {
+            "role": "user",
+            "content": blocks
+        }
+    })
+}
+
+pub fn claude_tool_result(tool_use_id: &str, content: &str, is_error: bool) -> Value {
+    json!({
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": content,
+        "is_error": is_error
+    })
+}
+
+pub fn claude_assistant(uuid: &str, cwd: &str, blocks: Vec<Value>) -> Value {
+    json!({
+        "type": "assistant",
+        "uuid": uuid,
+        "timestamp": "2026-06-13T00:00:03Z",
+        "message": {
+            "role": "assistant",
+            "cwd": cwd,
+            "content": blocks
+        }
+    })
+}
+
+pub fn claude_thinking(text: &str) -> Value {
+    json!({ "type": "thinking", "thinking": text })
+}
+
+pub fn claude_text(text: &str) -> Value {
+    json!({ "type": "text", "text": text })
+}
+
+pub fn claude_tool_use(id: &str, name: &str, input: Value) -> Value {
+    json!({
+        "type": "tool_use",
+        "id": id,
+        "name": name,
+        "input": input
+    })
+}
+
+pub fn claude_attachment(uuid: &str, cwd: &str) -> Value {
+    json!({
+        "type": "attachment",
+        "hook_event": "PostToolUse",
+        "uuid": uuid,
+        "timestamp": "2026-06-13T00:00:04Z",
+        "cwd": cwd,
+        "command": "echo hook",
+        "stdout": "ok",
+        "stderr": "",
+        "exitCode": 0
+    })
 }
 
 pub fn session_meta(thread_id: &str) -> Value {
@@ -348,12 +548,20 @@ pub fn write_rollout(path: &Path, lines: &[Value]) {
     std::fs::write(path, body).unwrap();
 }
 
+pub fn write_transcript(path: &Path, lines: &[Value]) {
+    write_rollout(path, lines);
+}
+
 pub fn append_rollout(path: &Path, lines: &[Value]) {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
     for line in lines {
         writeln!(file, "{}", serde_json::to_string(line).unwrap()).unwrap();
     }
+}
+
+pub fn append_transcript(path: &Path, lines: &[Value]) {
+    append_rollout(path, lines);
 }
 
 pub async fn wait_until<F, Fut>(timeout: Duration, mut condition: F)
@@ -446,6 +654,35 @@ pub fn spawn_source_with_discovery(
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
             ..CodexRolloutFlowSourceOptions::default()
+        },
+    );
+    let session = worker_session(seed);
+    let sink = WorkerFlowSink::new(repo);
+    let handle = tokio::spawn(async move { source.capture(&session, &sink).await });
+    (token, handle)
+}
+
+pub fn spawn_claude_source_with_path(
+    repo: Arc<SqlxRepo>,
+    runtime: CardRuntime,
+    seed: &SeededRuntime,
+    path: &Path,
+) -> (
+    CancellationToken,
+    tokio::task::JoinHandle<Result<(), calm_types::error::CoreError>>,
+) {
+    let token = CancellationToken::new();
+    let source = ClaudeTranscriptFlowSource::new_with_options(
+        repo.clone(),
+        runtime,
+        claude_card_cwd(seed),
+        token.clone(),
+        ClaudeTranscriptFlowSourceOptions {
+            path_override: Some(path.to_path_buf()),
+            poll_interval: Duration::from_millis(20),
+            lazy_retry_delay: Duration::from_millis(10),
+            lazy_retry_attempts: 3,
+            ..ClaudeTranscriptFlowSourceOptions::default()
         },
     );
     let session = worker_session(seed);
