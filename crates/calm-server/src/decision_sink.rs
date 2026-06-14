@@ -9,20 +9,28 @@ use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::mcp_server::registry::AppContext;
+use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, Wave, WaveLifecycle};
+use crate::recorder_shadow::{
+    RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
+};
 use crate::runtime_repo::RuntimeId;
 use crate::state::WriteContext;
 use crate::wave_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
 };
-use crate::wave_report::{WaveReportPayload, persist_report};
+use crate::wave_report::{WaveReportPayload, persist_report_with_shadow};
 use async_trait::async_trait;
 use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
+use calm_truth::decision_gate::PrincipalDecisionGate;
 use calm_types::error::CoreError;
 use calm_types::observation::Observation;
 use calm_types::worker::{Principal, WorkerSessionId};
+use sqlx::{Sqlite, Transaction};
 use std::sync::Arc;
+use tokio::sync::Mutex;
+
+type RecorderShadowDivergences = Arc<Mutex<Vec<RecorderShadowDivergence>>>;
 
 #[derive(Clone)]
 pub struct CardDecisionSink {
@@ -42,10 +50,11 @@ impl CardDecisionSink {
 
     pub async fn commit_worker_task_report(
         &self,
-        actor: ActorId,
-        card_id_str: String,
+        identity: &ToolCallIdentity,
         event: Event,
     ) -> Result<(), CalmError> {
+        let actor = identity.to_actor_id();
+        let card_id_str = identity.card_id.clone();
         let card = self
             .repo
             .card_get(&card_id_str)
@@ -262,12 +271,14 @@ impl CardDecisionSink {
 
     pub async fn commit_spec_verdict(
         &self,
-        actor: ActorId,
-        card_id_str: String,
+        identity: &ToolCallIdentity,
         message: String,
         lifecycle: Option<WaveLifecycle>,
         event: Event,
     ) -> Result<(), CalmError> {
+        let actor = identity.to_actor_id();
+        let card_id_str = identity.card_id.clone();
+        let principal = identity.to_principal();
         let card = self
             .repo
             .card_get(&card_id_str)
@@ -296,6 +307,12 @@ impl CardDecisionSink {
         };
         let wave_id = wave.id.clone();
         let wave_scope = scope.clone();
+        let divergences = Arc::new(Mutex::new(Vec::new()));
+        let recorder_shadow = Arc::new(CardDecisionSinkRecorderShadowProbe {
+            principal,
+            wave_id: wave_id.clone(),
+            divergences: Arc::clone(&divergences),
+        });
 
         write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
@@ -309,6 +326,7 @@ impl CardDecisionSink {
                 let wave_scope = wave_scope.clone();
                 let wave_id = wave_id.clone();
                 let message = message.clone();
+                let recorder_shadow = Arc::clone(&recorder_shadow);
                 Box::pin(async move {
                     let mut events = Vec::new();
                     if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await? {
@@ -328,6 +346,9 @@ impl CardDecisionSink {
                         )
                         .await?
                     {
+                        recorder_shadow
+                            .record(tx, RecorderShadowDecisionKind::WaveLifecycle)
+                            .await;
                         events.extend(
                             lifecycle_events
                                 .into_iter()
@@ -340,6 +361,7 @@ impl CardDecisionSink {
             },
         )
         .await?;
+        emit_recorder_shadow_divergences(&divergences).await;
 
         Ok(())
     }
@@ -347,7 +369,7 @@ impl CardDecisionSink {
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_write(
         &self,
-        actor: ActorId,
+        identity: &ToolCallIdentity,
         wave: Wave,
         report_card: Card,
         current_payload: WaveReportPayload,
@@ -355,7 +377,16 @@ impl CardDecisionSink {
         agent_message: String,
         lifecycle: Option<WaveLifecycle>,
     ) -> Result<Card, CalmError> {
-        persist_report(
+        let actor = identity.to_actor_id();
+        let principal = identity.to_principal();
+        let divergences = Arc::new(Mutex::new(Vec::new()));
+        let recorder_shadow: Arc<dyn RecorderShadowProbe> =
+            Arc::new(CardDecisionSinkRecorderShadowProbe {
+                principal,
+                wave_id: wave.id.clone(),
+                divergences: Arc::clone(&divergences),
+            });
+        let updated = persist_report_with_shadow(
             self.repo.as_ref(),
             &self.events,
             &self.write,
@@ -368,8 +399,69 @@ impl CardDecisionSink {
             Some(agent_message),
             lifecycle,
             true,
+            Some(recorder_shadow),
         )
-        .await
+        .await?;
+        emit_recorder_shadow_divergences(&divergences).await;
+        Ok(updated)
+    }
+}
+
+struct CardDecisionSinkRecorderShadowProbe {
+    principal: Option<Principal>,
+    wave_id: WaveId,
+    divergences: RecorderShadowDivergences,
+}
+
+#[async_trait]
+impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
+    async fn record(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        decision_kind: RecorderShadowDecisionKind,
+    ) {
+        let Some(principal) = self.principal.as_ref() else {
+            return;
+        };
+        let Principal::Agent { session_id, .. } = principal else {
+            return;
+        };
+        match PrincipalDecisionGate::new(principal.clone())
+            .recorder_grant(tx, &self.wave_id)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.divergences
+                    .lock()
+                    .await
+                    .push(RecorderShadowDivergence {
+                        wave_id: self.wave_id.clone(),
+                        session_id: session_id.clone(),
+                        decision_kind,
+                    });
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "neige::recorder_shadow",
+                    wave_id = %self.wave_id,
+                    session_id = %session_id,
+                    decision_kind = decision_kind.as_str(),
+                    error = %error,
+                    "recorder shadow gate computation failed; allowing card-era write"
+                );
+            }
+        }
+    }
+}
+
+async fn emit_recorder_shadow_divergences(divergences: &RecorderShadowDivergences) {
+    let divergences = {
+        let mut guard = divergences.lock().await;
+        std::mem::take(&mut *guard)
+    };
+    for divergence in divergences {
+        emit_divergence(&divergence);
     }
 }
 
@@ -427,6 +519,199 @@ impl AgentReactor for SpecHarnessAgentReactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::{SqlxRepo, session_insert_tx};
+    use crate::model::{CardRole, NewCard, NewCove, NewWave};
+    use crate::recorder_shadow::divergence_count_for_test;
+    use crate::wave_cove_cache::WaveCoveCache;
+    use calm_types::worker::{
+        LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
+        WorkerSessionState,
+    };
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing_subscriber::layer::Context as TracingContext;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{Layer, registry as tracing_registry};
+
+    struct RecorderShadowWarnLayer {
+        hits: Arc<AtomicUsize>,
+    }
+
+    impl<S> Layer<S> for RecorderShadowWarnLayer
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: TracingContext<'_, S>) {
+            if event.metadata().target() == "neige::recorder_shadow"
+                && *event.metadata().level() == tracing::Level::WARN
+            {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn worker_session(id: &str, wave_id: WaveId) -> WorkerSession {
+        WorkerSession {
+            id: WorkerSessionId::from(id),
+            wave_id,
+            provider: WorkerProviderKind::Codex,
+            mode: SessionMode::Resumable,
+            contract: WorkerContract::Planner,
+            parent_session_id: None,
+            requester_session_id: None,
+            state: WorkerSessionState::Starting,
+            mcp_token_hash: None,
+            thread_id: None,
+            agent_session_id: None,
+            active_turn_id: None,
+            terminal_run_id: None,
+            handle_state_json: None,
+            liveness: LivenessTag::Unknown,
+            liveness_probed_at_ms: None,
+            exit_code: None,
+            exit_interpretation: None,
+            spawn_op_id: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            completed_at_ms: None,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_root_report_write_commits_and_records_shadow_divergence() {
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let cove = repo
+            .cove_create(NewCove {
+                name: "recorder-shadow".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "shadow wave".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let spec_card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            })
+            .await
+            .expect("create spec card");
+        let report_card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "wave-report".into(),
+                sort: Some(-1.0),
+                payload: serde_json::to_value(WaveReportPayload::initial())
+                    .expect("initial report payload"),
+            })
+            .await
+            .expect("create report card");
+
+        let root_session_id = WorkerSessionId::from("root-session");
+        let root_session = worker_session(root_session_id.as_str(), wave.id.clone());
+        crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                session_insert_tx(tx, root_session)
+                    .await
+                    .map_err(Into::into)
+            })
+        })
+        .await
+        .expect("insert root session");
+        let updated_roots = sqlx::query("UPDATE waves SET root_session_id = ?1 WHERE id = ?2")
+            .bind(root_session_id.as_str())
+            .bind(wave.id.as_str())
+            .execute(repo.pool())
+            .await
+            .expect("set wave root")
+            .rows_affected();
+        assert_eq!(updated_roots, 1);
+
+        let card_role_cache = CardRoleCache::new();
+        card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+        card_role_cache.insert(
+            report_card.id.clone(),
+            CardRole::ReportCard,
+            wave.id.clone(),
+        );
+        let wave_cove_cache = WaveCoveCache::new();
+        repo.seed_wave_cove_cache(&wave_cove_cache)
+            .await
+            .expect("seed wave cove cache");
+        let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        let sink = CardDecisionSink {
+            repo: route_repo,
+            events: EventBus::new(),
+            write: WriteContext::new(card_role_cache, wave_cove_cache),
+        };
+        let identity = ToolCallIdentity {
+            card_id: spec_card.id.as_str().to_string(),
+            role: CardRole::Spec,
+            session_id: "non-root-session".to_string(),
+            wave_id: Some(wave.id.as_str().to_string()),
+            cove_id: cove.id.as_str().to_string(),
+            thread_id: "non-root-thread".to_string(),
+        };
+        let next = WaveReportPayload {
+            schema_version: WaveReportPayload::SCHEMA_VERSION,
+            summary: "non-root summary".into(),
+            body: "# Goal\n\nnon-root body\n".into(),
+        };
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_registry().with(RecorderShadowWarnLayer {
+            hits: Arc::clone(&warnings),
+        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let before_divergences = divergence_count_for_test();
+        let before_events = repo
+            .events_since(0, None)
+            .await
+            .expect("events before commit")
+            .len();
+
+        let updated = sink
+            .commit_report_write(
+                &identity,
+                wave.clone(),
+                report_card,
+                WaveReportPayload::initial(),
+                next,
+                "non-root edit".into(),
+                None,
+            )
+            .await
+            .expect("shadow divergence must not deny report write");
+
+        let payload: WaveReportPayload =
+            serde_json::from_value(updated.payload).expect("updated report payload");
+        assert_eq!(payload.summary, "non-root summary");
+        assert_eq!(divergence_count_for_test(), before_divergences + 1);
+        assert_eq!(warnings.load(Ordering::Relaxed), 1);
+
+        let events = repo.events_since(0, None).await.expect("events");
+        assert!(events.len() >= before_events + 2);
+        let report_events = &events[events.len() - 2..];
+        assert!(matches!(report_events[0].3, Event::CardUpdated(_)));
+        assert!(matches!(report_events[1].3, Event::WaveReportEdited { .. }));
+    }
 
     #[tokio::test]
     async fn spec_harness_agent_reactor_is_inert_and_shapes_principal() {

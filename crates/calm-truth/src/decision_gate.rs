@@ -6,7 +6,7 @@ use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::CardRole;
-use crate::worker::{WorkerSession, WorkerSessionId};
+use crate::worker::{Principal, WorkerSession, WorkerSessionId};
 use std::sync::Arc;
 
 pub type WorkerSessionRow = WorkerSession;
@@ -130,6 +130,46 @@ impl DecisionGate for PermissiveGate {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PrincipalDecisionGate {
+    principal: Principal,
+}
+
+impl PrincipalDecisionGate {
+    pub fn new(principal: Principal) -> Self {
+        Self { principal }
+    }
+
+    pub async fn decide_recorder<T>(&self, tx: &mut T, wave: &WaveId) -> Result<GateDecision>
+    where
+        T: WriteTx + ?Sized + Send,
+    {
+        let Principal::Agent { session_id, .. } = &self.principal else {
+            return Ok(GateDecision::Deny(
+                "principal is not an agent session".into(),
+            ));
+        };
+        let root = tx.read_wave_root_session_id(wave).await?;
+        if root.as_ref() == Some(session_id) {
+            Ok(GateDecision::Allow)
+        } else {
+            Ok(GateDecision::Deny(format!(
+                "session {session_id} is not wave root"
+            )))
+        }
+    }
+
+    pub async fn recorder_grant<T>(&self, tx: &mut T, wave: &WaveId) -> Result<bool>
+    where
+        T: WriteTx + ?Sized + Send,
+    {
+        Ok(matches!(
+            self.decide_recorder(tx, wave).await?,
+            GateDecision::Allow
+        ))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn commit_decision<R, G, F>(
     repo: &dyn crate::db::RepoEventWrite,
@@ -181,4 +221,82 @@ where
             crate::error::TruthError::Internal("commit_decision: closure did not set row".into())
         })?;
     Ok((row, event_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeWriteTx {
+        root_session_id: Option<WorkerSessionId>,
+    }
+
+    impl sealed::Sealed for FakeWriteTx {}
+
+    #[async_trait]
+    impl WriteTx for FakeWriteTx {
+        async fn read_wave_root_session_id(
+            &mut self,
+            _wave: &WaveId,
+        ) -> Result<Option<WorkerSessionId>> {
+            Ok(self.root_session_id.clone())
+        }
+
+        async fn read_worker_session(
+            &mut self,
+            _id: &WorkerSessionId,
+        ) -> Result<Option<WorkerSessionRow>> {
+            Ok(None)
+        }
+
+        async fn read_card_role(&mut self, _card: &CardId) -> Result<Option<CardRole>> {
+            Ok(None)
+        }
+
+        async fn read_wave_cove(&mut self, _wave: &WaveId) -> Result<Option<CoveId>> {
+            Ok(None)
+        }
+    }
+
+    fn agent(session_id: &str) -> Principal {
+        Principal::Agent {
+            session_id: WorkerSessionId::from(session_id),
+            wave_id: WaveId::from("wave-1"),
+            cove_id: CoveId::from("cove-1"),
+        }
+    }
+
+    #[tokio::test]
+    async fn principal_decision_gate_computes_root_grant() {
+        let wave = WaveId::from("wave-1");
+        let mut tx = FakeWriteTx {
+            root_session_id: Some(WorkerSessionId::from("root-session")),
+        };
+
+        let root = PrincipalDecisionGate::new(agent("root-session"))
+            .recorder_grant(&mut tx, &wave)
+            .await
+            .expect("root grant");
+        assert!(root);
+
+        let non_root = PrincipalDecisionGate::new(agent("other-session"))
+            .recorder_grant(&mut tx, &wave)
+            .await
+            .expect("non-root grant");
+        assert!(!non_root);
+    }
+
+    #[tokio::test]
+    async fn principal_decision_gate_treats_missing_root_as_not_root() {
+        let wave = WaveId::from("wave-1");
+        let mut tx = FakeWriteTx {
+            root_session_id: None,
+        };
+
+        let grant = PrincipalDecisionGate::new(agent("root-session"))
+            .recorder_grant(&mut tx, &wave)
+            .await
+            .expect("missing root grant");
+        assert!(!grant);
+    }
 }

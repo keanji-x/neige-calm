@@ -245,16 +245,9 @@ async fn task_verdict(
         }
     };
 
-    let actor = identity.to_actor_id();
     let kind_tag = event.kind_tag();
     let res = CardDecisionSink::from_app_context(&ctx)
-        .commit_spec_verdict(
-            actor,
-            identity.card_id.clone(),
-            write_args.message,
-            write_args.lifecycle,
-            event,
-        )
+        .commit_spec_verdict(&identity, write_args.message, write_args.lifecycle, event)
         .await;
 
     match res {

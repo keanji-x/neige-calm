@@ -552,6 +552,7 @@ pub mod plugin_host;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;
 pub mod provider_impls;
+pub(crate) mod recorder_shadow;
 pub mod replay;
 pub mod role_gate;
 pub mod routes;
