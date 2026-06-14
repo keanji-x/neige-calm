@@ -483,12 +483,19 @@ fn command_completion_item(
     state: &mut ClaudeNormalizerState,
 ) -> Option<WorkerFlowItem> {
     let call_id = string_field(block, &["tool_use_id", "id"])?;
-    let result = build_bash_completion(record, block)?;
     let pending = state.pending_commands.remove(&call_id)?;
-    let status = if tool_result_is_error(block) {
-        ExecStatus::Failed
-    } else {
-        ExecStatus::Completed
+    let is_error = tool_result_is_error(block);
+    let (aggregated_output, exit_code, status) = match build_bash_completion(record, block) {
+        Some(result) => (
+            Some(result.aggregated_output),
+            Some(result.exit_code),
+            if is_error {
+                ExecStatus::Failed
+            } else {
+                ExecStatus::Completed
+            },
+        ),
+        None => (None, Some(-1), ExecStatus::Failed),
     };
     Some(WorkerFlowItem::CommandExecution {
         env: env_for(record, seq, turn, session_id, raw_ref),
@@ -496,8 +503,8 @@ fn command_completion_item(
         command: pending.command,
         cwd: pending.cwd,
         parsed_actions: pending.parsed_actions,
-        aggregated_output: Some(result.aggregated_output),
-        exit_code: Some(result.exit_code),
+        aggregated_output,
+        exit_code,
         duration_ms: None,
         status,
         source: ExecSource::Agent,

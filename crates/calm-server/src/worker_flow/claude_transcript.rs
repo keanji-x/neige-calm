@@ -128,25 +128,45 @@ impl ClaudeTranscriptFlowSource {
             }
         }
 
-        for _ in 0..self.options.lazy_retry_attempts {
+        let warn_after = self.options.lazy_retry_attempts;
+        let mut warned = false;
+        let mut attempt = 0_usize;
+        loop {
             if self.stop.is_cancelled() {
                 return Ok(None);
             }
-            match tokio::fs::File::open(&path).await {
+            if !self.runtime_is_alive().await {
+                tracing::info!(
+                    card_id = %self.runtime.card_id,
+                    runtime_id = %self.runtime.id,
+                    source_path = %path.display(),
+                    "claude runtime reached terminal status before transcript appeared; exiting source"
+                );
+                return Ok(None);
+            }
+            match tokio::fs::metadata(&path).await {
                 Ok(_) => return Ok(Some(path)),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    sleep_or_cancel(self.options.lazy_retry_delay, &self.stop).await?;
+                    if !warned && attempt >= warn_after {
+                        warned = true;
+                        tracing::warn!(
+                            card_id = %self.runtime.card_id,
+                            runtime_id = %self.runtime.id,
+                            source_path = %path.display(),
+                            "claude transcript not present after lazy-retry budget; continuing to poll (claude creates file on first prompt)"
+                        );
+                    }
+                    let delay = if attempt < warn_after {
+                        self.options.lazy_retry_delay
+                    } else {
+                        Duration::from_secs(1)
+                    };
+                    sleep_or_cancel(delay, &self.stop).await?;
+                    attempt = attempt.saturating_add(1);
                 }
                 Err(err) => return Err(CoreError::Io(err)),
             }
         }
-        tracing::warn!(
-            card_id = %self.runtime.card_id,
-            runtime_id = %self.runtime.id,
-            source_path = %path.display(),
-            "claude transcript file not found after lazy-create retry budget; pausing source until next status change"
-        );
-        Ok(None)
     }
 
     async fn run_tail(

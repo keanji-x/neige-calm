@@ -223,6 +223,38 @@ fn claude_normalizer_fails_bash_from_tool_use_result_stderr() {
 }
 
 #[test]
+fn claude_normalizer_emits_failed_bash_completion_when_result_shape_absent() {
+    let (items, state) = normalize_lines_with_state(vec![
+        wf::claude_user_string("user-bash", "list files"),
+        wf::claude_assistant(
+            "assistant-bash",
+            "/tmp/claude-tools",
+            vec![wf::claude_tool_use(
+                "toolu-bash-degenerate",
+                "Bash",
+                json!({ "command": "ls" }),
+            )],
+        ),
+        wf::claude_user_blocks(
+            "result-bash",
+            vec![wf::claude_tool_result("toolu-bash-degenerate", "", false)],
+        ),
+    ]);
+
+    let commands = command_executions(&items);
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].call_id, Some("toolu-bash-degenerate"));
+    assert_eq!(commands[0].status, &ExecStatus::InProgress);
+    assert_eq!(commands[0].exit_code, None);
+    assert_eq!(commands[0].aggregated_output, None);
+    assert_eq!(commands[1].call_id, Some("toolu-bash-degenerate"));
+    assert_eq!(commands[1].status, &ExecStatus::Failed);
+    assert_eq!(commands[1].exit_code, Some(-1));
+    assert_eq!(commands[1].aggregated_output, None);
+    assert_eq!(state.pending_commands_len(), 0);
+}
+
+#[test]
 fn claude_normalizer_pairs_mcp_tool_result_with_mcp_completion() {
     let result_content = json!([{ "type": "text", "text": "result body" }]);
     let (items, state) = normalize_lines_with_state(vec![
