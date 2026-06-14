@@ -3001,20 +3001,18 @@ async fn session_set_handle_state_mirror_tx(
     state_text: &Option<String>,
     now: i64,
 ) -> RuntimeResult<()> {
-    let res = sqlx::query(
+    sqlx::query(
         r#"UPDATE worker_sessions
               SET handle_state_json = ?1,
                   updated_at_ms = ?2
-            WHERE id = ?3"#,
+            WHERE id = ?3
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(state_text)
     .bind(now)
     .bind(id)
     .execute(&mut **tx)
     .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("worker session {id} not found")));
-    }
     Ok(())
 }
 
@@ -3550,20 +3548,18 @@ pub async fn runtime_set_handle_state_tx(
 ) -> RuntimeResult<()> {
     let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
     let now = now_ms();
-    let res = sqlx::query(
+    sqlx::query(
         r#"UPDATE runtimes
               SET handle_state_json = ?1,
                   updated_at_ms = ?2
-            WHERE id = ?3"#,
+            WHERE id = ?3
+              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(&state_text)
     .bind(now)
     .bind(id)
     .execute(&mut **tx)
     .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("runtime {id} not found")));
-    }
     session_set_handle_state_mirror_tx(tx, id, &state_text, now).await?;
     Ok(())
 }
