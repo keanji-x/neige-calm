@@ -23,8 +23,10 @@
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
+use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
+use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
@@ -34,7 +36,13 @@ use calm_server::model::{
     CardRole, CardRuntimeView, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch,
 };
 use calm_server::plugin_host::mcp::RpcError;
+use calm_types::worker::{
+    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
+    WorkerSessionState,
+};
 use serde_json::{Value, json};
+
+const SPEC_SESSION_ID: &str = "spec-session";
 
 /// One-shot boot: in-memory sqlite + bus + cache + one cove with one
 /// wave with one spec card and one worker card. Returns enough handles
@@ -47,6 +55,52 @@ struct Boot {
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
+}
+
+fn planner_session(id: &str, wave_id: WaveId) -> WorkerSession {
+    WorkerSession {
+        id: WorkerSessionId::from(id),
+        wave_id,
+        provider: WorkerProviderKind::Codex,
+        mode: SessionMode::Resumable,
+        contract: WorkerContract::Planner,
+        parent_session_id: None,
+        requester_session_id: None,
+        state: WorkerSessionState::Starting,
+        mcp_token_hash: None,
+        thread_id: None,
+        agent_session_id: None,
+        active_turn_id: None,
+        terminal_run_id: None,
+        handle_state_json: None,
+        liveness: LivenessTag::Unknown,
+        liveness_probed_at_ms: None,
+        exit_code: None,
+        exit_interpretation: None,
+        spawn_op_id: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        completed_at_ms: None,
+    }
+}
+
+async fn seed_wave_root_session(repo: &dyn RepoEventWrite, wave_id: &WaveId, session_id: &str) {
+    let session = planner_session(session_id, wave_id.clone());
+    let root_session_id = session.id.clone();
+    let wave_id = wave_id.clone();
+    calm_server::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            session_insert_tx(tx, session)
+                .await
+                .map_err(CalmError::from)?;
+            session_mark_wave_root_tx(tx, &wave_id, &root_session_id)
+                .await
+                .map_err(CalmError::from)?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed wave root session");
 }
 
 async fn boot() -> Boot {
@@ -92,6 +146,7 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    seed_wave_root_session(repo.as_ref(), &wave.id, SPEC_SESSION_ID).await;
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
@@ -154,7 +209,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
-        session_id: "spec-session".to_string(),
+        session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
