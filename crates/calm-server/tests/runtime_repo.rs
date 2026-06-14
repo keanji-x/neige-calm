@@ -299,6 +299,147 @@ async fn runtime_supersede_tx_mirrors_old_superseded_and_new_starting_same_wave(
 }
 
 #[tokio::test]
+async fn stale_harness_observation_cannot_revive_superseded_runtime() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "spec").await;
+    let card_id = card.id.to_string();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let old = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card_id.clone(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+            RunStatus::Idle,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_mark_superseded_tx(&mut tx, &old.id).await.unwrap();
+
+    runtime_set_harness_observation_tx(
+        &mut tx,
+        &old.id,
+        RunStatus::Running,
+        Some("stale-thread"),
+        Some("stale-turn"),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let old_after = repo
+        .runtime_get_by_id(&old.id)
+        .await
+        .unwrap()
+        .expect("old runtime");
+    assert_eq!(old_after.status, RunStatus::Superseded);
+    assert_eq!(old_after.thread_id, None);
+    assert_eq!(old_after.active_turn_id, None);
+
+    let old_session = repo
+        .session_get(&WorkerSessionId(old.id.clone()))
+        .await
+        .unwrap()
+        .expect("mirrored old worker session");
+    assert_eq!(old_session.state, WorkerSessionState::Superseded);
+    assert_eq!(old_session.thread_id, None);
+    assert_eq!(old_session.active_turn_id, None);
+
+    let active = repo.runtime_get_active_for_card(&card_id).await.unwrap();
+    assert!(active.is_none());
+
+    let active_count: (i64,) = sqlx::query_as(
+        r#"SELECT COUNT(*)
+           FROM runtimes
+          WHERE card_id = ?1
+            AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(card_id.as_str())
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(active_count.0, 0);
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+
+    let replacement_card = make_card(&repo, "spec").await;
+    let replacement_card_id = replacement_card.id.to_string();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let replaced_old = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            replacement_card_id.clone(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+            RunStatus::Idle,
+        ),
+    )
+    .await
+    .unwrap();
+    let replacement = runtime_supersede_tx(
+        &mut tx,
+        &replaced_old.id,
+        runtime_init(
+            replacement_card_id.clone(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+
+    runtime_set_harness_observation_tx(
+        &mut tx,
+        &replaced_old.id,
+        RunStatus::Running,
+        Some("stale-replaced-thread"),
+        Some("stale-replaced-turn"),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let replaced_old_after = repo
+        .runtime_get_by_id(&replaced_old.id)
+        .await
+        .unwrap()
+        .expect("replaced old runtime");
+    assert_eq!(replaced_old_after.status, RunStatus::Superseded);
+    assert_eq!(replaced_old_after.thread_id, None);
+    assert_eq!(replaced_old_after.active_turn_id, None);
+
+    let replaced_old_session = repo
+        .session_get(&WorkerSessionId(replaced_old.id.clone()))
+        .await
+        .unwrap()
+        .expect("mirrored replaced old worker session");
+    assert_eq!(replaced_old_session.state, WorkerSessionState::Superseded);
+    assert_eq!(replaced_old_session.thread_id, None);
+    assert_eq!(replaced_old_session.active_turn_id, None);
+
+    let replacement_active = repo
+        .runtime_get_active_for_card(&replacement_card_id)
+        .await
+        .unwrap()
+        .expect("replacement active runtime");
+    assert_eq!(replacement_active.id, replacement.id);
+
+    let replacement_active_count: (i64,) = sqlx::query_as(
+        r#"SELECT COUNT(*)
+           FROM runtimes
+          WHERE card_id = ?1
+            AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(replacement_card_id.as_str())
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(replacement_active_count.0, 1);
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+}
+
+#[tokio::test]
 async fn runtime_start_tx_terminal_persists_active_row() {
     let repo = fresh_repo().await;
     let wave = make_wave(&repo).await;

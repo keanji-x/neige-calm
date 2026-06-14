@@ -9,8 +9,10 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, runtime_start_tx,
 };
 use calm_server::event::EventBus;
-use calm_server::harness::HarnessState;
-use calm_server::ids::CardId;
+use calm_server::harness::{
+    HarnessConfig, HarnessSnapshot, HarnessState, SpecHarness, SpecHarnessParams,
+};
+use calm_server::ids::{CardId, WaveId};
 use calm_server::mcp_server::auth;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id, now_ms};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
@@ -616,6 +618,119 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     assert_eq!(active.id, old_runtime_id);
     assert_eq!(active.status, RunStatus::Idle);
     assert_eq!(active.thread_id.as_deref(), Some(old_thread_id.as_str()));
+}
+
+#[tokio::test]
+async fn fresh_start_supersedes_existing_shared_spec_runtime() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+
+    let old_runtime_id = new_id();
+    let old_thread_id = "thread-existing-spec-runtime".to_string();
+    let old_snapshot = HarnessSnapshot::initial(0, vec![]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: old_runtime_id.clone(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(old_thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&old_snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let old_harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: old_runtime_id.clone(),
+        wave_id: WaveId::from(wave.id.to_string()),
+        card_id: CardId::from(card_id.clone()),
+        thread_id: Some(old_thread_id.clone()),
+        repo: repo_dyn,
+        events: state.events.clone(),
+        card_role_cache: role_cache.clone(),
+        wave_cove_cache: state.wave_cove_cache.clone(),
+        daemon: state.shared_codex_appserver.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot: old_snapshot,
+    });
+    state.harness.insert(old_runtime_id.clone(), old_harness);
+
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: Some("adapter goal".into()),
+        reset_harness_items: false,
+        force_new_thread: false,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+
+    match wait_op(&state, &op_id).await {
+        OperationOutcome::Succeeded { .. } => {}
+        other => panic!("expected spec harness fresh start to succeed, got {other:?}"),
+    }
+
+    let active = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("new active runtime");
+    assert_ne!(active.id, old_runtime_id);
+    assert_eq!(active.kind, RuntimeKind::SharedSpec);
+    assert_eq!(active.status, RunStatus::Idle);
+    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+
+    let old = repo
+        .runtime_get_by_id(&old_runtime_id)
+        .await
+        .unwrap()
+        .expect("old runtime");
+    assert_eq!(old.status, RunStatus::Superseded);
+    assert_eq!(old.thread_id.as_deref(), Some(old_thread_id.as_str()));
+    assert!(
+        state.harness.get(&old_runtime_id).is_none(),
+        "old harness handle must be shut down after supersede"
+    );
+
+    let active_count: (i64,) = sqlx::query_as(
+        r#"SELECT COUNT(*)
+             FROM runtimes
+            WHERE card_id = ?1
+              AND status NOT IN ('failed', 'exited', 'superseded')"#,
+    )
+    .bind(&card_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(active_count.0, 1);
+    if let Some(handle) = state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]

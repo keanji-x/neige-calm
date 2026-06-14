@@ -3055,7 +3055,8 @@ async fn session_set_harness_observation_tx(
                   thread_id = COALESCE(?2, thread_id),
                   active_turn_id = ?3,
                   updated_at_ms = ?4
-            WHERE id = ?5"#,
+            WHERE id = ?5
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(worker_session_state_from_run_status(&status).as_db_str())
     .bind(thread_id)
@@ -3607,7 +3608,8 @@ pub async fn runtime_set_harness_observation_tx(
                   thread_id = COALESCE(?2, thread_id),
                   active_turn_id = ?3,
                   updated_at_ms = ?4
-            WHERE id = ?5"#,
+            WHERE id = ?5
+              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(run_status_to_db(&status))
     .bind(thread_id)
