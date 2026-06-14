@@ -11,6 +11,7 @@ use calm_server::pending_codex_threads::{
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_types::worker::WorkerSessionId;
 use serde_json::json;
 use tokio::sync::Mutex;
 
@@ -548,6 +549,78 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
         .unwrap()
         .expect("live runtime");
     assert_eq!(runtime.thread_id.as_deref(), Some("T-live-own"));
+}
+
+#[tokio::test]
+async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_attribution() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id =
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+    let r1 = runtime_id_for_card(&repo, &card_id).await;
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))
+        .await
+        .unwrap();
+    let live_card = seed_pending(&repo, &registry, &wave_id, "term-live-behind").await;
+
+    let r2 = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_supersede_tx(
+        &mut tx,
+        &r1,
+        RuntimeInit {
+            id: r2.clone(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some("term-r1".to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let bound = registry.on_thread_started("T-r1-late").await.unwrap();
+
+    assert_eq!(bound, None);
+    assert_eq!(registry.pending_count().await, 1);
+    let old_runtime = repo
+        .runtime_get_by_id(&r1)
+        .await
+        .unwrap()
+        .expect("old runtime");
+    assert_eq!(old_runtime.thread_id, None);
+    let new_runtime = repo
+        .runtime_get_by_id(&r2)
+        .await
+        .unwrap()
+        .expect("new runtime");
+    assert_eq!(new_runtime.thread_id, None);
+    let new_session = repo
+        .session_get(&WorkerSessionId::from(r2.clone()))
+        .await
+        .unwrap()
+        .expect("new worker session");
+    assert_eq!(new_session.thread_id, None);
+    assert_eq!(new_session.agent_session_id, None);
+
+    let next = registry.on_thread_started("T-live-own").await.unwrap();
+    assert_eq!(next.as_deref(), Some(live_card.as_str()));
+    let live_runtime = repo
+        .runtime_get_active_for_card(&live_card)
+        .await
+        .unwrap()
+        .expect("live runtime");
+    assert_eq!(live_runtime.thread_id.as_deref(), Some("T-live-own"));
 }
 
 #[tokio::test]
