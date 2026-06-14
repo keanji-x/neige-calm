@@ -8,18 +8,20 @@
 use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
-use crate::ids::{ActorId, CardId};
+use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::mcp_server::registry::AppContext;
 use crate::model::{Card, Wave, WaveLifecycle};
+use crate::runtime_repo::RuntimeId;
 use crate::state::WriteContext;
 use crate::wave_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
 };
 use crate::wave_report::{WaveReportPayload, persist_report};
 use async_trait::async_trait;
-use calm_exec::{DecisionIntent, DecisionSink};
+use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
 use calm_types::error::CoreError;
-use calm_types::worker::Principal;
+use calm_types::observation::Observation;
+use calm_types::worker::{Principal, WorkerSessionId};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -385,3 +387,70 @@ impl DecisionSink for CardDecisionSink {
     }
 }
 
+/// Structural-only spec-harness reactor for #679 PR6a-2.
+///
+/// No `worker_sessions` row backs a spec harness yet, and nothing reads this
+/// principal until PR7. The live run loop still delivers observations through
+/// the existing turn queue and is deliberately not wired to this stub.
+#[derive(Clone, Debug)]
+pub struct SpecHarnessAgentReactor {
+    runtime_id: RuntimeId,
+    wave_id: WaveId,
+    cove_id: CoveId,
+}
+
+impl SpecHarnessAgentReactor {
+    pub fn new(runtime_id: RuntimeId, wave_id: WaveId, cove_id: CoveId) -> Self {
+        Self {
+            runtime_id,
+            wave_id,
+            cove_id,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentReactor for SpecHarnessAgentReactor {
+    fn principal(&self) -> Principal {
+        Principal::Agent {
+            session_id: WorkerSessionId::from(self.runtime_id.clone()),
+            wave_id: self.wave_id.clone(),
+            cove_id: self.cove_id.clone(),
+        }
+    }
+
+    async fn react(&self, _observation: &Observation) -> Result<Vec<DecisionIntent>, CoreError> {
+        Ok(vec![])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spec_harness_agent_reactor_is_inert_and_shapes_principal() {
+        let reactor = SpecHarnessAgentReactor::new(
+            "runtime-1".to_string(),
+            WaveId::from("wave-1"),
+            CoveId::from("cove-1"),
+        );
+
+        assert_eq!(
+            reactor.principal(),
+            Principal::Agent {
+                session_id: WorkerSessionId::from("runtime-1"),
+                wave_id: WaveId::from("wave-1"),
+                cove_id: CoveId::from("cove-1"),
+            }
+        );
+
+        let intents = reactor
+            .react(&Observation::WaveGoal {
+                text: "goal".into(),
+            })
+            .await
+            .expect("react succeeds");
+        assert!(intents.is_empty());
+    }
+}
