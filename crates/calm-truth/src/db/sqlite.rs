@@ -3089,7 +3089,7 @@ async fn session_start_mirror_tx(
     let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
     let session = worker_session_from_runtime_init(init, wave_id);
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
-    if session.contract == WorkerContract::Planner {
+    if session.contract == WorkerContract::Planner && !session.state.is_terminal() {
         session_mark_wave_root_tx(tx, &session.wave_id, &session.id)
             .await
             .map_err(runtime_session_error)?;
