@@ -2066,14 +2066,21 @@ async fn hook_events_for_card_tx(
     let rows: Vec<EventRow> = sqlx::query_as(
         r#"SELECT id, kind, payload, actor, at,
                   scope_kind, scope_cove, scope_wave, scope_card
-           FROM events
-           WHERE scope_wave = ?1
-             AND scope_card = ?2
-             AND kind IN ('codex.hook', 'claude.hook')
+           FROM (
+               SELECT id, kind, payload, actor, at,
+                      scope_kind, scope_cove, scope_wave, scope_card
+               FROM events
+               WHERE scope_wave = ?1
+                 AND scope_card = ?2
+                 AND kind IN ('codex.hook', 'claude.hook')
+               ORDER BY id DESC
+               LIMIT ?3
+           )
            ORDER BY id ASC"#,
     )
     .bind(wave_id.as_str())
     .bind(card_id.as_str())
+    .bind(wave_fs_view::HOOK_EVENT_TRANSCRIPT_CAP as i64)
     .fetch_all(&mut **tx)
     .await?;
 
