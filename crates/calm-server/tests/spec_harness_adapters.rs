@@ -7,6 +7,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, runtime_start_tx,
+    session_mcp_token_set_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -235,6 +236,22 @@ async fn card_mcp_hash(repo: &SqlxRepo, card_id: &str) -> Option<String> {
     sqlx::query_scalar("SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1")
         .bind(card_id)
         .fetch_optional(repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn card_session_id(repo: &SqlxRepo, card_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn wave_root_session_id(repo: &SqlxRepo, wave_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_one(repo.pool())
         .await
         .unwrap()
 }
@@ -568,7 +585,20 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     )
     .await
     .unwrap();
+    session_mcp_token_set_tx(&mut tx, &old_runtime_id, &old_hash)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
+    assert_eq!(
+        card_session_id(&repo, &card_id).await.as_deref(),
+        Some(old_runtime_id.as_str())
+    );
+    assert_eq!(
+        wave_root_session_id(&repo, wave.id.as_str())
+            .await
+            .as_deref(),
+        Some(old_runtime_id.as_str())
+    );
 
     state
         .shared_codex_appserver
@@ -609,6 +639,18 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         card_mcp_hash(&repo, &card_id).await.as_deref(),
         Some(old_hash.as_str())
     );
+    assert_eq!(
+        card_session_id(&repo, &card_id).await.as_deref(),
+        Some(old_runtime_id.as_str()),
+        "failed deferred mint must not leave card linked to the placeholder session"
+    );
+    assert_eq!(
+        wave_root_session_id(&repo, wave.id.as_str())
+            .await
+            .as_deref(),
+        Some(old_runtime_id.as_str()),
+        "failed deferred mint must not leave recorder root on the placeholder session"
+    );
 
     let active = repo
         .runtime_get_active_for_card(&card_id)
@@ -618,6 +660,20 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     assert_eq!(active.id, old_runtime_id);
     assert_eq!(active.status, RunStatus::Idle);
     assert_eq!(active.thread_id.as_deref(), Some(old_thread_id.as_str()));
+
+    let session = repo
+        .session_get_by_active_token_hash(&old_hash)
+        .await
+        .unwrap()
+        .expect("old MCP token should still resolve after failed deferred mint");
+    assert_eq!(session.id.as_str(), old_runtime_id.as_str());
+    let identity = repo
+        .card_identity_get_by_session(session.id.as_str())
+        .await
+        .unwrap()
+        .expect("old session should still resolve card identity");
+    assert_eq!(identity.card_id, CardId::from(card_id.clone()));
+    assert_eq!(identity.wave_id, wave.id);
 }
 
 #[tokio::test]

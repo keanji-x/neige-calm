@@ -24,9 +24,10 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_codex_create_tx, runtime_bind_attribution_tx,
-    runtime_get_active_for_card_tx, runtime_start_tx,
+    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
 };
 use calm_server::event::EventBus;
+use calm_server::ids::ActorId;
 use calm_server::mcp_server::handshake::handle_initialize;
 use calm_server::mcp_server::registry::{
     ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolHandlerFuture,
@@ -37,6 +38,7 @@ use calm_server::plugin_host::mcp::RpcError;
 use calm_server::runtime_repo::{
     AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution,
 };
+use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -54,7 +56,9 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_id: String,
+    cove_id: String,
     wave_id: String,
+    session_id: String,
     thread_id: String,
     /// Raw per-card MCP token (kept in memory only — never persisted).
     raw_token: String,
@@ -135,7 +139,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     tx.commit().await.unwrap();
     let raw_token = mcp_token.expect("Spec card must mint a token");
     let thread_id = format!("thread-{card_id}");
-    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+    let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     let events = EventBus::new();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -159,7 +163,9 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         repo,
         events,
         card_id,
+        cove_id: cove.id.to_string(),
         wave_id: wave.id.to_string(),
+        session_id,
         thread_id,
         raw_token,
         socket_path,
@@ -167,17 +173,18 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     }
 }
 
-async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
-    if let Some(runtime) = runtime_get_active_for_card_tx(&mut tx, card_id)
+    let runtime_id = if let Some(runtime) = runtime_get_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
     {
+        let runtime_id = runtime.id.clone();
         runtime_bind_attribution_tx(
             &mut tx,
-            &runtime.id,
+            &runtime_id,
             ThreadAttribution {
-                runtime_id: runtime.id.clone(),
+                runtime_id: runtime_id.clone(),
                 provider: AgentProvider::Codex,
                 thread_id: Some(thread_id.to_string()),
                 session_id: None,
@@ -186,8 +193,9 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
         )
         .await
         .unwrap();
+        runtime_id
     } else {
-        runtime_start_tx(
+        let runtime = runtime_start_tx(
             &mut tx,
             RuntimeInit {
                 id: calm_server::model::new_id(),
@@ -207,8 +215,41 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
         )
         .await
         .unwrap();
-    }
+        runtime.id
+    };
     tx.commit().await.unwrap();
+    runtime_id
+}
+
+async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let existing = runtime_get_active_for_card_tx(&mut tx, card_id)
+        .await
+        .unwrap()
+        .expect("active runtime before supersede");
+    let runtime = runtime_supersede_tx(
+        &mut tx,
+        &existing.id,
+        RuntimeInit {
+            id: calm_server::model::new_id(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.to_string()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    runtime.id
 }
 
 /// Connect to the kernel-side socket. Returns a buffered reader paired
@@ -341,7 +382,41 @@ async fn initialize_with_valid_token_succeeds() {
 }
 
 #[tokio::test]
-async fn rollback_keeps_mcp_alive_by_ignoring_worker_session_hash() {
+async fn initialize_with_valid_token_binds_session_principal_and_card_actor() {
+    let b = boot().await;
+    let frame = initialize_frame(1, &b.raw_token);
+    let params = frame.get("params").expect("initialize params");
+    let ok = handle_initialize(b.repo.as_ref(), None, params, "2024-11-05")
+        .await
+        .expect("valid session token authenticates");
+    match ok.connection_identity {
+        ConnectionIdentity::CardBound(identity) => {
+            assert_eq!(identity.card_id.as_str(), b.card_id);
+            assert_eq!(identity.session_id, b.session_id);
+            assert_eq!(identity.wave_id.as_deref(), Some(b.wave_id.as_str()));
+            assert_eq!(identity.cove_id, b.cove_id);
+            assert_eq!(
+                identity.to_actor_id(),
+                ActorId::AiSpec(identity.card_id.clone()),
+                "persisted-event actor must stay card-derived"
+            );
+            assert_eq!(
+                identity.to_principal(),
+                Some(Principal::Agent {
+                    session_id: WorkerSessionId::from(b.session_id.as_str()),
+                    wave_id: b.wave_id.as_str().into(),
+                    cove_id: b.cove_id.as_str().into(),
+                }),
+                "Principal must be session-derived"
+            );
+        }
+        other => panic!("expected card-bound identity, got {other:?}"),
+    }
+    let _ = &b.server;
+}
+
+#[tokio::test]
+async fn corrupt_worker_session_hash_rejects_initialize() {
     let b = boot().await;
     let (runtime_id, card_hash, session_hash): (String, String, Option<String>) = sqlx::query_as(
         r#"SELECT r.id, c.hashed_token, ws.mcp_token_hash
@@ -369,16 +444,59 @@ async fn rollback_keeps_mcp_alive_by_ignoring_worker_session_hash() {
 
     let frame = initialize_frame(1, &b.raw_token);
     let params = frame.get("params").expect("initialize params");
-    let ok = handle_initialize(b.repo.as_ref(), None, params, "2024-11-05")
-        .await
-        .expect("handshake must use card_mcp_tokens as the sole authority");
-    match ok.connection_identity {
-        ConnectionIdentity::CardBound(identity) => {
-            assert_eq!(identity.card_id.as_str(), b.card_id);
-            assert_eq!(identity.wave_id.as_deref(), Some(b.wave_id.as_str()));
-        }
-        other => panic!("expected card-bound identity, got {other:?}"),
+    let err = match handle_initialize(b.repo.as_ref(), None, params, "2024-11-05").await {
+        Ok(_) => panic!("handshake must use worker_sessions as the token authority"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code, -32401);
+    let _ = &b.server;
+}
+
+#[tokio::test]
+async fn inactive_worker_session_hashes_reject_initialize() {
+    for state in ["failed", "superseded", "exited"] {
+        let b = boot().await;
+        sqlx::query("UPDATE worker_sessions SET state = ?1 WHERE id = ?2")
+            .bind(state)
+            .bind(&b.session_id)
+            .execute(b.sqlx_repo.pool())
+            .await
+            .unwrap();
+
+        let frame = initialize_frame(1, &b.raw_token);
+        let params = frame.get("params").expect("initialize params");
+        let err = match handle_initialize(b.repo.as_ref(), None, params, "2024-11-05").await {
+            Ok(_) => panic!("inactive session state `{state}` must reject"),
+            Err(err) => err,
+        };
+        assert_eq!(err.code, -32401, "state `{state}` must be unauthorized");
+        let _ = &b.server;
     }
+}
+
+#[tokio::test]
+async fn pr7_to_pr6_downgrade_card_table_lookup_still_matches_session_hash() {
+    let b = boot().await;
+    let hashed = calm_server::mcp_server::auth::hash_token(&b.raw_token);
+    let (card_id, card_hash) = b
+        .repo
+        .card_mcp_token_lookup_by_hash(&hashed)
+        .await
+        .unwrap()
+        .expect("PR6-style card token lookup still finds the card row");
+    let session = b
+        .repo
+        .session_get_by_active_token_hash(&hashed)
+        .await
+        .unwrap()
+        .expect("PR7 session token lookup finds the session row");
+    assert_eq!(card_id, b.card_id);
+    assert_eq!(session.id.as_str(), b.session_id);
+    assert_eq!(session.mcp_token_hash.as_deref(), Some(card_hash.as_str()));
+    assert!(
+        calm_server::mcp_server::auth::verify_token(&b.raw_token, &card_hash),
+        "PR6-style card table credential must verify while dual-mint parity is preserved"
+    );
     let _ = &b.server;
 }
 
@@ -395,7 +513,7 @@ async fn initialize_without_token_returns_invalid_params_and_closes() {
         err["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("per-card MCP token required"),
+            .contains("per-session MCP token required"),
         "unexpected missing-token error: {err:#?}"
     );
 
@@ -506,6 +624,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         .expect("first captured identity within budget")
         .expect("first captured identity present");
     assert_eq!(identity1.card_id, b.card_id);
+    assert_eq!(identity1.session_id, b.session_id);
     assert_eq!(identity1.thread_id, b.thread_id);
 
     let thread_id_a2 = format!("thread-{}-second", b.card_id);
@@ -538,6 +657,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         .expect("second captured identity within budget")
         .expect("second captured identity present");
     assert_eq!(identity2.card_id, b.card_id);
+    assert_eq!(identity2.session_id, b.session_id);
     assert_eq!(identity2.thread_id, thread_id_a2);
 
     match timeout(Duration::from_millis(50), rx.recv()).await {
@@ -545,6 +665,50 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         Ok(Ok(env)) => panic!("read-only wave.cat must not emit events; got {env:?}"),
         Ok(Err(_)) => panic!("bus closed unexpectedly"),
     }
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn card_bound_connection_rejects_same_card_cross_session_thread_id() {
+    let b = boot().await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
+    let init_resp = recv_frame(&mut rd).await;
+    assert!(
+        init_resp.get("error").is_none(),
+        "init failed: {init_resp:#?}"
+    );
+
+    let second_thread_id = format!("thread-{}-new-session", b.card_id);
+    let second_session_id =
+        supersede_runtime_session(&b.sqlx_repo, b.card_id.as_str(), &second_thread_id).await;
+    assert_ne!(
+        second_session_id, b.session_id,
+        "test setup must create a distinct second session"
+    );
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            12,
+            "calm.wave.cat",
+            &second_thread_id,
+            json!({"path": "wave.json"}),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    let err = resp
+        .get("error")
+        .expect("cross-session threadId must be rejected before handler dispatch");
+    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("bound session"),
+        "error should name the bound-session check: {err:#?}"
+    );
     let _ = (&b.server, &b.repo);
 }
 

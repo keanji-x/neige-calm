@@ -37,16 +37,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::{
-    Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonRecord,
-    SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
-    WriteWithEventsFn,
+    Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SessionCardIdentity,
+    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn,
+    WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn,
 };
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
 use crate::decision_gate::DecisionGate;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, WaveId};
+use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::*;
 use crate::runtime_repo::{
     AgentProvider, CardId as RuntimeCardId, CardRuntime, Result as RuntimeResult, RunStatus,
@@ -735,6 +735,11 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
             .bind(&wave_id)
             .execute(&mut **tx)
             .await?;
+        clear_wave_root_session_refs_for_worker_session_delete_tx(
+            tx,
+            WorkerSessionDeleteScope::Wave { wave_id: &wave_id },
+        )
+        .await?;
         sqlx::query("DELETE FROM worker_sessions WHERE wave_id = ?1")
             .bind(&wave_id)
             .execute(&mut **tx)
@@ -1563,6 +1568,44 @@ pub async fn task_fail_from_worker_tx(
     Ok(res.rows_affected())
 }
 
+enum WorkerSessionDeleteScope<'a> {
+    Wave { wave_id: &'a str },
+    Card { card_id: &'a str },
+}
+
+async fn clear_wave_root_session_refs_for_worker_session_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: WorkerSessionDeleteScope<'_>,
+) -> Result<()> {
+    match scope {
+        WorkerSessionDeleteScope::Wave { wave_id } => {
+            sqlx::query(
+                r#"UPDATE waves
+                      SET root_session_id = NULL
+                    WHERE root_session_id IN (
+                        SELECT id FROM worker_sessions WHERE wave_id = ?1
+                    )"#,
+            )
+            .bind(wave_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        WorkerSessionDeleteScope::Card { card_id } => {
+            sqlx::query(
+                r#"UPDATE waves
+                      SET root_session_id = NULL
+                    WHERE root_session_id IN (
+                        SELECT id FROM runtimes WHERE card_id = ?1
+                    )"#,
+            )
+            .bind(card_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn wave_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -1583,6 +1626,11 @@ pub async fn wave_delete_tx(
         .bind(id)
         .execute(&mut **tx)
         .await?;
+    clear_wave_root_session_refs_for_worker_session_delete_tx(
+        tx,
+        WorkerSessionDeleteScope::Wave { wave_id: id },
+    )
+    .await?;
     // `worker_sessions.wave_id` is a required FK. Card/runtime rows may
     // cascade below, but sessions must leave before the wave row itself.
     sqlx::query("DELETE FROM worker_sessions WHERE wave_id = ?1")
@@ -1823,6 +1871,11 @@ pub async fn card_delete_tx(
     id: &str,
     card_role_cache: &CardRoleCache,
 ) -> Result<()> {
+    clear_wave_root_session_refs_for_worker_session_delete_tx(
+        tx,
+        WorkerSessionDeleteScope::Card { card_id: id },
+    )
+    .await?;
     sqlx::query(
         "DELETE FROM worker_sessions WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?1)",
     )
@@ -2458,6 +2511,63 @@ pub async fn session_mcp_token_set_tx(
     Ok(())
 }
 
+pub async fn session_mark_wave_root_tx(
+    tx: &mut SessionTx<'_>,
+    wave_id: &WaveId,
+    session_id: &WorkerSessionId,
+) -> Result<()> {
+    let res = sqlx::query("UPDATE waves SET root_session_id = ?1 WHERE id = ?2")
+        .bind(session_id.as_str())
+        .bind(wave_id.as_str())
+        .execute(&mut **tx)
+        .await?;
+    if res.rows_affected() != 1 {
+        return Err(CalmError::NotFound(format!("wave {wave_id}")));
+    }
+    Ok(())
+}
+
+pub async fn session_get_by_active_token_hash(
+    pool: &SqlitePool,
+    hashed_token: &str,
+) -> Result<Option<WorkerSession>> {
+    let row = sqlx::query(
+        r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+                  requester_session_id, state, mcp_token_hash, thread_id,
+                  agent_session_id, active_turn_id, terminal_run_id,
+                  handle_state_json, liveness, liveness_probed_at_ms,
+                  exit_code, exit_interpretation, spawn_op_id, created_at_ms,
+                  updated_at_ms, completed_at_ms
+           FROM worker_sessions
+           WHERE mcp_token_hash = ?1
+             AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(hashed_token)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(worker_session_from_row).transpose()
+}
+
+pub async fn session_get_by_id(
+    pool: &SqlitePool,
+    id: &WorkerSessionId,
+) -> Result<Option<WorkerSession>> {
+    let row = sqlx::query(
+        r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+                  requester_session_id, state, mcp_token_hash, thread_id,
+                  agent_session_id, active_turn_id, terminal_run_id,
+                  handle_state_json, liveness, liveness_probed_at_ms,
+                  exit_code, exit_interpretation, spawn_op_id, created_at_ms,
+                  updated_at_ms, completed_at_ms
+           FROM worker_sessions
+           WHERE id = ?1"#,
+    )
+    .bind(id.as_str())
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(worker_session_from_row).transpose()
+}
+
 fn runtime_kind_to_db(kind: &RuntimeKind) -> &'static str {
     match kind {
         RuntimeKind::Terminal => "terminal",
@@ -2875,15 +2985,212 @@ fn worker_session_from_card_runtime(runtime: &CardRuntime, wave_id: WaveId) -> W
     }
 }
 
+async fn session_refresh_deferred_planner_tx(
+    tx: &mut RuntimeTx<'_>,
+    existing: WorkerSession,
+    desired: WorkerSession,
+) -> RuntimeResult<WorkerSession> {
+    if desired.contract != WorkerContract::Planner
+        || existing.contract != WorkerContract::Planner
+        || existing.state != WorkerSessionState::Starting
+        || existing.wave_id != desired.wave_id
+        || existing.provider != desired.provider
+        || existing.mode != desired.mode
+        || existing.parent_session_id.is_some()
+        || existing.requester_session_id.is_some()
+        || existing.completed_at_ms.is_some()
+    {
+        return Err(runtime_message(format!(
+            "worker session {} already exists and is not a deferred planner placeholder",
+            desired.id
+        )));
+    }
+
+    let handle_state_json = desired
+        .handle_state_json
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| runtime_message(e.to_string()))?;
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = ?1,
+                  thread_id = ?2,
+                  agent_session_id = ?3,
+                  active_turn_id = ?4,
+                  terminal_run_id = ?5,
+                  handle_state_json = ?6,
+                  liveness = ?7,
+                  liveness_probed_at_ms = ?8,
+                  exit_code = ?9,
+                  exit_interpretation = ?10,
+                  spawn_op_id = ?11,
+                  created_at_ms = ?12,
+                  updated_at_ms = ?13,
+                  completed_at_ms = ?14
+            WHERE id = ?15
+              AND contract = 'planner'
+              AND state = 'starting'"#,
+    )
+    .bind(desired.state.as_db_str())
+    .bind(&desired.thread_id)
+    .bind(&desired.agent_session_id)
+    .bind(&desired.active_turn_id)
+    .bind(&desired.terminal_run_id)
+    .bind(&handle_state_json)
+    .bind(desired.liveness.as_db_str())
+    .bind(desired.liveness_probed_at_ms)
+    .bind(desired.exit_code)
+    .bind(&desired.exit_interpretation)
+    .bind(&desired.spawn_op_id)
+    .bind(desired.created_at_ms)
+    .bind(desired.updated_at_ms)
+    .bind(desired.completed_at_ms)
+    .bind(desired.id.as_str())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| runtime_message(e.to_string()))?;
+    if res.rows_affected() != 1 {
+        return Err(runtime_message(format!(
+            "deferred planner placeholder {} changed before runtime mirror refresh",
+            desired.id
+        )));
+    }
+    session_get_tx(tx, &desired.id)
+        .await
+        .map_err(runtime_session_error)?
+        .ok_or_else(|| {
+            runtime_message(format!(
+                "worker session {} missing after deferred planner refresh",
+                desired.id
+            ))
+        })
+}
+
+async fn session_insert_or_refresh_start_mirror_tx(
+    tx: &mut RuntimeTx<'_>,
+    session: WorkerSession,
+) -> RuntimeResult<WorkerSession> {
+    if let Some(existing) = session_get_tx(tx, &session.id)
+        .await
+        .map_err(runtime_session_error)?
+    {
+        session_refresh_deferred_planner_tx(tx, existing, session).await
+    } else {
+        session_insert_tx(tx, session)
+            .await
+            .map_err(runtime_session_error)
+    }
+}
+
+async fn card_session_link_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+    session_id: &WorkerSessionId,
+) -> RuntimeResult<()> {
+    let res = sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+        .bind(session_id.as_str())
+        .bind(card_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| runtime_message(e.to_string()))?;
+    if res.rows_affected() != 1 {
+        return Err(runtime_message(format!(
+            "card {card_id} missing while linking worker session {session_id}"
+        )));
+    }
+    Ok(())
+}
+
+async fn session_mirror_card_mcp_token_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+    session: &WorkerSession,
+) -> RuntimeResult<()> {
+    if !session.state.is_active_authority() || session.mcp_token_hash.is_some() {
+        return Ok(());
+    }
+
+    let hashed: Option<String> = sqlx::query_scalar(
+        r#"SELECT cmt.hashed_token
+             FROM card_mcp_tokens cmt
+            WHERE cmt.card_id = ?1
+              AND 1 = (
+                  SELECT COUNT(*)
+                    FROM card_mcp_tokens dup
+                   WHERE dup.hashed_token = cmt.hashed_token
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                    FROM worker_sessions other
+                   WHERE other.id != ?2
+                     AND other.mcp_token_hash = cmt.hashed_token
+              )
+            LIMIT 1"#,
+    )
+    .bind(card_id)
+    .bind(session.id.as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| runtime_message(e.to_string()))?;
+
+    if let Some(hashed) = hashed {
+        session_mcp_token_set_tx(tx, session.id.as_str(), &hashed)
+            .await
+            .map_err(runtime_session_error)?;
+    }
+    Ok(())
+}
+
+async fn session_repoint_current_links_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+    session: &WorkerSession,
+) -> RuntimeResult<()> {
+    // Runtime/session identity invariant: whenever a runtime/session becomes
+    // current for a card, cards.session_id must follow it. Active sessions
+    // also inherit the card MCP token when doing so cannot violate ws_token_idx.
+    // Planner sessions that are live own waves.root_session_id for recorder
+    // gating.
+    session_mirror_card_mcp_token_tx(tx, card_id, session).await?;
+    if session.contract == WorkerContract::Planner && session.state.is_active_authority() {
+        session_mark_wave_root_tx(tx, &session.wave_id, &session.id)
+            .await
+            .map_err(runtime_session_error)?;
+    }
+    card_session_link_tx(tx, card_id, &session.id).await
+}
+
 async fn session_start_mirror_tx(
     tx: &mut RuntimeTx<'_>,
     init: &RuntimeInit,
 ) -> RuntimeResult<WorkerSession> {
     let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
     let session = worker_session_from_runtime_init(init, wave_id);
-    session_insert_tx(tx, session)
-        .await
-        .map_err(runtime_session_error)
+    let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
+    session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
+    Ok(session)
+}
+
+pub async fn session_prepare_deferred_spec_tx(
+    tx: &mut RuntimeTx<'_>,
+    init: &RuntimeInit,
+) -> RuntimeResult<WorkerSession> {
+    if init.kind != RuntimeKind::SharedSpec || init.status != RunStatus::Starting {
+        return Err(runtime_message(
+            "deferred spec session placeholders require a starting shared-spec runtime init",
+        ));
+    }
+    if init.thread_id.is_some() || init.terminal_run_id.is_some() {
+        return Err(runtime_message(
+            "deferred spec session placeholders must not have a thread or terminal run",
+        ));
+    }
+    let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
+    let session = worker_session_from_runtime_init(init, wave_id);
+    let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
+    session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
+    Ok(session)
 }
 
 async fn session_supersede_active_tx(
@@ -3105,12 +3412,23 @@ async fn session_mark_superseded_tx(
     Ok(())
 }
 
+async fn session_get_required_for_runtime_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    context: &str,
+) -> RuntimeResult<WorkerSession> {
+    session_get_tx(tx, &WorkerSessionId(id.clone()))
+        .await
+        .map_err(runtime_session_error)?
+        .ok_or_else(|| runtime_message(format!("worker session {id} missing while {context}")))
+}
+
 async fn session_restore_from_superseded_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     status: RunStatus,
     now: i64,
-) -> RuntimeResult<()> {
+) -> RuntimeResult<WorkerSession> {
     let state_db = worker_session_state_from_run_status(&status).as_db_str();
     let res = sqlx::query(
         r#"UPDATE worker_sessions
@@ -3126,7 +3444,8 @@ async fn session_restore_from_superseded_tx(
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() > 0 {
-        return Ok(());
+        return session_get_required_for_runtime_tx(tx, id, "restoring old spec harness session")
+            .await;
     }
 
     let current: Option<(String,)> =
@@ -3135,7 +3454,9 @@ async fn session_restore_from_superseded_tx(
             .fetch_optional(&mut **tx)
             .await?;
     match current {
-        Some((current,)) if current == state_db => Ok(()),
+        Some((current,)) if current == state_db => {
+            session_get_required_for_runtime_tx(tx, id, "restoring old spec harness session").await
+        }
         Some((current,)) => Err(runtime_message(format!(
             "worker session {id} has state {current}; cannot restore old spec harness session to {state_db}"
         ))),
@@ -3686,7 +4007,11 @@ pub async fn runtime_restore_from_superseded_tx(
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() > 0 {
-        session_restore_from_superseded_tx(tx, id, status, now).await?;
+        let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
+        let runtime = runtime_get_by_id_tx(tx, id)
+            .await?
+            .ok_or_else(|| runtime_message(format!("runtime {id} missing after restore")))?;
+        session_repoint_current_links_tx(tx, &runtime.card_id, &session).await?;
         return Ok(());
     }
 
@@ -3696,7 +4021,11 @@ pub async fn runtime_restore_from_superseded_tx(
         .await?;
     match current {
         Some((current,)) if current == status_db => {
-            session_restore_from_superseded_tx(tx, id, status, now).await
+            let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
+            let runtime = runtime_get_by_id_tx(tx, id)
+                .await?
+                .ok_or_else(|| runtime_message(format!("runtime {id} missing after restore")))?;
+            session_repoint_current_links_tx(tx, &runtime.card_id, &session).await
         }
         Some((current,)) => Err(runtime_message(format!(
             "runtime {id} has status {current}; cannot restore old spec harness runtime to {status_db}"
@@ -3808,9 +4137,12 @@ pub async fn backfill_worker_sessions_from_runtimes(
         let runtime = card_runtime_from_row(&row)?;
         let wave_id = WaveId(row.try_get("wave_id")?);
         let session = worker_session_from_card_runtime(&runtime, wave_id);
-        session_insert_tx(tx, session)
+        let session = session_insert_tx(tx, session)
             .await
             .map_err(runtime_session_error)?;
+        if session.state.is_active_authority() {
+            session_repoint_current_links_tx(tx, &runtime.card_id, &session).await?;
+        }
         inserted += 1;
     }
     Ok(inserted)
@@ -4619,6 +4951,50 @@ impl RepoRead for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    async fn card_identity_get_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionCardIdentity>> {
+        let rows = sqlx::query(
+            r#"SELECT c.id, c.role, c.wave_id, w.cove_id
+               FROM cards c
+               JOIN waves w ON w.id = c.wave_id
+              WHERE c.session_id = ?1
+              ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC
+              LIMIT 2"#,
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [row] => {
+                let role = CardRole::try_from(row.try_get::<String, _>("role")?)
+                    .map_err(|e| CalmError::Internal(format!("cards.role decode: {e}")))?;
+                Ok(Some(SessionCardIdentity {
+                    card_id: CardId(row.try_get("id")?),
+                    role,
+                    wave_id: WaveId(row.try_get("wave_id")?),
+                    cove_id: CoveId(row.try_get("cove_id")?),
+                }))
+            }
+            _ => Err(CalmError::Internal(format!(
+                "multiple cards linked to worker session {session_id}"
+            ))),
+        }
+    }
+
+    async fn session_get_by_active_token_hash(
+        &self,
+        hashed_token: &str,
+    ) -> Result<Option<WorkerSession>> {
+        session_get_by_active_token_hash(&self.pool, hashed_token).await
+    }
+
+    async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
+        session_get_by_id(&self.pool, id).await
     }
 
     async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool> {

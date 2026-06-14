@@ -154,7 +154,9 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -163,7 +165,9 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }

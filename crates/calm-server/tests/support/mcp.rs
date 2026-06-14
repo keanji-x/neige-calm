@@ -6,7 +6,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, runtime_bind_attribution_tx,
-    runtime_get_active_for_card_tx, runtime_start_tx,
+    runtime_get_active_for_card_tx, runtime_start_tx, session_mcp_token_set_tx,
 };
 use calm_server::event::{BroadcastEnvelope, EventBus};
 use calm_server::mcp_server::{McpServer, build_default_registry};
@@ -80,12 +80,13 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
     let other_card_id = calm_server::model::new_id();
+    let runtime_id = calm_server::model::new_id();
 
     let mut tx = sqlx_repo.pool().begin().await.unwrap();
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
-        &calm_server::model::new_id(),
+        &runtime_id,
         wave.id.clone(),
         None,
         "/workspace".into(),
@@ -104,13 +105,13 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         Some(token) => token,
         None => {
             let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-            card_mcp_token_set_tx(
-                &mut tx,
-                &card_id,
-                &calm_server::mcp_server::auth::hash_token(token.as_str()),
-            )
-            .await
-            .expect("mint test-only legacy MCP token");
+            let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+            card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+                .await
+                .expect("mint test-only legacy MCP token");
+            session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+                .await
+                .expect("mint test-only session MCP token");
             token.into_inner()
         }
     };

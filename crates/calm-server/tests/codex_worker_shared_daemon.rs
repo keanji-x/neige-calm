@@ -10,7 +10,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus};
-use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -45,6 +45,7 @@ struct Boot {
     events: EventBus,
     cache: CardRoleCache,
     wcc: calm_server::wave_cove_cache::WaveCoveCache,
+    cove_id: CoveId,
     wave_id: WaveId,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
@@ -143,6 +144,7 @@ async fn boot(start_shared: bool) -> Boot {
         events,
         cache,
         wcc,
+        cove_id: cove.id,
         wave_id: wave.id,
         codex,
         daemon,
@@ -177,7 +179,9 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
 }

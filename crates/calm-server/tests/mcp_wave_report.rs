@@ -36,7 +36,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{
     TOOL_REPORT_EDIT, TOOL_REPORT_READ, TOOL_REPORT_WRITE,
@@ -55,6 +55,7 @@ struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
+    cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
     report_card_id: CardId,
@@ -158,6 +159,7 @@ async fn boot() -> Boot {
         ctx,
         registry,
         repo,
+        cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         report_card_id: report_card.id,
@@ -182,7 +184,9 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -191,7 +195,9 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }
@@ -1484,7 +1490,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
     let wave2 = boot
         .repo
         .wave_create(NewWave {
-            cove_id: cove2.id,
+            cove_id: cove2.id.clone(),
             title: "wave 2".into(),
             sort: None,
             cwd: String::new(),
@@ -1522,7 +1528,9 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
     let spec2_identity = ToolCallIdentity {
         card_id: spec2.id.as_str().to_string(),
         role: CardRole::Spec,
+        session_id: "spec2-session".to_string(),
         wave_id: Some(wave2.id.as_str().to_string()),
+        cove_id: cove2.id.as_str().to_string(),
         thread_id: "spec2-thread".to_string(),
     };
     call_tool(

@@ -353,6 +353,10 @@ pub async fn reset_from_fixture(
         // `waves`, so deleting `waves` will NOT cascade here — the wipe
         // must name it explicitly or task rows leak across resets.
         "DELETE FROM tasks",
+        // `waves.root_session_id` points at `worker_sessions` without
+        // ON DELETE SET NULL, so table-level resets must clear it before
+        // worker sessions leave.
+        "UPDATE waves SET root_session_id = NULL",
         // `worker_sessions.wave_id` is a NO ACTION FK, so sessions must
         // leave before their parent waves.
         "DELETE FROM worker_sessions",

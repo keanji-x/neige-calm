@@ -245,16 +245,9 @@ async fn task_verdict(
         }
     };
 
-    let actor = identity.to_actor_id();
     let kind_tag = event.kind_tag();
     let res = CardDecisionSink::from_app_context(&ctx)
-        .commit_spec_verdict(
-            actor,
-            identity.card_id.clone(),
-            write_args.message,
-            write_args.lifecycle,
-            event,
-        )
+        .commit_spec_verdict(&identity, write_args.message, write_args.lifecycle, event)
         .await;
 
     match res {
@@ -315,7 +308,9 @@ mod tests {
         ToolCallIdentity {
             card_id: "card-1".to_string(),
             role,
+            session_id: "session-1".to_string(),
             wave_id: Some("wave-1".to_string()),
+            cove_id: "cove-1".to_string(),
             thread_id: "thread-1".to_string(),
         }
     }

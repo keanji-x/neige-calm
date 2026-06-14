@@ -455,10 +455,9 @@ async fn commit_report_write_for_identity(
     identity: &ToolCallIdentity,
     call: ReportSinkCall,
 ) -> Result<Value, RpcError> {
-    let actor = identity.to_actor_id();
     match CardDecisionSink::from_app_context(ctx)
         .commit_report_write(
-            actor,
+            identity,
             call.wave,
             call.report_card,
             call.current_payload,

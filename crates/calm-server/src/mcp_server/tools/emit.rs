@@ -231,10 +231,9 @@ async fn commit_worker_task_report_for_identity(
     identity: &ToolCallIdentity,
     event: Event,
 ) -> Result<(), RpcError> {
-    let actor = identity.to_actor_id();
     let kind_tag = event.kind_tag();
     let result = CardDecisionSink::from_app_context(ctx)
-        .commit_worker_task_report(actor, identity.card_id.clone(), event)
+        .commit_worker_task_report(identity, event)
         .await;
 
     match result {

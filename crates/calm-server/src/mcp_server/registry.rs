@@ -20,10 +20,11 @@
 
 use crate::db::RouteRepo;
 use crate::event::EventBus;
-use crate::ids::{ActorId, CardId};
+use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
 use crate::state::WriteContext;
+use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -40,7 +41,9 @@ use std::sync::Arc;
 pub struct CardIdentity {
     pub card_id: CardId,
     pub role: CardRole,
+    pub session_id: String,
     pub wave_id: Option<String>,
+    pub cove_id: String,
 }
 
 impl CardIdentity {
@@ -60,6 +63,15 @@ impl CardIdentity {
             CardRole::Spec => ActorId::AiSpec(self.card_id.clone()),
             CardRole::Worker | CardRole::ReportCard => ActorId::AiCodex(self.card_id.clone()),
         }
+    }
+
+    pub fn to_principal(&self) -> Option<Principal> {
+        let wave_id = self.wave_id.as_ref()?;
+        Some(Principal::Agent {
+            session_id: WorkerSessionId::from(self.session_id.clone()),
+            wave_id: WaveId::from(wave_id.clone()),
+            cove_id: CoveId::from(self.cove_id.clone()),
+        })
     }
 }
 
@@ -84,7 +96,9 @@ pub enum ConnectionIdentity {
 pub struct ToolCallIdentity {
     pub card_id: String,
     pub role: CardRole,
+    pub session_id: String,
     pub wave_id: Option<String>,
+    pub cove_id: String,
     pub thread_id: String,
 }
 
@@ -95,6 +109,15 @@ impl ToolCallIdentity {
             CardRole::Spec => ActorId::AiSpec(card_id),
             CardRole::Worker | CardRole::ReportCard => ActorId::AiCodex(card_id),
         }
+    }
+
+    pub fn to_principal(&self) -> Option<Principal> {
+        let wave_id = self.wave_id.as_ref()?;
+        Some(Principal::Agent {
+            session_id: WorkerSessionId::from(self.session_id.clone()),
+            wave_id: WaveId::from(wave_id.clone()),
+            cove_id: CoveId::from(self.cove_id.clone()),
+        })
     }
 }
 
@@ -343,7 +366,9 @@ mod tests {
         ToolCallIdentity {
             card_id: "card-1".to_string(),
             role,
+            session_id: "session-1".to_string(),
             wave_id: Some("wave-1".to_string()),
+            cove_id: "cove-1".to_string(),
             thread_id: "thread-1".to_string(),
         }
     }

@@ -324,6 +324,18 @@ pub enum WorkerSessionState {
 }
 
 impl WorkerSessionState {
+    /// States that carry live MCP authority. Keep this in lockstep with the
+    /// `session_get_by_active_token_hash` SQL predicate.
+    pub fn is_active_authority(self) -> bool {
+        matches!(
+            self,
+            WorkerSessionState::Starting
+                | WorkerSessionState::Running
+                | WorkerSessionState::Idle
+                | WorkerSessionState::TurnPending
+        )
+    }
+
     /// Terminal states never transition again (mirrors the runtime-status
     /// matrix golden's terminal-absorption rule).
     pub fn is_terminal(self) -> bool {
@@ -538,9 +550,11 @@ mod tests {
         ];
         for s in terminal {
             assert!(s.is_terminal(), "{s:?} must be terminal");
+            assert!(!s.is_active_authority(), "{s:?} must not authenticate");
         }
         for s in active {
             assert!(!s.is_terminal(), "{s:?} must be active");
+            assert!(s.is_active_authority(), "{s:?} must authenticate");
         }
     }
 

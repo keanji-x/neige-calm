@@ -40,9 +40,11 @@ use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Card, CardPatch, Wave, WaveLifecycle};
+use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::state::WriteContext;
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
+use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
 // (Tier-A persisted payload, TS-exported). Re-exported so the
@@ -175,6 +177,40 @@ pub async fn persist_report(
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
 ) -> Result<Card, CalmError> {
+    persist_report_with_shadow(
+        repo,
+        events,
+        write,
+        actor,
+        author,
+        wave,
+        report_card,
+        current_payload,
+        next,
+        agent_message,
+        lifecycle,
+        auto_promote_draft,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn persist_report_with_shadow(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    actor: ActorId,
+    author: EditAuthor,
+    wave: Wave,
+    report_card: Card,
+    current_payload: WaveReportPayload,
+    next: WaveReportPayload,
+    agent_message: Option<String>,
+    lifecycle: Option<WaveLifecycle>,
+    auto_promote_draft: bool,
+    recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
+) -> Result<Card, CalmError> {
     let report_card_id = report_card.id.clone();
     let wave_id = wave.id.clone();
     let cove_id = wave.cove_id.clone();
@@ -200,6 +236,7 @@ pub async fn persist_report(
             let next = next.clone();
             let actor = actor.clone();
             let agent_message = agent_message.clone();
+            let recorder_shadow = recorder_shadow.clone();
             Box::pin(async move {
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
                 if auto_promote_draft
@@ -221,11 +258,21 @@ pub async fn persist_report(
                     )
                     .await?
                 {
+                    if let Some(probe) = recorder_shadow.as_ref() {
+                        probe
+                            .record(tx, RecorderShadowDecisionKind::WaveLifecycle)
+                            .await;
+                    }
                     events.extend(
                         lifecycle_events
                             .into_iter()
                             .map(|event| (actor.clone(), wave_scope.clone(), event)),
                     );
+                }
+                if let Some(probe) = recorder_shadow.as_ref() {
+                    probe
+                        .record(tx, RecorderShadowDecisionKind::ReportWrite)
+                        .await;
                 }
                 // 1. Load (or lazy-init) the CRDT doc for this card.
                 let existing = card_body_crdt_get_tx(tx, &id).await?;
