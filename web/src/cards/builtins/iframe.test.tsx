@@ -189,6 +189,46 @@ describe('IframeCard rendering', () => {
     expect(sandbox).toContain('allow-same-origin');
   });
 
+  it('resubmitting the same URL preserves trust', async () => {
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+      trusted: true,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Go' }));
+
+    await waitFor(() => {
+      expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
+        payload: { url: 'https://example.com', trusted: true },
+      });
+    });
+
+    const sandbox = iframeNode().getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).toContain('allow-same-origin');
+  });
+
+  it('submitting a different URL resets trust', async () => {
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+      trusted: true,
+    });
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, { target: { value: 'https://other.example.org' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => {
+      expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
+        payload: { url: 'https://other.example.org', trusted: false },
+      });
+    });
+  });
+
   it('toggling trust preserves an in-progress URL draft', () => {
     const Component = IframeEntry.Component;
     const card = {

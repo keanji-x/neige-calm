@@ -95,11 +95,12 @@ function IframeCard({
     }
 
     pendingUrlRef.current = nextUrl;
+    const keepTrust = nextUrl === currentUrl && trusted;
     setCurrentUrl(nextUrl);
     setDraftUrl(nextUrl);
-    setTrusted(false);
+    setTrusted(keepTrust);
     void api
-      .updateCard(card.id, { payload: { url: nextUrl, trusted: false } })
+      .updateCard(card.id, { payload: { url: nextUrl, trusted: keepTrust } })
       .catch((err: unknown) => {
         // eslint-disable-next-line no-console
         console.warn(
