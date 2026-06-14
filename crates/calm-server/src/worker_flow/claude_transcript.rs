@@ -1,5 +1,7 @@
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -128,47 +130,15 @@ impl ClaudeTranscriptFlowSource {
             }
         }
 
-        let warn_after = self.options.lazy_retry_attempts;
-        let mut warned = false;
-        let mut attempt = 0_usize;
-        loop {
-            if self.stop.is_cancelled() {
-                return Ok(None);
-            }
-            match tokio::fs::metadata(&path).await {
-                Ok(_) => return Ok(Some(path)),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    // Let a just-created transcript win against a runtime that
-                    // reached terminal status in the same poll window.
-                    if !self.runtime_is_alive().await {
-                        tracing::info!(
-                            card_id = %self.runtime.card_id,
-                            runtime_id = %self.runtime.id,
-                            source_path = %path.display(),
-                            "claude runtime reached terminal status without creating a transcript; exiting source"
-                        );
-                        return Ok(None);
-                    }
-                    if !warned && attempt >= warn_after {
-                        warned = true;
-                        tracing::warn!(
-                            card_id = %self.runtime.card_id,
-                            runtime_id = %self.runtime.id,
-                            source_path = %path.display(),
-                            "claude transcript not present after lazy-retry budget; continuing to poll (claude creates file on first prompt)"
-                        );
-                    }
-                    let delay = if attempt < warn_after {
-                        self.options.lazy_retry_delay
-                    } else {
-                        Duration::from_secs(1)
-                    };
-                    sleep_or_cancel(delay, &self.stop).await?;
-                    attempt = attempt.saturating_add(1);
-                }
-                Err(err) => return Err(CoreError::Io(err)),
-            }
-        }
+        let mut runtime_alive = RepoRuntimeAlive(self);
+        wait_for_transcript_path(
+            path,
+            &self.stop,
+            &self.options,
+            &self.runtime,
+            &mut runtime_alive,
+        )
+        .await
     }
 
     async fn run_tail(
@@ -359,6 +329,74 @@ impl ClaudeTranscriptFlowSource {
                 );
                 true
             }
+        }
+    }
+}
+
+trait RuntimeAliveProbe: Send {
+    fn is_alive<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+}
+
+struct RepoRuntimeAlive<'a>(&'a ClaudeTranscriptFlowSource);
+
+impl RuntimeAliveProbe for RepoRuntimeAlive<'_> {
+    fn is_alive<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(self.0.runtime_is_alive())
+    }
+}
+
+async fn wait_for_transcript_path(
+    path: PathBuf,
+    stop: &CancellationToken,
+    options: &ClaudeTranscriptFlowSourceOptions,
+    runtime: &CardRuntime,
+    runtime_alive: &mut (dyn RuntimeAliveProbe + Send),
+) -> Result<Option<PathBuf>, CoreError> {
+    let warn_after = options.lazy_retry_attempts;
+    let mut warned = false;
+    let mut attempt = 0_usize;
+    loop {
+        if stop.is_cancelled() {
+            return Ok(None);
+        }
+        match tokio::fs::metadata(&path).await {
+            Ok(_) => return Ok(Some(path)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                // Runtime shutdown can be what closes Claude's writer and
+                // flushes the transcript path, so terminal liveness gets one
+                // final filesystem probe before the source exits.
+                if !runtime_alive.is_alive().await {
+                    match tokio::fs::metadata(&path).await {
+                        Ok(_) => return Ok(Some(path)),
+                        Err(_) => {
+                            tracing::info!(
+                                card_id = %runtime.card_id,
+                                runtime_id = %runtime.id,
+                                source_path = %path.display(),
+                                "claude runtime reached terminal status without creating a transcript; exiting source"
+                            );
+                            return Ok(None);
+                        }
+                    }
+                }
+                if !warned && attempt >= warn_after {
+                    warned = true;
+                    tracing::warn!(
+                        card_id = %runtime.card_id,
+                        runtime_id = %runtime.id,
+                        source_path = %path.display(),
+                        "claude transcript not present after lazy-retry budget; continuing to poll (claude creates file on first prompt)"
+                    );
+                }
+                let delay = if attempt < warn_after {
+                    options.lazy_retry_delay
+                } else {
+                    Duration::from_secs(1)
+                };
+                sleep_or_cancel(delay, stop).await?;
+                attempt = attempt.saturating_add(1);
+            }
+            Err(err) => return Err(CoreError::Io(err)),
         }
     }
 }
@@ -606,4 +644,69 @@ pub fn slug_for_projects(cwd: &str) -> String {
             _ => '-',
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calm_types::runtime::{AgentProvider, RuntimeKind};
+
+    struct CreateTranscriptOnTerminal {
+        path: PathBuf,
+        calls: usize,
+    }
+
+    impl RuntimeAliveProbe for CreateTranscriptOnTerminal {
+        fn is_alive<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls = self.calls.saturating_add(1);
+                tokio::fs::write(&self.path, b"{}\n").await.unwrap();
+                false
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn lazy_resolve_final_recheck_catches_file_created_during_terminal_liveness() {
+        let transcript_dir = tempfile::tempdir().unwrap();
+        let path = transcript_dir.path().join("session-lazy-race.jsonl");
+        let stop = CancellationToken::new();
+        let options = ClaudeTranscriptFlowSourceOptions {
+            path_override: None,
+            poll_interval: Duration::from_millis(20),
+            lazy_retry_delay: Duration::from_millis(10),
+            lazy_retry_attempts: 3,
+            cursor_persist_every: 1,
+        };
+        let runtime = CardRuntime {
+            id: "rt-lazy-race".into(),
+            card_id: "card-lazy-race".into(),
+            kind: RuntimeKind::ClaudeCard,
+            agent_provider: Some(AgentProvider::Claude),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            terminal_ref: None,
+            thread_id: None,
+            session_id: Some("session-lazy-race".into()),
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            completed_at_ms: None,
+        };
+        let mut runtime_alive = CreateTranscriptOnTerminal {
+            path: path.clone(),
+            calls: 0,
+        };
+
+        let resolved =
+            wait_for_transcript_path(path.clone(), &stop, &options, &runtime, &mut runtime_alive)
+                .await
+                .unwrap();
+
+        assert_eq!(resolved, Some(path));
+        assert_eq!(runtime_alive.calls, 1);
+    }
 }
