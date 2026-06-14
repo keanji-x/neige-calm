@@ -51,10 +51,9 @@
 //! wave-level metadata about a worker the spec supervises, not the
 //! spec's own card state.
 
-use crate::db::write_with_actor_events_typed;
+use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
-use crate::event::{Event, EventScope};
-use crate::ids::ActorId;
+use crate::event::Event;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -65,7 +64,6 @@ use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
 use crate::model::{CardRole, Wave};
-use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -247,59 +245,17 @@ async fn task_verdict(
         }
     };
 
-    let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
-    };
     let actor = identity.to_actor_id();
     let kind_tag = event.kind_tag();
-    let wave_id = wave.id.clone();
-    let wave_scope = scope.clone();
-
-    let res = write_with_actor_events_typed::<(), _>(
-        ctx.repo.as_ref(),
-        None,
-        &ctx.events,
-        &ctx.write,
-        move |tx| {
-            let event = event.clone();
-            let actor = actor.clone();
-            let scope = scope.clone();
-            let wave_scope = wave_scope.clone();
-            let wave_id = wave_id.clone();
-            let message = write_args.message.clone();
-            Box::pin(async move {
-                let mut events = Vec::new();
-                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await? {
-                    events.extend(
-                        auto_events
-                            .into_iter()
-                            .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
-                    );
-                }
-                if let Some(target) = write_args.lifecycle
-                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
-                        tx,
-                        &wave_id,
-                        target,
-                        &actor,
-                        message.clone(),
-                    )
-                    .await?
-                {
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), wave_scope.clone(), event)),
-                    );
-                }
-                events.push((actor, scope, event));
-                Ok(((), events))
-            })
-        },
-    )
-    .await;
+    let res = CardDecisionSink::from_app_context(&ctx)
+        .commit_spec_verdict(
+            actor,
+            identity.card_id.clone(),
+            write_args.message,
+            write_args.lifecycle,
+            event,
+        )
+        .await;
 
     match res {
         Ok(_) => Ok(json!({ "ok": true })),

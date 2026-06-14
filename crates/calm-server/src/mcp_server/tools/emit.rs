@@ -27,10 +27,9 @@
 //! their own card scope; the role gate enforces that they can't
 //! escape it.
 
-use crate::db::write_with_actor_events_typed;
+use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
-use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, CardId};
+use crate::event::Event;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -38,7 +37,6 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::lifecycle_args::{lifecycle_schema, message_schema};
 use crate::model::CardRole;
-use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -166,7 +164,7 @@ async fn task_complete(
         artifacts,
         agent_message: None,
     };
-    emit_task_report_for_identity(&ctx, &identity, event).await?;
+    commit_worker_task_report_for_identity(&ctx, &identity, event).await?;
     Ok(json!({ "status": "emitted" }))
 }
 
@@ -219,231 +217,25 @@ async fn task_fail(
         reason,
         agent_message: None,
     };
-    emit_task_report_for_identity(&ctx, &identity, event).await?;
+    commit_worker_task_report_for_identity(&ctx, &identity, event).await?;
     Ok(json!({ "status": "emitted" }))
 }
 
 // ---------------------------------------------------------------------------
-// Shared emit path — resolves scope from the caller's card and runs
-// the eventized write through the role gate.
+// Shared emit path — derives the existing card actor and delegates the
+// eventized write to CardDecisionSink.
 // ---------------------------------------------------------------------------
 
-async fn emit_task_report_for_identity(
+async fn commit_worker_task_report_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
     event: Event,
 ) -> Result<(), RpcError> {
     let actor = identity.to_actor_id();
-    let card_id_str = identity.card_id.as_str().to_string();
-
-    let card = ctx
-        .repo
-        .card_get(&card_id_str)
-        .await
-        .map_err(|e| RpcError::internal(format!("emit: card lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!(
-                "emit: bound card {card_id_str} not found (deleted mid-connection?)"
-            ))
-        })?;
-    let wave = ctx
-        .repo
-        .wave_get(card.wave_id.as_str())
-        .await
-        .map_err(|e| RpcError::internal(format!("emit: wave lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!(
-                "emit: wave {} for card {} not found",
-                card.wave_id.as_str(),
-                card_id_str
-            ))
-        })?;
-
-    let scope = EventScope::Card {
-        card: CardId::from(card_id_str.clone()),
-        wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
-    };
-    let wave_scope = EventScope::Wave {
-        wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
-    };
-    let wave_id = wave.id.clone();
     let kind_tag = event.kind_tag();
-
-    let result = write_with_actor_events_typed::<(), _>(
-        ctx.repo.as_ref(),
-        None,
-        &ctx.events,
-        &ctx.write,
-        move |tx| {
-            let event = event.clone();
-            let actor = actor.clone();
-            let scope = scope.clone();
-            let wave_scope = wave_scope.clone();
-            let wave_id = wave_id.clone();
-            let worker_card_id = card_id_str.clone();
-            Box::pin(async move {
-                // Issue #644 PR-B — flip the matching plan-task row INSIDE
-                // the same tx that persists the worker's report event
-                // (design §3): one tx, no event-persisted-but-row-stale
-                // crash window. The flips are guarded
-                // (`status IN ('dispatched','running')`, wave-pinned, and
-                // the done-flip skips gated rows), so a legacy
-                // `calm.task.dispatch` key with no tasks row, an already
-                // terminal row, or a foreign-wave id all no-op. This hook
-                // lives ONLY in the worker-role-gated
-                // `calm.task.complete` / `calm.task.fail` handlers — spec
-                // verdict emissions (`calm.task.verdict`, wave_state.rs)
-                // never run it, so verdicts can never flip rows.
-                let now = crate::model::now_ms();
-                let flip = match &event {
-                    Event::TaskCompleted {
-                        idempotency_key, ..
-                    } => Some((idempotency_key.clone(), true)),
-                    Event::TaskFailed {
-                        idempotency_key, ..
-                    } => Some((idempotency_key.clone(), false)),
-                    _ => None,
-                };
-                // Issue #644 PR-C (§3): the `Working → Reviewing`
-                // auto-promotion is SUPPRESSED for a gated task's
-                // success report — the self-report is a claim, not
-                // evidence; the gate-result tx performs the promotion
-                // instead, on ANY gate verdict. Worker `task.failed`
-                // promotes as today (no gate runs on failure), and
-                // legacy keys with no tasks row keep today's behavior.
-                let mut suppress_promotion = false;
-                if let Some((task_id, success)) = flip {
-                    // Round-4 review F1 — unstamped-row ownership proof:
-                    // the REPORTING card must be the card the task's
-                    // worker-spawn operation created (immutable op
-                    // target, stamped in the same tx as the card). The
-                    // card payload's `idempotency_key` is NOT proof —
-                    // payloads are patchable via `PATCH /api/cards/{id}`,
-                    // so a forged sibling payload could otherwise steal
-                    // the report-beats-running-stamp window. For rows
-                    // already stamped, the `worker_card_id = card` guard
-                    // inside the flip implies the same binding.
-                    let reporter = crate::db::sqlite::TaskReporter::Card {
-                        card_id: worker_card_id.as_str(),
-                        owns_key: crate::db::sqlite::worker_op_targets_card_tx(
-                            tx,
-                            &task_id,
-                            &worker_card_id,
-                        )
-                        .await?,
-                    };
-                    let rows = if success {
-                        match crate::db::sqlite::task_report_success_from_worker_tx(
-                            tx,
-                            &task_id,
-                            wave_id.as_str(),
-                            reporter,
-                            now,
-                        )
-                        .await?
-                        {
-                            crate::db::sqlite::SuccessReportFlip::Done => 1,
-                            crate::db::sqlite::SuccessReportFlip::Verifying => {
-                                // Gated row handed to the gate runner —
-                                // the gate-result tx promotes (§3).
-                                suppress_promotion = true;
-                                1
-                            }
-                            crate::db::sqlite::SuccessReportFlip::None => 0,
-                        }
-                    } else {
-                        crate::db::sqlite::task_fail_from_worker_tx(
-                            tx,
-                            &task_id,
-                            wave_id.as_str(),
-                            reporter,
-                            "worker-reported",
-                            now,
-                        )
-                        .await?
-                    };
-                    // Round-2 review F3 — disambiguate a 0-row flip before
-                    // emitting terminal side effects:
-                    //   (i)   no tasks row for the key (legacy
-                    //         `calm.task.dispatch` worker) → emit exactly
-                    //         as before;
-                    //   (iii) row already TERMINAL → duplicate/retried
-                    //         report; keep emitting (consumers tolerate
-                    //         duplicate task events per key, design §1.3 —
-                    //         verdict emissions and report-retry
-                    //         idempotency depend on it);
-                    //   (iv)  row ACTIVE (`dispatched`/`running` — the
-                    //         only states the guarded flip targets) and
-                    //         the ownership guard rejected the reporter
-                    //         → refuse the whole write: no event, no
-                    //         Working → Reviewing transition; the
-                    //         caller is told it does not own the task.
-                    // Any other 0-row cause keeps today's emit behavior:
-                    // (round-6 review) statuses the guarded UPDATE could
-                    // never have matched — a legacy `calm.task.dispatch`
-                    // key colliding with a still-`pending` plan row (or
-                    // a `verifying` row whose gate is in flight) carries
-                    // no ownership signal, so the legacy event must keep
-                    // persisting with the row left untouched.
-                    if rows == 0
-                        && let Some(row) = crate::db::sqlite::task_get_tx(tx, &task_id).await?
-                    {
-                        // Issue #644 PR-C (§3): a duplicate / retried
-                        // success report for a GATED row (already
-                        // `verifying`, or already terminal via a gate
-                        // verdict) must not promote — exactly one
-                        // promotion per gated task, in the gate-result
-                        // tx.
-                        if success && row.gate_json.is_some() {
-                            suppress_promotion = true;
-                        }
-                        if matches!(
-                            row.status,
-                            crate::model::TaskStatus::Dispatched
-                                | crate::model::TaskStatus::Running
-                        ) {
-                            let owns = match &row.worker_card_id {
-                                Some(owner) => *owner == worker_card_id,
-                                None => matches!(
-                                    reporter,
-                                    crate::db::sqlite::TaskReporter::Card { owns_key: true, .. }
-                                ),
-                            };
-                            if !owns {
-                                return Err(CalmError::Forbidden(format!(
-                                    "task {task_id} is not owned by reporting card \
-                                     {worker_card_id}; report rejected"
-                                )));
-                            }
-                        }
-                    }
-                }
-
-                let mut events = vec![(actor, scope, event)];
-                if !suppress_promotion
-                    && let Some(auto_events) = auto_transition_if_current_in_tx(
-                        tx,
-                        &wave_id,
-                        crate::model::WaveLifecycle::Working,
-                        crate::model::WaveLifecycle::Reviewing,
-                        &ActorId::Kernel,
-                        Some("[auto] first task report".to_string()),
-                    )
-                    .await?
-                {
-                    events.extend(
-                        auto_events
-                            .into_iter()
-                            .map(|event| (ActorId::Kernel, wave_scope.clone(), event)),
-                    );
-                }
-                Ok(((), events))
-            })
-        },
-    )
-    .await;
+    let result = CardDecisionSink::from_app_context(ctx)
+        .commit_worker_task_report(actor, identity.card_id.clone(), event)
+        .await;
 
     match result {
         Ok(_) => Ok(()),
