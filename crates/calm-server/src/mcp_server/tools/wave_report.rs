@@ -51,8 +51,8 @@
 //!   * `old_string` found exactly once → replace it. (replace_all is
 //!     redundant in this case; we accept it for codex Edit symmetry.)
 
+use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
-use crate::event::EditAuthor;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -62,7 +62,7 @@ use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
 use crate::model::{Card, CardRole, Wave, WaveLifecycle};
-use crate::wave_report::{WaveReportPayload, persist_report};
+use crate::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -186,10 +186,10 @@ async fn report_write(
         summary: summary_override.unwrap_or_else(|| current.summary.clone()),
         body,
     };
-    call_persist_report(
+    commit_report_write_for_identity(
         &ctx,
         &identity,
-        PersistReportCall {
+        ReportSinkCall {
             wave,
             report_card,
             current_payload: current,
@@ -315,10 +315,10 @@ async fn report_edit(
         summary: current.summary.clone(),
         body: new_body,
     };
-    call_persist_report(
+    commit_report_write_for_identity(
         &ctx,
         &identity,
-        PersistReportCall {
+        ReportSinkCall {
             wave,
             report_card,
             current_payload: current,
@@ -424,14 +424,14 @@ pub(crate) async fn load_report_for_wave(
     Ok((report_card, payload))
 }
 
-/// MCP-side thin wrapper around [`crate::wave_report::persist_report`].
+/// MCP-side thin wrapper around [`CardDecisionSink::commit_report_write`].
 ///
 /// Resolves the actor from the per-call [`ToolCallIdentity`] (always
 /// maps to `ActorId::AiSpec` here — `require_role` upstream guarantees
 /// the role is Spec by the time we reach this site), tags every write
-/// with [`EditAuthor::Spec`] (the spec-MCP tools are the only `Spec`
-/// emitter), and projects the returned `Card` into the MCP wire shape
-/// `{ updated_at }`. The error mapping reproduces the pre-PR3 contract
+/// as the spec-MCP emitter inside the sink, and projects the returned
+/// `Card` into the MCP wire shape `{ updated_at }`. The error mapping
+/// reproduces the pre-PR3 contract
 /// (`CalmError::Forbidden` → `-32403`, anything else → internal).
 ///
 /// Issue #247 PR3 — the heavy lifting (CRDT load / project / update /
@@ -441,7 +441,7 @@ pub(crate) async fn load_report_for_wave(
 /// share one persist path; one event-pair contract; one transactional
 /// write. Anything else would be two parallel implementations of the
 /// same invariant, with the corresponding drift risk.
-struct PersistReportCall {
+struct ReportSinkCall {
     wave: Wave,
     report_card: Card,
     current_payload: WaveReportPayload,
@@ -450,27 +450,23 @@ struct PersistReportCall {
     lifecycle: Option<WaveLifecycle>,
 }
 
-async fn call_persist_report(
+async fn commit_report_write_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
-    call: PersistReportCall,
+    call: ReportSinkCall,
 ) -> Result<Value, RpcError> {
     let actor = identity.to_actor_id();
-    match persist_report(
-        ctx.repo.as_ref(),
-        &ctx.events,
-        &ctx.write,
-        actor,
-        EditAuthor::Spec,
-        call.wave,
-        call.report_card,
-        call.current_payload,
-        call.next,
-        Some(call.agent_message),
-        call.lifecycle,
-        true,
-    )
-    .await
+    match CardDecisionSink::from_app_context(ctx)
+        .commit_report_write(
+            actor,
+            call.wave,
+            call.report_card,
+            call.current_payload,
+            call.next,
+            call.agent_message,
+            call.lifecycle,
+        )
+        .await
     {
         Ok(updated) => Ok(json!({ "updated_at": updated.updated_at })),
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(

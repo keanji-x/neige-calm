@@ -534,6 +534,7 @@ pub mod card_role_cache;
 pub mod codex_appserver;
 pub mod config;
 pub mod db;
+pub mod decision_sink;
 pub mod dispatcher;
 pub mod error;
 pub mod event;
