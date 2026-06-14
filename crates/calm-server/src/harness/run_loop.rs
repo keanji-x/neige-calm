@@ -995,6 +995,7 @@ fn should_persist_item_method(method: &str) -> bool {
 /// hypothesis), this ceiling converts an unobservable hang into a logged
 /// warn + a degraded-but-functional turn issuance.
 const SINCE_LAST_TURN_DIFF_TIMEOUT: Duration = Duration::from_secs(5);
+const TRANSCRIPT_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
@@ -1090,15 +1091,37 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
+    let refresh_repo = Arc::clone(&inner.repo);
+    let refresh_wave_id = inner.wave_id.clone();
+    let refresh_head = transcript_refresh_with_timeout(
+        write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                wave_vcs::snapshot_transcripts_for_cards_in_wave(
+                    tx,
+                    &refresh_wave_id,
+                    None,
+                    wave_vcs::MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .map_err(CalmError::from)
+            })
+        }),
+        TRANSCRIPT_REFRESH_TIMEOUT,
+        &inner.runtime_id,
+        inner.card_id.as_str(),
+        inner.wave_id.as_str(),
+    )
+    .await;
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         wave_id = %inner.wave_id,
         last_seen_head = ?last_seen_head_snapshot,
+        refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    let diff = diff_with_timeout(inner).await;
+    let diff = diff_with_timeout(inner, refresh_head.as_ref()).await;
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
@@ -1212,19 +1235,59 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
+async fn transcript_refresh_with_timeout<F>(
+    fut: F,
+    timeout: Duration,
+    runtime_id: &RuntimeId,
+    card_id: &str,
+    wave_id: &str,
+) -> Option<wave_vcs::CommitHash>
+where
+    F: std::future::Future<Output = Result<wave_vcs::CommitHash>>,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(Ok(head)) => Some(head),
+        Ok(Err(e)) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %runtime_id,
+                card_id,
+                wave_id,
+                error = %e,
+                "pre-diff transcript refresh failed; issuing turn without refreshed transcripts"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %runtime_id,
+                card_id,
+                wave_id,
+                timeout_secs = timeout.as_secs(),
+                "pre-diff transcript refresh timed out; issuing turn without refreshed transcripts"
+            );
+            None
+        }
+    }
+}
+
 /// Wrap `since_last_turn_diff_block` in a 5s timeout. On timeout, log a warn
 /// and fall through without a diff block so the turn still issues — the diff
 /// block is contextual augmentation, never a correctness requirement (#639).
-async fn diff_with_timeout(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
+async fn diff_with_timeout(
+    inner: &Arc<Inner>,
+    current_override: Option<&wave_vcs::CommitHash>,
+) -> wave_vcs::SinceLastTurnBlock {
     diff_or_fallback_on_timeout(
-        since_last_turn_diff_block(inner),
+        since_last_turn_diff_block(inner, current_override),
         SINCE_LAST_TURN_DIFF_TIMEOUT,
         &inner.runtime_id,
         inner.card_id.as_str(),
         inner.wave_id.as_str(),
         || async {
             wave_vcs::SinceLastTurnBlock {
-                current_head: current_head_after_diff_timeout(inner).await,
+                current_head: current_head_after_diff_timeout(inner, current_override).await,
                 block: None,
             }
         },
@@ -1261,7 +1324,14 @@ where
     }
 }
 
-async fn current_head_after_diff_timeout(inner: &Arc<Inner>) -> Option<wave_vcs::CommitHash> {
+async fn current_head_after_diff_timeout(
+    inner: &Arc<Inner>,
+    current_override: Option<&wave_vcs::CommitHash>,
+) -> Option<wave_vcs::CommitHash> {
+    if let Some(current) = current_override {
+        return Some(current.clone());
+    }
+
     let pool = inner.repo.sqlite_pool()?;
 
     match tokio::time::timeout(
@@ -1292,7 +1362,10 @@ async fn current_head_after_diff_timeout(inner: &Arc<Inner>) -> Option<wave_vcs:
     }
 }
 
-async fn since_last_turn_diff_block(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
+async fn since_last_turn_diff_block(
+    inner: &Arc<Inner>,
+    current_override: Option<&wave_vcs::CommitHash>,
+) -> wave_vcs::SinceLastTurnBlock {
     let Some(pool) = inner.repo.sqlite_pool() else {
         return wave_vcs::SinceLastTurnBlock::empty();
     };
@@ -1301,22 +1374,26 @@ async fn since_last_turn_diff_block(inner: &Arc<Inner>) -> wave_vcs::SinceLastTu
         &pool,
         &inner.wave_id,
         last_seen_head.as_deref(),
+        current_override,
         Some(&inner.card_id),
     )
     .await
     {
         Ok(diff) => diff,
         Err(e) => {
-            let current_head = match wave_vcs::head(&pool, &inner.wave_id).await {
-                Ok(head) => head,
-                Err(head_err) => {
-                    tracing::warn!(
-                        wave_id = %inner.wave_id,
-                        error = %head_err,
-                        "spec harness could not read wave-vcs head after diff failure"
-                    );
-                    None
-                }
+            let current_head = match current_override {
+                Some(current) => Some(current.clone()),
+                None => match wave_vcs::head(&pool, &inner.wave_id).await {
+                    Ok(head) => head,
+                    Err(head_err) => {
+                        tracing::warn!(
+                            wave_id = %inner.wave_id,
+                            error = %head_err,
+                            "spec harness could not read wave-vcs head after diff failure"
+                        );
+                        None
+                    }
+                },
             };
             tracing::warn!(
                 wave_id = %inner.wave_id,
@@ -1821,6 +1898,55 @@ mod tests {
             result.current_head.as_deref(),
             Some("head-after-timeout"),
             "timeout fallback must preserve the fallback current head"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transcript_refresh_with_timeout_collapses_success_error_and_timeout() {
+        use super::transcript_refresh_with_timeout;
+        use crate::wave_vcs::CommitHash;
+        use std::future::pending;
+        use std::time::Duration;
+
+        let runtime_id: String = "c501ea4e-test".into();
+        let card_id = "47e6ce46-test";
+        let wave_id = "w-test";
+        let timeout = Duration::from_secs(5);
+
+        let success = transcript_refresh_with_timeout(
+            async { Ok("head-before-diff".into()) },
+            timeout,
+            &runtime_id,
+            card_id,
+            wave_id,
+        )
+        .await;
+        assert_eq!(success.as_deref(), Some("head-before-diff"));
+
+        let failure = transcript_refresh_with_timeout(
+            async { Err(CalmError::Conflict("refresh failed".into())) },
+            timeout,
+            &runtime_id,
+            card_id,
+            wave_id,
+        )
+        .await;
+        assert!(
+            failure.is_none(),
+            "refresh errors must degrade to live-HEAD diff"
+        );
+
+        let timed_out = transcript_refresh_with_timeout(
+            pending::<crate::error::Result<CommitHash>>(),
+            timeout,
+            &runtime_id,
+            card_id,
+            wave_id,
+        )
+        .await;
+        assert!(
+            timed_out.is_none(),
+            "refresh timeouts must degrade to live-HEAD diff"
         );
     }
 

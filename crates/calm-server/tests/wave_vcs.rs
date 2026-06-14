@@ -540,6 +540,121 @@ async fn head_manifest(repo: &SqlxRepo, wave_id: &WaveId) -> wave_vcs::TreeManif
         .expect("tree")
 }
 
+async fn refresh_transcripts(repo: &SqlxRepo, wave_id: &WaveId) -> wave_vcs::CommitHash {
+    let mut tx = repo.pool().begin().await.expect("begin transcript refresh");
+    let commit = wave_vcs::snapshot_transcripts_for_cards_in_wave(
+        &mut tx,
+        wave_id,
+        None,
+        MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("snapshot transcripts");
+    tx.commit().await.expect("commit transcript refresh");
+    commit
+}
+
+async fn commit_tree_hash(repo: &SqlxRepo, commit: &str) -> String {
+    sqlx::query_scalar("SELECT tree_hash FROM wave_vcs_commits WHERE hash = ?1")
+        .bind(commit)
+        .fetch_one(repo.pool())
+        .await
+        .expect("commit tree hash")
+}
+
+fn transcript_paths(card_id: &CardId) -> (String, String) {
+    (
+        format!("cards/{}/events.json", card_id.as_str()),
+        format!("cards/{}/conversation.md", card_id.as_str()),
+    )
+}
+
+fn transcript_blob_hashes(manifest: &wave_vcs::TreeManifest, card_id: &CardId) -> (String, String) {
+    let (events_path, conversation_path) = transcript_paths(card_id);
+    (
+        manifest
+            .entries
+            .get(&events_path)
+            .unwrap_or_else(|| panic!("{events_path} entry"))
+            .blob_hash
+            .clone(),
+        manifest
+            .entries
+            .get(&conversation_path)
+            .unwrap_or_else(|| panic!("{conversation_path} entry"))
+            .blob_hash
+            .clone(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn log_codex_hook(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    roles: &CardRoleCache,
+    coves: &WaveCoveCache,
+    wave_id: &WaveId,
+    cove_id: &CoveId,
+    card_id: &CardId,
+    key: &str,
+    prompt: &str,
+) -> i64 {
+    repo.log_pure_event(
+        ActorId::Kernel,
+        EventScope::Card {
+            card: card_id.clone(),
+            wave: wave_id.clone(),
+            cove: cove_id.clone(),
+        },
+        None,
+        bus,
+        roles,
+        coves,
+        Event::CodexHook {
+            card_id: card_id.clone(),
+            kind: "hook.codex.user_prompt_submit".into(),
+            hook_idempotency_key: key.into(),
+            payload: json!({"hook_event_name": "UserPromptSubmit", "prompt": prompt}),
+        },
+    )
+    .await
+    .expect("codex hook event")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn log_claude_hook(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    roles: &CardRoleCache,
+    coves: &WaveCoveCache,
+    wave_id: &WaveId,
+    cove_id: &CoveId,
+    card_id: &CardId,
+    key: &str,
+    prompt: &str,
+) -> i64 {
+    repo.log_pure_event(
+        ActorId::Kernel,
+        EventScope::Card {
+            card: card_id.clone(),
+            wave: wave_id.clone(),
+            cove: cove_id.clone(),
+        },
+        None,
+        bus,
+        roles,
+        coves,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.user_prompt_submit".into(),
+            hook_idempotency_key: key.into(),
+            payload: json!({"hook_event_name": "UserPromptSubmit", "prompt": prompt}),
+        },
+    )
+    .await
+    .expect("claude hook event")
+}
+
 async fn seed_head_payload_blob(
     repo: &SqlxRepo,
     wave_id: &WaveId,
@@ -792,12 +907,17 @@ async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
     )
     .await;
 
-    let block =
-        wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&legacy_head), Some(&spec.id))
-            .await
-            .expect("since-last-turn block")
-            .block
-            .expect("cutover diff block");
+    let block = wave_vcs::since_last_turn_block(
+        repo.pool(),
+        &wave.id,
+        Some(&legacy_head),
+        None,
+        Some(&spec.id),
+    )
+    .await
+    .expect("since-last-turn block")
+    .block
+    .expect("cutover diff block");
     let legacy_payload_noise = format!("cards/{}/payload.json deleted", spec.id.as_str());
     let payload_noise = format!("cards/{}/.payload.json new", spec.id.as_str());
     assert!(
@@ -1643,7 +1763,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
             .unwrap();
     assert_eq!(author, None);
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap()
         .block
@@ -1767,6 +1887,381 @@ async fn card_added_commit_updates_index_markdown_card_count() {
 }
 
 #[tokio::test]
+async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "hook-no-drip"}),
+    )
+    .await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before hooks");
+    let before_tree = commit_tree_hash(&repo, &before).await;
+    let before_hashes = transcript_blob_hashes(&head_manifest(&repo, &wave.id).await, &worker.id);
+    let before_objects = count_rows(repo.pool(), "wave_vcs_objects").await;
+    let before_commits = count_rows(repo.pool(), "wave_vcs_commits").await;
+
+    let codex_event_id = log_codex_hook(
+        &repo,
+        &bus,
+        &roles,
+        &coves,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        "hook-no-drip-codex",
+        "codex progress",
+    )
+    .await;
+    let codex_head = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after codex hook");
+    let codex_record = wave_vcs::commit_record(repo.pool(), &codex_head)
+        .await
+        .unwrap()
+        .expect("codex hook commit");
+    assert_eq!(codex_record.parent_hash.as_deref(), Some(before.as_str()));
+    assert_eq!(codex_record.event_id, Some(codex_event_id));
+    assert_eq!(codex_record.tree_hash, before_tree);
+    assert_eq!(
+        transcript_blob_hashes(&head_manifest(&repo, &wave.id).await, &worker.id),
+        before_hashes
+    );
+    assert_eq!(
+        count_rows(repo.pool(), "wave_vcs_objects").await,
+        before_objects
+    );
+
+    let claude_event_id = log_claude_hook(
+        &repo,
+        &bus,
+        &roles,
+        &coves,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        "hook-no-drip-claude",
+        "claude progress",
+    )
+    .await;
+    let claude_head = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after claude hook");
+    let claude_record = wave_vcs::commit_record(repo.pool(), &claude_head)
+        .await
+        .unwrap()
+        .expect("claude hook commit");
+    assert_eq!(
+        claude_record.parent_hash.as_deref(),
+        Some(codex_head.as_str())
+    );
+    assert_eq!(claude_record.event_id, Some(claude_event_id));
+    assert_eq!(claude_record.tree_hash, before_tree);
+    assert_eq!(
+        transcript_blob_hashes(&head_manifest(&repo, &wave.id).await, &worker.id),
+        before_hashes
+    );
+    assert_eq!(
+        count_rows(repo.pool(), "wave_vcs_objects").await,
+        before_objects
+    );
+    assert_eq!(
+        count_rows(repo.pool(), "wave_vcs_commits").await,
+        before_commits + 2
+    );
+}
+
+#[tokio::test]
+async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "hook-unchanged"}),
+    )
+    .await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before hooks");
+
+    log_codex_hook(
+        &repo,
+        &bus,
+        &roles,
+        &coves,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        "hook-unchanged-1",
+        "progress one",
+    )
+    .await;
+    log_codex_hook(
+        &repo,
+        &bus,
+        &roles,
+        &coves,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        "hook-unchanged-2",
+        "progress two",
+    )
+    .await;
+    let after = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head after hooks");
+    let (events_path, conversation_path) = transcript_paths(&worker.id);
+
+    let diff = wave_vcs::diff(repo.pool(), &before, &after, None)
+        .await
+        .expect("hook-only diff");
+    assert!(
+        diff.iter()
+            .all(|entry| entry.path != events_path && entry.path != conversation_path),
+        "hook-only commits must not dirty transcript paths: {diff:?}"
+    );
+    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
+        .await
+        .expect("since-last-turn block");
+    assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
+    assert!(
+        since.block.is_none(),
+        "unchanged transcript-only hook commits must not produce a diff block: {since:?}"
+    );
+}
+
+#[tokio::test]
+async fn turn_boundary_refresh_makes_hook_transcripts_fresh_once() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "turn-boundary"}),
+    )
+    .await;
+    let before = wave_vcs::head(repo.pool(), &wave.id)
+        .await
+        .unwrap()
+        .expect("head before hooks");
+
+    for seq in 0..3 {
+        log_codex_hook(
+            &repo,
+            &bus,
+            &roles,
+            &coves,
+            &wave.id,
+            &cove.id,
+            &worker.id,
+            &format!("turn-boundary-hook-{seq}"),
+            &format!("boundary progress {seq}"),
+        )
+        .await;
+    }
+
+    let refresh = refresh_transcripts(&repo, &wave.id).await;
+    let manifest = wave_vcs::tree_at(repo.pool(), &refresh)
+        .await
+        .expect("refresh tree")
+        .expect("refresh manifest");
+    let view = WaveFsView::new(&repo, &write);
+    for path in [
+        format!("cards/{}/events.json", worker.id.as_str()),
+        format!("cards/{}/conversation.md", worker.id.as_str()),
+    ] {
+        let vcs = blob_text(
+            &repo,
+            &manifest
+                .entries
+                .get(&path)
+                .unwrap_or_else(|| panic!("{path} entry"))
+                .blob_hash,
+        )
+        .await;
+        let live = view
+            .cat(&wave, &path)
+            .await
+            .unwrap_or_else(|_| panic!("live {path}"))
+            .content;
+        assert_eq!(vcs, live, "path {path}");
+    }
+
+    let (events_path, conversation_path) = transcript_paths(&worker.id);
+    let diff = wave_vcs::diff(repo.pool(), &before, &refresh, None)
+        .await
+        .expect("boundary diff");
+    assert_eq!(
+        diff.iter()
+            .filter(|entry| entry.path == events_path || entry.path == conversation_path)
+            .count(),
+        2,
+        "turn-boundary transcript refresh should surface each transcript path once: {diff:?}"
+    );
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
+        .await
+        .expect("boundary since-last-turn")
+        .block
+        .expect("boundary diff block");
+    assert_eq!(block.matches(&format!("- {events_path} edited")).count(), 1);
+    assert_eq!(
+        block
+            .matches(&format!("- {conversation_path} edited"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn transcript_refresh_includes_backfilled_inherited_cards() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    insert_raw_report_card(&repo, &roles, &wave.id).await;
+    let worker = insert_raw_card(
+        &repo,
+        &roles,
+        &wave.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "inherited-transcript"}),
+    )
+    .await;
+    assert_eq!(
+        wave_vcs::backfill_existing_waves(repo.pool())
+            .await
+            .expect("backfill"),
+        1
+    );
+    let before_hashes = transcript_blob_hashes(&head_manifest(&repo, &wave.id).await, &worker.id);
+
+    log_codex_hook(
+        &repo,
+        &bus,
+        &roles,
+        &coves,
+        &wave.id,
+        &cove.id,
+        &worker.id,
+        "inherited-transcript-hook",
+        "inherited card progress",
+    )
+    .await;
+    let refresh = refresh_transcripts(&repo, &wave.id).await;
+    let manifest = wave_vcs::tree_at(repo.pool(), &refresh)
+        .await
+        .expect("refresh tree")
+        .expect("refresh manifest");
+    let after_hashes = transcript_blob_hashes(&manifest, &worker.id);
+    assert_ne!(after_hashes, before_hashes);
+
+    let (_, conversation_path) = transcript_paths(&worker.id);
+    let vcs_conversation = blob_text(
+        &repo,
+        &manifest
+            .entries
+            .get(&conversation_path)
+            .expect("conversation entry")
+            .blob_hash,
+    )
+    .await;
+    assert!(
+        vcs_conversation.contains("inherited card progress"),
+        "conversation.md = {vcs_conversation}"
+    );
+    let live_conversation = WaveFsView::new(&repo, &write)
+        .cat(&wave, &conversation_path)
+        .await
+        .expect("live inherited conversation")
+        .content;
+    assert_eq!(vcs_conversation, live_conversation);
+}
+
+#[tokio::test]
+async fn turn_boundary_refresh_tree_hash_matches_full_snapshot_replay() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "replay-parity"}),
+    )
+    .await;
+    for seq in 0..4 {
+        log_codex_hook(
+            &repo,
+            &bus,
+            &roles,
+            &coves,
+            &wave.id,
+            &cove.id,
+            &worker.id,
+            &format!("replay-parity-hook-{seq}"),
+            &format!("replay parity progress {seq}"),
+        )
+        .await;
+    }
+
+    let refresh = refresh_transcripts(&repo, &wave.id).await;
+    let refresh_tree_hash = commit_tree_hash(&repo, &refresh).await;
+    let mut tx = repo.pool().begin().await.expect("begin replay snapshot");
+    let replayed = wave_vcs::snapshot_tree(&mut tx, &wave.id, MANIFEST_SCHEMA_VERSION)
+        .await
+        .expect("replayed full snapshot");
+    tx.rollback().await.expect("rollback replay snapshot");
+
+    assert_eq!(replayed.tree_hash, refresh_tree_hash);
+}
+
+#[tokio::test]
 async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
@@ -1860,6 +2355,7 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
     .await
     .expect("task completed");
 
+    refresh_transcripts(&repo, &wave.id).await;
     let manifest = head_manifest(&repo, &wave.id).await;
     let view = WaveFsView::new(&repo, &write);
     let manifest_paths = manifest.entries.keys().cloned().collect::<BTreeSet<_>>();
@@ -2105,6 +2601,7 @@ async fn hook_event_transcript_is_capped_to_recent_events_with_live_vcs_parity()
 
     let events_path = format!("cards/{}/events.json", worker.id.as_str());
     let conversation_path = format!("cards/{}/conversation.md", worker.id.as_str());
+    refresh_transcripts(&repo, &wave.id).await;
     let manifest = head_manifest(&repo, &wave.id).await;
     let view = WaveFsView::new(&repo, &write);
 
@@ -2186,11 +2683,12 @@ async fn card_retarget_from_wave_report_removes_report_blob() {
 
     let after = head_manifest(&repo, &wave.id).await;
     assert!(!after.entries.contains_key("report.md"));
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before_head), None)
-        .await
-        .unwrap()
-        .block
-        .expect("diff block");
+    let block =
+        wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before_head), None, None)
+            .await
+            .unwrap()
+            .block
+            .expect("diff block");
     assert!(block.contains("report.md deleted"), "block = {block}");
     assert!(
         !block.contains("report.md deleted (unified patch follows)"),
@@ -2258,7 +2756,7 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         .unwrap()
         .expect("head after report edit");
 
-    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap();
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
@@ -2320,7 +2818,7 @@ async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
         .await;
     }
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap()
         .block
@@ -2365,7 +2863,7 @@ async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
         .await
         .unwrap();
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap()
         .block
@@ -2760,7 +3258,7 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         Some(legacy_hash.as_str())
     );
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .expect("since-last-turn block")
         .block
