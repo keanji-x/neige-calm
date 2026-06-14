@@ -457,6 +457,16 @@ enum BindEntryOutcome {
     Orphan { reason: &'static str },
 }
 
+// TODO(#679 cleanup, off-roadmap): orphan-ness is signaled OUT of the bind tx
+// closure by encoding it into a magic-prefixed `CalmError::Internal` string and
+// decoding it back in `pending_runtime_orphan_reason` — control flow via an error
+// string. Footgun: adding a new orphan reason requires touching TWO places (the
+// `PENDING_RUNTIME_ORPHAN_*` consts AND the decode `match`); forgetting the decode
+// arm silently degrades drop -> re-park. Cleaner shape: resolve the runtime status
+// BEFORE opening the write tx and decide Orphan there (no tx, no sentinel); let the
+// rare in-tx TOCTOU fall to the plain-Err re-park path. Not worth a dedicated PR on
+// this just-stabilized file — fold the refactor in opportunistically the next time
+// this module is touched for real.
 const PENDING_RUNTIME_ORPHAN_PREFIX: &str = "__pending_codex_runtime_orphan__";
 const PENDING_RUNTIME_ORPHAN_MISSING: &str = "thread_started_runtime_missing";
 const PENDING_RUNTIME_ORPHAN_NOT_ACTIVE: &str = "thread_started_runtime_not_active";
