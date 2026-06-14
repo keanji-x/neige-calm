@@ -4277,6 +4277,24 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
+    async fn worker_flow_cursor_get(
+        &self,
+        card_id: &str,
+        source_kind: &str,
+    ) -> Result<Option<crate::db::rows::WorkerFlowCursor>> {
+        let row = sqlx::query_as::<_, crate::db::rows::WorkerFlowCursor>(
+            r#"SELECT card_id, source_kind, source_path, record_index,
+                      byte_offset, last_source_uuid, last_line_hash, updated_at_ms
+               FROM worker_flow_cursors
+               WHERE card_id = ?1 AND source_kind = ?2"#,
+        )
+        .bind(card_id)
+        .bind(source_kind)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
         let row = sqlx::query_as::<
             _,
@@ -5306,6 +5324,45 @@ impl RepoOutOfDomain for SqlxRepo {
         .await?;
         tx.commit().await?;
         Ok(id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn worker_flow_cursor_upsert(
+        &self,
+        card_id: &str,
+        source_kind: &str,
+        source_path: &str,
+        record_index: i64,
+        byte_offset: i64,
+        last_source_uuid: Option<&str>,
+        last_line_hash: Option<&str>,
+        updated_at_ms: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO worker_flow_cursors (
+                   card_id, source_kind, source_path, record_index,
+                   byte_offset, last_source_uuid, last_line_hash, updated_at_ms
+               )
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+               ON CONFLICT(card_id, source_kind) DO UPDATE SET
+                   source_path = excluded.source_path,
+                   record_index = excluded.record_index,
+                   byte_offset = excluded.byte_offset,
+                   last_source_uuid = excluded.last_source_uuid,
+                   last_line_hash = excluded.last_line_hash,
+                   updated_at_ms = excluded.updated_at_ms"#,
+        )
+        .bind(card_id)
+        .bind(source_kind)
+        .bind(source_path)
+        .bind(record_index)
+        .bind(byte_offset)
+        .bind(last_source_uuid)
+        .bind(last_line_hash)
+        .bind(updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     // --------------------------------------------------------------- plugins
@@ -6350,5 +6407,141 @@ mod worker_flow_items_tests {
             .await
             .unwrap();
         assert!(rows.is_empty(), "explicit delete-by-card must purge rows");
+    }
+}
+
+#[cfg(test)]
+mod worker_flow_cursor_tests {
+    use super::{SqlxRepo, card_create_with_id_tx, card_delete_tx, cove_create_tx, wave_create_tx};
+    use crate::db::{RepoOutOfDomain, RepoRead};
+    use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme};
+
+    async fn seed_card(repo: &SqlxRepo) -> String {
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id.clone(),
+                title: "w".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            "card-cursor".into(),
+            NewCard {
+                wave_id: wave.id.clone(),
+                kind: "worker".into(),
+                sort: None,
+                payload: serde_json::json!({}),
+            },
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        card.id.to_string()
+    }
+
+    #[tokio::test]
+    async fn cursor_upsert_overwrites_allows_reset_and_cascades() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let card_id = seed_card(&repo).await;
+
+        repo.worker_flow_cursor_upsert(
+            &card_id,
+            "codex_rollout",
+            "/tmp/rollout-a.jsonl",
+            10,
+            0,
+            Some("uuid-a"),
+            Some("hash-a"),
+            100,
+        )
+        .await
+        .unwrap();
+        let first = repo
+            .worker_flow_cursor_get(&card_id, "codex_rollout")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.record_index, 10);
+        assert_eq!(first.last_source_uuid.as_deref(), Some("uuid-a"));
+        assert_eq!(first.last_line_hash.as_deref(), Some("hash-a"));
+
+        repo.worker_flow_cursor_upsert(
+            &card_id,
+            "codex_rollout",
+            "/tmp/rollout-b.jsonl",
+            3,
+            0,
+            None,
+            None,
+            200,
+        )
+        .await
+        .unwrap();
+        let reset = repo
+            .worker_flow_cursor_get(&card_id, "codex_rollout")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reset.source_path, "/tmp/rollout-b.jsonl");
+        assert_eq!(reset.record_index, 3);
+        assert!(reset.last_source_uuid.is_none());
+        assert!(reset.last_line_hash.is_none());
+        assert_eq!(reset.updated_at_ms, 200);
+
+        repo.worker_flow_cursor_upsert(
+            &card_id,
+            "codex_rollout",
+            "/tmp/rollout-b.jsonl",
+            14,
+            0,
+            Some("uuid-b"),
+            Some("hash-b"),
+            300,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repo.worker_flow_cursor_get(&card_id, "codex_rollout")
+                .await
+                .unwrap()
+                .unwrap()
+                .record_index,
+            14
+        );
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            repo.worker_flow_cursor_get(&card_id, "codex_rollout")
+                .await
+                .unwrap()
+                .is_none(),
+            "cursor must cascade with its card"
+        );
     }
 }

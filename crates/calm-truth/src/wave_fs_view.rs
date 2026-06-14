@@ -1036,7 +1036,7 @@ pub(crate) fn worker_flow_markdown(
     items: &[calm_types::worker_flow::WorkerFlowItem],
 ) -> String {
     use calm_types::worker_flow::{
-        FileChangeKind, McpStatus, PlanStatus, ReviewKind, WorkerFlowItem,
+        ExecStatus, FileChangeKind, McpStatus, PlanStatus, ReviewKind, WorkerFlowItem,
     };
 
     let mut out = String::new();
@@ -1105,8 +1105,8 @@ pub(crate) fn worker_flow_markdown(
                 ..
             } => {
                 out.push_str(&format!("- ran `{}`", flow_truncate(command)));
-                let failed = matches!(status, calm_types::worker_flow::ExecStatus::Failed)
-                    || exit_code.is_some_and(|c| c != 0);
+                let failed =
+                    matches!(status, ExecStatus::Failed) || exit_code.is_some_and(|c| c != 0);
                 if failed {
                     match exit_code {
                         Some(code) => out.push_str(&format!(" ✗ exit {code}")),
@@ -1119,7 +1119,12 @@ pub(crate) fn worker_flow_markdown(
                         out.push_str(&format!(" — {}", flow_truncate(o)));
                     }
                 } else {
-                    out.push_str(" ✓");
+                    match status {
+                        ExecStatus::InProgress => out.push_str(" ⋯ running"),
+                        ExecStatus::Declined => out.push_str(" ⊘ declined"),
+                        ExecStatus::Completed => out.push_str(" ✓"),
+                        ExecStatus::Failed => unreachable!("matched above"),
+                    }
                 }
                 out.push('\n');
             }
@@ -1977,6 +1982,53 @@ mod tests {
         assert!(md.contains("- edit src/lib.rs"), "md = {md}");
         assert!(md.contains("## Assistant\n\nAll green now."), "md = {md}");
         assert!(md.contains("- (future.provider.thing)"), "md = {md}");
+    }
+
+    #[test]
+    fn worker_flow_markdown_renders_command_execution_statuses() {
+        use calm_types::worker_flow::{ExecSource, ExecStatus, WorkerFlowItem};
+
+        fn command_item(
+            seq: u64,
+            command: &str,
+            status: ExecStatus,
+            exit_code: Option<i32>,
+            aggregated_output: Option<&str>,
+        ) -> WorkerFlowItem {
+            WorkerFlowItem::CommandExecution {
+                env: flow_env(seq, 1),
+                call_id: None,
+                command: command.into(),
+                cwd: None,
+                parsed_actions: vec![],
+                aggregated_output: aggregated_output.map(str::to_string),
+                exit_code,
+                duration_ms: None,
+                status,
+                source: ExecSource::Agent,
+            }
+        }
+
+        let items = vec![
+            command_item(0, "cargo check", ExecStatus::InProgress, None, None),
+            command_item(1, "cargo fmt", ExecStatus::Completed, Some(0), None),
+            command_item(2, "cargo test", ExecStatus::Failed, Some(1), Some("boom")),
+            command_item(3, "dangerous command", ExecStatus::Declined, None, None),
+        ];
+
+        let md = worker_flow_markdown(&CardId::from("card-statuses"), &items);
+
+        assert!(md.contains("- ran `cargo check` ⋯ running"), "md = {md}");
+        assert!(!md.contains("- ran `cargo check` ✓"), "md = {md}");
+        assert!(md.contains("- ran `cargo fmt` ✓"), "md = {md}");
+        assert!(
+            md.contains("- ran `cargo test` ✗ exit 1 — boom"),
+            "md = {md}"
+        );
+        assert!(
+            md.contains("- ran `dangerous command` ⊘ declined"),
+            "md = {md}"
+        );
     }
 
     #[test]

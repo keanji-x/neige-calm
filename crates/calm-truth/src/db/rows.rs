@@ -208,6 +208,19 @@ pub struct WorkerFlowItemRow {
     pub created_at_ms: i64,
 }
 
+/// Per-card source cursor for passive worker-flow capture.
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+pub struct WorkerFlowCursor {
+    pub card_id: String,
+    pub source_kind: String,
+    pub source_path: String,
+    pub record_index: i64,
+    pub byte_offset: i64,
+    pub last_source_uuid: Option<String>,
+    pub last_line_hash: Option<String>,
+    pub updated_at_ms: i64,
+}
+
 /// Row mirror of [`Overlay`].
 #[derive(Debug, sqlx::FromRow)]
 pub struct OverlayRow {

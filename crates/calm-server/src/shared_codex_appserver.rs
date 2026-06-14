@@ -423,6 +423,10 @@ impl SharedCodexAppServer {
         })
     }
 
+    pub fn codex_home_path(&self) -> &std::path::Path {
+        self.home.path()
+    }
+
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
         self.rebuild_thread_cache_from_db().await?;
         let record = self.repo.shared_daemon_runtime_get().await?;
