@@ -90,10 +90,9 @@ impl PendingThreadStartRegistry {
         let pty_pid = entry.pty_pid;
         let (queue_len_after, already_registered) = {
             let mut queue = self.queue.lock().await;
-            if queue
-                .iter()
-                .any(|pending| pending.card_id == card_id.as_str())
-            {
+            if queue.iter().any(|pending| {
+                pending.card_id == card_id.as_str() && pending.runtime_id == runtime_id.as_str()
+            }) {
                 (queue.len(), true)
             } else {
                 queue.push_back(entry);

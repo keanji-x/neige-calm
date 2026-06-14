@@ -223,14 +223,15 @@ async fn register_and_bind_in_arrival_order() {
 }
 
 #[tokio::test]
-async fn register_is_idempotent_by_card_id_without_reordering() {
+async fn register_is_idempotent_by_card_and_runtime_without_reordering() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let a = seed_card(&repo, &wave_id, "term-a").await;
     let b = seed_card(&repo, &wave_id, "term-b").await;
+    let runtime_a = runtime_id_for_card(&repo, &a).await;
 
     registry
-        .register(entry(&repo, &a, &wave_id, "term-a").await)
+        .register(entry_with_runtime_id(&a, &wave_id, "term-a", &runtime_a))
         .await
         .unwrap();
     registry
@@ -238,7 +239,7 @@ async fn register_is_idempotent_by_card_id_without_reordering() {
         .await
         .unwrap();
     registry
-        .register(entry(&repo, &a, &wave_id, "term-a").await)
+        .register(entry_with_runtime_id(&a, &wave_id, "term-a", &runtime_a))
         .await
         .unwrap();
 
@@ -629,6 +630,96 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
         .unwrap()
         .expect("live runtime");
     assert_eq!(live_runtime.thread_id.as_deref(), Some("T-live-own"));
+}
+
+#[tokio::test]
+async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtime() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id =
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+    let r1 = runtime_id_for_card(&repo, &card_id).await;
+    let r2 = new_id();
+
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))
+        .await
+        .unwrap();
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r2))
+        .await
+        .unwrap();
+    assert_eq!(registry.pending_count().await, 2);
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_supersede_tx(
+        &mut tx,
+        &r1,
+        RuntimeInit {
+            id: r2.clone(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some("term-r1".to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let r1_bound = registry.on_thread_started("T-r1-late").await.unwrap();
+
+    assert_eq!(r1_bound, None);
+    assert_eq!(registry.pending_count().await, 1);
+    let old_runtime = repo
+        .runtime_get_by_id(&r1)
+        .await
+        .unwrap()
+        .expect("old runtime");
+    assert_eq!(old_runtime.status, RunStatus::Superseded);
+    assert_eq!(old_runtime.thread_id, None);
+    let active_runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("active respawned runtime");
+    assert_eq!(active_runtime.id, r2);
+    assert_eq!(active_runtime.status, RunStatus::TurnPending);
+    assert_eq!(active_runtime.thread_id, None);
+    let r2_session = repo
+        .session_get(&WorkerSessionId::from(r2.clone()))
+        .await
+        .unwrap()
+        .expect("replacement worker session");
+    assert_eq!(r2_session.thread_id, None);
+    assert_eq!(r2_session.agent_session_id, None);
+
+    let r2_bound = registry.on_thread_started("T-r2-own").await.unwrap();
+
+    assert_eq!(r2_bound.as_deref(), Some(card_id.as_str()));
+    assert_eq!(registry.pending_count().await, 0);
+    let replacement_runtime = repo
+        .runtime_get_by_id(&r2)
+        .await
+        .unwrap()
+        .expect("replacement runtime");
+    assert_eq!(replacement_runtime.status, RunStatus::Running);
+    assert_eq!(replacement_runtime.thread_id.as_deref(), Some("T-r2-own"));
+    let replacement_session = repo
+        .session_get(&WorkerSessionId::from(r2.clone()))
+        .await
+        .unwrap()
+        .expect("replacement worker session");
+    assert_eq!(replacement_session.thread_id.as_deref(), Some("T-r2-own"));
+    assert_eq!(replacement_session.agent_session_id, None);
 }
 
 #[tokio::test]
