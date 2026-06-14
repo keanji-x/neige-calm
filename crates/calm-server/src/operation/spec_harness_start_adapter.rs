@@ -10,7 +10,7 @@ use crate::db::sqlite::{
     card_mcp_token_set_tx, card_update_tx, harness_items_delete_by_card_tx,
     runtime_bind_attribution_tx, runtime_fail_if_active_tx, runtime_get_active_for_card_tx,
     runtime_restore_from_superseded_tx, runtime_start_tx, runtime_supersede_tx,
-    session_mcp_token_set_tx,
+    session_mcp_token_set_tx, session_prepare_deferred_spec_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -258,22 +258,24 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_id = new_id();
         let mut old_runtime_id = None;
         let mut old_runtime_status = None;
-        if !defer_runtime_start {
-            let runtime_init = RuntimeInit {
-                id: runtime_id.clone(),
-                card_id: card.id.to_string(),
-                kind: RuntimeKind::SharedSpec,
-                agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&snapshot)?),
-                lease_owner: None,
-                lease_until_ms: None,
-                now_ms: now_ms(),
-            };
+        let runtime_init = RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot)?),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        };
+        if defer_runtime_start {
+            session_prepare_deferred_spec_tx(tx, &runtime_init).await?;
+        } else {
             if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_str()).await? {
                 old_runtime_id = Some(existing.id.clone());
                 old_runtime_status = Some(existing.status.clone());

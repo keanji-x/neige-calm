@@ -98,6 +98,7 @@ use crate::session_repo::SessionRepo;
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 use async_trait::async_trait;
+use calm_types::worker::WorkerSession;
 use futures::future::BoxFuture;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -443,6 +444,21 @@ pub trait RepoRead: Send + Sync + 'static {
         &self,
         hashed_token: &str,
     ) -> Result<Option<(String, String)>>;
+
+    /// PR7b-i Unit 1 (#679) — look up the active worker session bound to
+    /// a presented MCP token's `SHA-256` hash. Mirrors
+    /// [`RepoRead::card_mcp_token_lookup_by_hash`]: the caller passes
+    /// `hash_token(presented)`, receives the stored session row, then
+    /// immediately runs `verify_token(presented, stored_hash)`.
+    ///
+    /// Only live authority-bearing sessions are returned. Terminal or
+    /// stale rows (`failed`, `exited`, `superseded`) deliberately collapse
+    /// to `None` so Unit 2 can bind a connection principal only to the
+    /// current session actor.
+    async fn session_get_by_active_token_hash(
+        &self,
+        hashed_token: &str,
+    ) -> Result<Option<WorkerSession>>;
 
     /// Return whether a card owns a per-card MCP token row. Used by the
     /// spec-harness reusable-thread invariant: only threads minted under

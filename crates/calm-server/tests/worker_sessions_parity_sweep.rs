@@ -3,12 +3,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx, session_prepare_deferred_spec_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_types::worker::{WorkerSessionId, WorkerSessionState};
 use serde_json::json;
 
 const BOOT_ASSERT_ENV: &str = "NEIGE_ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT";
@@ -115,6 +116,64 @@ async fn boot_worker_sessions_parity_assertion_env_unset_divergence_returns_ok()
     calm_server::assert_worker_sessions_parity_on_boot(&state)
         .await
         .expect("unset boot assertion env must be a no-op");
+}
+
+#[tokio::test]
+async fn deferred_spec_placeholder_session_is_not_parity_divergence() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let card_id = create_codex_card(&repo).await;
+    let wave_id: String = sqlx::query_scalar("SELECT wave_id FROM cards WHERE id = ?1")
+        .bind(&card_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let runtime_id = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_prepare_deferred_spec_tx(
+        &mut tx,
+        &RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(json!({"mode": "harness"})),
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let runtime_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
+        .bind(&runtime_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime_count, 0,
+        "placeholder must not create a runtime row"
+    );
+    let session = repo
+        .session_get(&WorkerSessionId::from(runtime_id.clone()))
+        .await
+        .unwrap()
+        .expect("deferred placeholder session");
+    assert_eq!(session.state, WorkerSessionState::Starting);
+    assert_eq!(session.wave_id.as_str(), wave_id);
+
+    let counter = AtomicU64::new(0);
+    let divergences = calm_server::worker_sessions_parity_sweep::sweep(repo.pool(), &counter)
+        .await
+        .unwrap();
+    assert_eq!(divergences, 0);
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
 }
 
 async fn create_codex_card(repo: &SqlxRepo) -> String {
