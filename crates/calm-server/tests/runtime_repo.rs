@@ -1168,6 +1168,95 @@ async fn runtime_handle_state_json_roundtrip() {
 }
 
 #[tokio::test]
+async fn runtime_set_handle_state_tx_writes_active_runtime() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let state = json!({"phase": "active-write", "queue": [1, 2, 3]});
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Running,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_set_handle_state_tx(&mut tx, &runtime.id, Some(state.clone()))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let persisted = repo
+        .runtime_get_by_id(&runtime.id)
+        .await
+        .unwrap()
+        .expect("runtime");
+    assert_eq!(persisted.handle_state_json, Some(state.clone()));
+
+    let session = repo
+        .session_get(&WorkerSessionId(runtime.id))
+        .await
+        .unwrap()
+        .expect("mirrored worker session");
+    assert_eq!(session.handle_state_json, Some(state));
+}
+
+#[tokio::test]
+async fn runtime_set_handle_state_tx_noops_for_superseded_runtime() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let original = json!({"phase": "original", "queue": [1]});
+    let stale = json!({"phase": "stale", "queue": [2]});
+    let mut init = runtime_init(
+        card.id.to_string(),
+        RuntimeKind::CodexCard,
+        Some(AgentProvider::Codex),
+        RunStatus::Running,
+    );
+    init.handle_state_json = Some(original.clone());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_start_tx(&mut tx, init).await.unwrap();
+    let _replacement = runtime_supersede_tx(
+        &mut tx,
+        &runtime.id,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+    runtime_set_handle_state_tx(&mut tx, &runtime.id, Some(stale))
+        .await
+        .expect("superseded handle-state write should no-op");
+    tx.commit().await.unwrap();
+
+    let stale_runtime = repo
+        .runtime_get_by_id(&runtime.id)
+        .await
+        .unwrap()
+        .expect("superseded runtime");
+    assert_eq!(stale_runtime.status, RunStatus::Superseded);
+    assert_eq!(stale_runtime.handle_state_json, Some(original.clone()));
+
+    let stale_session = repo
+        .session_get(&WorkerSessionId(runtime.id))
+        .await
+        .unwrap()
+        .expect("mirrored superseded worker session");
+    assert_eq!(stale_session.state, WorkerSessionState::Superseded);
+    assert_eq!(stale_session.handle_state_json, Some(original));
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+}
+
+#[tokio::test]
 async fn runtimes_recover_orphans_skips_unleased_runtimes() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "terminal").await;
