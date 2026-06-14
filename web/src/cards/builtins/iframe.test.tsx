@@ -62,6 +62,14 @@ function iframeNode(): HTMLIFrameElement {
   return screen.getByTitle(/Embedded page:/) as HTMLIFrameElement;
 }
 
+function expectBaseSandboxTokens(sandbox: string | null) {
+  expect(sandbox).toBeTruthy();
+  expect(sandbox).toContain('allow-scripts');
+  expect(sandbox).toContain('allow-popups');
+  expect(sandbox).toContain('allow-forms');
+  expect(sandbox).toContain('allow-popups-to-escape-sandbox');
+}
+
 describe('IframeEntry.fromKernel', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -79,6 +87,7 @@ describe('IframeEntry.fromKernel', () => {
       type: 'iframe',
       id: 'iframe_1',
       url: 'https://example.com',
+      trusted: false,
     });
     expect(warnSpy).not.toHaveBeenCalled();
   });
@@ -130,17 +139,184 @@ describe('IframeCard rendering', () => {
     expect(frame).toHaveAttribute('src', 'https://example.com');
   });
 
-  it('sandboxes the iframe without same-origin access', () => {
+  it('keeps same-origin targets opaque, even when trusted', () => {
+    const sameOriginUrl = `${window.location.origin}/api/plugins/foo/resources/bar`;
+    const { unmount } = renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: sameOriginUrl,
+    });
+
+    let frame = iframeNode();
+    let sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).not.toContain('allow-same-origin');
+
+    unmount();
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: sameOriginUrl,
+      trusted: true,
+    });
+
+    frame = iframeNode();
+    sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).not.toContain('allow-same-origin');
+  });
+
+  it('keeps cross-origin targets opaque by default', () => {
     renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
-    const frame = screen.getByTitle('Embedded page: https://example.com');
+    const frame = iframeNode();
     const sandbox = frame.getAttribute('sandbox');
-    expect(sandbox).toBeTruthy();
-    expect(sandbox).toContain('allow-scripts');
-    expect(sandbox).toContain('allow-popups');
-    expect(sandbox).toContain('allow-forms');
-    expect(sandbox).toContain('allow-popups-to-escape-sandbox');
+    expectBaseSandboxTokens(sandbox);
     expect(sandbox).not.toContain('allow-same-origin');
+  });
+
+  it('allows same-origin access for trusted cross-origin targets', () => {
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+      trusted: true,
+    });
+
+    const frame = iframeNode();
+    const sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).toContain('allow-same-origin');
+  });
+
+  it('resubmitting the same URL preserves trust', async () => {
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+      trusted: true,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Go' }));
+
+    await waitFor(() => {
+      expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
+        payload: { url: 'https://example.com', trusted: true },
+      });
+    });
+
+    const sandbox = iframeNode().getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).toContain('allow-same-origin');
+  });
+
+  it('submitting a different URL resets trust', async () => {
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+      trusted: true,
+    });
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, { target: { value: 'https://other.example.org' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => {
+      expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
+        payload: { url: 'https://other.example.org', trusted: false },
+      });
+    });
+  });
+
+  it('toggling trust preserves an in-progress URL draft', () => {
+    const Component = IframeEntry.Component;
+    const card = {
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+    } satisfies IframeCardData;
+    const { rerender } = render(
+      <CardInstanceProvider cardId="iframe_1" deletable card={card}>
+        <Component card={card} />
+      </CardInstanceProvider>,
+    );
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, {
+      target: { value: 'https://typed-but-not-submitted.com' },
+    });
+    fireEvent.click(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    );
+
+    const trustedCard = { ...card, trusted: true };
+    rerender(
+      <CardInstanceProvider cardId="iframe_1" deletable card={trustedCard}>
+        <Component card={trustedCard} />
+      </CardInstanceProvider>,
+    );
+
+    expect(screen.getByLabelText('Web page URL')).toHaveValue(
+      'https://typed-but-not-submitted.com',
+    );
+  });
+
+  it('toggling trust remounts the iframe element (policy change)', async () => {
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+
+    const before = iframeNode();
+    fireEvent.click(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    );
+
+    await waitFor(() => {
+      const after = iframeNode();
+      expect(after).not.toBe(before);
+      expect(after.getAttribute('sandbox')).toContain('allow-same-origin');
+    });
+  });
+
+  it('shows the trust checkbox only for cross-origin URLs', () => {
+    const { unmount } = renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+    });
+
+    expect(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    ).toBeInTheDocument();
+
+    unmount();
+    renderIframe({
+      type: 'iframe',
+      id: 'iframe_1',
+      url: `${window.location.origin}/api/plugins/foo/resources/bar`,
+    });
+
+    expect(
+      screen.queryByLabelText('Allow same-origin access for this app'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('persists cross-origin trust and updates the iframe sandbox', async () => {
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+
+    fireEvent.click(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    );
+
+    await waitFor(() => {
+      expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
+        payload: { url: 'https://example.com', trusted: true },
+      });
+    });
+
+    const frame = iframeNode();
+    const sandbox = frame.getAttribute('sandbox');
+    expectBaseSandboxTokens(sandbox);
+    expect(sandbox).toContain('allow-same-origin');
   });
 
   it('URL bar reflects current URL', () => {
@@ -167,7 +343,7 @@ describe('IframeCard rendering', () => {
     expect(input).toHaveValue('https://docs.mintlify.com/');
     await waitFor(() => {
       expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
-        payload: { url: 'https://docs.mintlify.com/' },
+        payload: { url: 'https://docs.mintlify.com/', trusted: false },
       });
     });
   });
@@ -258,7 +434,7 @@ describe('IframeCard rendering', () => {
     expect(input).toHaveValue('https://example.com');
     await waitFor(() => {
       expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
-        payload: { url: 'https://example.com' },
+        payload: { url: 'https://example.com', trusted: false },
       });
     });
   });
