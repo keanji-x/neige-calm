@@ -3082,6 +3082,24 @@ async fn card_session_link_tx(
     Ok(())
 }
 
+async fn session_repoint_current_links_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+    session: &WorkerSession,
+) -> RuntimeResult<()> {
+    // Runtime/session identity invariant: whenever a runtime/session becomes
+    // current for a card, cards.session_id must follow it. Planner sessions
+    // that are live also own waves.root_session_id for recorder gating.
+    // Deferred placeholders are intentionally created without calling this;
+    // they only claim these links once runtime_start_tx creates the real row.
+    if session.contract == WorkerContract::Planner && !session.state.is_terminal() {
+        session_mark_wave_root_tx(tx, &session.wave_id, &session.id)
+            .await
+            .map_err(runtime_session_error)?;
+    }
+    card_session_link_tx(tx, card_id, &session.id).await
+}
+
 async fn session_start_mirror_tx(
     tx: &mut RuntimeTx<'_>,
     init: &RuntimeInit,
@@ -3089,12 +3107,7 @@ async fn session_start_mirror_tx(
     let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
     let session = worker_session_from_runtime_init(init, wave_id);
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
-    if session.contract == WorkerContract::Planner && !session.state.is_terminal() {
-        session_mark_wave_root_tx(tx, &session.wave_id, &session.id)
-            .await
-            .map_err(runtime_session_error)?;
-    }
-    card_session_link_tx(tx, &init.card_id, &session.id).await?;
+    session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
     Ok(session)
 }
 
@@ -3112,7 +3125,9 @@ pub async fn session_prepare_deferred_spec_tx(
             "deferred spec session placeholders must not have a thread or terminal run",
         ));
     }
-    session_start_mirror_tx(tx, init).await
+    let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
+    let session = worker_session_from_runtime_init(init, wave_id);
+    session_insert_or_refresh_start_mirror_tx(tx, session).await
 }
 
 async fn session_supersede_active_tx(
@@ -3334,12 +3349,23 @@ async fn session_mark_superseded_tx(
     Ok(())
 }
 
+async fn session_get_required_for_runtime_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    context: &str,
+) -> RuntimeResult<WorkerSession> {
+    session_get_tx(tx, &WorkerSessionId(id.clone()))
+        .await
+        .map_err(runtime_session_error)?
+        .ok_or_else(|| runtime_message(format!("worker session {id} missing while {context}")))
+}
+
 async fn session_restore_from_superseded_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     status: RunStatus,
     now: i64,
-) -> RuntimeResult<()> {
+) -> RuntimeResult<WorkerSession> {
     let state_db = worker_session_state_from_run_status(&status).as_db_str();
     let res = sqlx::query(
         r#"UPDATE worker_sessions
@@ -3355,7 +3381,8 @@ async fn session_restore_from_superseded_tx(
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() > 0 {
-        return Ok(());
+        return session_get_required_for_runtime_tx(tx, id, "restoring old spec harness session")
+            .await;
     }
 
     let current: Option<(String,)> =
@@ -3364,7 +3391,9 @@ async fn session_restore_from_superseded_tx(
             .fetch_optional(&mut **tx)
             .await?;
     match current {
-        Some((current,)) if current == state_db => Ok(()),
+        Some((current,)) if current == state_db => {
+            session_get_required_for_runtime_tx(tx, id, "restoring old spec harness session").await
+        }
         Some((current,)) => Err(runtime_message(format!(
             "worker session {id} has state {current}; cannot restore old spec harness session to {state_db}"
         ))),
@@ -3915,7 +3944,11 @@ pub async fn runtime_restore_from_superseded_tx(
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() > 0 {
-        session_restore_from_superseded_tx(tx, id, status, now).await?;
+        let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
+        let runtime = runtime_get_by_id_tx(tx, id)
+            .await?
+            .ok_or_else(|| runtime_message(format!("runtime {id} missing after restore")))?;
+        session_repoint_current_links_tx(tx, &runtime.card_id, &session).await?;
         return Ok(());
     }
 
@@ -3925,7 +3958,11 @@ pub async fn runtime_restore_from_superseded_tx(
         .await?;
     match current {
         Some((current,)) if current == status_db => {
-            session_restore_from_superseded_tx(tx, id, status, now).await
+            let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
+            let runtime = runtime_get_by_id_tx(tx, id)
+                .await?
+                .ok_or_else(|| runtime_message(format!("runtime {id} missing after restore")))?;
+            session_repoint_current_links_tx(tx, &runtime.card_id, &session).await
         }
         Some((current,)) => Err(runtime_message(format!(
             "runtime {id} has status {current}; cannot restore old spec harness runtime to {status_db}"
