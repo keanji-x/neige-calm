@@ -189,6 +189,54 @@ describe('IframeCard rendering', () => {
     expect(sandbox).toContain('allow-same-origin');
   });
 
+  it('toggling trust preserves an in-progress URL draft', () => {
+    const Component = IframeEntry.Component;
+    const card = {
+      type: 'iframe',
+      id: 'iframe_1',
+      url: 'https://example.com',
+    } satisfies IframeCardData;
+    const { rerender } = render(
+      <CardInstanceProvider cardId="iframe_1" deletable card={card}>
+        <Component card={card} />
+      </CardInstanceProvider>,
+    );
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, {
+      target: { value: 'https://typed-but-not-submitted.com' },
+    });
+    fireEvent.click(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    );
+
+    const trustedCard = { ...card, trusted: true };
+    rerender(
+      <CardInstanceProvider cardId="iframe_1" deletable card={trustedCard}>
+        <Component card={trustedCard} />
+      </CardInstanceProvider>,
+    );
+
+    expect(screen.getByLabelText('Web page URL')).toHaveValue(
+      'https://typed-but-not-submitted.com',
+    );
+  });
+
+  it('toggling trust remounts the iframe element (policy change)', async () => {
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+
+    const before = iframeNode();
+    fireEvent.click(
+      screen.getByLabelText('Allow same-origin access for this app'),
+    );
+
+    await waitFor(() => {
+      const after = iframeNode();
+      expect(after).not.toBe(before);
+      expect(after.getAttribute('sandbox')).toContain('allow-same-origin');
+    });
+  });
+
   it('shows the trust checkbox only for cross-origin URLs', () => {
     const { unmount } = renderIframe({
       type: 'iframe',

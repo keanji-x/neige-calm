@@ -77,9 +77,12 @@ function IframeCard({
     }
     setCurrentUrl(card.url);
     setDraftUrl(card.url);
-    setTrusted(card.trusted ?? false);
     pendingUrlRef.current = null;
-  }, [card.trusted, card.url]);
+  }, [card.url]);
+
+  useEffect(() => {
+    setTrusted(card.trusted ?? false);
+  }, [card.trusted]);
 
   const submitUrl = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
