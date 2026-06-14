@@ -793,9 +793,13 @@ pub async fn since_last_turn_block(
     pool: &SqlitePool,
     wave_id: &WaveId,
     last_seen_head: Option<&str>,
+    current_override: Option<&CommitHash>,
     spec_card_id: Option<&CardId>,
 ) -> Result<SinceLastTurnBlock> {
-    let Some(current) = head(pool, wave_id).await? else {
+    let Some(current) = (match current_override {
+        Some(current) => Some(current.clone()),
+        None => head(pool, wave_id).await?,
+    }) else {
         return Ok(SinceLastTurnBlock::empty());
     };
     let Some(previous) = last_seen_head else {

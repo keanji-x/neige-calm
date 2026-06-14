@@ -1092,38 +1092,44 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
     let refresh_repo = Arc::clone(&inner.repo);
     let refresh_wave_id = inner.wave_id.clone();
-    if let Err(e) = write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            wave_vcs::snapshot_transcripts_for_cards_in_wave(
-                tx,
-                &refresh_wave_id,
-                None,
-                wave_vcs::MANIFEST_SCHEMA_VERSION,
-            )
-            .await
-            .map_err(CalmError::from)
+    let refresh_head: Option<wave_vcs::CommitHash> =
+        match write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                wave_vcs::snapshot_transcripts_for_cards_in_wave(
+                    tx,
+                    &refresh_wave_id,
+                    None,
+                    wave_vcs::MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .map_err(CalmError::from)
+            })
         })
-    })
-    .await
-    {
-        tracing::warn!(
-            target: "calm_server::spec_harness_issue",
-            runtime_id = %inner.runtime_id,
-            card_id = %inner.card_id,
-            wave_id = %inner.wave_id,
-            error = %e,
-            "pre-diff transcript refresh failed; issuing turn without refreshed transcripts"
-        );
-    }
+        .await
+        {
+            Ok(head) => Some(head),
+            Err(e) => {
+                tracing::warn!(
+                    target: "calm_server::spec_harness_issue",
+                    runtime_id = %inner.runtime_id,
+                    card_id = %inner.card_id,
+                    wave_id = %inner.wave_id,
+                    error = %e,
+                    "pre-diff transcript refresh failed; issuing turn without refreshed transcripts"
+                );
+                None
+            }
+        };
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
         card_id = %inner.card_id,
         wave_id = %inner.wave_id,
         last_seen_head = ?last_seen_head_snapshot,
+        refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    let diff = diff_with_timeout(inner).await;
+    let diff = diff_with_timeout(inner, refresh_head.as_ref()).await;
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
@@ -1240,16 +1246,19 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
 /// Wrap `since_last_turn_diff_block` in a 5s timeout. On timeout, log a warn
 /// and fall through without a diff block so the turn still issues — the diff
 /// block is contextual augmentation, never a correctness requirement (#639).
-async fn diff_with_timeout(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
+async fn diff_with_timeout(
+    inner: &Arc<Inner>,
+    current_override: Option<&wave_vcs::CommitHash>,
+) -> wave_vcs::SinceLastTurnBlock {
     diff_or_fallback_on_timeout(
-        since_last_turn_diff_block(inner),
+        since_last_turn_diff_block(inner, current_override),
         SINCE_LAST_TURN_DIFF_TIMEOUT,
         &inner.runtime_id,
         inner.card_id.as_str(),
         inner.wave_id.as_str(),
         || async {
             wave_vcs::SinceLastTurnBlock {
-                current_head: current_head_after_diff_timeout(inner).await,
+                current_head: current_head_after_diff_timeout(inner, current_override).await,
                 block: None,
             }
         },
@@ -1286,7 +1295,14 @@ where
     }
 }
 
-async fn current_head_after_diff_timeout(inner: &Arc<Inner>) -> Option<wave_vcs::CommitHash> {
+async fn current_head_after_diff_timeout(
+    inner: &Arc<Inner>,
+    current_override: Option<&wave_vcs::CommitHash>,
+) -> Option<wave_vcs::CommitHash> {
+    if let Some(current) = current_override {
+        return Some(current.clone());
+    }
+
     let pool = inner.repo.sqlite_pool()?;
 
     match tokio::time::timeout(
@@ -1317,7 +1333,10 @@ async fn current_head_after_diff_timeout(inner: &Arc<Inner>) -> Option<wave_vcs:
     }
 }
 
-async fn since_last_turn_diff_block(inner: &Arc<Inner>) -> wave_vcs::SinceLastTurnBlock {
+async fn since_last_turn_diff_block(
+    inner: &Arc<Inner>,
+    current_override: Option<&wave_vcs::CommitHash>,
+) -> wave_vcs::SinceLastTurnBlock {
     let Some(pool) = inner.repo.sqlite_pool() else {
         return wave_vcs::SinceLastTurnBlock::empty();
     };
@@ -1326,22 +1345,26 @@ async fn since_last_turn_diff_block(inner: &Arc<Inner>) -> wave_vcs::SinceLastTu
         &pool,
         &inner.wave_id,
         last_seen_head.as_deref(),
+        current_override,
         Some(&inner.card_id),
     )
     .await
     {
         Ok(diff) => diff,
         Err(e) => {
-            let current_head = match wave_vcs::head(&pool, &inner.wave_id).await {
-                Ok(head) => head,
-                Err(head_err) => {
-                    tracing::warn!(
-                        wave_id = %inner.wave_id,
-                        error = %head_err,
-                        "spec harness could not read wave-vcs head after diff failure"
-                    );
-                    None
-                }
+            let current_head = match current_override {
+                Some(current) => Some(current.clone()),
+                None => match wave_vcs::head(&pool, &inner.wave_id).await {
+                    Ok(head) => head,
+                    Err(head_err) => {
+                        tracing::warn!(
+                            wave_id = %inner.wave_id,
+                            error = %head_err,
+                            "spec harness could not read wave-vcs head after diff failure"
+                        );
+                        None
+                    }
+                },
             };
             tracing::warn!(
                 wave_id = %inner.wave_id,

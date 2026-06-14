@@ -253,6 +253,25 @@ async fn log_worker_codex_hook(boot: &Boot, card: &Card, key: &str, prompt: &str
         .expect("worker codex hook event");
 }
 
+async fn refresh_transcripts(boot: &Boot) -> wave_vcs::CommitHash {
+    let mut tx = boot
+        .repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin transcript refresh");
+    let commit = wave_vcs::snapshot_transcripts_for_cards_in_wave(
+        &mut tx,
+        &boot.wave_id,
+        None,
+        wave_vcs::MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("snapshot transcripts");
+    tx.commit().await.expect("commit transcript refresh");
+    commit
+}
+
 async fn start_worker_runtime_with_event(boot: &Boot, card: &Card, status: RunStatus) -> String {
     let runtime_id = new_id();
     let returned_runtime_id = runtime_id.clone();
@@ -805,7 +824,14 @@ async fn transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_har
         "corrupt refresh source must degrade to no diff block: {text}"
     );
     assert!(text.contains("idempotency_key=corrupt-refresh-payload"));
-    wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some()).await;
+    let issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
+        .await
+        .issued_turn_head
+        .expect("issued turn head");
+    assert_eq!(
+        issued_head, current,
+        "refresh failure must preserve live-HEAD fallback behavior"
+    );
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -892,6 +918,16 @@ async fn turn_issuance_refreshes_hook_transcripts_before_diff() {
     );
     assert!(text.contains("idempotency_key=hook-transcript-refresh"));
 
+    let issued_record = wave_vcs::commit_record(boot.repo.pool(), &issued_head)
+        .await
+        .expect("issued head commit record")
+        .expect("issued head commit");
+    assert_eq!(
+        issued_record.message.as_deref(),
+        Some("transcript refresh"),
+        "successful issuance should stamp the pre-diff refresh commit"
+    );
+
     let wave = boot
         .repo
         .wave_get(boot.wave_id.as_str())
@@ -912,6 +948,127 @@ async fn turn_issuance_refreshes_hook_transcripts_before_diff() {
     assert!(
         vcs_conversation.contains("issuance progress 2"),
         "conversation.md = {vcs_conversation}"
+    );
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn since_last_turn_override_fences_post_refresh_hook_commit() {
+    let boot = boot().await;
+    let worker = add_worker_card_event(&boot, "post-refresh-fence").await;
+    let before = complete_first_turn_and_stamp(&boot).await;
+    let events_path = format!("cards/{}/events.json", worker.id.as_str());
+    let conversation_path = format!("cards/{}/conversation.md", worker.id.as_str());
+
+    log_worker_codex_hook(&boot, &worker, "pre-refresh-hook", "pre refresh prompt").await;
+    let refresh_head = refresh_transcripts(&boot).await;
+    let refresh_conversation =
+        wave_vcs::cat_at(boot.repo.pool(), &refresh_head, &conversation_path)
+            .await
+            .expect("refresh conversation")
+            .content;
+    assert!(refresh_conversation.contains("pre refresh prompt"));
+
+    log_worker_codex_hook(&boot, &worker, "post-refresh-hook", "post refresh prompt").await;
+    let hook_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .expect("head query")
+        .expect("post-refresh hook head");
+    assert_ne!(
+        hook_head, refresh_head,
+        "post-refresh hook should advance live HEAD"
+    );
+    let hook_head_conversation = wave_vcs::cat_at(boot.repo.pool(), &hook_head, &conversation_path)
+        .await
+        .expect("hook head conversation")
+        .content;
+    assert!(
+        !hook_head_conversation.contains("post refresh prompt"),
+        "hook-only commit should not contain its transcript until the next refresh"
+    );
+
+    let fenced = wave_vcs::since_last_turn_block(
+        boot.repo.pool(),
+        &boot.wave_id,
+        Some(&before),
+        Some(&refresh_head),
+        Some(&boot.spec_card_id),
+    )
+    .await
+    .expect("fenced diff");
+    assert_eq!(fenced.current_head.as_deref(), Some(refresh_head.as_str()));
+    let fenced_block = fenced.block.expect("fenced diff block");
+    assert_eq!(
+        fenced_block
+            .matches(&format!("- {events_path} edited"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        fenced_block
+            .matches(&format!("- {conversation_path} edited"))
+            .count(),
+        1
+    );
+
+    let unfenced = wave_vcs::since_last_turn_block(
+        boot.repo.pool(),
+        &boot.wave_id,
+        Some(&before),
+        None,
+        Some(&boot.spec_card_id),
+    )
+    .await
+    .expect("unfenced diff");
+    assert_eq!(unfenced.current_head.as_deref(), Some(hook_head.as_str()));
+
+    let next_refresh_head = refresh_transcripts(&boot).await;
+    let next_conversation =
+        wave_vcs::cat_at(boot.repo.pool(), &next_refresh_head, &conversation_path)
+            .await
+            .expect("next refresh conversation")
+            .content;
+    assert!(next_conversation.contains("post refresh prompt"));
+
+    let next = wave_vcs::since_last_turn_block(
+        boot.repo.pool(),
+        &boot.wave_id,
+        Some(&refresh_head),
+        Some(&next_refresh_head),
+        Some(&boot.spec_card_id),
+    )
+    .await
+    .expect("next fenced diff");
+    assert_eq!(
+        next.current_head.as_deref(),
+        Some(next_refresh_head.as_str())
+    );
+    let next_block = next.block.expect("next diff block");
+    assert_eq!(
+        next_block
+            .matches(&format!("- {events_path} edited"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        next_block
+            .matches(&format!("- {conversation_path} edited"))
+            .count(),
+        1
+    );
+
+    let after_next = wave_vcs::since_last_turn_block(
+        boot.repo.pool(),
+        &boot.wave_id,
+        Some(&next_refresh_head),
+        None,
+        Some(&boot.spec_card_id),
+    )
+    .await
+    .expect("after next refresh diff");
+    assert!(
+        after_next.block.is_none(),
+        "post-refresh transcript paths should appear in one next-turn diff only"
     );
     boot.harness.shutdown().await.unwrap();
 }

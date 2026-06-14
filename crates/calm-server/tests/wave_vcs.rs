@@ -907,12 +907,17 @@ async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
     )
     .await;
 
-    let block =
-        wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&legacy_head), Some(&spec.id))
-            .await
-            .expect("since-last-turn block")
-            .block
-            .expect("cutover diff block");
+    let block = wave_vcs::since_last_turn_block(
+        repo.pool(),
+        &wave.id,
+        Some(&legacy_head),
+        None,
+        Some(&spec.id),
+    )
+    .await
+    .expect("since-last-turn block")
+    .block
+    .expect("cutover diff block");
     let legacy_payload_noise = format!("cards/{}/payload.json deleted", spec.id.as_str());
     let payload_noise = format!("cards/{}/.payload.json new", spec.id.as_str());
     assert!(
@@ -1758,7 +1763,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
             .unwrap();
     assert_eq!(author, None);
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap()
         .block
@@ -2043,7 +2048,7 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
             .all(|entry| entry.path != events_path && entry.path != conversation_path),
         "hook-only commits must not dirty transcript paths: {diff:?}"
     );
-    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .expect("since-last-turn block");
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
@@ -2130,7 +2135,7 @@ async fn turn_boundary_refresh_makes_hook_transcripts_fresh_once() {
         2,
         "turn-boundary transcript refresh should surface each transcript path once: {diff:?}"
     );
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .expect("boundary since-last-turn")
         .block
@@ -2678,11 +2683,12 @@ async fn card_retarget_from_wave_report_removes_report_blob() {
 
     let after = head_manifest(&repo, &wave.id).await;
     assert!(!after.entries.contains_key("report.md"));
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before_head), None)
-        .await
-        .unwrap()
-        .block
-        .expect("diff block");
+    let block =
+        wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before_head), None, None)
+            .await
+            .unwrap()
+            .block
+            .expect("diff block");
     assert!(block.contains("report.md deleted"), "block = {block}");
     assert!(
         !block.contains("report.md deleted (unified patch follows)"),
@@ -2750,7 +2756,7 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         .unwrap()
         .expect("head after report edit");
 
-    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let since = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap();
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
@@ -2812,7 +2818,7 @@ async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
         .await;
     }
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap()
         .block
@@ -2857,7 +2863,7 @@ async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
         .await
         .unwrap();
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .unwrap()
         .block
@@ -3252,7 +3258,7 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         Some(legacy_hash.as_str())
     );
 
-    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None)
+    let block = wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before), None, None)
         .await
         .expect("since-last-turn block")
         .block
