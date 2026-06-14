@@ -1068,6 +1068,7 @@ pub(crate) fn worker_flow_markdown(
     }
 
     let mut latest_file_change_for_call: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut latest_mcp_for_call: BTreeMap<&str, usize> = BTreeMap::new();
     let mut latest_web_search_for_call: BTreeMap<&str, usize> = BTreeMap::new();
     for (idx, item) in items.iter().enumerate() {
         match item {
@@ -1076,6 +1077,9 @@ pub(crate) fn worker_flow_markdown(
                 ..
             } => {
                 latest_file_change_for_call.insert(call_id.as_str(), idx);
+            }
+            WorkerFlowItem::McpToolCall { call_id, .. } => {
+                latest_mcp_for_call.insert(call_id.as_str(), idx);
             }
             WorkerFlowItem::WebSearch {
                 call_id: Some(call_id),
@@ -1181,22 +1185,28 @@ pub(crate) fn worker_flow_markdown(
                 // Rendered inline with its paired ToolCall above.
             }
             WorkerFlowItem::McpToolCall {
+                call_id,
                 server,
                 tool,
                 status,
                 ..
             } => {
-                let name = match server {
-                    Some(s) => format!("{s}.{tool}"),
-                    None => tool.clone(),
-                };
-                out.push_str(&format!("- {}", flow_truncate(&name)));
-                match status {
-                    McpStatus::Completed => out.push_str(" ✓"),
-                    McpStatus::Failed => out.push_str(" ✗"),
-                    McpStatus::InProgress => {}
+                let should_render = latest_mcp_for_call
+                    .get(call_id.as_str())
+                    .is_none_or(|latest| *latest == idx);
+                if should_render {
+                    let name = match server {
+                        Some(s) => format!("{s}.{tool}"),
+                        None => tool.clone(),
+                    };
+                    out.push_str(&format!("- {}", flow_truncate(&name)));
+                    match status {
+                        McpStatus::Completed => out.push_str(" ✓"),
+                        McpStatus::Failed => out.push_str(" ✗"),
+                        McpStatus::InProgress => {}
+                    }
+                    out.push('\n');
                 }
-                out.push('\n');
             }
             WorkerFlowItem::WebSearch { call_id, query, .. } => {
                 let should_render = call_id.as_ref().is_none_or(|call_id| {
@@ -2101,6 +2111,71 @@ mod tests {
             1,
             "md = {md}"
         );
+    }
+
+    #[test]
+    fn worker_flow_markdown_coalesces_mcp_tool_calls_by_call_id() {
+        use calm_types::worker_flow::{McpStatus, ToolCallId, WorkerFlowItem};
+
+        let items = vec![
+            WorkerFlowItem::McpToolCall {
+                env: flow_env(0, 1),
+                call_id: ToolCallId::from("m1"),
+                server: Some("fs".into()),
+                tool: "read".into(),
+                arguments: json!({"path": "a.txt"}),
+                status: McpStatus::InProgress,
+                result: None,
+                error: None,
+                duration_ms: None,
+            },
+            WorkerFlowItem::McpToolCall {
+                env: flow_env(1, 1),
+                call_id: ToolCallId::from("m1"),
+                server: Some("fs".into()),
+                tool: "read".into(),
+                arguments: json!({"path": "a.txt"}),
+                status: McpStatus::Completed,
+                result: Some(json!({"content": "ok"})),
+                error: None,
+                duration_ms: Some(12),
+            },
+        ];
+
+        let md = worker_flow_markdown(&CardId::from("card-mcp-coalesce"), &items);
+
+        assert_eq!(md.matches("- fs.read").count(), 1, "md = {md}");
+        assert!(md.contains("- fs.read ✓"), "md = {md}");
+
+        let distinct = vec![
+            WorkerFlowItem::McpToolCall {
+                env: flow_env(0, 1),
+                call_id: ToolCallId::from("m2"),
+                server: Some("fs".into()),
+                tool: "first".into(),
+                arguments: json!({}),
+                status: McpStatus::Completed,
+                result: Some(json!({"ok": true})),
+                error: None,
+                duration_ms: None,
+            },
+            WorkerFlowItem::McpToolCall {
+                env: flow_env(1, 1),
+                call_id: ToolCallId::from("m3"),
+                server: Some("fs".into()),
+                tool: "second".into(),
+                arguments: json!({}),
+                status: McpStatus::Completed,
+                result: Some(json!({"ok": true})),
+                error: None,
+                duration_ms: None,
+            },
+        ];
+
+        let md = worker_flow_markdown(&CardId::from("card-mcp-distinct"), &distinct);
+
+        assert_eq!(md.matches("- fs.first ✓\n").count(), 1, "md = {md}");
+        assert_eq!(md.matches("- fs.second ✓\n").count(), 1, "md = {md}");
     }
 
     #[test]

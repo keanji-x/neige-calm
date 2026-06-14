@@ -16,5 +16,11 @@ fn claude_project_slug_preserves_verified_ascii_allowlist() {
         "-home-kenji-Abyssal-.claude-worktrees-cuddly-tickling-puzzle"
     );
     assert_eq!(slug_for_projects(""), "");
-    assert_eq!(slug_for_projects("/tmp/a b/é"), "-tmp-a-b---");
+    assert_eq!(slug_for_projects("/tmp/a b"), "-tmp-a-b");
+}
+
+#[test]
+fn claude_project_slug_replaces_non_ascii_per_character() {
+    assert_eq!(slug_for_projects("/tmp/é"), "-tmp--");
+    assert_eq!(slug_for_projects("/home/user/中文"), "-home-user---");
 }

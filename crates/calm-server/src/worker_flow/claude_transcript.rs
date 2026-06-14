@@ -676,13 +676,17 @@ fn hash_line(raw: &str) -> String {
 
 /// Mirrors Claude 2.1.170 project-directory slugging; cwd cross-checks catch drift.
 pub fn slug_for_projects(cwd: &str) -> String {
-    cwd.as_bytes()
-        .iter()
-        .map(|byte| match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => *byte as char,
-            _ => '-',
-        })
-        .collect()
+    let mut slug = String::with_capacity(cwd.len());
+    for ch in cwd.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+            slug.push(ch);
+        } else {
+            slug.push('-');
+        }
+    }
+    // Claude's JS regex is per UTF-16 code unit; this intentionally matches
+    // BMP paths and leaves astral-plane cwd drift to the runtime cross-check.
+    slug
 }
 
 #[cfg(test)]
