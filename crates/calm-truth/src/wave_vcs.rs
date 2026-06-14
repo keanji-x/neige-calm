@@ -525,22 +525,75 @@ pub async fn commit_events_with_author_in_tx(
     }
 
     let now = now_ms();
+    let mut delta = PathDelta::default();
+    for event in events {
+        delta.merge(paths_changed_by_event(event, wave_id));
+    }
+    let author = author.map(ToString::to_string);
+    commit_delta_in_tx(
+        tx,
+        wave_id,
+        delta,
+        CommitTreeMeta {
+            parent_hash: None,
+            author: author.as_deref(),
+            event_id: Some(event_id),
+            message: events.last().map(Event::kind_tag).unwrap_or("event"),
+            manifest_schema_version,
+            created_at: now,
+        },
+    )
+    .await
+    .map(Some)
+}
+
+pub async fn snapshot_transcripts_for_cards_in_wave(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+    event_id: Option<i64>,
+    manifest_schema_version: i64,
+) -> Result<CommitHash> {
+    let cards = cards_for_wave_tx(tx, wave_id, &CardVisibility::announced_only()).await?;
+    let mut delta = PathDelta::default();
+    for card in cards {
+        add_card_event_paths(&mut delta, &card.card.id);
+    }
+
+    let author = ActorId::Kernel.to_string();
+    commit_delta_in_tx(
+        tx,
+        wave_id,
+        delta,
+        CommitTreeMeta {
+            parent_hash: None,
+            author: Some(author.as_str()),
+            event_id,
+            message: "transcript refresh",
+            manifest_schema_version,
+            created_at: now_ms(),
+        },
+    )
+    .await
+}
+
+async fn commit_delta_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+    delta: PathDelta,
+    meta: CommitTreeMeta<'_>,
+) -> Result<CommitHash> {
     let parent_hash = head_in_tx(tx, wave_id).await?;
     let tree = if let Some(parent) = parent_hash.as_deref() {
         let mut parent_manifest = tree_at_in_tx(tx, parent)
             .await?
             .ok_or_else(|| CalmError::Internal(format!("wave-vcs: missing tree for {parent}")))?;
         let card_visibility = CardVisibility::from_manifest(&parent_manifest);
-        let mut delta = PathDelta::default();
-        for event in events {
-            delta.merge(paths_changed_by_event(event, wave_id));
-        }
         if delta.full_snapshot || has_legacy_card_lens_paths(&parent_manifest) {
             snapshot_tree_at_tx(
                 tx,
                 wave_id,
-                manifest_schema_version,
-                now,
+                meta.manifest_schema_version,
+                meta.created_at,
                 &None,
                 &card_visibility,
             )
@@ -552,39 +605,39 @@ pub async fn commit_events_with_author_in_tx(
                 &mut parent_manifest,
                 delta,
                 &card_visibility,
-                now,
+                meta.created_at,
             )
             .await?;
-            store_tree(tx, manifest_schema_version, parent_manifest.entries, now).await?
+            store_tree(
+                tx,
+                meta.manifest_schema_version,
+                parent_manifest.entries,
+                meta.created_at,
+            )
+            .await?
         }
     } else {
         snapshot_tree_at_tx(
             tx,
             wave_id,
-            manifest_schema_version,
-            now,
+            meta.manifest_schema_version,
+            meta.created_at,
             &None,
             &CardVisibility::announced_only(),
         )
         .await?
     };
 
-    let author = author.map(ToString::to_string);
     commit_tree_at_tx(
         tx,
         wave_id,
         &tree,
         CommitTreeMeta {
             parent_hash: parent_hash.as_deref(),
-            author: author.as_deref(),
-            event_id: Some(event_id),
-            message: events.last().map(Event::kind_tag).unwrap_or("event"),
-            manifest_schema_version,
-            created_at: now,
+            ..meta
         },
     )
     .await
-    .map(Some)
 }
 
 pub async fn head(pool: &SqlitePool, wave_id: &WaveId) -> Result<Option<CommitHash>> {
