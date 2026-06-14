@@ -530,6 +530,16 @@ async fn set_last_seen_head_raw(boot: &Boot, head: &str) {
     persist_runtime_snapshot(boot, &snapshot).await;
 }
 
+async fn corrupt_card_payload(boot: &Boot, card_id: &CardId) {
+    let res = sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+        .bind("{not-json")
+        .bind(card_id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .expect("corrupt card payload");
+    assert_eq!(res.rows_affected(), 1, "card payload should be corrupted");
+}
+
 async fn runtime_snapshot(boot: &Boot) -> HarnessSnapshot {
     let state_text: Option<String> = sqlx::query_scalar(
         r#"SELECT handle_state_json
@@ -764,6 +774,38 @@ async fn diff_failure_from_bogus_stored_head_does_not_wedge_harness() {
         .expect("issued turn head");
     complete_latest_turn(&boot).await;
     wait_for_last_seen_head_eq(&boot, &issued_head).await;
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_harness() {
+    let boot = boot().await;
+    let before = complete_first_turn_and_stamp(&boot).await;
+    let worker = add_worker_card_event(&boot, "corrupt-refresh-payload").await;
+    let current = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(current, before);
+    set_last_seen_head_raw(&boot, &current).await;
+    corrupt_card_payload(&boot, &worker.id).await;
+
+    let text = issue_observation(
+        &boot,
+        Observation::TaskFailed {
+            idempotency_key: "corrupt-refresh-payload".into(),
+            error: "keep issuing".into(),
+        },
+        2,
+    )
+    .await;
+
+    assert!(
+        !text.contains("Wave state changes since your last turn"),
+        "corrupt refresh source must degrade to no diff block: {text}"
+    );
+    assert!(text.contains("idempotency_key=corrupt-refresh-payload"));
+    wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some()).await;
     boot.harness.shutdown().await.unwrap();
 }
 
