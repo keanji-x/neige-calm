@@ -213,21 +213,60 @@ impl ClaudeTranscriptFlowSource {
                 );
             }
 
-            if read.lines.is_empty() {
+            let mut lines = read.lines;
+            let mut exit_after_batch = false;
+            if lines.is_empty() {
                 persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
                 if !self.runtime_is_alive().await {
-                    tracing::info!(
-                        card_id = %self.runtime.card_id,
-                        runtime_id = %self.runtime.id,
-                        "claude runtime reached terminal status; final drain complete, exiting tail"
-                    );
-                    return Ok(());
+                    let final_read = match read_transcript_lines(&path, cursor.byte_offset).await {
+                        Ok(read) => read,
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                            tracing::info!(
+                                card_id = %self.runtime.card_id,
+                                runtime_id = %self.runtime.id,
+                                "claude runtime reached terminal status; final drain complete, exiting tail"
+                            );
+                            return Ok(());
+                        }
+                        Err(err) => return Err(CoreError::Io(err)),
+                    };
+                    if final_read.offset_reset {
+                        tracing::warn!(
+                            card_id = %self.runtime.card_id,
+                            runtime_id = %self.runtime.id,
+                            source_path,
+                            byte_offset = cursor.byte_offset,
+                            "claude transcript cursor passed EOF; resetting to start"
+                        );
+                        cursor = CursorState::default();
+                        position = Position::default();
+                        state = ClaudeNormalizerState::default();
+                    }
+                    if !final_read.has_terminator && final_read.saw_bytes {
+                        tracing::debug!(
+                            source_path,
+                            "claude transcript tail has an unterminated final line; deferring it"
+                        );
+                    }
+                    lines = final_read.lines;
+                    exit_after_batch = true;
+                    if lines.is_empty() {
+                        persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
+                            .await?;
+                        tracing::info!(
+                            card_id = %self.runtime.card_id,
+                            runtime_id = %self.runtime.id,
+                            "claude runtime reached terminal status; final drain complete, exiting tail"
+                        );
+                        return Ok(());
+                    }
+                } else {
+                    sleep_or_cancel(self.options.poll_interval, &self.stop).await?;
+                    continue;
                 }
-                sleep_or_cancel(self.options.poll_interval, &self.stop).await?;
-                continue;
             }
 
-            for line in read.lines {
+            for line in lines {
                 if self.stop.is_cancelled() {
                     persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
                         .await?;
@@ -301,7 +340,7 @@ impl ClaudeTranscriptFlowSource {
             }
 
             persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
-            if !self.runtime_is_alive().await {
+            if exit_after_batch {
                 tracing::info!(
                     card_id = %self.runtime.card_id,
                     runtime_id = %self.runtime.id,

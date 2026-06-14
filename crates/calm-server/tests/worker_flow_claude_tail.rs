@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::RepoRead;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_set_status_tx};
+use calm_server::runtime_repo::RunStatus;
 use calm_server::worker_flow::claude_transcript::CLAUDE_TRANSCRIPT_SOURCE_KIND;
 
 use support::worker_flow as wf;
@@ -74,6 +75,64 @@ async fn claude_transcript_tail_records_and_resumes_from_byte_cursor() {
     .await;
     assert_cursor(&repo, "card-claude-tail", 5, third_len).await;
     token.cancel();
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_without_event() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = "card-claude-tail-terminal-drain";
+    let session_id = "session-claude-tail-terminal-drain";
+    let cwd = "/tmp/claude-tail-terminal-drain";
+    let seed = wf::seed_claude_card_and_runtime(&repo, card_id, session_id, cwd).await;
+    let transcript_dir = tempfile::tempdir().unwrap();
+    let path = transcript_dir.path().join(format!("{session_id}.jsonl"));
+    wf::write_transcript(
+        &path,
+        &[
+            wf::claude_user_string("user-terminal-1", "one"),
+            wf::claude_assistant("assistant-terminal-1", cwd, vec![wf::claude_text("two")]),
+            wf::claude_user_string("user-terminal-2", "three"),
+            wf::claude_assistant("assistant-terminal-2", cwd, vec![wf::claude_text("four")]),
+        ],
+    );
+    let initial_len = file_len(&path);
+
+    let (_token, handle) =
+        wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
+    wf::wait_until(Duration::from_secs(1), || {
+        let repo = repo.clone();
+        async move { item_count(&repo, card_id).await == 4 }
+    })
+    .await;
+    assert_cursor(&repo, card_id, 4, initial_len).await;
+
+    let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+        .await
+        .unwrap();
+    wf::append_transcript(
+        &path,
+        &[
+            wf::claude_user_string("user-terminal-final", "five"),
+            wf::claude_assistant(
+                "assistant-terminal-final",
+                cwd,
+                vec![wf::claude_text("six")],
+            ),
+        ],
+    );
+    let final_len = file_len(&path);
+    tx.commit().await.unwrap();
+
+    wf::wait_until(Duration::from_millis(500), || {
+        let repo = repo.clone();
+        let finished = handle.is_finished();
+        async move { item_count(&repo, card_id).await == 6 && finished }
+    })
+    .await;
+    assert_cursor(&repo, card_id, 6, final_len).await;
     handle.await.unwrap().unwrap();
 }
 
