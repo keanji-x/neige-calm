@@ -1,3 +1,3 @@
 pub mod provider;
 
-pub use provider::{ClaudeProvider, CodexDaemonProbe, TerminalProvider};
+pub use provider::{ClaudeProvider, CodexDaemonProbe, CodexProvider, TerminalProvider};

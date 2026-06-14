@@ -4,5 +4,5 @@ mod supervisor;
 pub mod terminal;
 
 pub use claude::ClaudeProvider;
-pub use codex::CodexDaemonProbe;
+pub use codex::{CodexDaemonProbe, CodexProvider};
 pub use terminal::TerminalProvider;
