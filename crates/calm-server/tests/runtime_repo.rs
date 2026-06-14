@@ -52,8 +52,12 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
 
 async fn make_card(repo: &SqlxRepo, kind: &str) -> Card {
     let wave = make_wave(repo).await;
+    make_card_in_wave(repo, wave.id, kind).await
+}
+
+async fn make_card_in_wave(repo: &SqlxRepo, wave_id: calm_server::ids::WaveId, kind: &str) -> Card {
     repo.card_create(NewCard {
-        wave_id: wave.id,
+        wave_id,
         kind: kind.into(),
         sort: None,
         payload: json!({"schemaVersion": 1}),
@@ -249,6 +253,63 @@ async fn runtime_start_shared_spec_restarts_wave_root_on_respawn() {
             .await
             .unwrap();
     assert_eq!(root.as_deref(), Some(second.id.as_str()));
+}
+
+#[tokio::test]
+async fn runtime_start_executor_respawn_leaves_wave_root_unchanged() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let planner_card = make_card_in_wave(&repo, wave.id.clone(), "codex").await;
+    let executor_card = make_card_in_wave(&repo, wave.id.clone(), "codex").await;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let root = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            planner_card.id.to_string(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+    let executor = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            executor_card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let replacement = runtime_supersede_tx(
+        &mut tx,
+        &executor.id,
+        runtime_init(
+            executor_card.id.to_string(),
+            RuntimeKind::CodexCard,
+            Some(AgentProvider::Codex),
+            RunStatus::Starting,
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let current_root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(wave.id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(current_root.as_deref(), Some(root.id.as_str()));
+    assert_ne!(current_root.as_deref(), Some(replacement.id.as_str()));
 }
 
 #[tokio::test]

@@ -53,6 +53,44 @@ async fn make_card(repo: &SqlxRepo, wave_id: &str, kind: &str) -> Card {
     .expect("create card")
 }
 
+fn runtime_init(
+    card_id: String,
+    kind: RuntimeKind,
+    agent_provider: Option<AgentProvider>,
+) -> RuntimeInit {
+    RuntimeInit {
+        id: new_id(),
+        card_id,
+        kind,
+        agent_provider,
+        status: RunStatus::Running,
+        terminal_run_id: None,
+        thread_id: None,
+        session_id: None,
+        active_turn_id: None,
+        handle_state_json: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        now_ms: now_ms(),
+    }
+}
+
+async fn start_root_runtime(repo: &SqlxRepo, card: &Card) -> String {
+    let mut tx = repo.pool().begin().await.expect("begin runtime tx");
+    let runtime = runtime_start_tx(
+        &mut tx,
+        runtime_init(
+            card.id.to_string(),
+            RuntimeKind::SharedSpec,
+            Some(AgentProvider::Codex),
+        ),
+    )
+    .await
+    .expect("start root runtime");
+    tx.commit().await.expect("commit runtime tx");
+    runtime.id
+}
+
 async fn make_overlay(
     repo: &SqlxRepo,
     plugin_id: &str,
@@ -379,6 +417,34 @@ async fn cove_delete_cascades_to_waves_and_cards() {
 }
 
 #[tokio::test]
+async fn cove_delete_succeeds_when_wave_references_root_session() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo, "rooted").await;
+    let wave = make_wave(&repo, cove.id.as_str(), "rooted wave").await;
+    let root_card = make_card(&repo, wave.id.as_str(), "codex").await;
+    let root_session_id = start_root_runtime(&repo, &root_card).await;
+
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(wave.id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(root.as_deref(), Some(root_session_id.as_str()));
+
+    repo.cove_delete(cove.id.as_str()).await.unwrap();
+
+    assert!(repo.cove_get(cove.id.as_str()).await.unwrap().is_none());
+    assert!(repo.wave_get(wave.id.as_str()).await.unwrap().is_none());
+    assert!(
+        repo.card_get(root_card.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn wave_delete_cascades_to_cards() {
     let repo = fresh_repo().await;
     let c = make_cove(&repo, "C").await;
@@ -403,6 +469,49 @@ async fn wave_delete_cascades_to_cards() {
             .await
             .unwrap()
             .is_some()
+    );
+}
+
+#[tokio::test]
+async fn root_card_delete_clears_wave_root_session_id() {
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo, "rooted-card").await;
+    let wave = make_wave(&repo, cove.id.as_str(), "rooted wave").await;
+    let root_card = make_card(&repo, wave.id.as_str(), "codex").await;
+    let other_card = make_card(&repo, wave.id.as_str(), "terminal").await;
+    let root_session_id = start_root_runtime(&repo, &root_card).await;
+
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(wave.id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(root.as_deref(), Some(root_session_id.as_str()));
+
+    repo.card_delete(root_card.id.as_str()).await.unwrap();
+
+    assert!(
+        repo.card_get(root_card.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.card_get(other_card.id.as_str())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(wave.id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        root, None,
+        "deleting the root card must detach the wave root"
     );
 }
 

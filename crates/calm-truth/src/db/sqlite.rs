@@ -735,6 +735,11 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
             .bind(&wave_id)
             .execute(&mut **tx)
             .await?;
+        clear_wave_root_session_refs_for_worker_session_delete_tx(
+            tx,
+            WorkerSessionDeleteScope::Wave { wave_id: &wave_id },
+        )
+        .await?;
         sqlx::query("DELETE FROM worker_sessions WHERE wave_id = ?1")
             .bind(&wave_id)
             .execute(&mut **tx)
@@ -1563,6 +1568,44 @@ pub async fn task_fail_from_worker_tx(
     Ok(res.rows_affected())
 }
 
+enum WorkerSessionDeleteScope<'a> {
+    Wave { wave_id: &'a str },
+    Card { card_id: &'a str },
+}
+
+async fn clear_wave_root_session_refs_for_worker_session_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: WorkerSessionDeleteScope<'_>,
+) -> Result<()> {
+    match scope {
+        WorkerSessionDeleteScope::Wave { wave_id } => {
+            sqlx::query(
+                r#"UPDATE waves
+                      SET root_session_id = NULL
+                    WHERE root_session_id IN (
+                        SELECT id FROM worker_sessions WHERE wave_id = ?1
+                    )"#,
+            )
+            .bind(wave_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        WorkerSessionDeleteScope::Card { card_id } => {
+            sqlx::query(
+                r#"UPDATE waves
+                      SET root_session_id = NULL
+                    WHERE root_session_id IN (
+                        SELECT id FROM runtimes WHERE card_id = ?1
+                    )"#,
+            )
+            .bind(card_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn wave_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -1583,10 +1626,11 @@ pub async fn wave_delete_tx(
         .bind(id)
         .execute(&mut **tx)
         .await?;
-    sqlx::query("UPDATE waves SET root_session_id = NULL WHERE id = ?1")
-        .bind(id)
-        .execute(&mut **tx)
-        .await?;
+    clear_wave_root_session_refs_for_worker_session_delete_tx(
+        tx,
+        WorkerSessionDeleteScope::Wave { wave_id: id },
+    )
+    .await?;
     // `worker_sessions.wave_id` is a required FK. Card/runtime rows may
     // cascade below, but sessions must leave before the wave row itself.
     sqlx::query("DELETE FROM worker_sessions WHERE wave_id = ?1")
@@ -1827,6 +1871,11 @@ pub async fn card_delete_tx(
     id: &str,
     card_role_cache: &CardRoleCache,
 ) -> Result<()> {
+    clear_wave_root_session_refs_for_worker_session_delete_tx(
+        tx,
+        WorkerSessionDeleteScope::Card { card_id: id },
+    )
+    .await?;
     sqlx::query(
         "DELETE FROM worker_sessions WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?1)",
     )

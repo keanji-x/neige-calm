@@ -50,13 +50,16 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, task_insert_tx};
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx, task_insert_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCove, NewWave, Overlay, Task, TaskKind, TaskStatus, WaveLifecycle};
-use calm_server::model::{WavePatch, now_ms};
+use calm_server::model::{
+    NewCard, NewCove, NewWave, Overlay, Task, TaskKind, TaskStatus, WaveLifecycle,
+};
+use calm_server::model::{WavePatch, new_id, now_ms};
 use calm_server::replay::{self, Fixture};
 use calm_server::routes;
+use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::ws;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -79,6 +82,67 @@ fn load_fixture(name: &str) -> Fixture {
     path.push("events");
     path.push(name);
     replay::load_fixture_from_path(&path).expect("load fixture")
+}
+
+async fn seed_rooted_wave(repo: &SqlxRepo) {
+    let cove = repo
+        .cove_create(NewCove {
+            name: "reset-rooted".into(),
+            color: "#123456".into(),
+            sort: None,
+        })
+        .await
+        .expect("create reset cove");
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "reset rooted wave".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create reset wave");
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .expect("create reset root card");
+    let mut tx = repo.pool().begin().await.expect("begin runtime tx");
+    let runtime = runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: new_id(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Running,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("start reset root runtime");
+    tx.commit().await.expect("commit runtime tx");
+
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(wave.id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .expect("read reset root");
+    assert_eq!(root.as_deref(), Some(runtime.id.as_str()));
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +691,11 @@ async fn reset_from_fixture_wipes_and_reseeds() {
     .execute(repo.pool())
     .await
     .expect("seed leftover tasks row");
+
+    // PR7b-i review blocker: a rooted wave used to make the structural
+    // wipe fail when `DELETE FROM worker_sessions` ran while
+    // `waves.root_session_id` still pointed at the root session.
+    seed_rooted_wave(&repo).await;
 
     // Reset: drop everything, reseed from the fixture, assert ids
     // re-start at 1 and the log carries exactly the fixture again.
