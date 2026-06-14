@@ -995,6 +995,7 @@ fn should_persist_item_method(method: &str) -> bool {
 /// hypothesis), this ceiling converts an unobservable hang into a logged
 /// warn + a degraded-but-functional turn issuance.
 const SINCE_LAST_TURN_DIFF_TIMEOUT: Duration = Duration::from_secs(5);
+const TRANSCRIPT_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
@@ -1092,8 +1093,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
     let refresh_repo = Arc::clone(&inner.repo);
     let refresh_wave_id = inner.wave_id.clone();
-    let refresh_head: Option<wave_vcs::CommitHash> =
-        match write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
+    let refresh_head = transcript_refresh_with_timeout(
+        write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
             Box::pin(async move {
                 wave_vcs::snapshot_transcripts_for_cards_in_wave(
                     tx,
@@ -1104,22 +1105,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 .await
                 .map_err(CalmError::from)
             })
-        })
-        .await
-        {
-            Ok(head) => Some(head),
-            Err(e) => {
-                tracing::warn!(
-                    target: "calm_server::spec_harness_issue",
-                    runtime_id = %inner.runtime_id,
-                    card_id = %inner.card_id,
-                    wave_id = %inner.wave_id,
-                    error = %e,
-                    "pre-diff transcript refresh failed; issuing turn without refreshed transcripts"
-                );
-                None
-            }
-        };
+        }),
+        TRANSCRIPT_REFRESH_TIMEOUT,
+        &inner.runtime_id,
+        inner.card_id.as_str(),
+        inner.wave_id.as_str(),
+    )
+    .await;
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
@@ -1241,6 +1233,43 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn transcript_refresh_with_timeout<F>(
+    fut: F,
+    timeout: Duration,
+    runtime_id: &RuntimeId,
+    card_id: &str,
+    wave_id: &str,
+) -> Option<wave_vcs::CommitHash>
+where
+    F: std::future::Future<Output = Result<wave_vcs::CommitHash>>,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(Ok(head)) => Some(head),
+        Ok(Err(e)) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %runtime_id,
+                card_id,
+                wave_id,
+                error = %e,
+                "pre-diff transcript refresh failed; issuing turn without refreshed transcripts"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "calm_server::spec_harness_issue",
+                runtime_id = %runtime_id,
+                card_id,
+                wave_id,
+                timeout_secs = timeout.as_secs(),
+                "pre-diff transcript refresh timed out; issuing turn without refreshed transcripts"
+            );
+            None
+        }
+    }
 }
 
 /// Wrap `since_last_turn_diff_block` in a 5s timeout. On timeout, log a warn
@@ -1869,6 +1898,55 @@ mod tests {
             result.current_head.as_deref(),
             Some("head-after-timeout"),
             "timeout fallback must preserve the fallback current head"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transcript_refresh_with_timeout_collapses_success_error_and_timeout() {
+        use super::transcript_refresh_with_timeout;
+        use crate::wave_vcs::CommitHash;
+        use std::future::pending;
+        use std::time::Duration;
+
+        let runtime_id: String = "c501ea4e-test".into();
+        let card_id = "47e6ce46-test";
+        let wave_id = "w-test";
+        let timeout = Duration::from_secs(5);
+
+        let success = transcript_refresh_with_timeout(
+            async { Ok("head-before-diff".into()) },
+            timeout,
+            &runtime_id,
+            card_id,
+            wave_id,
+        )
+        .await;
+        assert_eq!(success.as_deref(), Some("head-before-diff"));
+
+        let failure = transcript_refresh_with_timeout(
+            async { Err(CalmError::Conflict("refresh failed".into())) },
+            timeout,
+            &runtime_id,
+            card_id,
+            wave_id,
+        )
+        .await;
+        assert!(
+            failure.is_none(),
+            "refresh errors must degrade to live-HEAD diff"
+        );
+
+        let timed_out = transcript_refresh_with_timeout(
+            pending::<crate::error::Result<CommitHash>>(),
+            timeout,
+            &runtime_id,
+            card_id,
+            wave_id,
+        )
+        .await;
+        assert!(
+            timed_out.is_none(),
+            "refresh timeouts must degrade to live-HEAD diff"
         );
     }
 
