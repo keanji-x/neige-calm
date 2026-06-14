@@ -135,18 +135,20 @@ impl ClaudeTranscriptFlowSource {
             if self.stop.is_cancelled() {
                 return Ok(None);
             }
-            if !self.runtime_is_alive().await {
-                tracing::info!(
-                    card_id = %self.runtime.card_id,
-                    runtime_id = %self.runtime.id,
-                    source_path = %path.display(),
-                    "claude runtime reached terminal status before transcript appeared; exiting source"
-                );
-                return Ok(None);
-            }
             match tokio::fs::metadata(&path).await {
                 Ok(_) => return Ok(Some(path)),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    // Let a just-created transcript win against a runtime that
+                    // reached terminal status in the same poll window.
+                    if !self.runtime_is_alive().await {
+                        tracing::info!(
+                            card_id = %self.runtime.card_id,
+                            runtime_id = %self.runtime.id,
+                            source_path = %path.display(),
+                            "claude runtime reached terminal status without creating a transcript; exiting source"
+                        );
+                        return Ok(None);
+                    }
                     if !warned && attempt >= warn_after {
                         warned = true;
                         tracing::warn!(
