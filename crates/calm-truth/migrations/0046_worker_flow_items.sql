@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS worker_flow_items (
   card_id           TEXT REFERENCES cards(id) ON DELETE SET NULL,  -- NULLABLE on purpose: row must survive card delete (#695)
   runtime_id        TEXT,
   wave_id           TEXT,
-  worker_session_id TEXT,                                          -- nullable; PR5 migration 0049 adds the worker_sessions FK with ON DELETE SET NULL
+  worker_session_id TEXT,                                          -- nullable forward column; adopted when #679 PR3 dual-write lands
   kind              TEXT NOT NULL,                                  -- WorkerFlowItem discriminant
   payload           TEXT NOT NULL,                                  -- JSON of the WorkerFlowItem (+ FlowEnvelope/provider_extra/raw_ref)
   created_at_ms     INTEGER NOT NULL
