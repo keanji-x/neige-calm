@@ -237,6 +237,31 @@ async fn card_mcp_hash(repo: &SqlxRepo, card_id: &str) -> Option<String> {
         .unwrap()
 }
 
+async fn assert_card_session_mcp_hash_parity(
+    repo: &SqlxRepo,
+    card_id: &str,
+    runtime_id: &str,
+) -> String {
+    let (card_hash, session_hash): (String, Option<String>) = sqlx::query_as(
+        r#"SELECT c.hashed_token, ws.mcp_token_hash
+             FROM card_mcp_tokens c
+             JOIN worker_sessions ws ON ws.id = ?2
+            WHERE c.card_id = ?1"#,
+    )
+    .bind(card_id)
+    .bind(runtime_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert!(!card_hash.is_empty(), "card MCP hash must be populated");
+    assert_eq!(
+        session_hash.as_deref(),
+        Some(card_hash.as_str()),
+        "worker_sessions.mcp_token_hash must mirror the spec MCP hash"
+    );
+    card_hash
+}
+
 fn thread_start_token(req: &Value) -> &str {
     req.pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_TOKEN")
         .and_then(Value::as_str)
@@ -436,6 +461,15 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
     let first_hash = card_mcp_hash(&repo, &card_id)
         .await
         .expect("first mint stores card MCP hash");
+    let first_runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("first spec runtime");
+    assert_eq!(
+        assert_card_session_mcp_hash_parity(&repo, &card_id, &first_runtime.id).await,
+        first_hash
+    );
 
     let rows = wait_for_requests(&capture_file, 2).await;
     let starts = rows
@@ -477,6 +511,15 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         .await
         .expect("second mint stores card MCP hash");
     assert_ne!(first_hash, second_hash);
+    let second_runtime = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("second spec runtime");
+    assert_eq!(
+        assert_card_session_mcp_hash_parity(&repo, &card_id, &second_runtime.id).await,
+        second_hash
+    );
 
     let rows = wait_for_requests(&capture_file, 3).await;
     let starts = rows
