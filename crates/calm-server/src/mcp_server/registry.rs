@@ -506,6 +506,8 @@ mod tests {
             crate::mcp_server::tools::wave_history::TOOL_WAVE_DIFF,
             crate::mcp_server::tools::wave_history::TOOL_WAVE_CAT_AT,
             crate::mcp_server::tools::wave_history::TOOL_WAVE_LOG,
+            crate::mcp_server::tools::admin::TOOL_ADMIN_WAVE_GC,
+            crate::mcp_server::tools::admin::TOOL_ADMIN_VACUUM,
         ];
 
         for name in hidden {

@@ -9,6 +9,7 @@
 
 use crate::mcp_server::registry::ToolRegistry;
 
+pub mod admin;
 pub mod emit;
 pub(crate) mod lifecycle_args;
 pub mod plan;
@@ -32,4 +33,5 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     wave_report::register_into(registry);
     wave_file::register_into(registry);
     wave_history::register_into(registry);
+    admin::register_into(registry);
 }
