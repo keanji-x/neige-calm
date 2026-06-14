@@ -13,7 +13,7 @@
     "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-48", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
-    "expected": { "decision": "allow" }
+    "expected": { "decision": "deny", "error_contains": "out of scope" }
   },
   {
     "description": "AiCodex(report card) emitting a Wave-scoped task.completed is ALLOWED today",
@@ -21,7 +21,7 @@
     "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-49", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
-    "expected": { "decision": "allow" }
+    "expected": { "decision": "deny", "error_contains": "out of scope" }
   },
   {
     "description": "AiCodex(report card) is still refused wave.updated — the wave-authority branch fires before the ReportCard arm",

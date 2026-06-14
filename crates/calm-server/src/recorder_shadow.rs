@@ -1,3 +1,4 @@
+use crate::error::CalmError;
 use crate::ids::WaveId;
 use async_trait::async_trait;
 use calm_types::worker::WorkerSessionId;
@@ -34,7 +35,7 @@ pub(crate) trait RecorderShadowProbe: Send + Sync {
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         decision_kind: RecorderShadowDecisionKind,
-    );
+    ) -> Result<(), CalmError>;
 }
 
 pub(crate) fn emit_divergence(divergence: &RecorderShadowDivergence) {

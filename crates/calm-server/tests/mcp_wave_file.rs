@@ -28,6 +28,8 @@ use calm_server::wave_report::WaveReportPayload;
 use calm_server::wave_vcs;
 use serde_json::{Value, json};
 
+const SPEC_SESSION_ID: &str = "spec-session";
+
 struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
@@ -46,6 +48,31 @@ struct Boot {
     report_card_id: CardId,
     other_spec_card_id: CardId,
     other_wave_card_id: CardId,
+}
+
+async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: SPEC_SESSION_ID.to_string(),
+            card_id: spec_card_id.as_str().to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some("spec-thread".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("seed spec root runtime");
+    tx.commit().await.unwrap();
 }
 
 async fn boot() -> Boot {
@@ -101,6 +128,7 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    seed_spec_root_runtime(sqlx_repo.as_ref(), &spec_card.id).await;
 
     let cove2 = repo
         .cove_create(NewCove {
@@ -212,7 +240,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
-        session_id: "spec-session".to_string(),
+        session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),

@@ -1,0 +1,74 @@
+[
+  {
+    "description": "validator cannot record a wave lifecycle transition",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "from": "planning", "to": "dispatching", "agent_message": "validator lifecycle" } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": true,
+    "expected": { "decision": "deny", "recorder": "deny", "role": "deny", "role_error_contains": "out of scope" }
+  },
+  {
+    "description": "validator cannot record a report write",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "wave.report_edited", "data": { "wave_id": "$HOME_WAVE", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-validator-report", "summary_before": "", "summary_after": "validator", "body_before": "", "body_after": "validator body", "agent_message": "validator report" } },
+    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": true,
+    "expected": { "decision": "deny", "recorder": "deny", "role": "deny", "role_error_contains": "out of scope" }
+  },
+  {
+    "description": "validator cannot request a codex worker",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "pd-validator-codex", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$VALIDATOR_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "deny", "recorder": "skip", "role": "deny", "role_error_contains": "dispatch-request events" }
+  },
+  {
+    "description": "validator cannot request a terminal worker",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "terminal.worker_requested", "data": { "idempotency_key": "pd-validator-terminal", "cmd": "echo forged", "cwd": null, "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$VALIDATOR_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "deny", "recorder": "skip", "role": "deny", "role_error_contains": "dispatch-request events" }
+  },
+  {
+    "description": "validator may report task.completed in own card scope",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "pd-validator-complete", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$VALIDATOR_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "validator may report task.failed in own card scope",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "task.failed", "data": { "idempotency_key": "pd-validator-fail", "reason": "failed", "agent_message": null } },
+    "scope": { "kind": "Card", "id": { "card": "$VALIDATOR_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "validator may write a codex hook observation event in own card scope",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$VALIDATOR_CARD", "kind": "hook.codex.stop", "hook_idempotency_key": "pd-validator-hook", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$VALIDATOR_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "validator may write a harness user-message observation event in own card scope",
+    "principal": { "session_id": "$VALIDATOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "$VALIDATOR_SESSION", "card_id": "$VALIDATOR_CARD", "wave_id": "$HOME_WAVE", "char_count": 4 } },
+    "scope": { "kind": "Card", "id": { "card": "$VALIDATOR_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  }
+]

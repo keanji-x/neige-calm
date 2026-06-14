@@ -261,7 +261,7 @@ pub(crate) async fn persist_report_with_shadow(
                     if let Some(probe) = recorder_shadow.as_ref() {
                         probe
                             .record(tx, RecorderShadowDecisionKind::WaveLifecycle)
-                            .await;
+                            .await?;
                     }
                     events.extend(
                         lifecycle_events
@@ -272,7 +272,7 @@ pub(crate) async fn persist_report_with_shadow(
                 if let Some(probe) = recorder_shadow.as_ref() {
                     probe
                         .record(tx, RecorderShadowDecisionKind::ReportWrite)
-                        .await;
+                        .await?;
                 }
                 // 1. Load (or lazy-init) the CRDT doc for this card.
                 let existing = card_body_crdt_get_tx(tx, &id).await?;

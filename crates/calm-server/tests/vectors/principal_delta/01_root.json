@@ -1,0 +1,74 @@
+[
+  {
+    "description": "root planner may record a wave lifecycle transition",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "from": "planning", "to": "dispatching", "agent_message": "root lifecycle" } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": true,
+    "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
+  },
+  {
+    "description": "root planner may record a report write",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "wave.report_edited", "data": { "wave_id": "$HOME_WAVE", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-root-report", "summary_before": "", "summary_after": "root", "body_before": "", "body_after": "root body", "agent_message": "root report" } },
+    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": true,
+    "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
+  },
+  {
+    "description": "root planner may request a codex worker",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "pd-root-codex", "goal": "implement", "context": null, "acceptance_criteria": null, "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "root planner may request a terminal worker",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "terminal.worker_requested", "data": { "idempotency_key": "pd-root-terminal", "cmd": "echo ok", "cwd": null, "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "root planner AiSpec to task.completed remains allowed by the role gate (vec-r-47 deferred)",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "task.completed", "data": { "idempotency_key": "pd-root-complete", "result": null, "artifacts": [], "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "root planner AiSpec to task.failed remains allowed by the role gate",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "task.failed", "data": { "idempotency_key": "pd-root-fail", "reason": "not accepted", "agent_message": null } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "root planner may write a codex hook observation event",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "codex.hook", "data": { "card_id": "$SPEC_CARD", "kind": "hook.codex.stop", "hook_idempotency_key": "pd-root-hook", "payload": {} } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  },
+  {
+    "description": "root planner may write a harness user-message observation event",
+    "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "$ROOT_SESSION", "card_id": "$SPEC_CARD", "wave_id": "$HOME_WAVE", "char_count": 4 } },
+    "scope": { "kind": "Card", "id": { "card": "$SPEC_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "recorder_gate": false,
+    "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
+  }
+]
