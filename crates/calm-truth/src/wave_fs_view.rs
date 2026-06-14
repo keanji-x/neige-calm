@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
 pub(crate) const RESERVED_RUN_KEYS: &[&str] = &["index"];
+pub(crate) const HOOK_EVENT_TRANSCRIPT_CAP: usize = 500;
 
 #[derive(Clone)]
 pub struct WaveFsView<'a> {
@@ -352,6 +353,9 @@ impl<'a> WaveFsView<'a> {
                 }),
                 _ => {}
             }
+        }
+        if hooks.len() > HOOK_EVENT_TRANSCRIPT_CAP {
+            hooks = hooks.split_off(hooks.len() - HOOK_EVENT_TRANSCRIPT_CAP);
         }
         Ok(hooks)
     }

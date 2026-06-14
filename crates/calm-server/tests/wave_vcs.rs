@@ -1874,6 +1874,108 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
 }
 
 #[tokio::test]
+async fn hook_event_transcript_is_capped_to_recent_events_with_live_vcs_parity() {
+    const EXPECTED_CAP: usize = 500;
+    const EXTRA_EVENTS: usize = 50;
+
+    let repo = fresh_repo().await;
+    let cove = make_cove(&repo).await;
+    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let bus = EventBus::new();
+    let (roles, coves, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let worker = add_card_with_event(
+        &repo,
+        &bus,
+        &roles,
+        &write,
+        &wave.id,
+        &cove.id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "idempotency_key": "hook-cap", "goal": "cap hooks"}),
+    )
+    .await;
+
+    for seq in 0..(EXPECTED_CAP + EXTRA_EVENTS) {
+        repo.log_pure_event(
+            ActorId::Kernel,
+            EventScope::Card {
+                card: worker.id.clone(),
+                wave: wave.id.clone(),
+                cove: cove.id.clone(),
+            },
+            None,
+            &bus,
+            &roles,
+            &coves,
+            Event::CodexHook {
+                card_id: worker.id.clone(),
+                kind: "hook.codex.user_prompt_submit".into(),
+                hook_idempotency_key: format!("hook-{seq:03}"),
+                payload: json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": format!("prompt-{seq:03}"),
+                    "seq": seq,
+                }),
+            },
+        )
+        .await
+        .expect("hook event");
+    }
+
+    let events_path = format!("cards/{}/events.json", worker.id.as_str());
+    let conversation_path = format!("cards/{}/conversation.md", worker.id.as_str());
+    let manifest = head_manifest(&repo, &wave.id).await;
+    let view = WaveFsView::new(&repo, &write);
+
+    let vcs_events = blob_text(
+        &repo,
+        &manifest
+            .entries
+            .get(&events_path)
+            .expect("events.json entry")
+            .blob_hash,
+    )
+    .await;
+    let live_events = view
+        .cat(&wave, &events_path)
+        .await
+        .expect("live events.json")
+        .content;
+    assert_eq!(vcs_events, live_events);
+
+    let events: serde_json::Value = serde_json::from_str(&vcs_events).expect("events json");
+    let events = events.as_array().expect("events array");
+    assert_eq!(events.len(), EXPECTED_CAP);
+    let seqs = events
+        .iter()
+        .map(|event| event["payload"]["seq"].as_u64().expect("seq"))
+        .collect::<Vec<_>>();
+    let expected = (EXTRA_EVENTS as u64..(EXPECTED_CAP + EXTRA_EVENTS) as u64).collect::<Vec<_>>();
+    assert_eq!(seqs, expected);
+
+    let vcs_conversation = blob_text(
+        &repo,
+        &manifest
+            .entries
+            .get(&conversation_path)
+            .expect("conversation.md entry")
+            .blob_hash,
+    )
+    .await;
+    let live_conversation = view
+        .cat(&wave, &conversation_path)
+        .await
+        .expect("live conversation.md")
+        .content;
+    assert_eq!(vcs_conversation, live_conversation);
+    assert!(!vcs_conversation.contains("prompt-049"));
+    assert!(vcs_conversation.contains("prompt-050"));
+    assert!(vcs_conversation.contains("prompt-549"));
+}
+
+#[tokio::test]
 async fn card_retarget_from_wave_report_removes_report_blob() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
