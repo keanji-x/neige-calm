@@ -3,9 +3,9 @@
 -- worker_sessions(id) == runtimes(id), so the source-side change in
 -- session_from_runtime now writes the correct value.
 --
--- This migration recreates the table to add the worker_sessions FK. The table is
--- empty in any current deployment (no worker_flow_items rows existed before
--- the orchestrator restarted with the latest code), so no backfill is needed.
+-- This migration recreates the table to add the worker_sessions FK. Existing
+-- pre-PR5 rows stored the agent session string in worker_session_id; translate
+-- that value through runtimes.thread_id/session_id and preserve orphaned rows.
 
 PRAGMA foreign_keys = OFF;
 
@@ -21,16 +21,27 @@ CREATE TABLE worker_flow_items_new (
   created_at_ms     INTEGER NOT NULL
 );
 
--- Defensive copy of any existing rows. Skips rows whose worker_session_id
--- has no matching worker_sessions row (those are leftover from the
--- now-pivoted semantic; pre-PR5 only the dev box has them, and a hard
--- truncate is the explicit user-acknowledged outcome of the restart).
+-- Defensive copy of any existing rows. If a row still carries the old agent
+-- session string, resolve it to the runtime id used by worker_sessions(id).
+-- Rows with no runtime/session match keep their payload and receive NULL FKs.
 INSERT INTO worker_flow_items_new
     (id, card_id, runtime_id, wave_id, worker_session_id, kind, payload, created_at_ms)
-SELECT w.id, w.card_id, w.runtime_id, w.wave_id, w.worker_session_id, w.kind, w.payload, w.created_at_ms
+SELECT w.id,
+       w.card_id,
+       COALESCE(w.runtime_id, r.id),
+       w.wave_id,
+       CASE
+         WHEN EXISTS (SELECT 1 FROM worker_sessions ws2 WHERE ws2.id = COALESCE(w.runtime_id, r.id))
+           THEN COALESCE(w.runtime_id, r.id)
+         ELSE NULL
+       END AS worker_session_id,
+       w.kind,
+       w.payload,
+       w.created_at_ms
 FROM worker_flow_items w
-WHERE w.worker_session_id IS NOT NULL
-  AND EXISTS (SELECT 1 FROM worker_sessions ws WHERE ws.id = w.worker_session_id);
+LEFT JOIN runtimes r
+       ON r.thread_id = w.worker_session_id
+       OR r.session_id = w.worker_session_id;
 
 DROP TABLE worker_flow_items;
 ALTER TABLE worker_flow_items_new RENAME TO worker_flow_items;
