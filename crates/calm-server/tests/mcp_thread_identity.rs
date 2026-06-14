@@ -13,6 +13,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
     runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_start_tx,
+    session_mcp_token_set_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::auth;
@@ -299,6 +300,116 @@ async fn card_mcp_token_set_tx_replaces_hash() {
         repo.card_mcp_token_lookup_by_hash(&hash_b).await.unwrap(),
         Some((card_id, hash_b))
     );
+}
+
+#[tokio::test]
+async fn session_mcp_token_set_tx_fails_closed_without_mirror_row() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let err = session_mcp_token_set_tx(&mut tx, "missing-session", "hash")
+        .await
+        .expect_err("missing worker_sessions mirror row must fail closed");
+    assert!(
+        err.to_string().contains(
+            "expected 1 worker_sessions mirror row for MCP token session missing-session"
+        ),
+        "unexpected error: {err}"
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn remint_updates_one_worker_session_hash_row() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = repo
+        .cove_create(NewCove {
+            name: "mcp-token-remint".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "mcp-token-remint".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card_id = calm_server::model::new_id();
+    let runtime_id = calm_server::model::new_id();
+    let role_cache = CardRoleCache::new();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (_card, _term, first_token) = card_with_codex_create_tx(
+        &mut tx,
+        card_id.clone(),
+        &runtime_id,
+        wave.id,
+        None,
+        "/workspace".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Worker,
+        true,
+        &role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let first_hash = auth::hash_token(
+        first_token
+            .as_deref()
+            .expect("worker card mint must return raw token"),
+    );
+    let initial_session_hash: String =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1")
+            .bind(&runtime_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(initial_session_hash, first_hash);
+
+    let second_token = auth::CardMcpToken::generate();
+    let second_hash = auth::hash_token(second_token.as_str());
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_mcp_token_set_tx(&mut tx, &card_id, &second_hash)
+        .await
+        .unwrap();
+    session_mcp_token_set_tx(&mut tx, &runtime_id, &second_hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let non_null_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM worker_sessions WHERE id = ?1 AND mcp_token_hash IS NOT NULL",
+    )
+    .bind(&runtime_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(non_null_rows, 1);
+    let card_hash: String =
+        sqlx::query_scalar("SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let session_hash: String =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1")
+            .bind(&runtime_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(card_hash, second_hash);
+    assert_eq!(session_hash, second_hash);
 }
 
 async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> TokenCard {

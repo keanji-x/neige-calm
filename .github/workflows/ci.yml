@@ -51,6 +51,14 @@ jobs:
           hits=$(grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/ | wc -l)
           [ "$hits" -eq 0 ] && echo OK || { echo "::error::parallel operation-event entrance survives"; grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/; exit 1; }
 
+      - name: token authority audit gate (#679 PR6b)
+        run: |
+          hits=$(grep -rnE "worker_sessions|mcp_token_hash|session_mcp_token|agent_session_id" \
+            crates/calm-server/src/mcp_server/ crates/calm-truth/src/role_gate.rs crates/calm-truth/src/mcp_auth.rs 2>/dev/null | wc -l)
+          [ "$hits" -eq 0 ] && echo "OK: no session-table auth reference on the handshake/role_gate path" \
+            || { echo "::error::session-table reference on the auth path (token authority window breach risk)"; \
+                 grep -rnE "worker_sessions|mcp_token_hash|session_mcp_token|agent_session_id" crates/calm-server/src/mcp_server/ crates/calm-truth/src/role_gate.rs crates/calm-truth/src/mcp_auth.rs; exit 1; }
+
       # Soft backstop alongside the cargo-feature gate on
       # `AppState::raw_repo` (see `state.rs` and design doc §1.4.1).
       # The compile gate already blocks production builds from reaching

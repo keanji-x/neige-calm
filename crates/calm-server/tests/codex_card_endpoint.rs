@@ -335,6 +335,28 @@ async fn latest_codex_operation_phase(repo: &SqlxRepo) -> (String, Value) {
     (phase, serde_json::from_str(&detail_text).unwrap())
 }
 
+async fn assert_card_session_mcp_hash_parity(repo: &SqlxRepo, card_id: &str, runtime_id: &str) {
+    let row = sqlx::query(
+        r#"SELECT c.hashed_token, ws.mcp_token_hash
+             FROM card_mcp_tokens c
+             JOIN worker_sessions ws ON ws.id = ?2
+            WHERE c.card_id = ?1"#,
+    )
+    .bind(card_id)
+    .bind(runtime_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let card_hash: String = row.try_get("hashed_token").unwrap();
+    let session_hash: Option<String> = row.try_get("mcp_token_hash").unwrap();
+    assert!(!card_hash.is_empty(), "card MCP hash must be populated");
+    assert_eq!(
+        session_hash.as_deref(),
+        Some(card_hash.as_str()),
+        "worker_sessions.mcp_token_hash must mirror the card MCP hash"
+    );
+}
+
 #[tokio::test]
 async fn post_codex_card_empty_prompt_succeeds_via_register_pending() {
     let _guard = ENV_LOCK.lock().await;
@@ -368,15 +390,17 @@ async fn post_codex_card_with_prompt_succeeds_via_mint_and_await() {
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
     assert_eq!(card["payload"]["codex_thread_id"], "fake-thread-0001");
     let card_id = card["id"].as_str().unwrap();
-    let row = sqlx::query("SELECT status, thread_id FROM runtimes WHERE card_id = ?1")
+    let row = sqlx::query("SELECT id, status, thread_id FROM runtimes WHERE card_id = ?1")
         .bind(card_id)
         .fetch_one(boot.repo.pool())
         .await
         .unwrap();
+    let runtime_id: String = row.try_get("id").unwrap();
     let status: String = row.try_get("status").unwrap();
     let thread_id: String = row.try_get("thread_id").unwrap();
     assert_eq!(status, "running");
     assert_eq!(thread_id, "fake-thread-0001");
+    assert_card_session_mcp_hash_parity(&boot.repo, card_id, &runtime_id).await;
     let (phase, _) = latest_codex_operation_phase(&boot.repo).await;
     assert_eq!(phase, "succeeded");
 }

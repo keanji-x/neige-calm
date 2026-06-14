@@ -268,6 +268,26 @@ async fn worker_card_count_with_prefix(boot: &Boot, prefix: &str) -> usize {
         .count()
 }
 
+async fn assert_card_session_mcp_hash_parity(repo: &SqlxRepo, card_id: &str, runtime_id: &str) {
+    let (card_hash, session_hash): (String, Option<String>) = sqlx::query_as(
+        r#"SELECT c.hashed_token, ws.mcp_token_hash
+             FROM card_mcp_tokens c
+             JOIN worker_sessions ws ON ws.id = ?2
+            WHERE c.card_id = ?1"#,
+    )
+    .bind(card_id)
+    .bind(runtime_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert!(!card_hash.is_empty(), "card MCP hash must be populated");
+    assert_eq!(
+        session_hash.as_deref(),
+        Some(card_hash.as_str()),
+        "worker_sessions.mcp_token_hash must mirror the final worker MCP hash"
+    );
+}
+
 async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let cove = repo
@@ -412,6 +432,8 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
             .unwrap();
     let output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
     let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
+    let card_id = output.data["card_id"].as_str().unwrap().to_string();
+    assert_card_session_mcp_hash_parity(&repo, &card_id, &runtime_id).await;
     let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
     assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
     assert_eq!(runtime.active_turn_id.as_deref(), Some("fake-turn-0001"));

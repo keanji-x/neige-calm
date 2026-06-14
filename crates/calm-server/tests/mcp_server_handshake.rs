@@ -27,7 +27,10 @@ use calm_server::db::sqlite::{
     runtime_get_active_for_card_tx, runtime_start_tx,
 };
 use calm_server::event::EventBus;
-use calm_server::mcp_server::registry::{ToolCallIdentity, ToolHandler, ToolHandlerFuture};
+use calm_server::mcp_server::handshake::handle_initialize;
+use calm_server::mcp_server::registry::{
+    ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolHandlerFuture,
+};
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
@@ -334,6 +337,48 @@ async fn initialize_with_valid_token_succeeds() {
     );
     assert_eq!(result["serverInfo"]["name"], json!("neige-calm-kernel"));
     // Keep `b` and `_server` alive until the end.
+    let _ = &b.server;
+}
+
+#[tokio::test]
+async fn rollback_keeps_mcp_alive_by_ignoring_worker_session_hash() {
+    let b = boot().await;
+    let (runtime_id, card_hash, session_hash): (String, String, Option<String>) = sqlx::query_as(
+        r#"SELECT r.id, c.hashed_token, ws.mcp_token_hash
+             FROM runtimes r
+             JOIN card_mcp_tokens c ON c.card_id = r.card_id
+             JOIN worker_sessions ws ON ws.id = r.id
+            WHERE r.card_id = ?1"#,
+    )
+    .bind(&b.card_id)
+    .fetch_one(b.sqlx_repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        session_hash.as_deref(),
+        Some(card_hash.as_str()),
+        "boot should populate both MCP hash rows before the rollback check"
+    );
+
+    sqlx::query("UPDATE worker_sessions SET mcp_token_hash = ?1 WHERE id = ?2")
+        .bind("ignored-session-hash")
+        .bind(&runtime_id)
+        .execute(b.sqlx_repo.pool())
+        .await
+        .unwrap();
+
+    let frame = initialize_frame(1, &b.raw_token);
+    let params = frame.get("params").expect("initialize params");
+    let ok = handle_initialize(b.repo.as_ref(), None, params, "2024-11-05")
+        .await
+        .expect("handshake must use card_mcp_tokens as the sole authority");
+    match ok.connection_identity {
+        ConnectionIdentity::CardBound(identity) => {
+            assert_eq!(identity.card_id.as_str(), b.card_id);
+            assert_eq!(identity.wave_id.as_deref(), Some(b.wave_id.as_str()));
+        }
+        other => panic!("expected card-bound identity, got {other:?}"),
+    }
     let _ = &b.server;
 }
 
