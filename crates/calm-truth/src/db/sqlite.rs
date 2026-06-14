@@ -117,6 +117,9 @@ impl SqlxRepo {
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
+                    // Takes effect only on a fresh DB before any table exists,
+                    // or on an existing DB after a full VACUUM.
+                    conn.execute("PRAGMA auto_vacuum = INCREMENTAL;").await?;
                     conn.execute("PRAGMA busy_timeout = 5000;").await?;
                     conn.execute("PRAGMA journal_mode = WAL;").await?;
                     Ok(())
@@ -174,6 +177,16 @@ impl SqlxRepo {
     #[doc(hidden)]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Reclaim free pages incrementally (no-op unless the DB was created with
+    /// auto_vacuum=INCREMENTAL). Safe to call live; does not hold a global lock
+    /// the way a full VACUUM does.
+    pub async fn incremental_vacuum(&self) -> Result<()> {
+        sqlx::query("PRAGMA incremental_vacuum;")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// PR3 (#136) — borrow the repo's role cache. `AppState::new` clones
@@ -6194,9 +6207,36 @@ impl RepoEventWrite for SqlxRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_session_identity, is_sqlite_busy_code};
+    use super::{SqlxRepo, derive_session_identity, is_sqlite_busy_code};
     use crate::runtime_repo::RuntimeKind;
     use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
+
+    fn temp_sqlite_url(file_name: &str) -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join(file_name);
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+        (tmp, url)
+    }
+
+    #[tokio::test]
+    async fn auto_vacuum_is_incremental_on_fresh_db() {
+        let (_tmp, url) = temp_sqlite_url("t.db");
+        let repo = SqlxRepo::open(&url).await.unwrap();
+        let (auto_vacuum,): (i64,) = sqlx::query_as("PRAGMA auto_vacuum;")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+
+        assert_eq!(auto_vacuum, 2);
+    }
+
+    #[tokio::test]
+    async fn incremental_vacuum_runs_without_error() {
+        let (_tmp, url) = temp_sqlite_url("t.db");
+        let repo = SqlxRepo::open(&url).await.unwrap();
+
+        repo.incremental_vacuum().await.unwrap();
+    }
 
     #[test]
     fn sqlite_busy_code_matches_primary_and_extended_codes() {
