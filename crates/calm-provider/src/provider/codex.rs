@@ -100,8 +100,8 @@ pub(crate) fn codex_liveness_from_evidence(
 ) -> Liveness {
     match pty {
         Liveness::Exited { evidence } => Liveness::Exited { evidence },
-        Liveness::Unknown { .. } => Liveness::Unknown { since_ms: now_ms },
-        Liveness::Alive { .. } | Liveness::Idle => {
+        _ => {
+            // Codex is resumable: PTY Unknown means no terminal/probe failed, so daemon evidence is authoritative unless PTY proves Exited.
             if !daemon_running {
                 return Liveness::Unknown { since_ms: now_ms };
             }
@@ -120,6 +120,7 @@ pub(crate) fn codex_interpret_exit(evidence: &ExitEvidence) -> ExitInterpretatio
     if evidence.exit_code == Some(0) && !evidence.signal_killed {
         return ExitInterpretation::Completed;
     }
+    // Deliberately refines worker_cleanup::worker_spawn_failure_preserved: exit 0 completes, signals PreserveCard, non-zero fails.
     if evidence.signal_killed {
         return ExitInterpretation::PreserveCard;
     }
@@ -220,6 +221,42 @@ mod tests {
                 Liveness::Alive {
                     active_turn_id: None
                 },
+                false,
+                Some("turn-1".into()),
+                7,
+            ),
+            Liveness::Unknown { since_ms: 7 }
+        );
+    }
+
+    #[test]
+    fn codex_liveness_pty_unknown_uses_daemon_turn() {
+        assert_eq!(
+            codex_liveness_from_evidence(
+                Liveness::Unknown { since_ms: 3 },
+                true,
+                Some("turn-1".into()),
+                7,
+            ),
+            Liveness::Alive {
+                active_turn_id: Some("turn-1".into())
+            }
+        );
+    }
+
+    #[test]
+    fn codex_liveness_pty_unknown_uses_daemon_idle() {
+        assert_eq!(
+            codex_liveness_from_evidence(Liveness::Unknown { since_ms: 3 }, true, None, 7),
+            Liveness::Idle
+        );
+    }
+
+    #[test]
+    fn codex_liveness_pty_unknown_and_daemon_down_is_unknown_since_now() {
+        assert_eq!(
+            codex_liveness_from_evidence(
+                Liveness::Unknown { since_ms: 3 },
                 false,
                 Some("turn-1".into()),
                 7,

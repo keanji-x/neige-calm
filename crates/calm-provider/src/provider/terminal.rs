@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use calm_exec::{SpawnCtx, WorkerProvider};
 use calm_types::error::CoreError;
-use calm_types::worker::{ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession};
+use calm_types::worker::{
+    ExitEvidence, ExitInterpretation, ExitSource, Liveness, SessionMode, WorkerSession,
+};
 
 use super::supervisor::probe_terminal_liveness;
 
@@ -72,6 +74,9 @@ pub(crate) fn ephemeral_interpret_exit(kind: &str, evidence: &ExitEvidence) -> E
 }
 
 pub(crate) fn failed_reason(kind: &str, evidence: &ExitEvidence) -> String {
+    if evidence.source == ExitSource::Probe {
+        return format!("{kind} worker exited (outcome unknown; observed via supervisor probe)");
+    }
     match (evidence.exit_code, evidence.signal_killed) {
         (_, true) => format!("{kind} worker was signal-killed"),
         (Some(code), false) => format!("{kind} worker exited with code {code}"),
@@ -120,5 +125,22 @@ mod tests {
                 reason: "terminal worker exited with code 2".into()
             }
         );
+    }
+
+    #[test]
+    fn failed_reason_probe_source_hides_exit_code_sentinel() {
+        let reason = failed_reason(
+            "terminal",
+            &ExitEvidence {
+                exit_code: Some(-1),
+                signal_killed: false,
+                observed_at_ms: 1,
+                source: ExitSource::Probe,
+            },
+        );
+
+        assert!(!reason.contains("-1"));
+        assert!(reason.contains("outcome unknown"));
+        assert!(reason.contains("supervisor probe"));
     }
 }
