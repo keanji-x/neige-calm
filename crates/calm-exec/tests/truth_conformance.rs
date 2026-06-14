@@ -37,3 +37,8 @@ async fn t3_state_is_not_fold_events() {
 fn t4_no_operations_read_api() {
     calm_truth_test_harness::t4_no_operations_read_api();
 }
+
+#[tokio::test]
+async fn provider_conformance_fake() {
+    calm_truth_test_harness::provider_conformance_fake().await;
+}
