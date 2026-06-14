@@ -5,12 +5,20 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::operation::codex_adapter::CodexAdapter;
+use calm_server::operation::{
+    Operation, OperationCompletionBus, Phase, PhaseTag, ProviderAdapter, SpawnCtx,
+    SqlxOperationRepo, TxOutput,
+};
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::state::{CodexClient, DaemonClient};
+use calm_server::terminal_renderer::TerminalRendererRegistry;
+use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_types::worker::WorkerSessionId;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -55,6 +63,26 @@ async fn seed_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String 
     seed_card_with_runtime_kind(repo, wave_id, terminal_id, RuntimeKind::CodexCard).await
 }
 
+async fn insert_terminal(repo: &SqlxRepo, card_id: &str, terminal_id: &str) {
+    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+    )
+    .bind(terminal_id)
+    .bind(card_id)
+    .bind("bash")
+    .bind("/workspace")
+    .bind("{}")
+    .bind(theme.fg_arg())
+    .bind(theme.bg_arg())
+    .bind(0_i64)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+}
+
 async fn seed_card_with_runtime_kind(
     repo: &SqlxRepo,
     wave_id: &str,
@@ -70,23 +98,7 @@ async fn seed_card_with_runtime_kind(
         })
         .await
         .unwrap();
-    let theme = calm_server::routes::theme::RequestTheme::default_dark();
-    sqlx::query(
-        r#"INSERT INTO terminals
-               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
-    )
-    .bind(terminal_id)
-    .bind(card.id.as_str())
-    .bind("bash")
-    .bind("/workspace")
-    .bind("{}")
-    .bind(theme.fg_arg())
-    .bind(theme.bg_arg())
-    .bind(0_i64)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+    insert_terminal(repo, card.id.as_str(), terminal_id).await;
 
     start_runtime_for_card(repo, card.id.as_str(), terminal_id, runtime_kind).await;
     card.id.to_string()
@@ -142,6 +154,41 @@ async fn start_runtime_for_card_with_thread(
     runtime_id
 }
 
+async fn supersede_runtime_for_card(
+    repo: &SqlxRepo,
+    old_runtime_id: &str,
+    card_id: &str,
+    terminal_id: &str,
+    runtime_kind: RuntimeKind,
+) -> String {
+    let runtime_id = new_id();
+    let old_runtime_id = old_runtime_id.to_string();
+    let mut tx = repo.pool().begin().await.unwrap();
+    repo.runtime_supersede_tx(
+        &mut tx,
+        &old_runtime_id,
+        RuntimeInit {
+            id: runtime_id.clone(),
+            card_id: card_id.to_string(),
+            kind: runtime_kind,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::TurnPending,
+            terminal_run_id: Some(terminal_id.to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    runtime_id
+}
+
 async fn projected_card(repo: &SqlxRepo, card_id: &str) -> calm_server::model::Card {
     let mut card = repo.card_get(card_id).await.unwrap().expect("card row");
     project_runtime_into_card_payload(repo, &mut card)
@@ -181,6 +228,31 @@ async fn seed_pending(
         .await
         .unwrap();
     card_id
+}
+
+fn dummy_codex_operation() -> Operation {
+    Operation {
+        id: new_id(),
+        operation_key: new_id(),
+        kind: "codex-create".into(),
+        idempotency_key: None,
+        payload_hash: "pending-runtime-compensation-test".into(),
+        target_type: "runtime".into(),
+        target_id: None,
+        target: json!({}),
+        payload: json!({}),
+        tx_output: None,
+        phase: Phase::Pending,
+        phase_detail: None,
+        attempt: 0,
+        last_error: None,
+        compensation_state: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        spawn_artifacts: None,
+        parked_at_ms: None,
+        parked_deadline_ms: None,
+    }
 }
 
 #[tokio::test]
@@ -485,6 +557,56 @@ async fn expire_dead_pending_projects_failed_status() {
     assert_eq!(registry.pending_count().await, 0);
     let card = projected_card(&repo, &card_id).await;
     assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+}
+
+#[tokio::test]
+async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id =
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+    let r1 = runtime_id_for_card(&repo, &card_id).await;
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))
+        .await
+        .unwrap();
+
+    repo.terminal_delete("term-r1").await.unwrap();
+    insert_terminal(&repo, &card_id, "term-r2").await;
+    let r2 =
+        supersede_runtime_for_card(&repo, &r1, &card_id, "term-r2", RuntimeKind::CodexCard).await;
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r2", &r2))
+        .await
+        .unwrap();
+
+    let dropped = registry.expire_dead_pending().await;
+
+    assert_eq!(dropped, 1);
+    assert_eq!(registry.pending_count().await, 1);
+    let old_runtime = repo
+        .runtime_get_by_id(&r1)
+        .await
+        .unwrap()
+        .expect("old runtime");
+    assert_eq!(old_runtime.status, RunStatus::Superseded);
+    let replacement_runtime = repo
+        .runtime_get_by_id(&r2)
+        .await
+        .unwrap()
+        .expect("replacement runtime");
+    assert_eq!(replacement_runtime.status, RunStatus::TurnPending);
+    assert_eq!(replacement_runtime.thread_id, None);
+
+    let bound = registry.on_thread_started("T-r2-own").await.unwrap();
+    assert_eq!(bound.as_deref(), Some(card_id.as_str()));
+    let replacement_runtime = repo
+        .runtime_get_by_id(&r2)
+        .await
+        .unwrap()
+        .expect("replacement runtime");
+    assert_eq!(replacement_runtime.status, RunStatus::Running);
+    assert_eq!(replacement_runtime.thread_id.as_deref(), Some("T-r2-own"));
 }
 
 #[tokio::test]
@@ -953,12 +1075,13 @@ async fn expire_runs_periodically_via_background_task() {
 }
 
 #[tokio::test]
-async fn remove_by_card_drops_pending_entry() {
+async fn remove_by_runtime_drops_pending_entry() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let a = seed_card(&repo, &wave_id, "term-a").await;
     let b = seed_card(&repo, &wave_id, "term-b").await;
     let c = seed_card(&repo, &wave_id, "term-c").await;
+    let runtime_b = runtime_id_for_card(&repo, &b).await;
     registry
         .register(entry(&repo, &a, &wave_id, "term-a").await)
         .await
@@ -972,7 +1095,7 @@ async fn remove_by_card_drops_pending_entry() {
         .await
         .unwrap();
 
-    assert!(registry.remove_by_card(&b).await);
+    assert!(registry.remove_by_runtime(&runtime_b).await);
     assert_eq!(registry.pending_count().await, 2);
     assert_eq!(
         registry.on_thread_started("T-1").await.unwrap(),
@@ -985,11 +1108,131 @@ async fn remove_by_card_drops_pending_entry() {
 }
 
 #[tokio::test]
-async fn remove_by_card_returns_false_for_unknown() {
+async fn remove_by_runtime_returns_false_for_unknown() {
     let (repo, events, _wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo, events);
 
-    assert!(!registry.remove_by_card("never-registered").await);
+    assert!(!registry.remove_by_runtime("never-registered").await);
+}
+
+#[tokio::test]
+async fn compensation_remove_uses_runtime_id_for_same_card_spawns() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = Arc::new(PendingThreadStartRegistry::new(
+        repo.clone(),
+        events.clone(),
+    ));
+    let card_id =
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+    let r1 = runtime_id_for_card(&repo, &card_id).await;
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))
+        .await
+        .unwrap();
+
+    let r2 = new_id();
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r2", &r2))
+        .await
+        .unwrap();
+    assert_eq!(registry.pending_count().await, 2);
+
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let adapter = CodexAdapter::new(
+        route_repo.clone(),
+        Arc::new(CodexClient::new_stub()),
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), Some(registry.clone())),
+        registry.clone(),
+        Arc::new(Mutex::new(())),
+        Default::default(),
+        WaveCoveCache::default(),
+    );
+    let mut output = TxOutput::new("runtime", Some(r2.clone()), json!({}));
+    output.data = json!({
+        "card_id": card_id,
+        "runtime_id": r2,
+        "wave_id": wave_id,
+        "terminal_id": "term-r2",
+        "cwd": "/workspace",
+        "env": {},
+        "prompt": null,
+    });
+    let op = dummy_codex_operation();
+    let compensation = adapter
+        .plan_compensation(
+            PhaseTag::AppServerInteract,
+            "forced test compensation",
+            &output,
+            &op,
+        )
+        .await
+        .unwrap();
+    let pending_step = compensation
+        .steps
+        .iter()
+        .find(|step| step.op == "pending_codex_threads_remove_by_card")
+        .expect("pending removal step");
+    assert_eq!(pending_step.args["runtime_id"].as_str(), Some(r2.as_str()));
+
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let spawn_ctx = SpawnCtx::new(
+        route_repo,
+        Arc::new(SqlxOperationRepo::new(repo.pool().clone())),
+        Arc::new(DaemonClient::new_stub()),
+        terminal_renderer,
+        events,
+        OperationCompletionBus::new(),
+    );
+    adapter
+        .compensate_step(pending_step, &output, &op, &spawn_ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(registry.pending_count().await, 1);
+    assert!(registry.remove_by_runtime(&r1).await);
+    assert_eq!(registry.pending_count().await, 0);
+
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))
+        .await
+        .unwrap();
+    registry
+        .register(entry_with_runtime_id(&card_id, &wave_id, "term-r2", &r2))
+        .await
+        .unwrap();
+    let mut output = TxOutput::new("runtime", Some(r1.clone()), json!({}));
+    output.data = json!({
+        "card_id": card_id,
+        "runtime_id": r1,
+        "wave_id": wave_id,
+        "terminal_id": "term-r1",
+        "cwd": "/workspace",
+        "env": {},
+        "prompt": null,
+    });
+    let compensation = adapter
+        .plan_compensation(
+            PhaseTag::AppServerInteract,
+            "forced test compensation",
+            &output,
+            &op,
+        )
+        .await
+        .unwrap();
+    let pending_step = compensation
+        .steps
+        .iter()
+        .find(|step| step.op == "pending_codex_threads_remove_by_card")
+        .expect("pending removal step");
+    assert_eq!(pending_step.args["runtime_id"].as_str(), Some(r1.as_str()));
+    adapter
+        .compensate_step(pending_step, &output, &op, &spawn_ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(registry.pending_count().await, 1);
+    assert!(registry.remove_by_runtime(&r2).await);
+    assert_eq!(registry.pending_count().await, 0);
 }
 
 #[tokio::test]

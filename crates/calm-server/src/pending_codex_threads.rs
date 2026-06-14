@@ -5,6 +5,15 @@
 //! established that PTY spawn order matches `thread/started` notification
 //! order, so this registry FIFO-binds the next shared-daemon thread start to
 //! the oldest pending card.
+//!
+//! A `PendingEntry` represents one codex spawn awaiting its `thread/started`.
+//! Its identity is the spawn: `terminal_id` and `runtime_id` are each unique
+//! per spawn, with `runtime_id == worker_session.id`. `card_id` is not unique
+//! in the queue because a card can be rapidly re-spawned, queuing multiple
+//! entries. Therefore every per-spawn operation (register-dedup, bind,
+//! dead-terminal expiry, stale-drop cleanup, compensation-remove) must key on
+//! the spawn (`runtime_id` / `terminal_id`), never on `card_id`. `card_id` in
+//! this registry is informational for logging and scope only.
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -113,9 +122,12 @@ impl PendingThreadStartRegistry {
         Ok(())
     }
 
-    pub async fn remove_by_card(&self, card_id: &str) -> bool {
+    pub async fn remove_by_runtime(&self, runtime_id: &str) -> bool {
         let mut queue = self.queue.lock().await;
-        let Some(index) = queue.iter().position(|entry| entry.card_id == card_id) else {
+        let Some(index) = queue
+            .iter()
+            .position(|entry| entry.runtime_id == runtime_id)
+        else {
             return false;
         };
         queue.remove(index).is_some()
@@ -253,7 +265,7 @@ impl PendingThreadStartRegistry {
                 .collect::<Vec<_>>()
         };
 
-        let mut dead_card_ids = HashSet::new();
+        let mut dead_terminals = HashSet::new();
         for (card_id, terminal_id) in snapshot {
             let terminal = match self.repo.terminal_get(&terminal_id).await {
                 Ok(terminal) => terminal,
@@ -273,11 +285,11 @@ impl PendingThreadStartRegistry {
                 Some(terminal) => terminal.exit_code.is_some() || terminal.signal_killed,
             };
             if is_dead {
-                dead_card_ids.insert(card_id);
+                dead_terminals.insert(terminal_id);
             }
         }
 
-        if dead_card_ids.is_empty() {
+        if dead_terminals.is_empty() {
             return 0;
         }
 
@@ -286,7 +298,7 @@ impl PendingThreadStartRegistry {
             let mut queue = self.queue.lock().await;
             let mut kept = VecDeque::with_capacity(queue.len());
             while let Some(entry) = queue.pop_front() {
-                if dead_card_ids.contains(&entry.card_id) {
+                if dead_terminals.contains(&entry.terminal_id) {
                     expired.push(entry);
                 } else {
                     kept.push_back(entry);
@@ -519,7 +531,7 @@ pub(crate) async fn card_payload_clear_pending_status(
 }
 
 fn same_pending_entry(a: &PendingEntry, b: &PendingEntry) -> bool {
-    a.card_id == b.card_id && a.terminal_id == b.terminal_id
+    a.runtime_id == b.runtime_id && a.terminal_id == b.terminal_id
 }
 
 pub fn spawn_periodic_expire_task(

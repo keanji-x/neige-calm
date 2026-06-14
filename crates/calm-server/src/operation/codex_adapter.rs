@@ -574,9 +574,10 @@ impl ProviderAdapter for CodexAdapter {
                 json!({ "card_id": card_id }),
             ));
         } else {
+            let runtime_id = output_string(output, "runtime_id")?;
             steps.push(step(
                 "pending_codex_threads_remove_by_card",
-                json!({ "card_id": card_id.clone() }),
+                json!({ "card_id": card_id.clone(), "runtime_id": runtime_id }),
             ));
             steps.push(step(
                 "card_payload_clear_pending_status",
@@ -648,8 +649,10 @@ impl ProviderAdapter for CodexAdapter {
                 Ok(())
             }
             "pending_codex_threads_remove_by_card" => {
-                let card_id = step_arg_string(step, "card_id")?;
-                self.pending_codex_threads.remove_by_card(&card_id).await;
+                let runtime_id = output_string(output, "runtime_id")?;
+                self.pending_codex_threads
+                    .remove_by_runtime(&runtime_id)
+                    .await;
                 Ok(())
             }
             "card_payload_clear_pending_status" => {
