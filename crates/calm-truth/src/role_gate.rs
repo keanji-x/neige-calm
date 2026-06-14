@@ -25,14 +25,15 @@
 //!    `CardRole::Spec`. Any `AiCodex` / `AiClaude` actor — even one bound
 //!    to a card — is rejected: worker cards must not edit wave-level state.
 //!
-//! 3. **Worker-card scope check.** When an `AiCodex(card_id)` or
-//!    `AiClaude(card_id)` actor's cached role is `Worker`, the event's
+//! 3. **Worker/ReportCard self-scope check.** When an
+//!    `AiCodex(card_id)` or `AiClaude(card_id)` actor's cached role is
+//!    `Worker` or `ReportCard`, the event's
 //!    `EventScope` must be the
 //!    same card, its `wave` field must match the card's home wave
 //!    (issue #232), *and* its `cove` field must match the card's
-//!    home cove (issue #234). A worker that tries to emit a `Wave`
-//!    or `Cove` scope event — or a Card scope with a spoofed `wave`
-//!    or `cove` — is refused.
+//!    home cove (issue #234). A worker or report-card actor that tries
+//!    to emit a `Wave` or `Cove` scope event — or a Card scope with a
+//!    spoofed `wave` or `cove` — is refused.
 //!
 //! 4. **Dispatch-request events are gated to spec cards.** Issue #583.
 //!    `Event::CodexWorkerRequested` and `Event::TerminalWorkerRequested` are
@@ -267,12 +268,12 @@ pub fn enforce_role(
         }
     }
 
-    // --- (3) Worker-card scope check + (5) unknown-card deny. ---
+    // --- (3) Worker/ReportCard self-scope check + (5) unknown-card deny. ---
     //
     // For AI worker actors: confirm the cache knows the card, and if
-    // the cached role is `Worker`, refuse anything broader than that
-    // card's own scope. The check is three-pronged:
-    //   * `scope.card == self_card` — the worker only writes into its
+    // the cached role is `Worker` or `ReportCard`, refuse anything
+    // broader than that card's own scope. The check is three-pronged:
+    //   * `scope.card == self_card` — the actor only writes into its
     //     own card scope;
     //   * `scope.wave == cache.wave_of(self_card)` — the supplied
     //     `wave` field must match the worker's home wave (closes
@@ -324,12 +325,12 @@ pub fn enforce_role(
                     ),
                 });
             }
-            // Issue #229 PR A — ReportCard has no wave-level authority.
-            // The wave-update branch above already refuses any AiCodex
-            // actor (which is what a report-card-bound MCP connection
-            // would surface as) from emitting `WaveUpdated`, so the
-            // existing report-card gate behavior remains unchanged here.
-            Some(CardRole::ReportCard) => {}
+            // Issue #679 PR7b-ii — ReportCard-bound actors have no
+            // cross-card/wave authority; mirror the Worker self-scope
+            // rule for non-wave-update/non-dispatch events.
+            Some(CardRole::ReportCard) => {
+                enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
+            }
         }
     }
 
@@ -343,9 +344,9 @@ pub fn enforce_role(
 
 /// Cross-check that `scope` describes the card's own home — `card`
 /// matches, `wave` matches the cached home wave, `cove` matches the
-/// home wave's persisted cove. Shared between the Worker arm (which
-/// uses it for *every* event) and the Spec arm's `CodexHook` carveout
-/// (bug A — the codex bridge ingest path for a spec card).
+/// home wave's persisted cove. Shared between the Worker and ReportCard
+/// arms (which use it for *every* event) and the Spec arm's `CodexHook`
+/// carveout (bug A — the codex bridge ingest path for a spec card).
 ///
 /// Returns `Err(RoleViolation::WorkerOutOfScope)` on any mismatch. The
 /// variant name is historical (the check originated in the Worker
@@ -1258,6 +1259,78 @@ mod tests {
         assert!(
             res.is_ok(),
             "worker reporting its own task completion: {res:?}",
+        );
+    }
+
+    #[test]
+    fn reportcard_can_emit_task_completed_in_own_scope() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("report-1");
+        cache.insert(id.clone(), CardRole::ReportCard, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &task_completed(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            res.is_ok(),
+            "report card actor writing its own card scope should stay allowed: {res:?}",
+        );
+    }
+
+    #[test]
+    fn reportcard_task_completed_cross_card_rejected() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("report-1");
+        cache.insert(id.clone(), CardRole::ReportCard, WaveId::from("w"));
+        let err = enforce_role(
+            &ActorId::AiCodex(id),
+            &task_completed(),
+            &card_scope("worker-1", "w", "c"),
+            &cache,
+            &wcc,
+        )
+        .expect_err("AiCodex(ReportCard) cross-card task.completed must be refused");
+        assert!(
+            matches!(&err, RoleViolation::WorkerOutOfScope { .. }),
+            "expected out-of-scope violation, got {err:?}",
+        );
+        assert!(
+            err.to_string().contains("out of scope"),
+            "denial must surface out-of-scope text, got {err}",
+        );
+    }
+
+    #[test]
+    fn reportcard_task_completed_cross_wave_rejected() {
+        let cache = CardRoleCache::new();
+        let wcc = WaveCoveCache::new();
+        wcc.insert(WaveId::from("home-wave"), CoveId::from("c"));
+        let id = CardId::from("report-1");
+        cache.insert(id.clone(), CardRole::ReportCard, WaveId::from("home-wave"));
+        let err = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &task_completed(),
+            &card_scope(id.as_str(), "other-wave", "c"),
+            &cache,
+            &wcc,
+        )
+        .expect_err("AiCodex(ReportCard) cross-wave task.completed must be refused");
+        assert!(
+            matches!(
+                &err,
+                RoleViolation::WorkerOutOfScope { scope, .. }
+                    if scope.contains("scope.wave mismatch")
+            ),
+            "expected scope.wave out-of-scope violation, got {err:?}",
+        );
+        assert!(
+            err.to_string().contains("out of scope"),
+            "denial must surface out-of-scope text, got {err}",
         );
     }
 
