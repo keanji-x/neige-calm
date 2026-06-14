@@ -192,10 +192,12 @@ impl From<HarnessItemRow> for HarnessItem {
 /// `card_id` is `Option<String>` because the table's FK is
 /// `REFERENCES cards(id) ON DELETE SET NULL` — a row must survive the
 /// deletion of its worker card (#695), so this column goes NULL rather
-/// than cascading away. `runtime_id` / `wave_id` / `worker_session_id`
-/// are nullable for the same forward-compatibility reasons the DDL
-/// documents. Plain `String` ids (not the typed `CardId` / `WaveId`)
-/// keep the row decode total even for orphaned (`card_id = NULL`) rows.
+/// than cascading away. `worker_session_id` is required by migration 0049,
+/// and `runtime_id` is populated with the same value by the PR5 sink; the
+/// row type keeps these as `Option<String>` so older fixture rows can still
+/// decode in tests that exercise migration boundaries. Plain `String` ids
+/// (not the typed `CardId` / `WaveId`) keep the row decode total even for
+/// orphaned (`card_id = NULL`) rows.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct WorkerFlowItemRow {
     pub id: i64,

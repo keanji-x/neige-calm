@@ -773,13 +773,12 @@ pub trait RepoOutOfDomain: RepoRead {
     // ---- worker message-flow capture (#695 PR2) ------------------------
     /// Append one captured worker-flow item, returning the new row id.
     ///
-    /// Sibling of [`harness_item_insert`](Self::harness_item_insert), but the
-    /// scoping columns are all nullable: `card_id` so the row can outlive its
-    /// worker card (the FK is `ON DELETE SET NULL`, #695), and
-    /// `worker_session_id` as a forward column adopted when #679 PR3's
-    /// dual-write lands. `kind` is the `WorkerFlowItem` discriminant and
-    /// `payload` is its JSON-serialized form (+ envelope / provider_extra /
-    /// raw_ref). The repo method delegates to the
+    /// Sibling of [`harness_item_insert`](Self::harness_item_insert):
+    /// `card_id` is nullable so the row can outlive its worker card (the FK is
+    /// `ON DELETE SET NULL`, #695), while `worker_session_id` is a required
+    /// `worker_sessions(id)` FK as of migration 0049. `kind` is the
+    /// `WorkerFlowItem` discriminant and `payload` is its JSON-serialized form
+    /// (+ envelope / provider_extra / raw_ref). The repo method delegates to the
     /// [`worker_flow_item_insert_tx`](sqlite::worker_flow_item_insert_tx)
     /// free fn so PR3's sink can call the same insert from inside
     /// `commit_decision`'s transaction.

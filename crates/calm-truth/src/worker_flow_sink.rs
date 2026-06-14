@@ -47,12 +47,12 @@ impl WorkerFlowItemSink for WorkerFlowSink {
         let payload = serde_json::to_string(&item)?;
 
         // Direct out-of-domain insert — no Event, no gate (db/mod.rs trait
-        // doc), exactly like run_loop's `harness_item_insert`. The ctx has no
-        // runtime id (it is keyed by session); pass it through as absent.
+        // doc), exactly like run_loop's `harness_item_insert`.
+        // Worker-flow sessions are runtime-keyed after #695 PR5.
         self.repo
             .worker_flow_item_insert(
                 ctx.card_id.as_deref(),
-                None,
+                Some(ctx.session_id.as_str()),
                 ctx.wave_id.as_deref(),
                 Some(ctx.session_id.as_str()),
                 kind,
@@ -70,17 +70,22 @@ mod tests {
     use super::*;
     use crate::db::RepoRead;
     use crate::db::sqlite::SqlxRepo;
-    use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
+    use calm_types::worker::{
+        LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
+        WorkerSessionId, WorkerSessionState,
+    };
     use calm_types::worker_flow::{
         ExecSource, ExecStatus, FileChangeKind, FileEdit, FlowEnvelope, MessageBlock, PatchStatus,
         ToolCallId, WorkerFlowItem,
     };
 
+    const SESSION_ID: &str = "rt-sink-3";
+
     fn env(seq: u64, turn: u32) -> FlowEnvelope {
         FlowEnvelope {
             seq,
             turn,
-            session_id: WorkerSessionId::from("sess-3"),
+            session_id: WorkerSessionId::from(SESSION_ID),
             provider: WorkerProviderKind::Codex,
             timestamp: Some(1_700_000_000),
             source_uuid: None,
@@ -90,36 +95,76 @@ mod tests {
     }
 
     async fn seed_card(repo: &SqlxRepo) -> String {
-        use crate::db::RepoSyncDomainRaw;
+        use crate::db::sqlite::session_insert_tx;
         use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
-        let cove = repo
-            .cove_create(NewCove {
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = crate::db::sqlite::cove_create_tx(
+            &mut tx,
+            NewCove {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
-            })
-            .await
-            .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
+            },
+        )
+        .await
+        .unwrap();
+        let wave = crate::db::sqlite::wave_create_tx(
+            &mut tx,
+            NewWave {
                 cove_id: cove.id.clone(),
                 title: "w".into(),
                 sort: None,
                 cwd: String::new(),
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
-            })
-            .await
-            .unwrap();
-        let card = repo
-            .card_create(NewCard {
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        let card = crate::db::sqlite::card_create_tx(
+            &mut tx,
+            NewCard {
                 wave_id: wave.id.clone(),
                 kind: "codex".into(),
                 sort: Some(0.0),
                 payload: serde_json::json!({ "task": "x" }),
-            })
-            .await
-            .unwrap();
+            },
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        session_insert_tx(
+            &mut tx,
+            WorkerSession {
+                id: WorkerSessionId::from(SESSION_ID),
+                wave_id: wave.id,
+                provider: WorkerProviderKind::Codex,
+                mode: SessionMode::Resumable,
+                contract: WorkerContract::Executor,
+                parent_session_id: None,
+                requester_session_id: None,
+                state: WorkerSessionState::Running,
+                mcp_token_hash: None,
+                thread_id: Some("thread-sink-3".into()),
+                agent_session_id: Some("agent-sink-3".into()),
+                active_turn_id: None,
+                terminal_run_id: None,
+                handle_state_json: None,
+                liveness: LivenessTag::Alive,
+                liveness_probed_at_ms: None,
+                exit_code: None,
+                exit_interpretation: None,
+                spawn_op_id: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                completed_at_ms: None,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
         card.id.as_str().to_string()
     }
 
@@ -130,7 +175,7 @@ mod tests {
         let sink = WorkerFlowSink::new(repo.clone());
 
         let ctx = FlowRowCtx {
-            session_id: WorkerSessionId::from("sess-3"),
+            session_id: WorkerSessionId::from(SESSION_ID),
             wave_id: Some("wave-x".to_string()),
             card_id: Some(card_id.clone()),
         };
@@ -179,9 +224,9 @@ mod tests {
         assert_eq!(rows[1].kind, "commandExecution");
         assert_eq!(rows[2].kind, "fileChange");
         assert_eq!(rows[0].card_id.as_deref(), Some(card_id.as_str()));
-        assert_eq!(rows[0].worker_session_id.as_deref(), Some("sess-3"));
+        assert_eq!(rows[0].runtime_id.as_deref(), Some(SESSION_ID));
+        assert_eq!(rows[0].worker_session_id.as_deref(), Some(SESSION_ID));
         assert_eq!(rows[0].wave_id.as_deref(), Some("wave-x"));
-        assert!(rows[0].runtime_id.is_none());
 
         // Payload deserializes back to the original item.
         for (row, item) in rows.iter().zip(items.iter()) {

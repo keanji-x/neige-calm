@@ -23,6 +23,8 @@ use calm_types::worker_flow::WorkerFlowItem;
 /// identifiers the read-model keys flow rows by; the [`WorkerFlowItem`]'s own
 /// [`FlowEnvelope`](calm_types::worker_flow::FlowEnvelope) carries sequencing.
 pub struct FlowRowCtx {
+    /// `worker_sessions(id)` FK; after #695 PR5 this is the same value as
+    /// the backing runtime id.
     pub session_id: calm_types::worker::WorkerSessionId,
     pub wave_id: Option<String>,
     pub card_id: Option<String>,
