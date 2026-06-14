@@ -12,6 +12,17 @@ pub struct ClaudeNormalizerState {
     pending_commands: HashMap<String, PendingCommand>,
     pending_file_changes: HashMap<String, PendingFileChange>,
     pending_web_searches: HashMap<String, PendingWebSearch>,
+    pending_mcp_calls: HashMap<String, PendingMcpCall>,
+}
+
+impl ClaudeNormalizerState {
+    pub fn pending_commands_len(&self) -> usize {
+        self.pending_commands.len()
+    }
+
+    pub fn pending_mcp_calls_len(&self) -> usize {
+        self.pending_mcp_calls.len()
+    }
 }
 
 #[derive(Clone)]
@@ -29,6 +40,13 @@ struct PendingFileChange {
 #[derive(Clone)]
 struct PendingWebSearch {
     query: Option<String>,
+}
+
+#[derive(Clone)]
+struct PendingMcpCall {
+    server: Option<String>,
+    tool: String,
+    arguments: Value,
 }
 
 pub fn normalize_record(
@@ -106,6 +124,26 @@ pub fn normalize_record_with_state(
                     let mut message_blocks = Vec::new();
                     for block in blocks {
                         if content_type(block) == Some("tool_result") {
+                            let call_id = string_field(block, &["tool_use_id", "id"]);
+                            let has_pending_mcp = call_id
+                                .as_ref()
+                                .map(|call_id| state.pending_mcp_calls.contains_key(call_id))
+                                .unwrap_or(false);
+                            if has_pending_mcp
+                                && let Some(item) = tool_completion_item(
+                                    block,
+                                    record,
+                                    next_seq,
+                                    turn,
+                                    session_id,
+                                    raw_ref.clone(),
+                                    state,
+                                )
+                            {
+                                out.push(item);
+                                next_seq = next_seq.saturating_add(1);
+                                continue;
+                            }
                             let env = env_for(record, next_seq, turn, session_id, raw_ref.clone());
                             out.push(tool_result_item(block, env));
                             next_seq = next_seq.saturating_add(1);
@@ -325,6 +363,14 @@ fn tool_use_item(
         }),
         _ if name.starts_with("mcp__") => {
             let (server, tool) = parse_mcp_tool_name(&name);
+            state.pending_mcp_calls.insert(
+                call_id.clone(),
+                PendingMcpCall {
+                    server: server.clone(),
+                    tool: tool.clone(),
+                    arguments: input.clone(),
+                },
+            );
             Some(WorkerFlowItem::McpToolCall {
                 env,
                 call_id: ToolCallId::from(call_id),
@@ -421,6 +467,9 @@ fn tool_completion_item(
     if state.pending_web_searches.contains_key(&call_id) {
         return web_search_completion_item(block, record, seq, turn, session_id, raw_ref, state);
     }
+    if state.pending_mcp_calls.contains_key(&call_id) {
+        return mcp_tool_completion_item(block, record, seq, turn, session_id, raw_ref, state);
+    }
     None
 }
 
@@ -434,12 +483,12 @@ fn command_completion_item(
     state: &mut ClaudeNormalizerState,
 ) -> Option<WorkerFlowItem> {
     let call_id = string_field(block, &["tool_use_id", "id"])?;
-    let result = parse_bash_result(block.get("content")?)?;
+    let result = build_bash_completion(record, block)?;
     let pending = state.pending_commands.remove(&call_id)?;
-    let status = if result.exit_code == 0 {
-        ExecStatus::Completed
-    } else {
+    let status = if tool_result_is_error(block) {
         ExecStatus::Failed
+    } else {
+        ExecStatus::Completed
     };
     Some(WorkerFlowItem::CommandExecution {
         env: env_for(record, seq, turn, session_id, raw_ref),
@@ -452,6 +501,45 @@ fn command_completion_item(
         duration_ms: None,
         status,
         source: ExecSource::Agent,
+    })
+}
+
+fn mcp_tool_completion_item(
+    block: &Value,
+    record: &Value,
+    seq: u64,
+    turn: u32,
+    session_id: &WorkerSessionId,
+    raw_ref: RawRef,
+    state: &mut ClaudeNormalizerState,
+) -> Option<WorkerFlowItem> {
+    let call_id = string_field(block, &["tool_use_id", "id"])?;
+    let pending = state.pending_mcp_calls.remove(&call_id)?;
+    let is_error = tool_result_is_error(block);
+    let result = block.get("content").cloned().unwrap_or(Value::Null);
+    let output = tool_result_blocks(&result);
+    let output_text = output_text(&output);
+    Some(WorkerFlowItem::McpToolCall {
+        env: env_for(record, seq, turn, session_id, raw_ref),
+        call_id: ToolCallId::from(call_id),
+        server: pending.server,
+        tool: pending.tool,
+        arguments: pending.arguments,
+        status: if is_error {
+            McpStatus::Failed
+        } else {
+            McpStatus::Completed
+        },
+        result: Some(result),
+        error: if is_error {
+            Some(ToolError {
+                message: summary(&output_text),
+                kind: None,
+            })
+        } else {
+            None
+        },
+        duration_ms: None,
     })
 }
 
@@ -513,7 +601,42 @@ struct BashResult {
     exit_code: i32,
 }
 
-fn parse_bash_result(content: &Value) -> Option<BashResult> {
+fn build_bash_completion(record: &Value, block: &Value) -> Option<BashResult> {
+    if let Some(content) = block.get("content")
+        && let Some(result) = parse_bash_result_tagged(content)
+    {
+        return Some(result);
+    }
+
+    let tool_use_result = record.get("toolUseResult")?;
+    let stdout = tool_use_result
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let stderr = tool_use_result
+        .get("stderr")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let exit_code = tool_use_result
+        .get("exit_code")
+        .or_else(|| tool_use_result.get("exitCode"))
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok())
+        // Claude often omits exit_code here; -1 is the error sentinel.
+        .unwrap_or_else(|| if tool_result_is_error(block) { -1 } else { 0 });
+    let aggregated_output = match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (true, true) => String::new(),
+    };
+    Some(BashResult {
+        aggregated_output,
+        exit_code,
+    })
+}
+
+fn parse_bash_result_tagged(content: &Value) -> Option<BashResult> {
     let text = match content {
         Value::String(text) => text.clone(),
         Value::Array(items) => items
