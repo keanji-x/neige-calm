@@ -489,13 +489,8 @@ pub async fn start_on_boot(state: &AppState) -> Result<(), CoreError> {
 }
 
 fn session_from_runtime(runtime: &CardRuntime, card: &Card) -> WorkerSession {
-    let id = runtime
-        .session_id
-        .clone()
-        .or_else(|| runtime.thread_id.clone())
-        .unwrap_or_else(|| runtime.id.clone());
     WorkerSession {
-        id: WorkerSessionId::from(id),
+        id: WorkerSessionId::from(runtime.id.clone()),
         wave_id: card.wave_id.clone(),
         provider: worker_provider_from_runtime(runtime),
         mode: SessionMode::Resumable,

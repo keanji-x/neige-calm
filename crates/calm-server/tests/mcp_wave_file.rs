@@ -729,6 +729,7 @@ async fn card_conversation_md_renders_worker_flow_when_present() {
     // events.
     let boot = boot().await;
     let card_id = boot.worker_card_id.clone();
+    let runtime = seed_codex_runtime(&boot, &card_id).await;
 
     let user = json!({
         "type": "userMessage",
@@ -765,9 +766,9 @@ async fn card_conversation_md_renders_worker_flow_when_present() {
         boot.repo
             .worker_flow_item_insert(
                 Some(card_id.as_str()),
-                None,
+                Some(runtime.id.as_str()),
                 Some(boot.wave_id.as_str()),
-                Some("sess-1"),
+                Some(runtime.id.as_str()),
                 kind,
                 &serde_json::to_string(payload).unwrap(),
                 now_ms(),

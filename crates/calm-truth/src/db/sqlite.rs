@@ -6269,15 +6269,19 @@ mod worker_flow_items_tests {
     //! turns `card_id` NULL (FK `ON DELETE SET NULL`) instead of cascading
     //! the row away.
     use super::{
-        SqlxRepo, card_create_with_id_tx, cove_create_tx, wave_create_tx,
+        SqlxRepo, card_create_with_id_tx, cove_create_tx, session_insert_tx, wave_create_tx,
         worker_flow_item_insert_tx, worker_flow_items_delete_by_card_tx,
     };
     use crate::db::RepoRead;
     use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme};
+    use calm_types::worker::{
+        LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
+        WorkerSessionId, WorkerSessionState,
+    };
 
     /// Seed a real cove → wave → card chain through the typed `_tx` helpers
-    /// (so the FK targets a genuine `cards` row) and return the card id.
-    async fn seed_card(repo: &SqlxRepo) -> String {
+    /// (so the FKs target genuine rows) and return the card/wave ids.
+    async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, String) {
         let mut tx = repo.pool().begin().await.unwrap();
         let cove = cove_create_tx(
             &mut tx,
@@ -6318,14 +6322,44 @@ mod worker_flow_items_tests {
         )
         .await
         .unwrap();
+        session_insert_tx(
+            &mut tx,
+            WorkerSession {
+                id: WorkerSessionId::from(session_id),
+                wave_id: wave.id.clone(),
+                provider: WorkerProviderKind::Codex,
+                mode: SessionMode::Resumable,
+                contract: WorkerContract::Executor,
+                parent_session_id: None,
+                requester_session_id: None,
+                state: WorkerSessionState::Running,
+                mcp_token_hash: None,
+                thread_id: Some(format!("thread-{session_id}")),
+                agent_session_id: Some(format!("agent-{session_id}")),
+                active_turn_id: None,
+                terminal_run_id: None,
+                handle_state_json: None,
+                liveness: LivenessTag::Alive,
+                liveness_probed_at_ms: None,
+                exit_code: None,
+                exit_interpretation: None,
+                spawn_op_id: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                completed_at_ms: None,
+            },
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
-        card.id.to_string()
+        (card.id.to_string(), wave.id.to_string())
     }
 
     #[tokio::test]
     async fn insert_list_paging_delete_and_set_null_on_card_delete() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let card_id = seed_card(&repo).await;
+        let session_id = "rt-flow-item-1";
+        let (card_id, wave_id) = seed_card_and_session(&repo, session_id).await;
 
         // Insert three flow items for the card via the `_tx` free fn.
         let mut ids = Vec::new();
@@ -6338,9 +6372,9 @@ mod worker_flow_items_tests {
             let id = worker_flow_item_insert_tx(
                 &mut tx,
                 Some(&card_id),
-                Some("rt-1"),
-                Some("wave-1"),
-                None, // worker_session_id — forward column, unset for now
+                Some(session_id),
+                Some(&wave_id),
+                Some(session_id),
                 kind,
                 &format!(r#"{{"kind":"{kind}","seq":{n}}}"#),
                 1_000 + n,
@@ -6359,8 +6393,8 @@ mod worker_flow_items_tests {
         assert_eq!(asc.iter().map(|r| r.id).collect::<Vec<_>>(), ids);
         assert_eq!(asc[0].kind, "user_message");
         assert_eq!(asc[0].card_id.as_deref(), Some(card_id.as_str()));
-        assert_eq!(asc[0].runtime_id.as_deref(), Some("rt-1"));
-        assert!(asc[0].worker_session_id.is_none());
+        assert_eq!(asc[0].runtime_id.as_deref(), Some(session_id));
+        assert_eq!(asc[0].worker_session_id.as_deref(), Some(session_id));
 
         // Ascending paging: after the first id, limit 1 -> the second row.
         let page = repo
@@ -6412,15 +6446,16 @@ mod worker_flow_items_tests {
     #[tokio::test]
     async fn delete_by_card_tx_purges_rows() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let card_id = seed_card(&repo).await;
+        let session_id = "rt-flow-item-delete";
+        let (card_id, wave_id) = seed_card_and_session(&repo, session_id).await;
         for n in 1..=2 {
             let mut tx = repo.pool().begin().await.unwrap();
             worker_flow_item_insert_tx(
                 &mut tx,
                 Some(&card_id),
-                None,
-                None,
-                None,
+                Some(session_id),
+                Some(&wave_id),
+                Some(session_id),
                 "user_message",
                 &format!(r#"{{"seq":{n}}}"#),
                 n,

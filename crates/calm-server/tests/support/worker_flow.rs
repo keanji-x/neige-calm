@@ -227,13 +227,7 @@ pub async fn seed_claude_runtime_for_card_with_status(
 pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
     let status = seed.runtime.status.clone();
     WorkerSession {
-        id: WorkerSessionId::from(
-            seed.runtime
-                .session_id
-                .clone()
-                .or_else(|| seed.runtime.thread_id.clone())
-                .unwrap_or_else(|| seed.runtime.id.clone()),
-        ),
+        id: WorkerSessionId::from(seed.runtime.id.clone()),
         wave_id: seed.card.wave_id.clone(),
         provider: match seed.runtime.agent_provider.as_ref() {
             Some(AgentProvider::Claude) => WorkerProviderKind::Claude,

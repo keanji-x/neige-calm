@@ -2246,10 +2246,14 @@ mod tests {
     #[tokio::test]
     async fn conversation_md_paging_renders_full_transcript_over_500_items() {
         use crate::db::sqlite::{
-            SqlxRepo, card_create_with_id_tx, cove_create_tx, wave_create_tx,
+            SqlxRepo, card_create_with_id_tx, cove_create_tx, session_insert_tx, wave_create_tx,
             worker_flow_item_insert_tx,
         };
         use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+        use calm_types::worker::{
+            LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
+            WorkerSessionId, WorkerSessionState,
+        };
         use calm_types::worker_flow::{MessageBlock, WorkerFlowItem};
 
         const FIRST_USER: &str = "FIRST-USER-MESSAGE-MARKER";
@@ -2302,6 +2306,36 @@ mod tests {
         .await
         .unwrap();
         let card_id = card.id.to_string();
+        let session_id = "rt-card-big";
+        session_insert_tx(
+            &mut tx,
+            WorkerSession {
+                id: WorkerSessionId::from(session_id),
+                wave_id: wave.id.clone(),
+                provider: WorkerProviderKind::Codex,
+                mode: SessionMode::Resumable,
+                contract: WorkerContract::Executor,
+                parent_session_id: None,
+                requester_session_id: None,
+                state: WorkerSessionState::Running,
+                mcp_token_hash: None,
+                thread_id: Some("thread-card-big".into()),
+                agent_session_id: Some("agent-card-big".into()),
+                active_turn_id: None,
+                terminal_run_id: None,
+                handle_state_json: None,
+                liveness: LivenessTag::Alive,
+                liveness_probed_at_ms: None,
+                exit_code: None,
+                exit_interpretation: None,
+                spawn_op_id: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                completed_at_ms: None,
+            },
+        )
+        .await
+        .unwrap();
 
         // First user message (lowest id).
         let first = WorkerFlowItem::UserMessage {
@@ -2313,9 +2347,9 @@ mod tests {
         worker_flow_item_insert_tx(
             &mut tx,
             Some(&card_id),
-            None,
-            None,
-            None,
+            Some(session_id),
+            Some(wave.id.as_str()),
+            Some(session_id),
             "user_message",
             &serde_json::to_string(&first).unwrap(),
             1,
@@ -2340,9 +2374,9 @@ mod tests {
             worker_flow_item_insert_tx(
                 &mut tx,
                 Some(&card_id),
-                None,
-                None,
-                None,
+                Some(session_id),
+                Some(wave.id.as_str()),
+                Some(session_id),
                 "command_execution",
                 &serde_json::to_string(&item).unwrap(),
                 (2 + n) as i64,
@@ -2361,9 +2395,9 @@ mod tests {
         worker_flow_item_insert_tx(
             &mut tx,
             Some(&card_id),
-            None,
-            None,
-            None,
+            Some(session_id),
+            Some(wave.id.as_str()),
+            Some(session_id),
             "assistant_message",
             &serde_json::to_string(&final_item).unwrap(),
             600,
