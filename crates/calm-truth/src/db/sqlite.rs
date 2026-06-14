@@ -2444,39 +2444,15 @@ pub async fn session_mcp_token_set_tx(
     session_id: &str,
     hashed_token: &str,
 ) -> Result<()> {
-    let now = now_ms();
-    let res = sqlx::query(
-        r#"UPDATE worker_sessions
-              SET mcp_token_hash = ?1,
-                  updated_at_ms = ?2
-            WHERE id = ?3"#,
-    )
-    .bind(hashed_token)
-    .bind(now)
-    .bind(session_id)
-    .execute(&mut **tx)
-    .await?;
+    let res = sqlx::query("UPDATE worker_sessions SET mcp_token_hash = ?1 WHERE id = ?2")
+        .bind(hashed_token)
+        .bind(session_id)
+        .execute(&mut **tx)
+        .await?;
     if res.rows_affected() != 1 {
         return Err(CalmError::Internal(format!(
             "expected 1 worker_sessions mirror row for MCP token session {session_id}, got {}",
             res.rows_affected()
-        )));
-    }
-    // Preserve the existing runtimes <-> worker_sessions timestamp parity;
-    // token authority still remains exclusively in card_mcp_tokens.
-    let runtime_res = sqlx::query(
-        r#"UPDATE runtimes
-              SET updated_at_ms = ?1
-            WHERE id = ?2"#,
-    )
-    .bind(now)
-    .bind(session_id)
-    .execute(&mut **tx)
-    .await?;
-    if runtime_res.rows_affected() != 1 {
-        return Err(CalmError::Internal(format!(
-            "expected 1 runtime row for MCP token session {session_id}, got {}",
-            runtime_res.rows_affected()
         )));
     }
     Ok(())
