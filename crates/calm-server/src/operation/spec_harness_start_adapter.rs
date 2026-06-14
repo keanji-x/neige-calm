@@ -256,26 +256,31 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         }
 
         let runtime_id = new_id();
+        let mut old_runtime_id = None;
+        let mut old_runtime_status = None;
         if !defer_runtime_start {
-            runtime_start_tx(
-                tx,
-                RuntimeInit {
-                    id: runtime_id.clone(),
-                    card_id: card.id.to_string(),
-                    kind: RuntimeKind::SharedSpec,
-                    agent_provider: Some(AgentProvider::Codex),
-                    status: RunStatus::Starting,
-                    terminal_run_id: None,
-                    thread_id: None,
-                    session_id: None,
-                    active_turn_id: None,
-                    handle_state_json: Some(serde_json::to_value(&snapshot)?),
-                    lease_owner: None,
-                    lease_until_ms: None,
-                    now_ms: now_ms(),
-                },
-            )
-            .await?;
+            let runtime_init = RuntimeInit {
+                id: runtime_id.clone(),
+                card_id: card.id.to_string(),
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot)?),
+                lease_owner: None,
+                lease_until_ms: None,
+                now_ms: now_ms(),
+            };
+            if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_str()).await? {
+                old_runtime_id = Some(existing.id.clone());
+                old_runtime_status = Some(existing.status.clone());
+                runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+            } else {
+                runtime_start_tx(tx, runtime_init).await?;
+            }
         }
 
         let mut output = TxOutput::new(
@@ -293,6 +298,16 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             "report_card_id": report_card_id,
             "snapshot": snapshot,
         });
+        if let Some(old_runtime_id) = old_runtime_id {
+            set_output_data(&mut output, "old_runtime_id", json!(old_runtime_id))?;
+        }
+        if let Some(old_runtime_status) = old_runtime_status {
+            set_output_data(
+                &mut output,
+                "old_runtime_status",
+                serde_json::to_value(&old_runtime_status)?,
+            )?;
+        }
         Ok(output)
     }
 
@@ -554,6 +569,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let runtime_id = output_string(output, "runtime_id")?;
+        let old_runtime_id = output_optional_string(output, "old_runtime_id")?;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
         let thread_id = output_optional_string(output, "codex_thread_id")?;
@@ -577,6 +593,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         self.harness_registry
             .insert(runtime_id.clone(), handle.clone());
         handle.persist_snapshot().await?;
+        if let Some(old_runtime_id) = old_runtime_id.filter(|old| old != &runtime_id)
+            && let Some(old_handle) = self.harness_registry.remove(&old_runtime_id)
+        {
+            old_handle.shutdown().await?;
+        }
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness { runtime_id }))
     }
 
