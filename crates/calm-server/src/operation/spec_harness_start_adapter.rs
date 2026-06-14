@@ -226,27 +226,26 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         .map(Card::from)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
 
-        let inherited_snapshot = if defer_runtime_start {
-            runtime_get_active_for_card_tx(tx, card.id.as_str())
-                .await?
-                .and_then(|runtime| {
-                    let state = runtime.handle_state_json?;
-                    if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE) {
-                        return None;
-                    }
-                    if !is_harness_snapshot_value(&state) {
-                        tracing::warn!(
-                            card_id = %card_id,
-                            "reset: dormant runtime snapshot has corrupt/unknown shape; \
-                             discarding inherited queue and starting a fresh session"
-                        );
-                        return None;
-                    }
-                    Some(HarnessSnapshot::from_value_strict(state))
-                })
+        let existing_active_runtime = if defer_runtime_start {
+            runtime_get_active_for_card_tx(tx, card.id.as_str()).await?
         } else {
             None
         };
+        let inherited_snapshot = existing_active_runtime.as_ref().and_then(|runtime| {
+            let state = runtime.handle_state_json.as_ref()?;
+            if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE) {
+                return None;
+            }
+            if !is_harness_snapshot_value(state) {
+                tracing::warn!(
+                    card_id = %card_id,
+                    "reset: dormant runtime snapshot has corrupt/unknown shape; \
+                     discarding inherited queue and starting a fresh session"
+                );
+                return None;
+            }
+            Some(HarnessSnapshot::from_value_strict(state.clone()))
+        });
         let mut snapshot = initial_snapshot_with_goal(payload.goal.clone());
         if let Some(inherited) = inherited_snapshot {
             snapshot.push_watermark = inherited.push_watermark;
@@ -274,6 +273,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             now_ms: now_ms(),
         };
         if defer_runtime_start {
+            if let Some(existing) = existing_active_runtime.as_ref() {
+                old_runtime_id = Some(existing.id.clone());
+                old_runtime_status = Some(existing.status.clone());
+            }
             session_prepare_deferred_spec_tx(tx, &runtime_init).await?;
         } else {
             if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_str()).await? {

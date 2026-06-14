@@ -1,14 +1,16 @@
 mod support;
 
+use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
-    runtime_bind_attribution_tx, runtime_complete_for_card_tx, runtime_complete_tx,
-    runtime_fail_if_active_tx, runtime_get_active_for_card_tx, runtime_get_by_id_tx,
-    runtime_mark_superseded_tx, runtime_restore_from_superseded_tx, runtime_set_active_turn_tx,
-    runtime_set_handle_state_tx, runtime_set_harness_observation_tx,
-    runtime_set_status_for_card_tx, runtime_set_status_tx, runtime_start_tx, runtime_supersede_tx,
-    session_insert_tx, session_mcp_token_set_tx, session_prepare_deferred_spec_tx,
+    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_claude_create_tx,
+    card_with_codex_create_tx, card_with_terminal_create_tx, runtime_bind_attribution_tx,
+    runtime_complete_for_card_tx, runtime_complete_tx, runtime_fail_if_active_tx,
+    runtime_get_active_for_card_tx, runtime_get_by_id_tx, runtime_mark_superseded_tx,
+    runtime_restore_from_superseded_tx, runtime_set_active_turn_tx, runtime_set_handle_state_tx,
+    runtime_set_harness_observation_tx, runtime_set_status_for_card_tx, runtime_set_status_tx,
+    runtime_start_tx, runtime_supersede_tx, session_insert_tx, session_mcp_token_set_tx,
+    session_prepare_deferred_spec_tx,
 };
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
@@ -506,7 +508,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
 }
 
 #[tokio::test]
-async fn deferred_spec_placeholder_does_not_claim_current_links() {
+async fn deferred_spec_placeholder_claims_current_links() {
     let repo = fresh_repo().await;
     let active_card = make_card(&repo, "codex").await;
 
@@ -540,8 +542,8 @@ async fn deferred_spec_placeholder_does_not_claim_current_links() {
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(active_link.as_deref(), Some(old.id.as_str()));
-    assert_ne!(active_link.as_deref(), Some(placeholder_id.as_str()));
+    assert_eq!(active_link.as_deref(), Some(placeholder_id.as_str()));
+    assert_ne!(active_link.as_deref(), Some(old.id.as_str()));
 
     let active_root: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
@@ -549,8 +551,8 @@ async fn deferred_spec_placeholder_does_not_claim_current_links() {
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(active_root.as_deref(), Some(old.id.as_str()));
-    assert_ne!(active_root.as_deref(), Some(placeholder_id.as_str()));
+    assert_eq!(active_root.as_deref(), Some(placeholder_id.as_str()));
+    assert_ne!(active_root.as_deref(), Some(old.id.as_str()));
 
     let fresh_card = make_card(&repo, "codex").await;
     let fresh_placeholder_init = runtime_init(
@@ -572,14 +574,14 @@ async fn deferred_spec_placeholder_does_not_claim_current_links() {
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(fresh_link, None);
+    assert_eq!(fresh_link.as_deref(), Some(fresh_placeholder_id.as_str()));
     let fresh_root: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
             .bind(fresh_card.wave_id.as_str())
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(fresh_root, None);
+    assert_eq!(fresh_root.as_deref(), Some(fresh_placeholder_id.as_str()));
     assert!(
         repo.session_get(&WorkerSessionId::from(fresh_placeholder_id))
             .await
@@ -742,6 +744,96 @@ async fn backfill_worker_sessions_from_runtimes_is_idempotent() {
         Some("agent-session-backfill")
     );
     assert_eq!(session.active_turn_id.as_deref(), Some("turn-backfill"));
+}
+
+#[tokio::test]
+async fn backfill_worker_sessions_from_runtimes_mirrors_active_session_identity() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let card_id = new_id();
+    let runtime_id = new_id();
+    let token_hash = "hash-backfill-active-session";
+    let role_cache = CardRoleCache::new();
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.clone(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        },
+        CardRole::Spec,
+        false,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    card_mcp_token_set_tx(&mut tx, &card_id, token_hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO runtimes
+           (id, card_id, kind, agent_provider, status, thread_id, session_id, active_turn_id,
+            created_at_ms, updated_at_ms)
+           VALUES (?1, ?2, 'shared-spec', 'codex', 'running', 'thread-boot-backfill',
+                   'agent-session-boot-backfill', 'turn-boot-backfill', ?3, ?3)"#,
+    )
+    .bind(&runtime_id)
+    .bind(&card_id)
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(
+        repo.backfill_worker_sessions_from_runtimes().await.unwrap(),
+        1
+    );
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+
+    let session = repo
+        .session_get(&WorkerSessionId(runtime_id.clone()))
+        .await
+        .unwrap()
+        .expect("backfilled worker session");
+    assert_eq!(session.contract, WorkerContract::Planner);
+    assert_eq!(session.state, WorkerSessionState::Running);
+    assert_eq!(session.mcp_token_hash.as_deref(), Some(token_hash));
+
+    let card_session: Option<String> =
+        sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+            .bind(&card_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(card_session.as_deref(), Some(runtime_id.as_str()));
+
+    let root_session: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(wave.id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(root_session.as_deref(), Some(runtime_id.as_str()));
+
+    let auth_session = repo
+        .session_get_by_active_token_hash(token_hash)
+        .await
+        .unwrap()
+        .expect("mirrored token must authenticate through worker_sessions");
+    assert_eq!(auth_session.id.as_str(), runtime_id.as_str());
+    let card_identity = repo
+        .card_identity_get_by_session(runtime_id.as_str())
+        .await
+        .unwrap()
+        .expect("card link must resolve from session");
+    assert_eq!(card_identity.card_id.as_str(), card_id.as_str());
+    assert_eq!(card_identity.wave_id, wave.id);
 }
 
 #[tokio::test]

@@ -12,11 +12,12 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
-    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_start_tx,
-    session_mcp_token_set_tx,
+    runtime_bind_attribution_tx, runtime_fail_if_active_tx, runtime_get_active_for_card_tx,
+    runtime_mark_superseded_tx, runtime_start_tx, session_mcp_token_set_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::auth;
+use calm_server::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE;
 use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, require_role,
 };
@@ -702,6 +703,100 @@ async fn cardbound_without_thread_id_uses_bound_card() {
     assert_eq!(identity.role, CardRole::Spec);
     assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
     assert_eq!(identity.thread_id, "card-bound");
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
+    let (registry, mut rx) = capture_identity_registry();
+    let boot = boot_with_registry(registry).await;
+    let (mut rd, mut wr) = initialized_client(&boot).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "test.capture_identity", None, json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(
+        resp.get("error").is_none(),
+        "active CardBound no-thread call must succeed before supersede: {resp:#?}"
+    );
+    let identity = rx.recv().await.unwrap();
+    assert_eq!(identity.card_id, boot.spec_card_id);
+
+    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    let runtime = runtime_get_active_for_card_tx(&mut tx, &boot.spec_card_id)
+        .await
+        .unwrap()
+        .expect("active bound runtime");
+    runtime_mark_superseded_tx(&mut tx, &runtime.id)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(3, "test.capture_identity", None, json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(
+        resp.get("error").is_some(),
+        "superseded CardBound no-thread call must reject: {resp:#?}"
+    );
+    assert_eq!(resp["error"]["code"], json!(TOKEN_NOT_RECOGNIZED_CODE));
+    assert!(
+        rx.try_recv().is_err(),
+        "handler must not run after bound session is superseded"
+    );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
+    let (registry, mut rx) = capture_identity_registry();
+    let boot = boot_with_registry(registry).await;
+    let (mut rd, mut wr) = initialized_client(&boot).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "test.capture_identity", None, json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(
+        resp.get("error").is_none(),
+        "active CardBound no-thread call must succeed before fail: {resp:#?}"
+    );
+    let identity = rx.recv().await.unwrap();
+    assert_eq!(identity.card_id, boot.spec_card_id);
+
+    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    let runtime = runtime_get_active_for_card_tx(&mut tx, &boot.spec_card_id)
+        .await
+        .unwrap()
+        .expect("active bound runtime");
+    runtime_fail_if_active_tx(&mut tx, &runtime.id)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(3, "test.capture_identity", None, json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(
+        resp.get("error").is_some(),
+        "failed CardBound no-thread call must reject: {resp:#?}"
+    );
+    assert_eq!(resp["error"]["code"], json!(TOKEN_NOT_RECOGNIZED_CODE));
+    assert!(
+        rx.try_recv().is_err(),
+        "handler must not run after bound session fails"
+    );
     let _ = &boot.server;
 }
 

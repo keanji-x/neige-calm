@@ -98,7 +98,7 @@ use crate::session_repo::SessionRepo;
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 use async_trait::async_trait;
-use calm_types::worker::WorkerSession;
+use calm_types::worker::{WorkerSession, WorkerSessionId};
 use futures::future::BoxFuture;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -481,6 +481,11 @@ pub trait RepoRead: Send + Sync + 'static {
         &self,
         hashed_token: &str,
     ) -> Result<Option<WorkerSession>>;
+
+    /// Reload a worker session by id without applying authority filtering.
+    /// MCP per-call revalidation uses this to reject cached card-bound
+    /// identities once their bound session leaves the active authority set.
+    async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
 
     /// Return whether a card owns a per-card MCP token row. Used by the
     /// spec-harness reusable-thread invariant: only threads minted under

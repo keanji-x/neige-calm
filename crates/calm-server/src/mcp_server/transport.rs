@@ -32,17 +32,18 @@
 //! hundred lines of `tokio::net::UnixListener` + `BufReader::lines()`;
 //! adding an HTTP framework would only obscure the framing.
 
-use crate::db::{Repo, RouteRepo};
+use crate::db::{Repo, RouteRepo, SessionCardIdentity};
 use crate::mcp_server::framing::{
     Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
-use crate::mcp_server::handshake::handle_initialize;
+use crate::mcp_server::handshake::{TOKEN_NOT_RECOGNIZED_CODE, handle_initialize};
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
 };
 use crate::model::CardRole;
 use crate::runtime_repo::AgentProvider;
 use crate::state::WriteContext;
+use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -420,7 +421,10 @@ async fn dispatch_request(
                         }
                         _ => Vec::new(),
                     },
-                    None => registry.descriptors_for_role(bound.role),
+                    None => {
+                        ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
+                        registry.descriptors_for_role(bound.role)
+                    }
                 },
             };
             // Codex's `tools/list` expects `{ "tools": [...] }`. Each
@@ -488,7 +492,7 @@ async fn dispatch_tools_call(
                 }
                 identity
             }
-            None => card_bound_tool_identity(bound),
+            None => card_bound_tool_identity(ctx, bound).await?,
         },
     };
 
@@ -508,15 +512,79 @@ async fn dispatch_tools_call(
     }))
 }
 
-fn card_bound_tool_identity(bound: &CardIdentity) -> ToolCallIdentity {
-    ToolCallIdentity {
-        card_id: bound.card_id.as_str().to_string(),
-        role: bound.role,
+async fn card_bound_tool_identity(
+    ctx: &Arc<AppContext>,
+    bound: &CardIdentity,
+) -> Result<ToolCallIdentity, RpcError> {
+    let card = ensure_card_bound_session_active(ctx, bound, "tools/call").await?;
+    Ok(ToolCallIdentity {
+        card_id: card.card_id.as_str().to_string(),
+        role: card.role,
         session_id: bound.session_id.clone(),
-        wave_id: bound.wave_id.clone(),
-        cove_id: bound.cove_id.clone(),
+        wave_id: Some(card.wave_id.as_str().to_string()),
+        cove_id: card.cove_id.as_str().to_string(),
         thread_id: "card-bound".to_string(),
+    })
+}
+
+async fn ensure_card_bound_session_active(
+    ctx: &Arc<AppContext>,
+    bound: &CardIdentity,
+    method: &'static str,
+) -> Result<SessionCardIdentity, RpcError> {
+    let session_id = WorkerSessionId::from(bound.session_id.clone());
+    let session = ctx
+        .repo
+        .session_get_by_id(&session_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("{method} bound session lookup: {e}")))?
+        .ok_or_else(|| {
+            warn_bound_session_reject(method, bound, "missing worker session");
+            bound_session_auth_error(method, bound)
+        })?;
+    if !session.state.is_active_authority() {
+        warn_bound_session_reject(method, bound, session.state.as_db_str());
+        return Err(bound_session_auth_error(method, bound));
     }
+
+    let card = ctx
+        .repo
+        .card_identity_get_by_session(bound.session_id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(format!("{method} bound session card lookup: {e}")))?
+        .ok_or_else(|| {
+            warn_bound_session_reject(method, bound, "missing card session link");
+            bound_session_auth_error(method, bound)
+        })?;
+    if card.card_id.as_str() != bound.card_id.as_str()
+        || card.wave_id != session.wave_id
+        || card.cove_id.as_str() != bound.cove_id.as_str()
+    {
+        warn_bound_session_reject(method, bound, "card session link drift");
+        return Err(bound_session_auth_error(method, bound));
+    }
+    Ok(card)
+}
+
+fn warn_bound_session_reject(method: &str, bound: &CardIdentity, reason: &str) {
+    tracing::warn!(
+        target: "mcp_server::bound_session_reject",
+        method,
+        bound_card_id = %bound.card_id.as_str(),
+        bound_session_id = %bound.session_id,
+        reason,
+        "mcp_server: card-bound session rejected"
+    );
+}
+
+fn bound_session_auth_error(method: &str, bound: &CardIdentity) -> RpcError {
+    RpcError::custom(
+        TOKEN_NOT_RECOGNIZED_CODE,
+        format!(
+            "{method}: bound session `{}` did not resolve to an active session",
+            bound.session_id
+        ),
+    )
 }
 
 fn same_bound_session(identity: &ToolCallIdentity, bound: &CardIdentity) -> bool {

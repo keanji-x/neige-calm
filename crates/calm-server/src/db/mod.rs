@@ -14,7 +14,7 @@ use crate::ids::ActorId;
 use crate::model::*;
 use crate::state::WriteContext;
 use crate::{card_role_cache::CardRoleCache, wave_cove_cache::WaveCoveCache};
-use calm_types::worker::WorkerSession;
+use calm_types::worker::{WorkerSession, WorkerSessionId};
 
 pub mod prelude {
     pub use super::{
@@ -90,6 +90,7 @@ pub trait ServerRepoReadExt {
         &self,
         hashed_token: &str,
     ) -> Result<Option<WorkerSession>>;
+    async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
     async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
 }
@@ -309,6 +310,11 @@ where
         hashed_token: &str,
     ) -> Result<Option<WorkerSession>> {
         calm_truth::db::RepoRead::session_get_by_active_token_hash(self, hashed_token)
+            .await
+            .map_err(Into::into)
+    }
+    async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
+        calm_truth::db::RepoRead::session_get_by_id(self, id)
             .await
             .map_err(Into::into)
     }

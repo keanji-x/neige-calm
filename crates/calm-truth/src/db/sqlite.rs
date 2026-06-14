@@ -2548,6 +2548,26 @@ pub async fn session_get_by_active_token_hash(
     row.as_ref().map(worker_session_from_row).transpose()
 }
 
+pub async fn session_get_by_id(
+    pool: &SqlitePool,
+    id: &WorkerSessionId,
+) -> Result<Option<WorkerSession>> {
+    let row = sqlx::query(
+        r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+                  requester_session_id, state, mcp_token_hash, thread_id,
+                  agent_session_id, active_turn_id, terminal_run_id,
+                  handle_state_json, liveness, liveness_probed_at_ms,
+                  exit_code, exit_interpretation, spawn_op_id, created_at_ms,
+                  updated_at_ms, completed_at_ms
+           FROM worker_sessions
+           WHERE id = ?1"#,
+    )
+    .bind(id.as_str())
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(worker_session_from_row).transpose()
+}
+
 fn runtime_kind_to_db(kind: &RuntimeKind) -> &'static str {
     match kind {
         RuntimeKind::Terminal => "terminal",
@@ -3082,17 +3102,58 @@ async fn card_session_link_tx(
     Ok(())
 }
 
+async fn session_mirror_card_mcp_token_tx(
+    tx: &mut RuntimeTx<'_>,
+    card_id: &str,
+    session: &WorkerSession,
+) -> RuntimeResult<()> {
+    if !session.state.is_active_authority() || session.mcp_token_hash.is_some() {
+        return Ok(());
+    }
+
+    let hashed: Option<String> = sqlx::query_scalar(
+        r#"SELECT cmt.hashed_token
+             FROM card_mcp_tokens cmt
+            WHERE cmt.card_id = ?1
+              AND 1 = (
+                  SELECT COUNT(*)
+                    FROM card_mcp_tokens dup
+                   WHERE dup.hashed_token = cmt.hashed_token
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                    FROM worker_sessions other
+                   WHERE other.id != ?2
+                     AND other.mcp_token_hash = cmt.hashed_token
+              )
+            LIMIT 1"#,
+    )
+    .bind(card_id)
+    .bind(session.id.as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| runtime_message(e.to_string()))?;
+
+    if let Some(hashed) = hashed {
+        session_mcp_token_set_tx(tx, session.id.as_str(), &hashed)
+            .await
+            .map_err(runtime_session_error)?;
+    }
+    Ok(())
+}
+
 async fn session_repoint_current_links_tx(
     tx: &mut RuntimeTx<'_>,
     card_id: &str,
     session: &WorkerSession,
 ) -> RuntimeResult<()> {
     // Runtime/session identity invariant: whenever a runtime/session becomes
-    // current for a card, cards.session_id must follow it. Planner sessions
-    // that are live also own waves.root_session_id for recorder gating.
-    // Deferred placeholders are intentionally created without calling this;
-    // they only claim these links once runtime_start_tx creates the real row.
-    if session.contract == WorkerContract::Planner && !session.state.is_terminal() {
+    // current for a card, cards.session_id must follow it. Active sessions
+    // also inherit the card MCP token when doing so cannot violate ws_token_idx.
+    // Planner sessions that are live own waves.root_session_id for recorder
+    // gating.
+    session_mirror_card_mcp_token_tx(tx, card_id, session).await?;
+    if session.contract == WorkerContract::Planner && session.state.is_active_authority() {
         session_mark_wave_root_tx(tx, &session.wave_id, &session.id)
             .await
             .map_err(runtime_session_error)?;
@@ -3127,7 +3188,9 @@ pub async fn session_prepare_deferred_spec_tx(
     }
     let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
     let session = worker_session_from_runtime_init(init, wave_id);
-    session_insert_or_refresh_start_mirror_tx(tx, session).await
+    let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
+    session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
+    Ok(session)
 }
 
 async fn session_supersede_active_tx(
@@ -4077,10 +4140,8 @@ pub async fn backfill_worker_sessions_from_runtimes(
         let session = session_insert_tx(tx, session)
             .await
             .map_err(runtime_session_error)?;
-        if session.contract == WorkerContract::Planner && !session.state.is_terminal() {
-            session_mark_wave_root_tx(tx, &session.wave_id, &session.id)
-                .await
-                .map_err(runtime_session_error)?;
+        if session.state.is_active_authority() {
+            session_repoint_current_links_tx(tx, &runtime.card_id, &session).await?;
         }
         inserted += 1;
     }
@@ -4930,6 +4991,10 @@ impl RepoRead for SqlxRepo {
         hashed_token: &str,
     ) -> Result<Option<WorkerSession>> {
         session_get_by_active_token_hash(&self.pool, hashed_token).await
+    }
+
+    async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
+        session_get_by_id(&self.pool, id).await
     }
 
     async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool> {
