@@ -20,7 +20,13 @@ fn claude_project_slug_preserves_verified_ascii_allowlist() {
 }
 
 #[test]
-fn claude_project_slug_replaces_non_ascii_per_character() {
+fn claude_project_slug_replaces_bmp_non_ascii_per_code_unit() {
     assert_eq!(slug_for_projects("/tmp/é"), "-tmp--");
     assert_eq!(slug_for_projects("/home/user/中文"), "-home-user---");
+}
+
+#[test]
+fn claude_project_slug_replaces_astral_chars_per_utf16_code_unit() {
+    assert_eq!(slug_for_projects("/tmp/🎉"), "-tmp---");
+    assert_eq!(slug_for_projects("/home/é/🎉/x"), "-home------x");
 }

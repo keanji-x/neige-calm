@@ -1,5 +1,6 @@
 mod support;
 
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -136,8 +137,112 @@ async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_withou
     handle.await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn claude_tail_drains_unterminated_final_record_when_runtime_exits() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = "card-claude-tail-unterminated-final";
+    let session_id = "session-claude-tail-unterminated-final";
+    let cwd = "/tmp/claude-tail-unterminated-final";
+    let seed = wf::seed_claude_card_and_runtime(&repo, card_id, session_id, cwd).await;
+    let transcript_dir = tempfile::tempdir().unwrap();
+    let path = transcript_dir.path().join(format!("{session_id}.jsonl"));
+    wf::write_transcript(
+        &path,
+        &[
+            wf::claude_user_string("user-unterminated-1", "one"),
+            wf::claude_assistant(
+                "assistant-unterminated-1",
+                cwd,
+                vec![wf::claude_text("two")],
+            ),
+        ],
+    );
+    let initial_len = file_len(&path);
+
+    let (_token, handle) =
+        wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
+    wf::wait_until(Duration::from_secs(1), || {
+        let repo = repo.clone();
+        async move { item_count(&repo, card_id).await == 2 }
+    })
+    .await;
+    assert_cursor(&repo, card_id, 2, initial_len).await;
+
+    let final_record = serde_json::to_string(&wf::claude_assistant(
+        "assistant-unterminated-final",
+        cwd,
+        vec![wf::claude_text("three")],
+    ))
+    .unwrap();
+    let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
+    runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+        .await
+        .unwrap();
+    append_raw(&path, &final_record);
+    let final_len = file_len(&path);
+    tx.commit().await.unwrap();
+
+    wf::wait_until(Duration::from_millis(500), || {
+        let repo = repo.clone();
+        let finished = handle.is_finished();
+        async move { item_count(&repo, card_id).await == 3 && finished }
+    })
+    .await;
+    assert_cursor(&repo, card_id, 3, final_len).await;
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn claude_tail_terminal_drain_leaves_invalid_unterminated_tail_unrecorded() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = "card-claude-tail-invalid-final";
+    let session_id = "session-claude-tail-invalid-final";
+    let cwd = "/tmp/claude-tail-invalid-final";
+    let seed = wf::seed_claude_card_and_runtime(&repo, card_id, session_id, cwd).await;
+    let transcript_dir = tempfile::tempdir().unwrap();
+    let path = transcript_dir.path().join(format!("{session_id}.jsonl"));
+    wf::write_transcript(
+        &path,
+        &[
+            wf::claude_user_string("user-invalid-1", "one"),
+            wf::claude_assistant("assistant-invalid-1", cwd, vec![wf::claude_text("two")]),
+        ],
+    );
+    let initial_len = file_len(&path);
+
+    let (_token, handle) =
+        wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
+    wf::wait_until(Duration::from_secs(1), || {
+        let repo = repo.clone();
+        async move { item_count(&repo, card_id).await == 2 }
+    })
+    .await;
+    assert_cursor(&repo, card_id, 2, initial_len).await;
+
+    let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
+    runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+        .await
+        .unwrap();
+    append_raw(&path, "{not-json");
+    tx.commit().await.unwrap();
+
+    wf::wait_until(Duration::from_millis(500), || {
+        let finished = handle.is_finished();
+        async move { finished }
+    })
+    .await;
+    assert_eq!(item_count(&repo, card_id).await, 2);
+    assert_cursor(&repo, card_id, 2, initial_len).await;
+    handle.await.unwrap().unwrap();
+}
+
 fn file_len(path: &std::path::Path) -> i64 {
     std::fs::metadata(path).unwrap().len() as i64
+}
+
+fn append_raw(path: &std::path::Path, text: &str) {
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    file.write_all(text.as_bytes()).unwrap();
 }
 
 async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {

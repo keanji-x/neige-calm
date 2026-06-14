@@ -186,7 +186,7 @@ impl ClaudeTranscriptFlowSource {
                 return Ok(());
             }
 
-            let read = match read_transcript_lines(&path, cursor.byte_offset).await {
+            let read = match read_transcript_lines(&path, cursor.byte_offset, false).await {
                 Ok(read) => read,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
                     sleep_or_cancel(self.options.poll_interval, &self.stop).await?;
@@ -218,7 +218,9 @@ impl ClaudeTranscriptFlowSource {
             if lines.is_empty() {
                 persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
                 if !self.runtime_is_alive().await {
-                    let final_read = match read_transcript_lines(&path, cursor.byte_offset).await {
+                    let final_read = match read_transcript_lines(&path, cursor.byte_offset, true)
+                        .await
+                    {
                         Ok(read) => read,
                         Err(err) if err.kind() == io::ErrorKind::NotFound => {
                             tracing::info!(
@@ -242,10 +244,10 @@ impl ClaudeTranscriptFlowSource {
                         position = Position::default();
                         state = ClaudeNormalizerState::default();
                     }
-                    if !final_read.has_terminator && final_read.saw_bytes {
-                        tracing::debug!(
+                    if final_read.invalid_unterminated_tail {
+                        tracing::warn!(
                             source_path,
-                            "claude transcript tail has an unterminated final line; deferring it"
+                            "claude transcript terminal drain found invalid unterminated tail; leaving cursor before tail"
                         );
                     }
                     lines = final_read.lines;
@@ -538,7 +540,7 @@ async fn reconstruct_prefix_once(
     let file = tokio::fs::File::open(path).await?;
     let mut bytes = Vec::new();
     file.take(byte_offset).read_to_end(&mut bytes).await?;
-    let read = split_complete_lines(&bytes, 0)?;
+    let read = split_complete_lines(&bytes, 0, false)?;
     let mut position = Position::default();
     let mut record_index = 0_u64;
     for line in read.lines {
@@ -601,6 +603,7 @@ struct TranscriptRead {
     has_terminator: bool,
     saw_bytes: bool,
     offset_reset: bool,
+    invalid_unterminated_tail: bool,
 }
 
 struct LineRead {
@@ -608,7 +611,11 @@ struct LineRead {
     offset_after: u64,
 }
 
-async fn read_transcript_lines(path: &Path, byte_offset: u64) -> io::Result<TranscriptRead> {
+async fn read_transcript_lines(
+    path: &Path,
+    byte_offset: u64,
+    allow_unterminated: bool,
+) -> io::Result<TranscriptRead> {
     let mut file = tokio::fs::File::open(path).await?;
     let len = file.metadata().await?.len();
     let (offset, offset_reset) = if byte_offset > len {
@@ -619,47 +626,70 @@ async fn read_transcript_lines(path: &Path, byte_offset: u64) -> io::Result<Tran
     file.seek(std::io::SeekFrom::Start(offset)).await?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).await?;
-    let mut read = split_complete_lines(&bytes, offset)?;
+    let mut read = split_complete_lines(&bytes, offset, allow_unterminated)?;
     read.offset_reset = offset_reset;
     Ok(read)
 }
 
-fn split_complete_lines(bytes: &[u8], base_offset: u64) -> io::Result<TranscriptRead> {
+fn split_complete_lines(
+    bytes: &[u8],
+    base_offset: u64,
+    allow_unterminated: bool,
+) -> io::Result<TranscriptRead> {
     let has_terminator = bytes.last().is_some_and(|byte| *byte == b'\n');
+    let last_newline = bytes.iter().rposition(|byte| *byte == b'\n');
+    let mut invalid_unterminated_tail = false;
     let complete_len = if has_terminator {
         bytes.len()
     } else {
-        bytes
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map(|pos| pos + 1)
-            .unwrap_or(0)
+        let terminated_len = last_newline.map(|pos| pos + 1).unwrap_or(0);
+        if allow_unterminated {
+            let tail = &bytes[terminated_len..];
+            if tail.is_empty() {
+                terminated_len
+            } else if serde_json::from_slice::<Value>(tail).is_ok() {
+                bytes.len()
+            } else {
+                invalid_unterminated_tail = true;
+                terminated_len
+            }
+        } else {
+            terminated_len
+        }
     };
     let mut lines = Vec::new();
     let mut start = 0_usize;
     while start < complete_len {
-        let Some(relative_end) = bytes[start..complete_len]
+        let (end, offset_after) = match bytes[start..complete_len]
             .iter()
             .position(|byte| *byte == b'\n')
-        else {
-            break;
+        {
+            Some(relative_end) => {
+                let end = start + relative_end;
+                (end, base_offset + end as u64 + 1)
+            }
+            None if allow_unterminated && complete_len == bytes.len() => {
+                (complete_len, base_offset + complete_len as u64)
+            }
+            None => break,
         };
-        let end = start + relative_end;
         let raw_bytes = bytes[start..end]
             .strip_suffix(b"\r")
             .unwrap_or(&bytes[start..end]);
         let raw = String::from_utf8(raw_bytes.to_vec()).map_err(io::Error::other)?;
-        lines.push(LineRead {
-            raw,
-            offset_after: base_offset + end as u64 + 1,
-        });
-        start = end + 1;
+        lines.push(LineRead { raw, offset_after });
+        start = if end < complete_len && bytes[end] == b'\n' {
+            end + 1
+        } else {
+            end
+        };
     }
     Ok(TranscriptRead {
         lines,
         has_terminator,
         saw_bytes: !bytes.is_empty(),
         offset_reset: false,
+        invalid_unterminated_tail,
     })
 }
 
@@ -677,15 +707,15 @@ fn hash_line(raw: &str) -> String {
 /// Mirrors Claude 2.1.170 project-directory slugging; cwd cross-checks catch drift.
 pub fn slug_for_projects(cwd: &str) -> String {
     let mut slug = String::with_capacity(cwd.len());
-    for ch in cwd.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+    for unit in cwd.encode_utf16() {
+        if let Some(ch) = char::from_u32(unit as u32)
+            && (ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+        {
             slug.push(ch);
-        } else {
-            slug.push('-');
+            continue;
         }
+        slug.push('-');
     }
-    // Claude's JS regex is per UTF-16 code unit; this intentionally matches
-    // BMP paths and leaves astral-plane cwd drift to the runtime cross-check.
     slug
 }
 
