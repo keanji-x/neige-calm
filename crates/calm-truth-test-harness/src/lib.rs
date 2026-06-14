@@ -10,6 +10,7 @@ pub mod fakes;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use calm_exec::{SpawnCtx, WorkerProvider};
 use calm_truth::card_role_cache::CardRoleCache;
 use calm_truth::db::sqlite::{
     SqlxRepo, append_decision_event_in_tx, begin_immediate_tx, runtime_set_harness_observation_tx,
@@ -30,8 +31,8 @@ use calm_truth::test_helpers;
 use calm_truth::wave_cove_cache::WaveCoveCache;
 use calm_types::ids::WaveId;
 use calm_types::worker::{
-    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
-    WorkerSessionState,
+    ExitEvidence, ExitInterpretation, ExitSource, Liveness, LivenessTag, SessionMode,
+    WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId, WorkerSessionState,
 };
 
 async fn seeded_repo() -> (SqlxRepo, WaveId) {
@@ -477,6 +478,82 @@ pub fn invariant_t4_no_operations_read_api() {
     // `crates/`; saga appends must use `append_decision_event(s)_in_tx`.
 }
 
+pub async fn provider_conformance<P: WorkerProvider>(p: P) {
+    let expected_mode = expected_session_mode(p.kind());
+    assert_eq!(p.session_mode(), expected_mode);
+
+    let ctx = SpawnCtx::new(17);
+    let session = provider_session(p.kind(), expected_mode);
+    let liveness = p
+        .probe_liveness(&session, &ctx)
+        .await
+        .expect("provider probe succeeds");
+    match p.kind() {
+        "fake" => assert_eq!(
+            liveness,
+            Liveness::Alive {
+                active_turn_id: None
+            }
+        ),
+        "terminal" | "claude" | "codex" => {
+            assert_eq!(
+                liveness,
+                Liveness::Unknown {
+                    since_ms: ctx.now_ms
+                }
+            );
+        }
+        other => panic!("unexpected provider kind {other}"),
+    }
+
+    assert_eq!(
+        p.interpret_exit(&session, &exit_evidence(Some(0), false), &ctx)
+            .await
+            .expect("zero exit interpretation"),
+        ExitInterpretation::Completed
+    );
+    assert_failed(
+        p.interpret_exit(&session, &exit_evidence(Some(2), false), &ctx)
+            .await
+            .expect("nonzero exit interpretation"),
+        p.kind(),
+    );
+    let signal = p
+        .interpret_exit(&session, &exit_evidence(None, true), &ctx)
+        .await
+        .expect("signal exit interpretation");
+    if p.kind() == "codex" {
+        assert_eq!(signal, ExitInterpretation::PreserveCard);
+    } else {
+        assert_failed(signal, p.kind());
+    }
+
+    let resume = p.resume(&session, &ctx).await;
+    match expected_mode {
+        SessionMode::Ephemeral => {
+            let err = resume.expect_err("ephemeral provider resume must error");
+            assert!(
+                err.to_string().contains("not resumable"),
+                "unexpected ephemeral resume error: {err}"
+            );
+        }
+        SessionMode::Resumable => {
+            let err = resume.expect_err("codex resume is a PR8 seam in this PR");
+            assert!(
+                err.to_string().contains("#679 PR8"),
+                "unexpected codex resume seam error: {err}"
+            );
+        }
+    }
+}
+
+pub async fn provider_conformance_fake() {
+    provider_conformance(FakeProvider::new().with_probe_script([Liveness::Alive {
+        active_turn_id: None,
+    }]))
+    .await;
+}
+
 pub async fn t1_decision_write_couples_state_and_event() {
     invariant_t1_decision_write_couples_state_and_event(Arc::new(PermissiveGate)).await;
 }
@@ -506,3 +583,65 @@ pub fn t4_no_operations_read_api() {
 }
 
 pub use fakes::*;
+
+fn expected_session_mode(kind: &str) -> SessionMode {
+    match kind {
+        "codex" => SessionMode::Resumable,
+        "fake" | "terminal" | "claude" => SessionMode::Ephemeral,
+        other => panic!("unexpected provider kind {other}"),
+    }
+}
+
+fn provider_session(kind: &str, mode: SessionMode) -> WorkerSession {
+    let provider = match kind {
+        "codex" => WorkerProviderKind::Codex,
+        "claude" => WorkerProviderKind::Claude,
+        "terminal" | "fake" => WorkerProviderKind::Terminal,
+        other => panic!("unexpected provider kind {other}"),
+    };
+    WorkerSession {
+        id: WorkerSessionId::from("ws-provider-conformance"),
+        wave_id: WaveId("wave-provider-conformance".into()),
+        provider,
+        mode,
+        contract: WorkerContract::Planner,
+        parent_session_id: None,
+        requester_session_id: None,
+        state: WorkerSessionState::Running,
+        mcp_token_hash: None,
+        thread_id: Some("thread-provider-conformance".into()),
+        agent_session_id: None,
+        active_turn_id: None,
+        terminal_run_id: Some("term-provider-conformance".into()),
+        handle_state_json: None,
+        liveness: LivenessTag::Unknown,
+        liveness_probed_at_ms: None,
+        exit_code: None,
+        exit_interpretation: None,
+        spawn_op_id: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        completed_at_ms: None,
+    }
+}
+
+fn exit_evidence(exit_code: Option<i32>, signal_killed: bool) -> ExitEvidence {
+    ExitEvidence {
+        exit_code,
+        signal_killed,
+        observed_at_ms: 17,
+        source: ExitSource::AttachReader,
+    }
+}
+
+fn assert_failed(interpretation: ExitInterpretation, kind: &str) {
+    match interpretation {
+        ExitInterpretation::Failed { reason } => {
+            assert!(
+                reason.contains(kind),
+                "failure reason should name provider kind `{kind}`: {reason}"
+            );
+        }
+        other => panic!("expected failed interpretation, got {other:?}"),
+    }
+}

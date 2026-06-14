@@ -1728,6 +1728,21 @@ impl Drop for SharedCodexAppServer {
     }
 }
 
+impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
+    fn is_running(&self) -> bool {
+        SharedCodexAppServer::is_running(self)
+    }
+
+    fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<String> {
+        SharedCodexAppServer::active_turn_id_for_thread(self, thread_id)
+            .map(|turn_id| turn_id.to_string())
+    }
+
+    fn remote_uri(&self) -> String {
+        SharedCodexAppServer::remote_uri(self)
+    }
+}
+
 async fn connect_initialized(
     sock: &Path,
 ) -> Result<(CodexAppServer, crate::codex_appserver::NotificationStream)> {

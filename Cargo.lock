@@ -409,6 +409,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "calm-provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "calm-exec",
+ "calm-proc-supervisor",
+ "calm-session",
+ "calm-truth",
+ "calm-truth-test-harness",
+ "calm-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calm-server"
 version = "0.1.0"
 dependencies = [
@@ -421,6 +440,7 @@ dependencies = [
  "blake3",
  "calm-exec",
  "calm-proc-supervisor",
+ "calm-provider",
  "calm-server",
  "calm-session",
  "calm-truth",
