@@ -823,7 +823,7 @@ pub async fn since_last_turn_block(
 }
 
 /// Prune old linear wave history while preserving every commit an active
-/// harness may still need for endpoint-only `diff(last_seen_head, HEAD)`.
+/// harness may still need for endpoint-only `diff(previous_endpoint, HEAD)`.
 ///
 /// The grace floor is the minimum `created_at` among all protected commits,
 /// not a maximum. Keeping every commit at or after the oldest protected
@@ -867,11 +867,11 @@ pub async fn prune_wave_history_tx(
         }
     }
 
-    let active_last_seen = match active_last_seen_head_commits_tx(tx, wave_id).await? {
+    let active_endpoints = match active_diff_endpoint_commits_tx(tx, wave_id).await? {
         ActiveLastSeenHeads::Safe(records) => records,
         ActiveLastSeenHeads::SkipPrune => return Ok(0),
     };
-    for record in active_last_seen {
+    for record in active_endpoints {
         protected.insert(record.hash, record.created_at);
     }
 
@@ -1068,7 +1068,7 @@ enum ActiveLastSeenHeads {
     SkipPrune,
 }
 
-async fn active_last_seen_head_commits_tx(
+async fn active_diff_endpoint_commits_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
 ) -> Result<ActiveLastSeenHeads> {
@@ -1103,8 +1103,8 @@ async fn active_last_seen_head_commits_tx(
             }
         };
 
-        let last_seen_head = match harness_snapshot_last_seen_head(&value) {
-            Ok(last_seen_head) => last_seen_head,
+        let endpoints = match harness_snapshot_diff_endpoints(&value) {
+            Ok(endpoints) => endpoints,
             Err(reason) => {
                 tracing::warn!(
                     target: "wave_vcs",
@@ -1116,39 +1116,61 @@ async fn active_last_seen_head_commits_tx(
                 return Ok(ActiveLastSeenHeads::SkipPrune);
             }
         };
-        let Some(last_seen_head) = last_seen_head else {
-            continue;
-        };
-        let Some(record) = load_commit_record_for_wave_tx(tx, wave_id, last_seen_head).await?
-        else {
-            tracing::warn!(
-                target: "wave_vcs",
-                wave_id = %wave_id.as_str(),
-                session_id = %session_id,
-                last_seen_head = %last_seen_head,
-                "wave-vcs prune: active session references an absent commit; skipping prune"
-            );
-            return Ok(ActiveLastSeenHeads::SkipPrune);
-        };
-        records.push(record);
+        for (endpoint_name, endpoint_hash) in [
+            ("last_seen_head", endpoints.last_seen_head),
+            ("issued_turn_head", endpoints.issued_turn_head),
+        ] {
+            let Some(endpoint_hash) = endpoint_hash else {
+                continue;
+            };
+            let Some(record) = load_commit_record_for_wave_tx(tx, wave_id, endpoint_hash).await?
+            else {
+                tracing::warn!(
+                    target: "wave_vcs",
+                    wave_id = %wave_id.as_str(),
+                    session_id = %session_id,
+                    endpoint = endpoint_name,
+                    commit_hash = %endpoint_hash,
+                    "wave-vcs prune: active session references an absent commit; skipping prune"
+                );
+                return Ok(ActiveLastSeenHeads::SkipPrune);
+            };
+            records.push(record);
+        }
     }
 
     Ok(ActiveLastSeenHeads::Safe(records))
 }
 
-fn harness_snapshot_last_seen_head(
+struct HarnessSnapshotDiffEndpoints<'a> {
+    last_seen_head: Option<&'a str>,
+    issued_turn_head: Option<&'a str>,
+}
+
+fn harness_snapshot_diff_endpoints(
     value: &Value,
-) -> std::result::Result<Option<&str>, &'static str> {
+) -> std::result::Result<HarnessSnapshotDiffEndpoints<'_>, &'static str> {
     if value.get("schema_version").and_then(Value::as_i64) != Some(1) {
         return Err("unknown schema_version");
     }
     if value.get("mode").and_then(Value::as_str) != Some("harness") {
         return Err("unknown mode");
     }
-    match value.get("last_seen_head") {
+    Ok(HarnessSnapshotDiffEndpoints {
+        last_seen_head: harness_snapshot_endpoint(value, "last_seen_head")?,
+        issued_turn_head: harness_snapshot_endpoint(value, "issued_turn_head")?,
+    })
+}
+
+fn harness_snapshot_endpoint<'a>(
+    value: &'a Value,
+    field: &'static str,
+) -> std::result::Result<Option<&'a str>, &'static str> {
+    match value.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(hash)) => Ok(Some(hash.as_str())),
-        Some(_) => Err("invalid last_seen_head"),
+        Some(_) if field == "last_seen_head" => Err("invalid last_seen_head"),
+        Some(_) => Err("invalid issued_turn_head"),
     }
 }
 

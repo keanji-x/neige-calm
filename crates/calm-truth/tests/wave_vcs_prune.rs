@@ -47,7 +47,7 @@ async fn fresh_wave() -> (SqlxRepo, WaveId) {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            cove_id: cove.id,
+            cove_id: cove.id.clone(),
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -196,10 +196,18 @@ async fn insert_active_session(
 }
 
 fn harness_snapshot(last_seen_head: Option<&str>) -> String {
+    harness_snapshot_with_heads(last_seen_head, None)
+}
+
+fn harness_snapshot_with_heads(
+    last_seen_head: Option<&str>,
+    issued_turn_head: Option<&str>,
+) -> String {
     json!({
         "schema_version": 1,
         "mode": "harness",
         "last_seen_head": last_seen_head,
+        "issued_turn_head": issued_turn_head,
     })
     .to_string()
 }
@@ -338,6 +346,82 @@ async fn active_session_last_seen_diff_still_works_after_prune() {
 }
 
 #[tokio::test]
+async fn active_session_issued_turn_head_diff_still_works_after_prune_and_sweep() {
+    let fixture = fixture_with_commits(6).await;
+    let issued_turn_head = &fixture.commits[1];
+    let head = fixture.commits.last().expect("head");
+    let snapshot = harness_snapshot_with_heads(None, Some(&issued_turn_head.hash));
+    insert_active_session(
+        fixture.pool(),
+        &fixture.wave_id,
+        "issued-turn-head",
+        Some(&snapshot),
+    )
+    .await;
+    let before_diff = wave_vcs::diff(fixture.pool(), &issued_turn_head.hash, &head.hash, None)
+        .await
+        .expect("diff before prune");
+
+    let deleted = prune_once(fixture.pool(), &fixture.wave_id, 1).await;
+    let swept = wave_vcs::sweep_unreferenced_objects_once(fixture.pool())
+        .await
+        .expect("sweep");
+
+    assert!(deleted > 0);
+    assert!(swept > 0);
+    assert!(commit_exists(fixture.pool(), &issued_turn_head.hash).await);
+    assert!(object_exists(fixture.pool(), &issued_turn_head.tree_hash).await);
+    assert!(object_exists(fixture.pool(), &issued_turn_head.blob_hash).await);
+    assert_eq!(
+        wave_vcs::diff(fixture.pool(), &issued_turn_head.hash, &head.hash, None)
+            .await
+            .expect("diff after prune"),
+        before_diff
+    );
+}
+
+#[tokio::test]
+async fn active_session_protects_distinct_last_seen_and_issued_turn_heads() {
+    let fixture = fixture_with_commits(7).await;
+    let issued_turn_head = &fixture.commits[1];
+    let last_seen_head = &fixture.commits[3];
+    let head = fixture.commits.last().expect("head");
+    let snapshot =
+        harness_snapshot_with_heads(Some(&last_seen_head.hash), Some(&issued_turn_head.hash));
+    insert_active_session(
+        fixture.pool(),
+        &fixture.wave_id,
+        "both-endpoints",
+        Some(&snapshot),
+    )
+    .await;
+    let before_diff = wave_vcs::diff(fixture.pool(), &issued_turn_head.hash, &head.hash, None)
+        .await
+        .expect("diff before prune");
+
+    let deleted = prune_once(fixture.pool(), &fixture.wave_id, 1).await;
+    let swept = wave_vcs::sweep_unreferenced_objects_once(fixture.pool())
+        .await
+        .expect("sweep");
+
+    assert!(deleted > 0);
+    assert!(swept > 0);
+    assert!(!commit_exists(fixture.pool(), &fixture.commits[0].hash).await);
+    assert!(commit_exists(fixture.pool(), &issued_turn_head.hash).await);
+    assert!(object_exists(fixture.pool(), &issued_turn_head.tree_hash).await);
+    assert!(object_exists(fixture.pool(), &issued_turn_head.blob_hash).await);
+    assert!(commit_exists(fixture.pool(), &last_seen_head.hash).await);
+    assert!(object_exists(fixture.pool(), &last_seen_head.tree_hash).await);
+    assert!(object_exists(fixture.pool(), &last_seen_head.blob_hash).await);
+    assert_eq!(
+        wave_vcs::diff(fixture.pool(), &issued_turn_head.hash, &head.hash, None)
+            .await
+            .expect("diff after prune"),
+        before_diff
+    );
+}
+
+#[tokio::test]
 async fn prune_keeps_every_commit_at_or_after_oldest_protected_floor() {
     let fixture = fixture_with_commits(7).await;
     let floor_commit = &fixture.commits[2];
@@ -372,6 +456,171 @@ async fn prune_keeps_every_commit_at_or_after_oldest_protected_floor() {
             commit.hash
         );
     }
+}
+
+#[tokio::test]
+async fn sweep_preserves_live_objects_from_other_waves() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open sqlite repo");
+    let cove = repo
+        .cove_create(NewCove {
+            name: "cove".into(),
+            color: "#336699".into(),
+            sort: None,
+        })
+        .await
+        .expect("create cove");
+    let wave_a = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "wave a".into(),
+            sort: None,
+            cwd: "/tmp/a".into(),
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create wave a");
+    let wave_b = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "wave b".into(),
+            sort: None,
+            cwd: "/tmp/b".into(),
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create wave b");
+    let wave_a_commits = seed_linear_commits(repo.pool(), &wave_a.id, 5).await;
+    let wave_b_commits = seed_linear_commits(repo.pool(), &wave_b.id, 4).await;
+
+    let deleted = prune_once(repo.pool(), &wave_a.id, 1).await;
+    let swept = wave_vcs::sweep_unreferenced_objects_once(repo.pool())
+        .await
+        .expect("sweep");
+
+    assert!(deleted > 0);
+    assert!(swept > 0);
+    assert!(!object_exists(repo.pool(), &wave_a_commits[0].tree_hash).await);
+    assert!(!object_exists(repo.pool(), &wave_a_commits[0].blob_hash).await);
+    for commit in &wave_b_commits {
+        assert!(commit_exists(repo.pool(), &commit.hash).await);
+        assert!(object_exists(repo.pool(), &commit.tree_hash).await);
+        assert!(object_exists(repo.pool(), &commit.blob_hash).await);
+    }
+    assert_eq!(
+        wave_vcs::head(repo.pool(), &wave_b.id).await.expect("head"),
+        Some(wave_b_commits.last().expect("wave b head").hash.clone())
+    );
+}
+
+#[tokio::test]
+async fn sweep_preserves_shared_blob_referenced_by_kept_tree() {
+    let (repo, wave_id) = fresh_wave().await;
+    let base = now_ms() - (2 * SWEEP_GRACE_MS);
+    let old_commit_hash = format!("{}-old-shared-commit", wave_id.as_str());
+    let kept_commit_hash = format!("{}-kept-shared-commit", wave_id.as_str());
+    let old_tree_hash = format!("{}-old-shared-tree", wave_id.as_str());
+    let kept_tree_hash = format!("{}-kept-shared-tree", wave_id.as_str());
+    let shared_blob_hash = format!("{}-shared-blob", wave_id.as_str());
+    let shared_blob_bytes = b"shared content\n".to_vec();
+    let mut old_entries = BTreeMap::new();
+    old_entries.insert(
+        "old.txt".to_string(),
+        ManifestEntry {
+            blob_hash: shared_blob_hash.clone(),
+            byte_len: shared_blob_bytes.len() as u64,
+            content_type: "text/plain".into(),
+        },
+    );
+    let mut kept_entries = BTreeMap::new();
+    kept_entries.insert(
+        "kept.txt".to_string(),
+        ManifestEntry {
+            blob_hash: shared_blob_hash.clone(),
+            byte_len: shared_blob_bytes.len() as u64,
+            content_type: "text/plain".into(),
+        },
+    );
+    let old_tree_bytes = canonical_json_bytes(&TreeManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        entries: old_entries,
+    })
+    .expect("canonical old tree json");
+    let kept_tree_bytes = canonical_json_bytes(&TreeManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        entries: kept_entries,
+    })
+    .expect("canonical kept tree json");
+
+    let mut tx = repo.pool().begin().await.expect("begin seed shared blob");
+    sqlx::query(
+        r#"INSERT INTO wave_vcs_objects (hash, kind, bytes, created_at)
+           VALUES (?1, 'blob', ?2, ?3)"#,
+    )
+    .bind(&shared_blob_hash)
+    .bind(&shared_blob_bytes)
+    .bind(base)
+    .execute(&mut *tx)
+    .await
+    .expect("insert shared blob");
+    sqlx::query(
+        r#"INSERT INTO wave_vcs_objects (hash, kind, bytes, created_at)
+           VALUES (?1, 'tree', ?2, ?3), (?4, 'tree', ?5, ?6)"#,
+    )
+    .bind(&old_tree_hash)
+    .bind(&old_tree_bytes)
+    .bind(base)
+    .bind(&kept_tree_hash)
+    .bind(&kept_tree_bytes)
+    .bind(base + 1000)
+    .execute(&mut *tx)
+    .await
+    .expect("insert trees");
+    sqlx::query(
+        r#"INSERT INTO wave_vcs_commits (
+               hash, wave_id, parent_hash, tree_hash, manifest_schema_version,
+               author, message, lifecycle, event_id, created_at
+           )
+           VALUES (?1, ?2, NULL, ?3, ?4, NULL, 'old shared blob', 'active', 1, ?5),
+                  (?6, ?2, ?1, ?7, ?4, NULL, 'kept shared blob', 'active', 2, ?8)"#,
+    )
+    .bind(&old_commit_hash)
+    .bind(wave_id.as_str())
+    .bind(&old_tree_hash)
+    .bind(MANIFEST_SCHEMA_VERSION)
+    .bind(base)
+    .bind(&kept_commit_hash)
+    .bind(&kept_tree_hash)
+    .bind(base + 1000)
+    .execute(&mut *tx)
+    .await
+    .expect("insert commits");
+    sqlx::query(
+        r#"INSERT INTO wave_vcs_refs (wave_id, head_hash, updated_event_id)
+           VALUES (?1, ?2, 2)"#,
+    )
+    .bind(wave_id.as_str())
+    .bind(&kept_commit_hash)
+    .execute(&mut *tx)
+    .await
+    .expect("insert ref");
+    tx.commit().await.expect("commit seed shared blob");
+
+    let deleted = prune_once(repo.pool(), &wave_id, 1).await;
+    let swept = wave_vcs::sweep_unreferenced_objects_once(repo.pool())
+        .await
+        .expect("sweep");
+
+    assert_eq!(deleted, 1);
+    assert!(swept > 0);
+    assert!(!commit_exists(repo.pool(), &old_commit_hash).await);
+    assert!(!object_exists(repo.pool(), &old_tree_hash).await);
+    assert!(commit_exists(repo.pool(), &kept_commit_hash).await);
+    assert!(object_exists(repo.pool(), &kept_tree_hash).await);
+    assert!(object_exists(repo.pool(), &shared_blob_hash).await);
 }
 
 #[tokio::test]
@@ -417,6 +666,75 @@ async fn unparseable_active_snapshot_keeps_all_commits() {
     assert_eq!(commit_count(fixture.pool(), &fixture.wave_id).await, 5);
     for commit in &fixture.commits {
         assert!(commit_exists(fixture.pool(), &commit.hash).await);
+    }
+}
+
+#[tokio::test]
+async fn parseable_rejected_active_snapshots_keep_all_commits() {
+    let cases = [
+        (
+            "schema-version",
+            json!({
+                "schema_version": 2,
+                "mode": "harness",
+                "last_seen_head": null,
+                "issued_turn_head": null,
+            }),
+        ),
+        (
+            "mode",
+            json!({
+                "schema_version": 1,
+                "mode": "worker",
+                "last_seen_head": null,
+                "issued_turn_head": null,
+            }),
+        ),
+        (
+            "last-seen-type",
+            json!({
+                "schema_version": 1,
+                "mode": "harness",
+                "last_seen_head": 123,
+                "issued_turn_head": null,
+            }),
+        ),
+        (
+            "issued-turn-type",
+            json!({
+                "schema_version": 1,
+                "mode": "harness",
+                "last_seen_head": null,
+                "issued_turn_head": ["not", "a", "hash"],
+            }),
+        ),
+    ];
+
+    for (suffix, snapshot) in cases {
+        let fixture = fixture_with_commits(5).await;
+        let snapshot = snapshot.to_string();
+        let before_objects = object_count(fixture.pool()).await;
+        insert_active_session(fixture.pool(), &fixture.wave_id, suffix, Some(&snapshot)).await;
+
+        let deleted = prune_once(fixture.pool(), &fixture.wave_id, 1).await;
+
+        assert_eq!(deleted, 0, "{suffix}");
+        assert_eq!(
+            commit_count(fixture.pool(), &fixture.wave_id).await,
+            5,
+            "{suffix}"
+        );
+        assert_eq!(
+            object_count(fixture.pool()).await,
+            before_objects,
+            "{suffix}"
+        );
+        for commit in &fixture.commits {
+            assert!(
+                commit_exists(fixture.pool(), &commit.hash).await,
+                "{suffix}"
+            );
+        }
     }
 }
 
