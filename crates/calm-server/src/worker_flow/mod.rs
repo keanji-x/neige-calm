@@ -359,10 +359,11 @@ impl WorkerFlowDriver {
                 })
             }
             FlowSourceKind::Claude => {
+                let card_cwd = self.resolve_card_cwd(&card).await;
                 let source = ClaudeTranscriptFlowSource::new_with_options(
                     self.repo.clone(),
                     runtime.clone(),
-                    card_cwd(&card),
+                    card_cwd,
                     stop.clone(),
                     self.claude_flow_options.clone(),
                 );
@@ -381,6 +382,27 @@ impl WorkerFlowDriver {
         let mut tasks = self.tasks.lock().await;
         tasks.insert(runtime.card_id.clone(), SourceTask { stop, join });
         Ok(())
+    }
+
+    async fn resolve_card_cwd(&self, card: &Card) -> String {
+        if let Some(cwd) = card_payload_string(card, "cwd") {
+            return cwd;
+        }
+
+        if let Some(terminal_id) = card_payload_string(card, "terminal_id") {
+            match self.repo.terminal_get(&terminal_id).await {
+                Ok(Some(term)) if !term.cwd.is_empty() => return term.cwd,
+                Ok(_) => {}
+                Err(err) => tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %terminal_id,
+                    error = %err,
+                    "worker-flow failed to read terminal cwd for card"
+                ),
+            }
+        }
+
+        crate::routes::codex_cards::default_cwd()
     }
 
     async fn cancel_card(&self, card_id: &str) {
@@ -427,13 +449,12 @@ fn is_supported_runtime_pair(kind: &RuntimeKind, provider: Option<&AgentProvider
     )
 }
 
-fn card_cwd(card: &Card) -> String {
+fn card_payload_string(card: &Card, key: &str) -> Option<String> {
     card.payload
-        .get("cwd")
+        .get(key)
         .and_then(serde_json::Value::as_str)
-        .filter(|cwd| !cwd.is_empty())
+        .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(crate::routes::codex_cards::default_cwd)
 }
 
 pub async fn start_on_boot(state: &AppState) -> Result<(), CoreError> {

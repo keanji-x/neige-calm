@@ -176,12 +176,88 @@ fn claude_normalizer_completes_bash_from_tool_use_result_stdout() {
     assert_eq!(commands.len(), 2);
     assert_eq!(commands[0].call_id, Some("toolu-bash"));
     assert_eq!(commands[0].status, &ExecStatus::InProgress);
+    assert_eq!(commands[0].cwd, Some("/tmp/claude-tools"));
     assert_eq!(commands[0].exit_code, None);
     assert_eq!(commands[0].aggregated_output, None);
     assert_eq!(commands[1].call_id, Some("toolu-bash"));
     assert_eq!(commands[1].status, &ExecStatus::Completed);
+    assert_eq!(commands[1].cwd, Some("/tmp/claude-tools"));
     assert_eq!(commands[1].exit_code, Some(0));
     assert_eq!(commands[1].aggregated_output, Some("file1\nfile2\n"));
+    assert_eq!(state.pending_commands_len(), 0);
+}
+
+#[test]
+fn claude_normalizer_uses_record_cwd_for_bash_when_input_cwd_is_absent() {
+    let (items, state) = normalize_lines_with_state(vec![
+        wf::claude_user_string("user-bash-cwd", "list files"),
+        wf::claude_assistant(
+            "assistant-bash-cwd",
+            "/work/dir",
+            vec![wf::claude_tool_use(
+                "toolu-bash-cwd",
+                "Bash",
+                json!({ "command": "ls" }),
+            )],
+        ),
+        with_record_cwd(
+            claude_user_blocks_with_tool_use_result(
+                "result-bash-cwd",
+                vec![wf::claude_tool_result("toolu-bash-cwd", "file\n", false)],
+                json!({
+                    "stdout": "file\n",
+                    "stderr": "",
+                    "interrupted": false
+                }),
+            ),
+            "/work/dir",
+        ),
+    ]);
+
+    let commands = command_executions(&items);
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].status, &ExecStatus::InProgress);
+    assert_eq!(commands[0].cwd, Some("/work/dir"));
+    assert_eq!(commands[1].status, &ExecStatus::Completed);
+    assert_eq!(commands[1].cwd, Some("/work/dir"));
+    assert_eq!(state.pending_commands_len(), 0);
+}
+
+#[test]
+fn claude_normalizer_keeps_explicit_bash_cwd_over_record_cwd() {
+    let (items, state) = normalize_lines_with_state(vec![
+        wf::claude_user_string("user-bash-explicit-cwd", "print cwd"),
+        wf::claude_assistant(
+            "assistant-bash-explicit-cwd",
+            "/work/dir",
+            vec![wf::claude_tool_use(
+                "toolu-bash-explicit-cwd",
+                "Bash",
+                json!({ "command": "pwd", "cwd": "/explicit" }),
+            )],
+        ),
+        with_record_cwd(
+            claude_user_blocks_with_tool_use_result(
+                "result-bash-explicit-cwd",
+                vec![wf::claude_tool_result(
+                    "toolu-bash-explicit-cwd",
+                    "/explicit\n",
+                    false,
+                )],
+                json!({
+                    "stdout": "/explicit\n",
+                    "stderr": "",
+                    "interrupted": false
+                }),
+            ),
+            "/work/dir",
+        ),
+    ]);
+
+    let commands = command_executions(&items);
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].cwd, Some("/explicit"));
+    assert_eq!(commands[1].cwd, Some("/explicit"));
     assert_eq!(state.pending_commands_len(), 0);
 }
 
@@ -380,9 +456,15 @@ fn claude_tool_result_value(tool_use_id: &str, content: Value, is_error: bool) -
     })
 }
 
+fn with_record_cwd(mut record: Value, cwd: &str) -> Value {
+    record["cwd"] = json!(cwd);
+    record
+}
+
 struct CommandExecutionView<'a> {
     call_id: Option<&'a str>,
     status: &'a ExecStatus,
+    cwd: Option<&'a str>,
     exit_code: Option<i32>,
     aggregated_output: Option<&'a str>,
 }
@@ -394,12 +476,14 @@ fn command_executions(items: &[WorkerFlowItem]) -> Vec<CommandExecutionView<'_>>
             WorkerFlowItem::CommandExecution {
                 call_id,
                 status,
+                cwd,
                 exit_code,
                 aggregated_output,
                 ..
             } => Some(CommandExecutionView {
                 call_id: call_id.as_ref().map(|call_id| call_id.as_str()),
                 status,
+                cwd: cwd.as_deref(),
                 exit_code: *exit_code,
                 aggregated_output: aggregated_output.as_deref(),
             }),

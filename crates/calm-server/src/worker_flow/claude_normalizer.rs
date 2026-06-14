@@ -96,9 +96,10 @@ pub fn normalize_record_with_state(
                 out.push(unknown_item(record, next_seq, turn, session_id, raw_ref));
                 return out;
             };
+            let fallback_cwd = record_cwd(record);
             for block in content {
                 let env = env_for(record, next_seq, turn, session_id, raw_ref.clone());
-                let Some(item) = assistant_block_item(block, env, state) else {
+                let Some(item) = assistant_block_item(block, env, state, fallback_cwd) else {
                     continue;
                 };
                 out.push(item);
@@ -250,6 +251,7 @@ fn assistant_block_item(
     block: &Value,
     env: FlowEnvelope,
     state: &mut ClaudeNormalizerState,
+    fallback_cwd: Option<&str>,
 ) -> Option<WorkerFlowItem> {
     match content_type(block).unwrap_or("unknown") {
         "thinking" => {
@@ -271,7 +273,7 @@ fn assistant_block_item(
             is_final: false,
             phase: None,
         }),
-        "tool_use" => tool_use_item(block, env, state),
+        "tool_use" => tool_use_item(block, env, state, fallback_cwd),
         _ => Some(WorkerFlowItem::Unknown {
             env,
             raw_type: format!("assistant/{}", content_type(block).unwrap_or("unknown")),
@@ -283,6 +285,7 @@ fn tool_use_item(
     block: &Value,
     env: FlowEnvelope,
     state: &mut ClaudeNormalizerState,
+    fallback_cwd: Option<&str>,
 ) -> Option<WorkerFlowItem> {
     let call_id = string_field(block, &["id", "tool_use_id"])?;
     let name = string_field(block, &["name"]).unwrap_or_else(|| "unknown".to_string());
@@ -298,7 +301,8 @@ fn tool_use_item(
                 .get("cwd")
                 .or_else(|| input.get("workdir"))
                 .and_then(Value::as_str)
-                .map(str::to_string);
+                .map(str::to_string)
+                .or_else(|| fallback_cwd.map(str::to_string));
             let parsed_actions = parse_command_actions(&command);
             state.pending_commands.insert(
                 call_id.clone(),
