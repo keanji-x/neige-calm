@@ -488,6 +488,7 @@ impl ProviderAdapter for CodexAdapter {
         let terminal_id = output_string(output, "terminal_id")?;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
+        let runtime_id = output_string(output, "runtime_id")?;
         let cwd = output_string(output, "cwd")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
@@ -518,6 +519,7 @@ impl ProviderAdapter for CodexAdapter {
                     card_id,
                     Some(wave_id),
                     terminal_id.clone(),
+                    runtime_id.clone(),
                 ))
                 .await?;
 

@@ -625,11 +625,12 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         .await
         .unwrap();
     let card_id = card.id.to_string();
+    let runtime_id = calm_server::model::new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
     runtime_start_tx(
         &mut tx,
         RuntimeInit {
-            id: calm_server::model::new_id(),
+            id: runtime_id.clone(),
             card_id: card_id.clone(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
@@ -652,6 +653,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
             card_id.clone(),
             None,
             terminal.id.to_string(),
+            runtime_id,
         ))
         .await
         .unwrap();

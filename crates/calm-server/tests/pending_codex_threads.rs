@@ -91,6 +91,14 @@ async fn seed_card_with_runtime_kind(
     card.id.to_string()
 }
 
+async fn runtime_id_for_card(repo: &SqlxRepo, card_id: &str) -> String {
+    repo.runtime_get_active_for_card(&card_id.to_string())
+        .await
+        .unwrap()
+        .expect("active runtime")
+        .id
+}
+
 async fn start_runtime_for_card(
     repo: &SqlxRepo,
     card_id: &str,
@@ -141,12 +149,23 @@ async fn projected_card(repo: &SqlxRepo, card_id: &str) -> calm_server::model::C
     card
 }
 
-fn entry(card_id: &str, wave_id: &str, terminal_id: &str) -> PendingEntry {
+fn entry_with_runtime_id(
+    card_id: &str,
+    wave_id: &str,
+    terminal_id: &str,
+    runtime_id: &str,
+) -> PendingEntry {
     PendingEntry::new(
         card_id.to_string(),
         Some(wave_id.to_string()),
         terminal_id.to_string(),
+        runtime_id.to_string(),
     )
+}
+
+async fn entry(repo: &SqlxRepo, card_id: &str, wave_id: &str, terminal_id: &str) -> PendingEntry {
+    let runtime_id = runtime_id_for_card(repo, card_id).await;
+    entry_with_runtime_id(card_id, wave_id, terminal_id, &runtime_id)
 }
 
 async fn seed_pending(
@@ -157,7 +176,7 @@ async fn seed_pending(
 ) -> String {
     let card_id = seed_card(repo, wave_id, terminal_id).await;
     registry
-        .register(entry(&card_id, wave_id, terminal_id))
+        .register(entry(repo, &card_id, wave_id, terminal_id).await)
         .await
         .unwrap();
     card_id
@@ -171,11 +190,11 @@ async fn register_and_bind_in_arrival_order() {
     let b = seed_card(&repo, &wave_id, "term-b").await;
 
     registry
-        .register(entry(&a, &wave_id, "term-a"))
+        .register(entry(&repo, &a, &wave_id, "term-a").await)
         .await
         .unwrap();
     registry
-        .register(entry(&b, &wave_id, "term-b"))
+        .register(entry(&repo, &b, &wave_id, "term-b").await)
         .await
         .unwrap();
 
@@ -210,15 +229,15 @@ async fn register_is_idempotent_by_card_id_without_reordering() {
     let b = seed_card(&repo, &wave_id, "term-b").await;
 
     registry
-        .register(entry(&a, &wave_id, "term-a"))
+        .register(entry(&repo, &a, &wave_id, "term-a").await)
         .await
         .unwrap();
     registry
-        .register(entry(&b, &wave_id, "term-b"))
+        .register(entry(&repo, &b, &wave_id, "term-b").await)
         .await
         .unwrap();
     registry
-        .register(entry(&a, &wave_id, "term-a"))
+        .register(entry(&repo, &a, &wave_id, "term-a").await)
         .await
         .unwrap();
 
@@ -241,7 +260,7 @@ async fn bind_persists_to_runtime_and_projects_payload() {
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-a").await;
     registry
-        .register(entry(&card_id, &wave_id, "term-a"))
+        .register(entry(&repo, &card_id, &wave_id, "term-a").await)
         .await
         .unwrap();
 
@@ -283,7 +302,7 @@ async fn bind_entry_clears_terminal_run_id() {
         .expect("active runtime")
         .id;
     registry
-        .register(entry(&card_id, &wave_id, "term-bind-clear"))
+        .register(entry(&repo, &card_id, &wave_id, "term-bind-clear").await)
         .await
         .unwrap();
 
@@ -311,7 +330,7 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
         .expect("active runtime")
         .id;
     registry
-        .register(entry(&card_id, &wave_id, "term-codex-card"))
+        .register(entry(&repo, &card_id, &wave_id, "term-codex-card").await)
         .await
         .unwrap();
 
@@ -332,13 +351,13 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
 }
 
 #[tokio::test]
-async fn on_thread_started_re_parks_entry_when_runtime_missing() {
+async fn on_thread_started_drops_entry_when_registered_runtime_inactive() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id =
         seed_card_with_runtime_kind(&repo, &wave_id, "term-missing", RuntimeKind::SharedSpec).await;
     registry
-        .register(entry(&card_id, &wave_id, "term-missing"))
+        .register(entry(&repo, &card_id, &wave_id, "term-missing").await)
         .await
         .unwrap();
     repo.runtime_complete_for_card(&card_id, RunStatus::Failed)
@@ -348,7 +367,7 @@ async fn on_thread_started_re_parks_entry_when_runtime_missing() {
     let bound = registry.on_thread_started("T-repark").await.unwrap();
 
     assert_eq!(bound, None);
-    assert_eq!(registry.pending_count().await, 1);
+    assert_eq!(registry.pending_count().await, 0);
     assert!(
         repo.runtime_get_active_for_card(&card_id)
             .await
@@ -358,38 +377,30 @@ async fn on_thread_started_re_parks_entry_when_runtime_missing() {
 }
 
 #[tokio::test]
-async fn on_thread_started_succeeds_after_runtime_reappears() {
+async fn on_thread_started_drops_registered_runtime_even_if_runtime_reappears() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id =
         seed_card_with_runtime_kind(&repo, &wave_id, "term-retry", RuntimeKind::SharedSpec).await;
     registry
-        .register(entry(&card_id, &wave_id, "term-retry"))
+        .register(entry(&repo, &card_id, &wave_id, "term-retry").await)
         .await
         .unwrap();
     repo.runtime_complete_for_card(&card_id, RunStatus::Failed)
         .await
         .unwrap();
 
-    assert_eq!(registry.on_thread_started("T-retry").await.unwrap(), None);
-    assert_eq!(registry.pending_count().await, 1);
-
     let runtime_id =
         start_runtime_for_card(&repo, &card_id, "term-retry", RuntimeKind::SharedSpec).await;
 
-    assert_eq!(
-        registry.on_thread_started("T-retry").await.unwrap(),
-        Some(card_id.clone())
-    );
+    assert_eq!(registry.on_thread_started("T-retry").await.unwrap(), None);
     assert_eq!(registry.pending_count().await, 0);
     let runtime = repo
         .runtime_get_by_id(&runtime_id)
         .await
         .unwrap()
         .expect("reappeared runtime row");
-    assert_eq!(runtime.status, RunStatus::Running);
-    assert!(runtime.terminal_run_id.is_none());
-    assert_eq!(runtime.thread_id.as_deref(), Some("T-retry"));
+    assert_eq!(runtime.thread_id, None);
 }
 
 #[tokio::test]
@@ -399,13 +410,13 @@ async fn expire_drops_abandoned_entries_past_ttl() {
     let old = seed_card(&repo, &wave_id, "term-old").await;
     let fresh = seed_card(&repo, &wave_id, "term-fresh").await;
 
-    let mut old_entry = entry(&old, &wave_id, "term-old");
+    let mut old_entry = entry(&repo, &old, &wave_id, "term-old").await;
     old_entry.registered_at = Instant::now()
         .checked_sub(Duration::from_secs(30))
         .expect("instant subtraction");
     registry.register(old_entry).await.unwrap();
     registry
-        .register(entry(&fresh, &wave_id, "term-fresh"))
+        .register(entry(&repo, &fresh, &wave_id, "term-fresh").await)
         .await
         .unwrap();
 
@@ -424,7 +435,7 @@ async fn ttl_expire_projects_failed_status() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-ttl").await;
-    let mut old_entry = entry(&card_id, &wave_id, "term-ttl");
+    let mut old_entry = entry(&repo, &card_id, &wave_id, "term-ttl").await;
     old_entry.registered_at = Instant::now()
         .checked_sub(Duration::from_secs(30))
         .expect("instant subtraction");
@@ -443,7 +454,7 @@ async fn expire_only_drops_pending_when_terminal_dead() {
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-live").await;
     registry
-        .register(entry(&card_id, &wave_id, "term-live"))
+        .register(entry(&repo, &card_id, &wave_id, "term-live").await)
         .await
         .unwrap();
 
@@ -459,7 +470,7 @@ async fn expire_dead_pending_projects_failed_status() {
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-exit").await;
     registry
-        .register(entry(&card_id, &wave_id, "term-exit"))
+        .register(entry(&repo, &card_id, &wave_id, "term-exit").await)
         .await
         .unwrap();
     repo.terminal_set_exit("term-exit", Some(0), false)
@@ -480,7 +491,7 @@ async fn expire_drops_pending_when_terminal_row_deleted() {
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-deleted").await;
     registry
-        .register(entry(&card_id, &wave_id, "term-deleted"))
+        .register(entry(&repo, &card_id, &wave_id, "term-deleted").await)
         .await
         .unwrap();
     repo.terminal_delete("term-deleted").await.unwrap();
@@ -506,7 +517,7 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
         .await
         .unwrap();
     registry
-        .register(entry(&dead_card, &wave_id, "term-dead"))
+        .register(entry(&repo, &dead_card, &wave_id, "term-dead").await)
         .await
         .unwrap();
     let live_card = seed_pending(&repo, &registry, &wave_id, "term-live").await;
@@ -551,7 +562,7 @@ async fn on_thread_started_stale_front_drop_orphans_only_one_per_event() {
         let card_id = seed_card(&repo, &wave_id, label).await;
         repo.terminal_set_exit(label, Some(1), false).await.unwrap();
         registry
-            .register(entry(&card_id, &wave_id, label))
+            .register(entry(&repo, &card_id, &wave_id, label).await)
             .await
             .unwrap();
     }
@@ -576,27 +587,19 @@ async fn concurrent_registrations_preserve_fifo_order() {
     let registry = Arc::new(PendingThreadStartRegistry::new(repo.clone(), events));
     let a = seed_card(&repo, &wave_id, "term-a").await;
     let b = seed_card(&repo, &wave_id, "term-b").await;
+    let entry_a = entry(&repo, &a, &wave_id, "term-a").await;
+    let entry_b = entry(&repo, &b, &wave_id, "term-b").await;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let reg_a = registry.clone();
-    let wave_a = wave_id.clone();
-    let a_for_task = a.clone();
     let task_a = tokio::spawn(async move {
-        reg_a
-            .register(entry(&a_for_task, &wave_a, "term-a"))
-            .await
-            .unwrap();
+        reg_a.register(entry_a).await.unwrap();
         tx.send(()).unwrap();
     });
     let reg_b = registry.clone();
-    let wave_b = wave_id.clone();
-    let b_for_task = b.clone();
     let task_b = tokio::spawn(async move {
         rx.await.unwrap();
-        reg_b
-            .register(entry(&b_for_task, &wave_b, "term-b"))
-            .await
-            .unwrap();
+        reg_b.register(entry_b).await.unwrap();
     });
     task_a.await.unwrap();
     task_b.await.unwrap();
@@ -714,14 +717,13 @@ async fn register_and_spawn_serializes_with_spawn_serial_lock() {
     let observed = Mutex::new(Vec::<&'static str>::new());
     let a = seed_card(&repo, &wave_id, "term-a").await;
     let b = seed_card(&repo, &wave_id, "term-b").await;
+    let entry_a = entry(&repo, &a, &wave_id, "term-a").await;
+    let entry_b = entry(&repo, &b, &wave_id, "term-b").await;
 
     let (a_registered_tx, a_registered_rx) = tokio::sync::oneshot::channel();
     let task_a = async {
         let _guard = spawn_serial.lock().await;
-        registry
-            .register(entry(&a, &wave_id, "term-a"))
-            .await
-            .unwrap();
+        registry.register(entry_a).await.unwrap();
         observed.lock().await.push("register-a");
         a_registered_tx.send(()).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -731,10 +733,7 @@ async fn register_and_spawn_serializes_with_spawn_serial_lock() {
     let task_b = async {
         a_registered_rx.await.unwrap();
         let _guard = spawn_serial.lock().await;
-        registry
-            .register(entry(&b, &wave_id, "term-b"))
-            .await
-            .unwrap();
+        registry.register(entry_b).await.unwrap();
         observed.lock().await.push("register-b");
         observed.lock().await.push("spawn-b");
     };
@@ -759,7 +758,7 @@ async fn expire_runs_periodically_via_background_task() {
     let (repo, events, wave_id) = boot().await;
     let registry = Arc::new(PendingThreadStartRegistry::new(repo.clone(), events));
     let card_id = seed_card(&repo, &wave_id, "term-old").await;
-    let mut old_entry = entry(&card_id, &wave_id, "term-old");
+    let mut old_entry = entry(&repo, &card_id, &wave_id, "term-old").await;
     old_entry.registered_at = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .expect("instant subtraction");
@@ -789,15 +788,15 @@ async fn remove_by_card_drops_pending_entry() {
     let b = seed_card(&repo, &wave_id, "term-b").await;
     let c = seed_card(&repo, &wave_id, "term-c").await;
     registry
-        .register(entry(&a, &wave_id, "term-a"))
+        .register(entry(&repo, &a, &wave_id, "term-a").await)
         .await
         .unwrap();
     registry
-        .register(entry(&b, &wave_id, "term-b"))
+        .register(entry(&repo, &b, &wave_id, "term-b").await)
         .await
         .unwrap();
     registry
-        .register(entry(&c, &wave_id, "term-c"))
+        .register(entry(&repo, &c, &wave_id, "term-c").await)
         .await
         .unwrap();
 
