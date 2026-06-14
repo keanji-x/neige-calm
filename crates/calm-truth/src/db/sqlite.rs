@@ -2258,10 +2258,12 @@ pub async fn card_with_codex_create_tx(
     //    invariant atomic: a committed card row whose role is Spec/Worker
     //    will *always* have a matching token row, and a rolled-back tx
     //    drops both together.
+    let mut mcp_token_hash = None;
     let mcp_token = if matches!(role, CardRole::Spec | CardRole::Worker) {
         let token = crate::mcp_auth::CardMcpToken::generate();
         let hashed = crate::mcp_auth::hash_token(token.as_str());
         card_mcp_token_set_tx(tx, card.id.as_ref(), &hashed).await?;
+        mcp_token_hash = Some(hashed);
         Some(token.into_inner())
     } else {
         None
@@ -2283,6 +2285,9 @@ pub async fn card_with_codex_create_tx(
         now_ms: now_ms(),
     };
     runtime_start_tx(tx, runtime_init).await?;
+    if let Some(hashed) = mcp_token_hash.as_deref() {
+        session_mcp_token_set_tx(tx, runtime_id, hashed).await?;
+    }
 
     Ok((card, term, mcp_token))
 }
@@ -2425,6 +2430,55 @@ pub async fn card_mcp_token_set_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+/// PR6b (#679) — mirror the per-card MCP hash onto the same-id worker_sessions
+/// row. POPULATE-ONLY: never read for authz (the handshake reads
+/// card_mcp_tokens). Fail-closed: the same-id mirror row MUST exist
+/// (created by runtime_start_tx -> session_start_mirror_tx in the same spawn);
+/// a missing row means the dual-write ordering drifted, so fail the spawn
+/// rather than silently half-mint.
+pub async fn session_mcp_token_set_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    hashed_token: &str,
+) -> Result<()> {
+    let now = now_ms();
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET mcp_token_hash = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(hashed_token)
+    .bind(now)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() != 1 {
+        return Err(CalmError::Internal(format!(
+            "expected 1 worker_sessions mirror row for MCP token session {session_id}, got {}",
+            res.rows_affected()
+        )));
+    }
+    // Preserve the existing runtimes <-> worker_sessions timestamp parity;
+    // token authority still remains exclusively in card_mcp_tokens.
+    let runtime_res = sqlx::query(
+        r#"UPDATE runtimes
+              SET updated_at_ms = ?1
+            WHERE id = ?2"#,
+    )
+    .bind(now)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    if runtime_res.rows_affected() != 1 {
+        return Err(CalmError::Internal(format!(
+            "expected 1 runtime row for MCP token session {session_id}, got {}",
+            runtime_res.rows_affected()
+        )));
+    }
     Ok(())
 }
 

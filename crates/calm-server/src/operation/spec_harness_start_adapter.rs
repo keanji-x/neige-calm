@@ -10,6 +10,7 @@ use crate::db::sqlite::{
     card_mcp_token_set_tx, card_update_tx, harness_items_delete_by_card_tx,
     runtime_bind_attribution_tx, runtime_fail_if_active_tx, runtime_get_active_for_card_tx,
     runtime_restore_from_superseded_tx, runtime_start_tx, runtime_supersede_tx,
+    session_mcp_token_set_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -474,6 +475,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             Some(serde_json::to_value(&snapshot)?),
                         )
                         .await?;
+                    }
+                    if let Some(hashed) = new_mcp_token_hash.as_ref() {
+                        session_mcp_token_set_tx(tx, &runtime_id, hashed).await?;
                     }
                     if reset_harness_items {
                         harness_items_delete_by_card_tx(tx, &card_id).await?;

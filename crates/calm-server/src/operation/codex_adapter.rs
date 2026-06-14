@@ -11,7 +11,7 @@ use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
     runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_get_by_id_tx,
-    runtime_set_status_tx,
+    runtime_set_status_tx, session_mcp_token_set_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -858,7 +858,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             .card_get(&card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-        let mcp_token = mint_card_mcp_token(ctx, &card_id).await?;
+        let mcp_token = mint_card_mcp_token(ctx, &card_id, &runtime_id).await?;
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {
             spawn_ctx: ctx,
@@ -1157,17 +1157,23 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     }
 }
 
-async fn mint_card_mcp_token(ctx: &SpawnCtx, card_id: &str) -> Result<String> {
+async fn mint_card_mcp_token(ctx: &SpawnCtx, card_id: &str, runtime_id: &str) -> Result<String> {
     let token = crate::mcp_server::auth::CardMcpToken::generate();
     let hashed = crate::mcp_server::auth::hash_token(token.as_str());
     let card_id = card_id.to_string();
+    let runtime_id = runtime_id.to_string();
     write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         let card_id = card_id.clone();
+        let runtime_id = runtime_id.clone();
         let hashed = hashed.clone();
         Box::pin(async move {
             card_mcp_token_set_tx(tx, &card_id, &hashed)
                 .await
-                .map_err(Into::into)
+                .map_err(CalmError::from)?;
+            session_mcp_token_set_tx(tx, &runtime_id, &hashed)
+                .await
+                .map_err(CalmError::from)?;
+            Ok(())
         })
     })
     .await?;
