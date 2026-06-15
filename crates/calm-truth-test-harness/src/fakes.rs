@@ -30,10 +30,24 @@ use calm_types::worker::{
 };
 use serde_json::json;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FakeProvider {
     probe_script: Mutex<VecDeque<Liveness>>,
     probe_calls: AtomicUsize,
+    session_mode: SessionMode,
+}
+
+impl Default for FakeProvider {
+    fn default() -> Self {
+        Self {
+            probe_script: Mutex::default(),
+            probe_calls: AtomicUsize::default(),
+            // Terminal/claude one-shot processes are ephemeral; this is the
+            // common fake. Use `with_session_mode(SessionMode::Resumable)`
+            // to exercise the reaper's codex-deferral branch (#679 PR8b-ii).
+            session_mode: SessionMode::Ephemeral,
+        }
+    }
 }
 
 impl FakeProvider {
@@ -50,6 +64,14 @@ impl FakeProvider {
         self
     }
 
+    /// Override the reported [`SessionMode`] (default [`SessionMode::Ephemeral`]).
+    /// A `Resumable` fake stands in for codex, whose torn-down PTY does not
+    /// mean the codex thread died — the reaper must NOT converge it.
+    pub fn with_session_mode(mut self, mode: SessionMode) -> Self {
+        self.session_mode = mode;
+        self
+    }
+
     pub fn probe_call_count(&self) -> usize {
         self.probe_calls.load(Ordering::SeqCst)
     }
@@ -62,7 +84,7 @@ impl WorkerProvider for FakeProvider {
     }
 
     fn session_mode(&self) -> SessionMode {
-        SessionMode::Ephemeral
+        self.session_mode
     }
 
     async fn probe_liveness(
@@ -86,6 +108,15 @@ impl WorkerProvider for FakeProvider {
     ) -> Result<ExitInterpretation, CoreError> {
         if evidence.exit_code == Some(0) && !evidence.signal_killed {
             return Ok(ExitInterpretation::Completed);
+        }
+        // Mirror the real ephemeral providers: a `Probe`-sourced exit carries
+        // the `-1` sentinel from the supervisor, so the reason must HIDE the
+        // sentinel and say "outcome unknown" rather than leak `code -1`.
+        if evidence.source == ExitSource::Probe {
+            return Ok(ExitInterpretation::Failed {
+                reason: "fake worker exited (outcome unknown; observed via supervisor probe)"
+                    .into(),
+            });
         }
         Ok(ExitInterpretation::Failed {
             reason: match (evidence.exit_code, evidence.signal_killed) {

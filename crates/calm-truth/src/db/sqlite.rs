@@ -4213,6 +4213,10 @@ pub async fn runtime_complete_tx(
     Ok(())
 }
 
+/// MUST be called only inside `session_commit_exit`, AFTER the session-side
+/// exit CAS in the same tx — it stamps `runtimes.updated_at_ms` from the
+/// just-written `worker_sessions` row; standalone use falls back to `now_ms()`
+/// and breaks parity.
 pub async fn runtime_status_flip_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
@@ -4693,6 +4697,15 @@ impl RepoRead for SqlxRepo {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows)
+    }
+
+    async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>> {
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT idempotency_key FROM operations WHERE id = ?1")
+                .bind(op_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.flatten())
     }
 
     // ---------------------------------------------------------------- cards
