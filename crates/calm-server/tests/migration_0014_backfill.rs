@@ -139,12 +139,22 @@ async fn backfill_mints_report_card_per_wave() {
     assert!(!report.deletable, "kernel-owned: deletable=false");
     // Sort places the report ahead of any other card.
     assert!(report.sort < 0.0, "sort < 0, got {}", report.sort);
-    // Payload deserializes as the v1 initial shape — the body matches
-    // `WaveReportPayload::initial()` (also asserted in
-    // `wave_report::tests::initial_matches_migration_seed_body`).
+    // Payload deserializes as the v1 shape. Body matches the literal
+    // English seed that migration 0014 SQL writes — intentionally
+    // diverged from `WaveReportPayload::initial()` since the prompt
+    // rewrite (5f3278e6), which moved `initial()` to a Chinese seed
+    // for new waves while keeping migration 0014 frozen for historical
+    // backfills. Existing wave reports get migrated in-place by the
+    // spec on next edit (see `spec_card.rs` migration paragraph).
     let payload: WaveReportPayload = serde_json::from_value(report.payload.clone())
         .expect("payload is a valid WaveReportPayload");
-    assert_eq!(payload, WaveReportPayload::initial());
+    assert_eq!(payload.schema_version, WaveReportPayload::SCHEMA_VERSION);
+    assert_eq!(payload.summary, "");
+    assert_eq!(
+        payload.body, "# Goal\n\n_The spec agent will fill this in._\n",
+        "migration 0014 backfills the English seed verbatim; the Rust-side initial() \
+         seed was changed to Chinese in 5f3278e6 but the SQL migration stayed frozen"
+    );
 }
 
 #[tokio::test]
