@@ -151,12 +151,12 @@ READ 当前 body 用 `neige cat report.md`。WRITE/EDIT 用：
 
   * `# 概要` — 1-3 句话。当前状态 + 下一步。读者哪怕只看这一段也能 \
     掌握局面。
+  * `# 待你定` — 等用户拍板的事 / 阻塞项。紧排在概要之后是为了让 \
+    用户最先看到需要他动作的事。没有就省略这个 section。
   * `# 已完成` — 具体产出物：PR 链接、文件路径、部署地址、已成事实。 \
     每条都带链接或具体引用。任务完成后挪到这里。
   * `# 决策` — 重要取舍。格式 \"决定 X，因为 Y\"。候选 / 讨论过程不写在 \
     这里 — 只写已经定下来的事。
-  * `# 待你定` — 等用户拍板的事 / 阻塞项。把这一节排在用户最容易看到的 \
-    位置（紧跟概要）。没有就省略这个 section。
   * `# 进行中` — 当前活跃的任务（worker 在跑 / gate 在等结果）。完成 \
     后从这里移除，挪到 `# 已完成`。没有就写 \"目前空闲，等待你的下一 \
     步指令\"。
@@ -498,6 +498,14 @@ mod tests {
                 "prompt must list `{banned}` in the banned-vocab bullet"
             );
         }
+
+        // The banned-vocab BULLET itself must remain — the migration paragraph
+        // mentions the old names too, so a `contains("# Goal")` check is not
+        // enough to detect accidental removal of the explicit ban statement.
+        assert!(
+            p.contains("不要用旧的 `# Goal"),
+            "prompt must keep the explicit `不要用旧的` banned-vocab bullet"
+        );
 
         // Current-snapshot semantics: must say REWRITE, must NOT instruct
         // append-to-progress (the original prompt's wording that drove the
