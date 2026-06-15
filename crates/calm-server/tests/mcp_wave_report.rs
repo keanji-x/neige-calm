@@ -293,7 +293,7 @@ async fn read_returns_initial_seeded_body() {
         .expect("spec can read the report");
     assert_eq!(
         out.get("body").and_then(Value::as_str),
-        Some("# Goal\n\n_The spec agent will fill this in._\n")
+        Some("# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n")
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
     assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(1));
@@ -412,7 +412,7 @@ async fn write_replaces_body_and_emits_card_updated() {
                 "pre-write summary is the empty initial value",
             );
             assert_eq!(
-                body_before, "# Goal\n\n_The spec agent will fill this in._\n",
+                body_before, "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n",
                 "pre-write body is the initial seed body",
             );
             // Post-write state: matches what was passed to report.write.
@@ -936,7 +936,7 @@ async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
             assert_eq!(*author, EditAuthor::Spec);
             assert_eq!(
                 body_before,
-                "# Goal\n\n_The spec agent will fill this in._\n"
+                "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n"
             );
             assert_eq!(body_after, "scoped body\n");
             assert_eq!(summary_after, "scoped summary");
@@ -1611,7 +1611,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         .unwrap();
     let payload1: WaveReportPayload = serde_json::from_value(card1.payload).unwrap();
     assert_eq!(
-        payload1.body, "# Goal\n\n_The spec agent will fill this in._\n",
+        payload1.body, "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n",
         "wave 1's report is the original seed body — cross-wave isolation held",
     );
 

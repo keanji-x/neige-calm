@@ -354,7 +354,7 @@ mod tests {
         let p = WaveReportPayload::initial();
         assert_eq!(p.schema_version, WaveReportPayload::SCHEMA_VERSION);
         assert!(p.summary.is_empty());
-        assert!(p.body.contains("# Goal"));
+        assert!(p.body.contains("# 概要"));
         assert!(p.body.ends_with('\n'));
     }
 
@@ -400,12 +400,13 @@ mod tests {
     }
 
     #[test]
-    fn initial_matches_migration_seed_body() {
-        // Migration 0014 hard-codes the same placeholder string; if
-        // this assertion fails the migration's INSERT and `initial()`
-        // have diverged — fix one to match the other so backfilled
-        // and freshly-minted waves render identically.
+    fn initial_uses_current_chinese_seed_body() {
+        // Migration 0014 is historical and intentionally remains
+        // frozen; freshly-minted waves use the current Chinese seed.
         let p = WaveReportPayload::initial();
-        assert_eq!(p.body, "# Goal\n\n_The spec agent will fill this in._\n");
+        assert_eq!(
+            p.body,
+            "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n"
+        );
     }
 }

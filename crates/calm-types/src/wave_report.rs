@@ -54,14 +54,13 @@ impl WaveReportPayload {
     pub const SCHEMA_VERSION: u32 = 1;
 
     /// Canonical "wave was just minted; spec hasn't run yet" payload.
-    /// Used by `routes::waves::create_wave` (PR B) and mirrored
-    /// verbatim by the SQL string in migration 0014 — keep them in
-    /// sync if the placeholder copy ever changes.
+    /// Used by `routes::waves::create_wave` (PR B). Historical
+    /// migration seeds stay frozen; freshly-minted waves use this copy.
     pub fn initial() -> Self {
         Self {
             schema_version: Self::SCHEMA_VERSION,
             summary: String::new(),
-            body: "# Goal\n\n_The spec agent will fill this in._\n".to_string(),
+            body: "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n".to_string(),
         }
     }
 }
