@@ -136,8 +136,9 @@ Wave 有一份面向用户的 Markdown 报告，由你维护。它显示在 Wave
   这类描述你内部动作的句子。读者不关心你怎么运转的；他们想知道 *做成 \
   了什么*、*定下了什么*、*还差什么*。
   ✗ 不好：\"重新读取 wave state，确认 worker 完成了 demo 实现。\"
-  ✓ 好：\"demo 已部署在 http://192.168.5.20:8000/，PR #76 已开。\"
-* **用中文写**。
+  ✓ 好：\"demo 已部署在 <preview URL>，PR #76 已开。\"
+* **用中文写** — body / summary / 各种 MCP 工具调用里的 `message` 字段 \
+  都用中文。读者听众是同一个人，不要混语言。
 
 READ 当前 body 用 `neige cat report.md`。WRITE/EDIT 用：
 
@@ -154,8 +155,8 @@ READ 当前 body 用 `neige cat report.md`。WRITE/EDIT 用：
     每条都带链接或具体引用。任务完成后挪到这里。
   * `# 决策` — 重要取舍。格式 \"决定 X，因为 Y\"。候选 / 讨论过程不写在 \
     这里 — 只写已经定下来的事。
-  * `# 待你定` — 等用户拍板的事 / 阻塞项。UI 用 warning 样式高亮。 \
-    没有就省略这个 section。
+  * `# 待你定` — 等用户拍板的事 / 阻塞项。把这一节排在用户最容易看到的 \
+    位置（紧跟概要）。没有就省略这个 section。
   * `# 进行中` — 当前活跃的任务（worker 在跑 / gate 在等结果）。完成 \
     后从这里移除，挪到 `# 已完成`。没有就写 \"目前空闲，等待你的下一 \
     步指令\"。
@@ -169,10 +170,18 @@ READ 当前 body 用 `neige cat report.md`。WRITE/EDIT 用：
   * 被阻塞 → 在 `# 待你定` 写明白具体要什么
   * 当前状态发生变化 → 重写 `# 概要`
 
+**初次接管旧格式报告：** 当 `neige cat report.md` 返回的还是旧的英文 \
+`# Goal / # Progress / # Needs attention / # Results / # Timeline` \
+格式时，**一次性整体 REWRITE 成新的中文 section 结构**（用 `calm.report.write` \
+整体替换），不要在旧格式上做局部 edit — partial 迁移会产生中英混杂、 \
+section 重复的 Frankensteinian body。迁移时保留仍然有效的事实，丢弃 \
+已经过时的流水账条目。
+
 **不要做的：**
 
-  * 不要用旧的 `# Goal / # Progress / # Results / # Timeline` 词汇 — \
-    那套词汇引导流水账式写作。
+  * 不要用旧的 `# Goal / # Progress / # Needs attention / # Results / # Timeline` \
+    词汇 — 那套词汇引导流水账式写作。新格式只用 `# 概要 / # 已完成 / # 决策 / \
+    # 待你定 / # 进行中` 这五个 H1。
   * 不要 append 后不删 — `# 已完成` 和 `# 进行中` 都会失效；旧条目失效 \
     就删掉，不要堆积。
   * 不要复述 lifecycle 状态（用户在卡头已经看到 badge 了）。
@@ -459,6 +468,64 @@ mod tests {
                 && !p.contains("calm.wave.ls")
                 && !p.contains("calm.report.read"),
             "spec prompt must not instruct reads via MCP"
+        );
+    }
+
+    #[test]
+    fn spec_prompt_pins_chinese_current_snapshot_report_semantics() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+
+        // New Chinese section vocab present (all five required H1s).
+        for section in ["# 概要", "# 已完成", "# 决策", "# 待你定", "# 进行中"] {
+            assert!(
+                p.contains(section),
+                "Wave Report prompt must document the new Chinese section `{section}`"
+            );
+        }
+
+        // Old English vocab is explicitly banned (the banned-list bullet must
+        // name all of them so future drift back to append-log is structurally
+        // discouraged in the prompt itself).
+        for banned in [
+            "# Goal",
+            "# Progress",
+            "# Needs attention",
+            "# Results",
+            "# Timeline",
+        ] {
+            assert!(
+                p.contains(banned),
+                "prompt must list `{banned}` in the banned-vocab bullet"
+            );
+        }
+
+        // Current-snapshot semantics: must say REWRITE, must NOT instruct
+        // append-to-progress (the original prompt's wording that drove the
+        // runaway-journal behavior).
+        assert!(
+            p.contains("REWRITE"),
+            "prompt must use REWRITE to pin current-snapshot semantics"
+        );
+        assert!(
+            !p.contains("append to `# Progress`"),
+            "prompt must NOT instruct append-to-progress (root cause of runaway journals)"
+        );
+
+        // Length budget present (soft, prompt-only) and process-narration ban.
+        assert!(
+            p.contains("1000 字") && p.contains("2000"),
+            "prompt must declare the body word budget"
+        );
+        assert!(
+            p.contains("写产出，不写过程"),
+            "prompt must ban process narration"
+        );
+
+        // Migration guidance: an existing English-format report must be
+        // rewritten in one shot, not partially edited.
+        assert!(
+            p.contains("一次性整体 REWRITE") || p.contains("整体 REWRITE"),
+            "prompt must give explicit one-shot migration guidance"
         );
     }
 
