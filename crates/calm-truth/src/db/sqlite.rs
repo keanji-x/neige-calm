@@ -64,8 +64,8 @@ use crate::validation::{
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
 use calm_types::worker::{
-    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
-    WorkerSessionState,
+    Liveness, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
+    WorkerSessionId, WorkerSessionState,
 };
 
 pub struct SqlxRepo {
@@ -2759,6 +2759,41 @@ pub async fn session_get_tx(
     row.as_ref().map(worker_session_from_row).transpose()
 }
 
+pub async fn session_set_liveness_tx(
+    tx: &mut SessionTx<'_>,
+    id: &WorkerSessionId,
+    liveness: &Liveness,
+    probed_at_ms: i64,
+) -> Result<Option<WorkerSession>> {
+    let tag = LivenessTag::from(liveness);
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET liveness = ?1,
+                  liveness_probed_at_ms = ?2
+            WHERE id = ?3
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(tag.as_db_str())
+    .bind(probed_at_ms)
+    .bind(id.as_str())
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        tracing::debug!(
+            session_id = %id,
+            liveness = tag.as_db_str(),
+            "worker session liveness observation skipped for non-active or missing row"
+        );
+        return Ok(None);
+    }
+    let Some(session) = session_get_tx(tx, id).await? else {
+        return Err(CalmError::Internal(format!(
+            "worker session {id} missing after liveness update"
+        )));
+    };
+    Ok(Some(session))
+}
+
 pub async fn session_insert_tx(
     tx: &mut SessionTx<'_>,
     session: WorkerSession,
@@ -5278,6 +5313,35 @@ impl SessionRepo for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         row.as_ref().map(worker_session_from_row).transpose()
+    }
+
+    async fn sessions_nonterminal(&self) -> Result<Vec<WorkerSession>> {
+        let rows = sqlx::query(
+            r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
+                      requester_session_id, state, mcp_token_hash, thread_id,
+                      agent_session_id, active_turn_id, terminal_run_id,
+                      handle_state_json, liveness, liveness_probed_at_ms,
+                      exit_code, exit_interpretation, spawn_op_id, created_at_ms,
+                      updated_at_ms, completed_at_ms
+               FROM worker_sessions
+               WHERE state IN ('starting', 'running', 'idle', 'turn_pending')
+               ORDER BY wave_id ASC, created_at_ms ASC, id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(worker_session_from_row).collect()
+    }
+
+    async fn session_set_liveness(
+        &self,
+        id: &WorkerSessionId,
+        liveness: &Liveness,
+        probed_at_ms: i64,
+    ) -> Result<Option<WorkerSession>> {
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let out = session_set_liveness_tx(&mut tx, id, liveness, probed_at_ms).await?;
+        tx.commit().await?;
+        Ok(out)
     }
 
     async fn session_state_transition_tx(

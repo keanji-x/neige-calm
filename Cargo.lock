@@ -444,6 +444,7 @@ dependencies = [
  "calm-server",
  "calm-session",
  "calm-truth",
+ "calm-truth-test-harness",
  "calm-types",
  "chrono",
  "clap",

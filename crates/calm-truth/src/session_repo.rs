@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use calm_types::worker::{WorkerSession, WorkerSessionId, WorkerSessionState};
+use calm_types::worker::{Liveness, WorkerSession, WorkerSessionId, WorkerSessionState};
 use sqlx::{Sqlite, Transaction};
 
 use crate::error::Result;
@@ -16,6 +16,15 @@ pub trait SessionRepo: Send + Sync {
     ) -> Result<WorkerSession>;
 
     async fn session_get(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
+
+    async fn sessions_nonterminal(&self) -> Result<Vec<WorkerSession>>;
+
+    async fn session_set_liveness(
+        &self,
+        id: &WorkerSessionId,
+        liveness: &Liveness,
+        probed_at_ms: i64,
+    ) -> Result<Option<WorkerSession>>;
 
     async fn session_state_transition_tx(
         &self,

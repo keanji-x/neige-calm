@@ -228,6 +228,7 @@ libc = "0.2"
 # the production binary or any non-test consumer. See `state.rs` doc on
 # `raw_repo` and the `fixtures` feature definition above.
 calm-server = { path = ".", features = ["fixtures"] }
+calm-truth-test-harness = { path = "../calm-truth-test-harness" }
 # Route integration tests drive the Router via `tower::ServiceExt::oneshot`
 # without bringing up a TCP listener. `tower` itself is already a normal dep
 # (used by axum) but the `oneshot` helper lives behind the `util` feature.

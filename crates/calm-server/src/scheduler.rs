@@ -289,17 +289,23 @@ impl Scheduler {
         }
     }
 
-    /// Resolve the reconcile-tick period from
-    /// `NEIGE_SCHEDULER_RECONCILE_SECS` (default 300; non-positive /
+    /// Resolve a reconcile-tick period from an env var (non-positive /
     /// garbage → default).
-    pub fn reconcile_secs_from_env(default: u64) -> u64 {
-        match std::env::var("NEIGE_SCHEDULER_RECONCILE_SECS") {
+    pub fn reconcile_secs_from_env_var(var: &str, default: u64) -> u64 {
+        match std::env::var(var) {
             Ok(raw) => match raw.trim().parse::<u64>() {
                 Ok(n) if n > 0 => n,
                 _ => default,
             },
             Err(_) => default,
         }
+    }
+
+    /// Resolve the reconcile-tick period from
+    /// `NEIGE_SCHEDULER_RECONCILE_SECS` (default 300; non-positive /
+    /// garbage → default).
+    pub fn reconcile_secs_from_env(default: u64) -> u64 {
+        Self::reconcile_secs_from_env_var("NEIGE_SCHEDULER_RECONCILE_SECS", default)
     }
 
     /// Configured kernel-default budget. Exposed for test assertions.
@@ -1683,6 +1689,10 @@ mod tests {
         assert_eq!(Scheduler::reconcile_secs_from_env(300), 300);
         set("17");
         assert_eq!(Scheduler::reconcile_secs_from_env(300), 17);
+        assert_eq!(
+            Scheduler::reconcile_secs_from_env_var("NEIGE_SCHEDULER_RECONCILE_SECS", 300),
+            17
+        );
 
         match saved {
             Some(v) => set(&v),

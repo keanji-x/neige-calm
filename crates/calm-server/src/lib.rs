@@ -33,8 +33,11 @@ pub mod aspect;
 pub mod auth;
 pub mod card_kind;
 pub mod harness;
+pub mod provider_registry;
+pub mod reaper;
 pub mod worker_flow;
 use crate::runtime_repo::RunStatus;
+pub use reaper::reaper_on_boot;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -678,5 +681,21 @@ mod boot_order_tests {
             .find("scheduler_sweep_on_boot(&state).await")
             .expect("main boot calls scheduler_sweep_on_boot");
         assert!(recover < sweep);
+    }
+
+    #[test]
+    fn boot_order_reaper_gate_after_backfill_and_operation_recovery() {
+        let main_rs = include_str!("main.rs");
+        let backfill = main_rs
+            .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await?")
+            .expect("main boot calls worker_sessions backfill");
+        let recover = main_rs
+            .find("recover_operations_on_boot(&state).await")
+            .expect("main boot calls recover_operations_on_boot");
+        let reaper = main_rs
+            .find("reaper_on_boot()")
+            .expect("main boot opens reaper gate");
+        assert!(backfill < reaper);
+        assert!(recover < reaper);
     }
 }
