@@ -270,6 +270,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             handle_state_json: Some(serde_json::to_value(&snapshot)?),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         };
         if defer_runtime_start {
@@ -454,6 +455,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             handle_state_json: Some(serde_json::to_value(&snapshot)?),
                             lease_owner: None,
                             lease_until_ms: None,
+                            spawn_op_id: None,
                             now_ms: now_ms(),
                         };
                         if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id).await?

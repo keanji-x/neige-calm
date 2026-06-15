@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{CoveId, WaveId};
-use crate::runtime::TimestampMs;
+use crate::runtime::{RunStatus, TimestampMs};
 
 // ---------------------------------------------------------------------------
 // WorkerSessionId
@@ -258,6 +258,29 @@ impl ExitInterpretation {
             ExitInterpretation::PreserveCard => "preserve_card",
             ExitInterpretation::ResumeEligible => "resume_eligible",
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitCommitMapping {
+    pub session_state: WorkerSessionState,
+    pub runtime_status: RunStatus,
+    pub exit_interpretation: &'static str,
+}
+
+pub fn exit_commit_mapping(interpretation: &ExitInterpretation) -> Option<ExitCommitMapping> {
+    match interpretation {
+        ExitInterpretation::Completed => Some(ExitCommitMapping {
+            session_state: WorkerSessionState::Exited,
+            runtime_status: RunStatus::Exited,
+            exit_interpretation: interpretation.as_db_str(),
+        }),
+        ExitInterpretation::Failed { .. } => Some(ExitCommitMapping {
+            session_state: WorkerSessionState::Failed,
+            runtime_status: RunStatus::Failed,
+            exit_interpretation: interpretation.as_db_str(),
+        }),
+        ExitInterpretation::PreserveCard | ExitInterpretation::ResumeEligible => None,
     }
 }
 

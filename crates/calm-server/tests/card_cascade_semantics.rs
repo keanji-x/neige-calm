@@ -133,6 +133,7 @@ async fn mint_codex_worker(boot: &Boot) -> (Card, Terminal) {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         boot.wave_id.clone().into(),
         None,
         "/workspace".into(),

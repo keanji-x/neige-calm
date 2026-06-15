@@ -87,6 +87,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         &mut tx,
         card_id.clone(),
         &runtime_id,
+        None,
         wave.id.clone(),
         None,
         "/workspace".into(),
@@ -120,6 +121,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         &mut tx,
         other_card_id.clone(),
         &calm_server::model::new_id(),
+        None,
         wave.id.clone(),
         None,
         "/workspace".into(),
@@ -206,6 +208,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
                 handle_state_json: None,
                 lease_owner: None,
                 lease_until_ms: None,
+                spawn_op_id: None,
                 now_ms: now_ms(),
             },
         )

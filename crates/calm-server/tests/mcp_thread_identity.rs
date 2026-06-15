@@ -90,6 +90,7 @@ async fn boot_with_registry_and_daemon_hash(
         &mut tx,
         spec_card_id.clone(),
         &calm_server::model::new_id(),
+        None,
         wave.id.clone(),
         None,
         "/workspace".into(),
@@ -221,6 +222,7 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
                 handle_state_json: None,
                 lease_owner: None,
                 lease_until_ms: None,
+                spawn_op_id: None,
                 now_ms: now_ms(),
             },
         )
@@ -349,6 +351,7 @@ async fn remint_updates_one_worker_session_hash_row() {
         &mut tx,
         card_id.clone(),
         &runtime_id,
+        None,
         wave.id,
         None,
         "/workspace".into(),
@@ -449,6 +452,7 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

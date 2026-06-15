@@ -1120,6 +1120,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
                 tx,
                 card_id,
                 &runtime_id_for_tx,
+                None,
                 wave_id.into(),
                 None,
                 "/bin/sh".into(),
@@ -1239,6 +1240,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
                 tx,
                 card_id,
                 &runtime_id_for_tx,
+                None,
                 wave_id.into(),
                 None,
                 "/workspace".into(),
@@ -2136,6 +2138,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
                 tx,
                 card_id,
                 &runtime_id_for_tx,
+                None,
                 wave_id.into(),
                 None,
                 "/bin/sh".into(),
@@ -2318,9 +2321,11 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     let idem = "terminal-worker-recovery-exited";
     let payload = terminal_worker_payload(&boot.wave_id, idem);
     let op = pending_operation("terminal-worker", &boot.wave_id, payload.clone());
+    insert_pending_operation_row(&boot.repo, &op).await;
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
+    mark_operation_succeeded(&boot.repo, &op.id).await;
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
     boot.repo
         .terminal_set_exit(&terminal_id, Some(0), false)
@@ -2427,12 +2432,14 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     let idem = "codex-worker-recovery-exited";
     let payload = codex_worker_payload(&boot.wave_id, idem);
     let op = pending_operation("codex-worker", &boot.wave_id, payload.clone());
+    insert_pending_operation_row(&boot.repo, &op).await;
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = codex_adapter
         .prepare_tx(&mut tx, &payload, &op)
         .await
         .unwrap();
     tx.commit().await.unwrap();
+    mark_operation_succeeded(&boot.repo, &op.id).await;
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
     boot.repo
         .terminal_set_exit(&terminal_id, Some(0), false)
@@ -2618,6 +2625,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                 tx,
                 card_id,
                 &runtime_id_for_tx,
+                None,
                 wave_id.into(),
                 None,
                 "/bin/sh".into(),
@@ -2994,6 +3002,47 @@ fn pending_operation(kind: &str, target_id: &str, payload: Value) -> Operation {
     }
 }
 
+async fn insert_pending_operation_row(repo: &SqlxRepo, op: &Operation) {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               phase, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
+    )
+    .bind(&op.id)
+    .bind(&op.operation_key)
+    .bind(&op.kind)
+    .bind(&op.idempotency_key)
+    .bind(&op.payload_hash)
+    .bind(&op.target_type)
+    .bind(op.target_id.as_deref())
+    .bind(serde_json::to_string(&op.target).unwrap())
+    .bind(serde_json::to_string(&op.payload).unwrap())
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+}
+
+async fn mark_operation_succeeded(repo: &SqlxRepo, op_id: &str) {
+    let now = now_ms();
+    sqlx::query(
+        r#"UPDATE operations
+              SET phase = 'succeeded',
+                  updated_at_ms = ?2,
+                  completed_at_ms = ?2
+            WHERE id = ?1"#,
+    )
+    .bind(op_id)
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+}
+
 async fn assert_minted_runtime(repo: &SqlxRepo, output: TxOutput, kind: RuntimeKind) {
     let runtime_id = output
         .target_id
@@ -3144,6 +3193,7 @@ async fn seed_codex_card_for_operation(
                 tx,
                 card_id,
                 &runtime_id_for_tx,
+                None,
                 wave_id.into(),
                 None,
                 "/workspace".into(),

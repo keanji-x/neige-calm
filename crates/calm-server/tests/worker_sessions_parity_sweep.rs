@@ -144,6 +144,7 @@ async fn deferred_spec_placeholder_session_is_not_parity_divergence() {
             handle_state_json: Some(json!({"mode": "harness"})),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -243,6 +244,7 @@ async fn insert_mirrored_runtime(repo: &SqlxRepo, card_id: &str) -> String {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

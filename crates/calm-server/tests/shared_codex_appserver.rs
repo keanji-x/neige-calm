@@ -369,6 +369,7 @@ async fn seed_runtime_thread_with_kind(
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

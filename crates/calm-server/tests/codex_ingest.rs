@@ -40,6 +40,7 @@ async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

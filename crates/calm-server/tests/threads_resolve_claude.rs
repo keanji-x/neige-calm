@@ -102,6 +102,7 @@ async fn bind_claude_session(repo: &SqlxRepo, card_id: &str, session_id: &str) {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

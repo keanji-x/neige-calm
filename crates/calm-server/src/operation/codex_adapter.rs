@@ -306,6 +306,7 @@ impl ProviderAdapter for CodexAdapter {
             tx,
             card_id.clone(),
             &runtime_id,
+            None,
             WaveId::from(wave_id.clone()),
             payload.request.sort,
             payload.request.cwd.clone(),
@@ -717,7 +718,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<TxOutput> {
         let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
@@ -741,6 +742,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             tx,
             card_id.clone(),
             &runtime_id,
+            Some(op.id.as_str()),
             wave_id,
             None,
             cwd.clone(),

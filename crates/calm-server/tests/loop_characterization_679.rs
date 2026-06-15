@@ -166,6 +166,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

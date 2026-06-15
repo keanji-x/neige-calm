@@ -57,7 +57,7 @@ use crate::runtime_row::{
     card_runtime_from_row, projectable_runtimes_for_cards_from_rows,
     projectable_runtimes_for_cards_query, run_status_from_db,
 };
-use crate::session_repo::{SessionRepo, Tx as SessionTx};
+use crate::session_repo::{CommitExitOutcome, SessionRepo, Tx as SessionTx};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
 };
@@ -2004,6 +2004,7 @@ pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
     runtime_id: &str,
+    spawn_op_id: Option<&str>,
     wave_id: WaveId,
     sort: Option<f64>,
     program: String,
@@ -2103,6 +2104,7 @@ pub async fn card_with_terminal_create_tx(
         handle_state_json: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_op_id: spawn_op_id.map(str::to_string),
         now_ms: now_ms(),
     };
     if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
@@ -2195,6 +2197,7 @@ pub async fn card_with_codex_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
     runtime_id: &str,
+    spawn_op_id: Option<&str>,
     wave_id: WaveId,
     sort: Option<f64>,
     cwd: String,
@@ -2335,6 +2338,7 @@ pub async fn card_with_codex_create_tx(
         handle_state_json: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_op_id: spawn_op_id.map(str::to_string),
         now_ms: now_ms(),
     };
     runtime_start_tx(tx, runtime_init).await?;
@@ -2445,6 +2449,7 @@ pub async fn card_with_claude_create_tx(
         handle_state_json: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_op_id: None,
         now_ms: now_ms(),
     };
     if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
@@ -2883,6 +2888,53 @@ pub async fn session_state_transition_tx(
     session_state_transition_at_tx(tx, id, to, now, completed_at_ms).await
 }
 
+pub async fn session_commit_exit_tx(
+    tx: &mut SessionTx<'_>,
+    id: &WorkerSessionId,
+    to: WorkerSessionState,
+    liveness_probed_at_ms: i64,
+    exit_code: Option<i32>,
+    exit_interpretation: &str,
+) -> Result<WorkerSession> {
+    let from = worker_session_current_state_tx(tx, id).await?;
+    if !worker_session_status_transition_allowed(from, to) {
+        return Err(CalmError::Conflict(format!(
+            "illegal worker session state transition {id}: {} -> {}",
+            from.as_db_str(),
+            to.as_db_str()
+        )));
+    }
+
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = ?1,
+                  liveness = 'exited',
+                  liveness_probed_at_ms = ?2,
+                  exit_code = ?3,
+                  exit_interpretation = ?4,
+                  completed_at_ms = ?2,
+                  updated_at_ms = ?2
+            WHERE id = ?5
+              AND state = ?6"#,
+    )
+    .bind(to.as_db_str())
+    .bind(liveness_probed_at_ms)
+    .bind(exit_code)
+    .bind(exit_interpretation)
+    .bind(id.as_str())
+    .bind(from.as_db_str())
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::Conflict(format!(
+            "worker session {id} changed during exit commit"
+        )));
+    }
+    session_get_tx(tx, id).await?.ok_or_else(|| {
+        CalmError::Internal(format!("worker session {id} missing after exit commit"))
+    })
+}
+
 async fn session_state_transition_at_tx(
     tx: &mut SessionTx<'_>,
     id: &WorkerSessionId,
@@ -2985,7 +3037,7 @@ fn worker_session_from_runtime_init(init: &RuntimeInit, wave_id: WaveId) -> Work
         liveness_probed_at_ms: None,
         exit_code: None,
         exit_interpretation: None,
-        spawn_op_id: None,
+        spawn_op_id: init.spawn_op_id.clone(),
         created_at_ms: init.now_ms,
         updated_at_ms: init.now_ms,
         completed_at_ms: None,
@@ -4103,6 +4155,45 @@ pub async fn runtime_complete_tx(
         return Err(runtime_message(format!("runtime {id} not found")));
     }
     session_complete_mirror_tx(tx, id, terminal_status, now).await?;
+    Ok(())
+}
+
+pub async fn runtime_status_flip_tx(
+    tx: &mut RuntimeTx<'_>,
+    id: &RuntimeId,
+    terminal_status: RunStatus,
+) -> RuntimeResult<()> {
+    if !matches!(terminal_status, RunStatus::Failed | RunStatus::Exited) {
+        return Err(RuntimeRepoError::IllegalStatusTransition {
+            id: id.clone(),
+            attempted: terminal_status,
+        });
+    }
+
+    let current = runtime_current_status_tx(tx, id).await?;
+    ensure_runtime_status_transition(id, &current, &terminal_status)?;
+
+    let lockstep_ms: Option<i64> =
+        sqlx::query_scalar("SELECT updated_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let lockstep_ms = lockstep_ms.unwrap_or_else(now_ms);
+    let res = sqlx::query(
+        r#"UPDATE runtimes
+              SET status = ?1,
+                  updated_at_ms = ?2,
+                  completed_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(run_status_to_db(&terminal_status))
+    .bind(lockstep_ms)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!("runtime {id} not found")));
+    }
     Ok(())
 }
 
@@ -5288,6 +5379,27 @@ impl RuntimeRepo for SqlxRepo {
     }
 }
 
+fn is_session_conflict(err: &CalmError) -> bool {
+    matches!(
+        err,
+        CalmError::Core(calm_types::error::CoreError::Conflict(_))
+    )
+}
+
+fn runtime_status_for_exit_session_state(
+    id: &WorkerSessionId,
+    to: WorkerSessionState,
+) -> Result<RunStatus> {
+    match to {
+        WorkerSessionState::Exited => Ok(RunStatus::Exited),
+        WorkerSessionState::Failed => Ok(RunStatus::Failed),
+        _ => Err(CalmError::BadRequest(format!(
+            "session exit commit {id} requires exited or failed target, got {}",
+            to.as_db_str()
+        ))),
+    }
+}
+
 #[async_trait]
 impl SessionRepo for SqlxRepo {
     async fn session_insert_tx(
@@ -5351,6 +5463,43 @@ impl SessionRepo for SqlxRepo {
         to: WorkerSessionState,
     ) -> Result<WorkerSession> {
         session_state_transition_tx(tx, id, to).await
+    }
+
+    async fn session_commit_exit(
+        &self,
+        id: &WorkerSessionId,
+        to: WorkerSessionState,
+        liveness_probed_at_ms: i64,
+        exit_code: Option<i32>,
+        exit_interpretation: &str,
+    ) -> Result<CommitExitOutcome> {
+        let runtime_status = runtime_status_for_exit_session_state(id, to)?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let session = match session_commit_exit_tx(
+            &mut tx,
+            id,
+            to,
+            liveness_probed_at_ms,
+            exit_code,
+            exit_interpretation,
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(err) if is_session_conflict(&err) => return Ok(CommitExitOutcome::Absorbed),
+            Err(err) => return Err(err),
+        };
+
+        match runtime_status_flip_tx(&mut tx, &id.0, runtime_status).await {
+            Ok(()) => {}
+            Err(RuntimeRepoError::IllegalStatusTransition { .. }) => {
+                return Ok(CommitExitOutcome::Absorbed);
+            }
+            Err(err) => return Err(err.into()),
+        }
+
+        tx.commit().await?;
+        Ok(CommitExitOutcome::Committed(session))
     }
 
     async fn session_list_by_wave(&self, wave_id: &WaveId) -> Result<Vec<WorkerSession>> {

@@ -134,6 +134,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -178,6 +179,7 @@ async fn seed_shared_spec_pair(
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "/tmp".into(),
@@ -210,6 +212,7 @@ async fn seed_shared_spec_pair(
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -247,6 +250,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "/tmp".into(),

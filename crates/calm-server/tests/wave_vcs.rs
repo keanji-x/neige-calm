@@ -341,6 +341,7 @@ async fn start_codex_runtime_with_event(
                         handle_state_json: None,
                         lease_owner: None,
                         lease_until_ms: None,
+                        spawn_op_id: None,
                         now_ms: now_ms(),
                     },
                 )
@@ -3033,6 +3034,7 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -3128,6 +3130,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
                 handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
                 lease_owner: None,
                 lease_until_ms: None,
+                spawn_op_id: None,
                 now_ms: now_ms(),
             },
         )

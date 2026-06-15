@@ -181,6 +181,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 handle_state_json: None,
                 lease_owner: None,
                 lease_until_ms: None,
+                spawn_op_id: None,
                 now_ms: crate::model::now_ms(),
             },
         )
