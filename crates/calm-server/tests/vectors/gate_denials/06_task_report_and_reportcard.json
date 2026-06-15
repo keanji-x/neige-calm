@@ -1,23 +1,23 @@
 [
   {
-    "description": "AiSpec(spec card) emitting task.completed at the kernel write entry is ALLOWED today",
-    "note": "Characterization surprise: the in-tx role gate has no rule denying task.completed to AiSpec — sections 2/2.5 don't list it and section 3 only inspects AiCodex/AiClaude actors. The 'spec must not report task completion' rule lives ONLY in the MCP soft gate (mcp_server/tools/emit.rs task_complete -> require_role(Worker)). Pinned as allow; tightening the kernel gate is a conscious FROZEN-VECTOR-CHANGE.",
+    "description": "AiSpec(spec card) emitting task.completed at the kernel write entry is ALLOWED (intentionally left so per PR7 decision (b))",
+    "note": "Characterization surprise: the in-tx role gate has no rule denying task.completed to AiSpec — sections 2/2.5 don't list it and section 3 only inspects AiCodex/AiClaude actors. The 'spec must not report task completion' rule lives ONLY in the MCP soft gate (mcp_server/tools/emit.rs task_complete -> require_role(Worker)). PR7 decision (b): INTENTIONALLY left allow — recorder-gate ENFORCE (PR7b-ii) already restricts wave-state recording to the wave root, so this kernel-gate AiSpec allow is a low-risk defense-in-depth backstop behind the soft gate. Flipping it to deny (which forces re-authoring accepted verdicts as ActorId::Kernel + a dispatcher self-push fix) is tracked in #733.",
     "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-47", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
     "expected": { "decision": "allow" }
   },
   {
-    "description": "AiCodex(report card) emitting task.completed into ANOTHER card's scope is ALLOWED today",
-    "note": "Characterization surprise: the ReportCard arm of the gate (role_gate.rs section 3, Some(CardRole::ReportCard) => {}) performs NO self-scope cross-check, unlike the Worker arm — a report-card-bound actor can write into any card/wave/cove scope as long as the event isn't wave.updated or a dispatch-request. Pinned as allow; closing this is a conscious FROZEN-VECTOR-CHANGE.",
+    "description": "AiCodex(report card) emitting task.completed into ANOTHER card's scope is DENIED (closed in PR7b-ii)",
+    "note": "Was a characterization surprise: the ReportCard arm (role_gate.rs section 3) performed NO self-scope cross-check, unlike the Worker arm. Closed in PR7b-ii — the ReportCard arm now runs enforce_card_self_scope, so a report-card-bound actor can no longer write outside its own card scope.",
     "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-48", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
     "expected": { "decision": "deny", "error_contains": "out of scope" }
   },
   {
-    "description": "AiCodex(report card) emitting a Wave-scoped task.completed is ALLOWED today",
-    "note": "Same ReportCard no-scope-check surprise as the previous vector, one scope level up.",
+    "description": "AiCodex(report card) emitting a Wave-scoped task.completed is DENIED (closed in PR7b-ii)",
+    "note": "Same ReportCard self-scope tightening as the previous vector, one scope level up (closed in PR7b-ii).",
     "actor": { "kind": "AiCodex", "id": "$REPORT_CARD" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-49", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
