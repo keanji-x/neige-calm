@@ -31,6 +31,19 @@ pub(crate) struct ParityDivergence {
     session_completed_at_ms: Option<i64>,
 }
 
+#[derive(Debug)]
+struct ReverseOrphan {
+    session_id: String,
+    state: String,
+    thread_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct CardSessionDuplicate {
+    session_id: String,
+    n: i64,
+}
+
 impl ParityDivergence {
     pub(crate) fn runtime_id(&self) -> &str {
         &self.runtime_id
@@ -56,11 +69,15 @@ pub fn spawn(pool: SqlitePool, counter: Arc<AtomicU64>) {
 
 pub async fn sweep(pool: &SqlitePool, counter: &AtomicU64) -> Result<usize> {
     let divergences = diff(pool).await?;
-    if divergences.is_empty() {
+    let reverse_orphans = reverse_orphans(pool).await?;
+    let card_session_duplicates = card_session_duplicates(pool).await?;
+    let divergence_count =
+        divergences.len() + reverse_orphans.len() + card_session_duplicates.len();
+    if divergence_count == 0 {
         return Ok(0);
     }
 
-    counter.fetch_add(divergences.len() as u64, Ordering::Relaxed);
+    counter.fetch_add(divergence_count as u64, Ordering::Relaxed);
     for divergence in &divergences {
         tracing::warn!(
             target: "worker_sessions::parity",
@@ -86,7 +103,24 @@ pub async fn sweep(pool: &SqlitePool, counter: &AtomicU64) -> Result<usize> {
             "worker_sessions parity divergence"
         );
     }
-    Ok(divergences.len())
+    for orphan in &reverse_orphans {
+        tracing::warn!(
+            target: "worker_sessions::parity",
+            session_id = %orphan.session_id,
+            state = %orphan.state,
+            thread_id = ?orphan.thread_id,
+            "worker_sessions reverse orphan"
+        );
+    }
+    for duplicate in &card_session_duplicates {
+        tracing::warn!(
+            target: "worker_sessions::parity",
+            session_id = %duplicate.session_id,
+            card_count = duplicate.n,
+            "cards share worker session"
+        );
+    }
+    Ok(divergence_count)
 }
 
 pub(crate) async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
@@ -151,6 +185,41 @@ pub(crate) async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
             session_updated_at_ms: row.get("session_updated_at_ms"),
             runtime_completed_at_ms: row.get("runtime_completed_at_ms"),
             session_completed_at_ms: row.get("session_completed_at_ms"),
+        })
+        .collect())
+}
+
+async fn reverse_orphans(pool: &SqlitePool) -> Result<Vec<ReverseOrphan>> {
+    let rows = sqlx::query(
+        r#"SELECT ws.id, ws.state, ws.thread_id FROM worker_sessions ws
+           LEFT JOIN runtimes r ON r.id = ws.id WHERE r.id IS NULL"#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ReverseOrphan {
+            session_id: row.get("id"),
+            state: row.get("state"),
+            thread_id: row.get("thread_id"),
+        })
+        .collect())
+}
+
+async fn card_session_duplicates(pool: &SqlitePool) -> Result<Vec<CardSessionDuplicate>> {
+    let rows = sqlx::query(
+        r#"SELECT session_id, COUNT(*) AS n FROM cards
+           WHERE session_id IS NOT NULL GROUP BY session_id HAVING n > 1"#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CardSessionDuplicate {
+            session_id: row.get("session_id"),
+            n: row.get("n"),
         })
         .collect())
 }

@@ -1,6 +1,7 @@
 use crate::runtime_repo::{
     AgentProvider, CardId, CardRuntime, Result, RunStatus, RuntimeKind, RuntimeRepoError,
 };
+use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionState};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::HashMap;
@@ -83,6 +84,72 @@ pub(crate) fn card_runtime_from_row(row: &SqliteRow) -> Result<CardRuntime> {
     })
 }
 
+#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
+pub(crate) fn card_runtime_from_session(
+    ws: &WorkerSession,
+    card_id: String,
+) -> Result<CardRuntime> {
+    let kind = runtime_kind_from_session_identity(ws.provider, ws.contract)?;
+    Ok(CardRuntime {
+        id: ws.id.as_str().to_string(),
+        card_id,
+        kind,
+        agent_provider: agent_provider_from_session_provider(ws.provider),
+        status: run_status_from_worker_session_state(ws.state),
+        terminal_run_id: ws.terminal_run_id.clone(),
+        terminal_ref: None,
+        thread_id: ws.thread_id.clone(),
+        session_id: ws.agent_session_id.clone(),
+        active_turn_id: ws.active_turn_id.clone(),
+        handle_state_json: ws.handle_state_json.clone(),
+        lease_owner: None,
+        lease_until_ms: None,
+        created_at_ms: ws.created_at_ms,
+        updated_at_ms: ws.updated_at_ms,
+        completed_at_ms: ws.completed_at_ms,
+    })
+}
+
+#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
+fn runtime_kind_from_session_identity(
+    provider: WorkerProviderKind,
+    contract: WorkerContract,
+) -> Result<RuntimeKind> {
+    match (provider, contract) {
+        (WorkerProviderKind::Terminal, WorkerContract::Executor) => Ok(RuntimeKind::Terminal),
+        (WorkerProviderKind::Codex, WorkerContract::Executor) => Ok(RuntimeKind::CodexCard),
+        (WorkerProviderKind::Codex, WorkerContract::Planner) => Ok(RuntimeKind::SharedSpec),
+        (WorkerProviderKind::Claude, WorkerContract::Executor) => Ok(RuntimeKind::ClaudeCard),
+        _ => Err(RuntimeRepoError::Message {
+            message: format!(
+                "unmappable session identity (provider={provider:?}, contract={contract:?})"
+            ),
+        }),
+    }
+}
+
+#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
+fn agent_provider_from_session_provider(provider: WorkerProviderKind) -> Option<AgentProvider> {
+    match provider {
+        WorkerProviderKind::Terminal => None,
+        WorkerProviderKind::Codex => Some(AgentProvider::Codex),
+        WorkerProviderKind::Claude => Some(AgentProvider::Claude),
+    }
+}
+
+#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
+fn run_status_from_worker_session_state(state: WorkerSessionState) -> RunStatus {
+    match state {
+        WorkerSessionState::Starting => RunStatus::Starting,
+        WorkerSessionState::Running => RunStatus::Running,
+        WorkerSessionState::Idle => RunStatus::Idle,
+        WorkerSessionState::TurnPending => RunStatus::TurnPending,
+        WorkerSessionState::Failed => RunStatus::Failed,
+        WorkerSessionState::Exited => RunStatus::Exited,
+        WorkerSessionState::Superseded => RunStatus::Superseded,
+    }
+}
+
 pub(crate) fn run_status_from_db(value: &str) -> Result<RunStatus> {
     match value {
         "starting" => Ok(RunStatus::Starting),
@@ -117,5 +184,180 @@ fn agent_provider_from_db(value: &str) -> Result<AgentProvider> {
         other => Err(RuntimeRepoError::Message {
             message: format!("unknown runtime agent provider {other:?}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calm_types::ids::WaveId;
+    use calm_types::worker::{LivenessTag, SessionMode, WorkerSessionId};
+    use serde_json::json;
+
+    fn worker_session(
+        provider: WorkerProviderKind,
+        contract: WorkerContract,
+        state: WorkerSessionState,
+    ) -> WorkerSession {
+        WorkerSession {
+            id: WorkerSessionId::from("ws-1"),
+            wave_id: WaveId::from("wave-1"),
+            provider,
+            mode: SessionMode::Resumable,
+            contract,
+            parent_session_id: Some(WorkerSessionId::from("parent-1")),
+            requester_session_id: Some(WorkerSessionId::from("requester-1")),
+            state,
+            mcp_token_hash: Some("token-hash-1".into()),
+            thread_id: Some("thread-1".into()),
+            agent_session_id: Some("agent-session-1".into()),
+            active_turn_id: Some("turn-1".into()),
+            terminal_run_id: Some("terminal-run-1".into()),
+            handle_state_json: Some(json!({"mode": "harness"})),
+            liveness: LivenessTag::Alive,
+            liveness_probed_at_ms: Some(111),
+            exit_code: Some(0),
+            exit_interpretation: Some("clean".into()),
+            spawn_op_id: Some("op-1".into()),
+            created_at_ms: 10,
+            updated_at_ms: 20,
+            completed_at_ms: Some(30),
+        }
+    }
+
+    fn expected_runtime(
+        kind: RuntimeKind,
+        agent_provider: Option<AgentProvider>,
+        status: RunStatus,
+    ) -> CardRuntime {
+        CardRuntime {
+            id: "ws-1".into(),
+            card_id: "card-1".into(),
+            kind,
+            agent_provider,
+            status,
+            terminal_run_id: Some("terminal-run-1".into()),
+            terminal_ref: None,
+            thread_id: Some("thread-1".into()),
+            session_id: Some("agent-session-1".into()),
+            active_turn_id: Some("turn-1".into()),
+            handle_state_json: Some(json!({"mode": "harness"})),
+            lease_owner: None,
+            lease_until_ms: None,
+            created_at_ms: 10,
+            updated_at_ms: 20,
+            completed_at_ms: Some(30),
+        }
+    }
+
+    #[test]
+    fn card_runtime_from_session_maps_terminal() {
+        let ws = worker_session(
+            WorkerProviderKind::Terminal,
+            WorkerContract::Executor,
+            WorkerSessionState::Starting,
+        );
+
+        assert_eq!(
+            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            expected_runtime(RuntimeKind::Terminal, None, RunStatus::Starting)
+        );
+    }
+
+    #[test]
+    fn card_runtime_from_session_maps_codex_card() {
+        let ws = worker_session(
+            WorkerProviderKind::Codex,
+            WorkerContract::Executor,
+            WorkerSessionState::Running,
+        );
+
+        assert_eq!(
+            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            expected_runtime(
+                RuntimeKind::CodexCard,
+                Some(AgentProvider::Codex),
+                RunStatus::Running
+            )
+        );
+    }
+
+    #[test]
+    fn card_runtime_from_session_maps_shared_spec() {
+        let ws = worker_session(
+            WorkerProviderKind::Codex,
+            WorkerContract::Planner,
+            WorkerSessionState::Idle,
+        );
+
+        assert_eq!(
+            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            expected_runtime(
+                RuntimeKind::SharedSpec,
+                Some(AgentProvider::Codex),
+                RunStatus::Idle
+            )
+        );
+    }
+
+    #[test]
+    fn card_runtime_from_session_maps_claude_card() {
+        let ws = worker_session(
+            WorkerProviderKind::Claude,
+            WorkerContract::Executor,
+            WorkerSessionState::TurnPending,
+        );
+
+        assert_eq!(
+            card_runtime_from_session(&ws, "card-1".into()).unwrap(),
+            expected_runtime(
+                RuntimeKind::ClaudeCard,
+                Some(AgentProvider::Claude),
+                RunStatus::TurnPending
+            )
+        );
+    }
+
+    #[test]
+    fn card_runtime_from_session_hard_errors_unmapped_identity() {
+        for (provider, contract) in [
+            (WorkerProviderKind::Codex, WorkerContract::Validator),
+            (WorkerProviderKind::Terminal, WorkerContract::Planner),
+        ] {
+            let ws = worker_session(provider, contract, WorkerSessionState::Running);
+            let err = card_runtime_from_session(&ws, "card-1".into()).unwrap_err();
+            let expected = format!(
+                "unmappable session identity (provider={provider:?}, contract={contract:?})"
+            );
+
+            assert!(
+                matches!(
+                    err,
+                    RuntimeRepoError::Message { ref message } if message == &expected
+                ),
+                "unexpected error: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn worker_session_state_round_trips_to_run_status() {
+        // The reverse helper is private to db::sqlite, so this module cannot assert a true round-trip.
+        let pairs = [
+            (WorkerSessionState::Starting, RunStatus::Starting),
+            (WorkerSessionState::Running, RunStatus::Running),
+            (WorkerSessionState::Idle, RunStatus::Idle),
+            (WorkerSessionState::TurnPending, RunStatus::TurnPending),
+            (WorkerSessionState::Failed, RunStatus::Failed),
+            (WorkerSessionState::Exited, RunStatus::Exited),
+            (WorkerSessionState::Superseded, RunStatus::Superseded),
+        ];
+
+        for (session_state, run_status) in pairs {
+            assert_eq!(
+                run_status_from_worker_session_state(session_state),
+                run_status
+            );
+        }
     }
 }

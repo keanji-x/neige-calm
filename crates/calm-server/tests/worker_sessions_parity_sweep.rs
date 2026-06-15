@@ -9,7 +9,10 @@ use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_types::worker::{WorkerSessionId, WorkerSessionState};
+use calm_types::ids::WaveId;
+use calm_types::worker::{
+    SessionMode, WorkerContract, WorkerProviderKind, WorkerSessionId, WorkerSessionState,
+};
 use serde_json::json;
 
 const BOOT_ASSERT_ENV: &str = "NEIGE_ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT";
@@ -70,6 +73,62 @@ async fn worker_sessions_parity_sweep_detects_unmirrored_runtime() {
 }
 
 #[tokio::test]
+async fn worker_sessions_parity_sweep_detects_reverse_orphan() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let card_id = create_codex_card(&repo).await;
+    let wave_id = card_wave_id(&repo, &card_id).await;
+    insert_reverse_orphan_session(&repo, &wave_id, "reverse-orphan-1").await;
+
+    let counter = AtomicU64::new(0);
+    let divergences = calm_server::worker_sessions_parity_sweep::sweep(repo.pool(), &counter)
+        .await
+        .unwrap();
+
+    assert_eq!(divergences, 1);
+    assert_eq!(counter.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn worker_sessions_parity_sweep_detects_card_session_duplicate() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let first_card_id = create_codex_card(&repo).await;
+    let wave_id = card_wave_id(&repo, &first_card_id).await;
+    let runtime_id = insert_mirrored_runtime(&repo, &first_card_id).await;
+    let second_card_id = create_codex_card_in_wave(&repo, &wave_id).await;
+
+    sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2 OR id = ?3")
+        .bind(&runtime_id)
+        .bind(&first_card_id)
+        .bind(&second_card_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let counter = AtomicU64::new(0);
+    let divergences = calm_server::worker_sessions_parity_sweep::sweep(repo.pool(), &counter)
+        .await
+        .unwrap();
+
+    assert_eq!(divergences, 1);
+    assert_eq!(counter.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn worker_sessions_parity_sweep_clean_dual_written_rows_stay_clean() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let card_id = create_codex_card(&repo).await;
+    insert_mirrored_runtime(&repo, card_id.as_str()).await;
+
+    let counter = AtomicU64::new(0);
+    let divergences = calm_server::worker_sessions_parity_sweep::sweep(repo.pool(), &counter)
+        .await
+        .unwrap();
+
+    assert_eq!(divergences, 0);
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn boot_worker_sessions_parity_assertion_env_set_divergence_returns_err() {
     let _lock = ENV_LOCK.lock().await;
     let _env = EnvGuard::set(BOOT_ASSERT_ENV, "1");
@@ -119,7 +178,7 @@ async fn boot_worker_sessions_parity_assertion_env_unset_divergence_returns_ok()
 }
 
 #[tokio::test]
-async fn deferred_spec_placeholder_session_is_not_parity_divergence() {
+async fn deferred_spec_placeholder_session_is_warned_as_reverse_orphan() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let card_id = create_codex_card(&repo).await;
     let wave_id: String = sqlx::query_scalar("SELECT wave_id FROM cards WHERE id = ?1")
@@ -173,8 +232,8 @@ async fn deferred_spec_placeholder_session_is_not_parity_divergence() {
     let divergences = calm_server::worker_sessions_parity_sweep::sweep(repo.pool(), &counter)
         .await
         .unwrap();
-    assert_eq!(divergences, 0);
-    assert_eq!(counter.load(Ordering::Relaxed), 0);
+    assert_eq!(divergences, 1);
+    assert_eq!(counter.load(Ordering::Relaxed), 1);
 }
 
 async fn create_codex_card(repo: &SqlxRepo) -> String {
@@ -207,6 +266,47 @@ async fn create_codex_card(repo: &SqlxRepo) -> String {
     .unwrap()
     .id
     .to_string()
+}
+
+async fn create_codex_card_in_wave(repo: &SqlxRepo, wave_id: &str) -> String {
+    repo.card_create(NewCard {
+        wave_id: WaveId::from(wave_id),
+        kind: "codex".into(),
+        sort: None,
+        payload: json!({"schemaVersion": 1}),
+    })
+    .await
+    .unwrap()
+    .id
+    .to_string()
+}
+
+async fn card_wave_id(repo: &SqlxRepo, card_id: &str) -> String {
+    sqlx::query_scalar("SELECT wave_id FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn insert_reverse_orphan_session(repo: &SqlxRepo, wave_id: &str, session_id: &str) {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO worker_sessions
+           (id, wave_id, provider, mode, contract, state, thread_id, created_at_ms, updated_at_ms)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)"#,
+    )
+    .bind(session_id)
+    .bind(wave_id)
+    .bind(WorkerProviderKind::Codex.as_db_str())
+    .bind(SessionMode::Resumable.as_db_str())
+    .bind(WorkerContract::Executor.as_db_str())
+    .bind(WorkerSessionState::Running.as_db_str())
+    .bind("thread-reverse-orphan")
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
 }
 
 async fn insert_unmirrored_runtime(repo: &SqlxRepo, card_id: &str) -> String {
