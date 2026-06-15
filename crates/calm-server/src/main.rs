@@ -74,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::recover_operations_on_boot(&state).await?;
 
+    calm_server::reaper_on_boot();
+
     // Issue #644 PR-B — scheduler boot sweep. Must follow operation
     // recovery (design §8 boot order; asserted in `boot_order_tests`).
     calm_server::scheduler_sweep_on_boot(&state).await;

@@ -11,6 +11,7 @@
 //! `terminal_sweeper`; adapter compensation only mirrors the required
 //! reap-before-delete ordering when undoing a failed worker operation.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -37,6 +38,8 @@ use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use crate::operation::terminal_adapter::{TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
+use crate::provider_registry::WorkerProviderRegistry;
+use crate::reaper::{DEFAULT_REAPER_RECONCILE_SECS, Reaper, reaper_disabled_from_env};
 use crate::runtime_repo::RuntimeKind;
 use crate::scheduler::{DEFAULT_RECONCILE_SECS, Scheduler, TerminalTaskHook};
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -49,6 +52,13 @@ pub(crate) use crate::db::sqlite::card_with_terminal_rollback_tx;
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
 const DEFAULT_PERMITS: usize = 8;
+
+fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
+    daemon
+        .proc_supervisor_sock
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock"))
+}
 pub(crate) fn event_warrants_spec_push(
     event: &Event,
     actor: &ActorId,
@@ -297,6 +307,10 @@ pub struct Dispatcher {
     /// like `handle`.
     #[allow(dead_code)]
     reconcile_handle: JoinHandle<()>,
+    /// #679 PR8a — observational worker-session liveness reaper.
+    /// `None` when `NEIGE_REAPER_DISABLED` is set.
+    #[allow(dead_code)]
+    reaper_handle: Option<JoinHandle<()>>,
 }
 
 impl Dispatcher {
@@ -542,11 +556,11 @@ impl Dispatcher {
         events: EventBus,
         write: WriteContext,
         _codex: Arc<CodexClient>,
-        _daemon: Arc<DaemonClient>,
+        daemon: Arc<DaemonClient>,
         terminal_renderer: Arc<TerminalRendererRegistry>,
         _mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         harness: HarnessRegistry,
-        _shared_codex_appserver: Arc<SharedCodexAppServer>,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
         operation_runtime: Arc<OperationRuntime>,
         permits: usize,
     ) -> Self {
@@ -566,6 +580,11 @@ impl Dispatcher {
             Arc::downgrade(&operation_runtime),
             Arc::clone(&semaphore),
         );
+        let provider_registry = WorkerProviderRegistry::new(
+            supervisor_sock_for_provider_registry(&daemon),
+            shared_codex_appserver,
+        );
+        let reaper = Arc::new(Reaper::new(repo.clone(), provider_registry));
         // Issue #644 M2 (live path) — install the terminal-exit
         // completion bundle on the renderer registry so the
         // attach-reader exit branch can flip plan-task rows.
@@ -691,6 +710,27 @@ impl Dispatcher {
                 tick_scheduler.sweep_all().await;
             }
         });
+        let reaper_handle = if reaper_disabled_from_env() {
+            None
+        } else {
+            let tick_reaper = Arc::clone(&reaper);
+            Some(tokio::spawn(async move {
+                let period =
+                    std::time::Duration::from_secs(Scheduler::reconcile_secs_from_env_var(
+                        "NEIGE_REAPER_RECONCILE_SECS",
+                        DEFAULT_REAPER_RECONCILE_SECS,
+                    ));
+                let mut interval = tokio::time::interval(period);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // The first tick fires immediately; skip it. The reaper
+                // has its own boot gate and remains observational after it opens.
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    tick_reaper.sweep_all().await;
+                }
+            }))
+        };
 
         Self {
             semaphore,
@@ -700,6 +740,7 @@ impl Dispatcher {
             operation_runtime,
             scheduler,
             reconcile_handle,
+            reaper_handle,
         }
     }
 }
