@@ -22,7 +22,7 @@ pub mod prelude {
         ServerRepoSyncDomainRawExt,
     };
     pub use crate::runtime_repo::RuntimeRepo;
-    pub use calm_truth::session_repo::SessionRepo;
+    pub use calm_truth::session_repo::{CommitExitOutcome, SessionRepo};
 }
 
 #[async_trait]
@@ -849,6 +849,7 @@ pub mod sqlite {
         tx: &mut Transaction<'_, Sqlite>,
         card_id: String,
         runtime_id: &str,
+        spawn_op_id: Option<&str>,
         wave_id: WaveId,
         sort: Option<f64>,
         program: String,
@@ -863,6 +864,7 @@ pub mod sqlite {
             tx,
             card_id,
             runtime_id,
+            spawn_op_id,
             wave_id,
             sort,
             program,
@@ -882,6 +884,7 @@ pub mod sqlite {
         tx: &mut Transaction<'_, Sqlite>,
         card_id: String,
         runtime_id: &str,
+        spawn_op_id: Option<&str>,
         wave_id: WaveId,
         sort: Option<f64>,
         cwd: String,
@@ -898,6 +901,7 @@ pub mod sqlite {
             tx,
             card_id,
             runtime_id,
+            spawn_op_id,
             wave_id,
             sort,
             cwd,

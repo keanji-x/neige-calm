@@ -100,6 +100,7 @@ async fn harness_with(
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -150,6 +151,7 @@ async fn harness_from_snapshot(
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -776,6 +778,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

@@ -642,6 +642,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
     )

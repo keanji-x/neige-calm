@@ -102,6 +102,7 @@ fn terminal_runtime_init(card_id: String, status: RunStatus) -> RuntimeInit {
         handle_state_json: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_op_id: None,
         now_ms: now_ms(),
     }
 }
@@ -302,6 +303,7 @@ async fn running_codex_fixture() -> (
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "/workspace".into(),

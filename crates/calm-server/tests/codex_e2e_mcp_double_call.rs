@@ -179,6 +179,7 @@ async fn seed_shared_spec_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &st
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

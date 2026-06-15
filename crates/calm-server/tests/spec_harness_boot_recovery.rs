@@ -96,6 +96,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -180,6 +181,7 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -259,6 +261,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -403,6 +406,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -499,6 +503,7 @@ async fn boot_recovery_skips_terminal_waves() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -702,6 +707,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

@@ -67,6 +67,7 @@ async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -500,6 +501,7 @@ async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> CardRuntime {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

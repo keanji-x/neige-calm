@@ -237,6 +237,7 @@ impl ProviderAdapter for TerminalAdapter {
             tx,
             card_id,
             &runtime_id,
+            None,
             WaveId::from(wave_id),
             payload.request.sort,
             program.clone(),
@@ -573,7 +574,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<TxOutput> {
         let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
@@ -591,6 +592,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             tx,
             card_id,
             &runtime_id,
+            Some(op.id.as_str()),
             wave_id,
             None,
             payload.cmd.clone(),

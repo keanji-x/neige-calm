@@ -155,6 +155,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
                         handle_state_json: None,
                         lease_owner: None,
                         lease_until_ms: None,
+                        spawn_op_id: None,
                         now_ms: now_ms(),
                     },
                 )

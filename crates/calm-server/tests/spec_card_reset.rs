@@ -429,6 +429,7 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -517,6 +518,7 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -568,6 +570,7 @@ async fn seed_inactive_spec_runtime(boot: &Boot, card: &Card) -> String {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -1113,6 +1116,7 @@ async fn seed_spec_runtime_row_with_status(
             handle_state_json,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -1647,6 +1651,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -1744,6 +1749,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
             })),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -1846,6 +1852,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -1969,6 +1976,7 @@ async fn reset_spec_card_spawn_failure_keeps_old_runtime_and_harness() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -2148,6 +2156,7 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

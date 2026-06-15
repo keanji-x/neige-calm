@@ -72,6 +72,7 @@ async fn harness_drops_foreign_thread_notifications() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -184,6 +185,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -340,6 +342,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

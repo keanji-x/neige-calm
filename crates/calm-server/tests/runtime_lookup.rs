@@ -64,6 +64,7 @@ fn runtime_init(
         handle_state_json: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_op_id: None,
         now_ms: now_ms(),
     }
 }

@@ -407,6 +407,7 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -580,6 +581,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -702,6 +704,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
             handle_state_json: Some(serde_json::to_value(&old_snapshot).unwrap()),
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

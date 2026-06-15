@@ -376,6 +376,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
                         handle_state_json: None,
                         lease_owner: None,
                         lease_until_ms: None,
+                        spawn_op_id: None,
                         now_ms: now_ms(),
                     },
                 )

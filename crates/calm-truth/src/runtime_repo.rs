@@ -62,6 +62,7 @@ pub struct RuntimeInit {
     pub handle_state_json: Option<Value>,
     pub lease_owner: Option<String>,
     pub lease_until_ms: Option<TimestampMs>,
+    pub spawn_op_id: Option<String>,
     pub now_ms: TimestampMs,
 }
 

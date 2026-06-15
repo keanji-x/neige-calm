@@ -145,6 +145,7 @@ async fn start_runtime_for_card_with_thread(
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -180,6 +181,7 @@ async fn supersede_runtime_for_card(
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -705,6 +707,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )
@@ -790,6 +793,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

@@ -184,6 +184,7 @@ pub async fn seed_runtime_for_card_with_status(
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
     )
@@ -215,6 +216,7 @@ pub async fn seed_claude_runtime_for_card_with_status(
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
     )

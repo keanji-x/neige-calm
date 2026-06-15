@@ -9,8 +9,8 @@ use calm_server::db::sqlite::{
     runtime_get_active_for_card_tx, runtime_get_by_id_tx, runtime_mark_superseded_tx,
     runtime_restore_from_superseded_tx, runtime_set_active_turn_tx, runtime_set_handle_state_tx,
     runtime_set_harness_observation_tx, runtime_set_status_for_card_tx, runtime_set_status_tx,
-    runtime_start_tx, runtime_supersede_tx, session_insert_tx, session_mcp_token_set_tx,
-    session_prepare_deferred_spec_tx,
+    runtime_start_tx, runtime_supersede_tx, session_commit_exit_tx, session_insert_tx,
+    session_mcp_token_set_tx, session_prepare_deferred_spec_tx,
 };
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
@@ -19,8 +19,8 @@ use calm_server::runtime_repo::{
     ThreadAttribution,
 };
 use calm_types::worker::{
-    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
-    WorkerSessionState,
+    ExitInterpretation, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind,
+    WorkerSession, WorkerSessionId, WorkerSessionState, exit_commit_mapping,
 };
 use serde_json::json;
 use support::parity::assert_runtimes_worker_sessions_parity;
@@ -87,6 +87,7 @@ fn runtime_init(
         handle_state_json: None,
         lease_owner: None,
         lease_until_ms: None,
+        spawn_op_id: None,
         now_ms: now_ms(),
     }
 }
@@ -101,6 +102,100 @@ async fn runtime_row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64
     .fetch_one(repo.pool())
     .await
     .expect("runtime row snapshot")
+}
+
+async fn mint_terminal_session(
+    repo: &SqlxRepo,
+    spawn_op_id: Option<&str>,
+) -> (WorkerSessionId, calm_server::ids::WaveId) {
+    if let Some(op_id) = spawn_op_id {
+        ensure_test_operation(repo, op_id, "terminal-worker", op_id).await;
+    }
+    let wave = make_wave(repo).await;
+    let runtime_id = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_with_terminal_create_tx(
+        &mut tx,
+        new_id(),
+        &runtime_id,
+        spawn_op_id,
+        wave.id.clone(),
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+        CardRole::Worker,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (WorkerSessionId(runtime_id), wave.id)
+}
+
+async fn mint_codex_session(
+    repo: &SqlxRepo,
+    spawn_op_id: Option<&str>,
+) -> (WorkerSessionId, calm_server::ids::WaveId) {
+    if let Some(op_id) = spawn_op_id {
+        ensure_test_operation(repo, op_id, "codex-worker", op_id).await;
+    }
+    let wave = make_wave(repo).await;
+    let runtime_id = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_with_codex_create_tx(
+        &mut tx,
+        new_id(),
+        &runtime_id,
+        spawn_op_id,
+        wave.id.clone(),
+        None,
+        "/workspace".into(),
+        json!({"CODEX_HOME": "/tmp/codex-home"}),
+        None,
+        None,
+        None,
+        CardRole::Worker,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (WorkerSessionId(runtime_id), wave.id)
+}
+
+async fn ensure_test_operation(repo: &SqlxRepo, op_id: &str, kind: &str, idempotency_key: &str) {
+    let now = now_ms();
+    let target_json = serde_json::to_string(&json!({"type": "wave"})).unwrap();
+    let payload_json = serde_json::to_string(&json!({
+        "idempotency_key": idempotency_key
+    }))
+    .unwrap();
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               phase, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, ?5,
+                   'wave', NULL, ?6, ?7,
+                   'pending', ?8, ?8)"#,
+    )
+    .bind(op_id)
+    .bind(new_id())
+    .bind(kind)
+    .bind(idempotency_key)
+    .bind(format!("{kind}:{idempotency_key}"))
+    .bind(target_json)
+    .bind(payload_json)
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
 }
 
 fn worker_session(
@@ -1036,6 +1131,7 @@ async fn runtime_start_tx_terminal_persists_active_row() {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "bash".into(),
@@ -1076,6 +1172,7 @@ async fn runtime_complete_for_terminal_exited_path() {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "bash".into(),
@@ -1125,6 +1222,7 @@ async fn runtime_complete_for_terminal_failed_path() {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "bash".into(),
@@ -1180,6 +1278,7 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "bash".into(),
@@ -1229,6 +1328,7 @@ async fn runtime_complete_for_card_noop_when_no_active() {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "bash".into(),
@@ -1278,6 +1378,7 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "bash".into(),
@@ -1332,6 +1433,7 @@ async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
         &mut tx,
         new_id(),
         &new_id(),
+        None,
         wave.id,
         None,
         "/workspace".into(),
@@ -1357,6 +1459,241 @@ async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
     assert_eq!(active.status, RunStatus::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert!(active.thread_id.is_none());
+}
+
+#[tokio::test]
+async fn worker_session_spawn_op_id_stamped_only_for_worker_mints() {
+    let repo = fresh_repo().await;
+    let codex_op_id = new_id();
+    ensure_test_operation(&repo, &codex_op_id, "codex-worker", "task-codex").await;
+    let (codex_id, _) = mint_codex_session(&repo, Some(&codex_op_id)).await;
+    let codex_session = repo
+        .session_get(&codex_id)
+        .await
+        .unwrap()
+        .expect("codex worker session");
+    // `spawn_op_id` stores operations.id; operations.idempotency_key resolves to task.id separately.
+    assert_eq!(
+        codex_session.spawn_op_id.as_deref(),
+        Some(codex_op_id.as_str())
+    );
+
+    let terminal_op_id = new_id();
+    ensure_test_operation(&repo, &terminal_op_id, "terminal-worker", "task-terminal").await;
+    let (terminal_id, _) = mint_terminal_session(&repo, Some(&terminal_op_id)).await;
+    let terminal_session = repo
+        .session_get(&terminal_id)
+        .await
+        .unwrap()
+        .expect("terminal worker session");
+    assert_eq!(
+        terminal_session.spawn_op_id.as_deref(),
+        Some(terminal_op_id.as_str())
+    );
+
+    let (codex_create_id, _) = mint_codex_session(&repo, None).await;
+    let codex_create_session = repo
+        .session_get(&codex_create_id)
+        .await
+        .unwrap()
+        .expect("codex-create session");
+    assert_eq!(codex_create_session.spawn_op_id, None);
+
+    let spec_card = make_card(&repo, "codex").await;
+    let spec_runtime_id = new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_start_tx(
+        &mut tx,
+        RuntimeInit {
+            id: spec_runtime_id.clone(),
+            card_id: spec_card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let spec_session = repo
+        .session_get(&WorkerSessionId(spec_runtime_id))
+        .await
+        .unwrap()
+        .expect("spec harness session");
+    assert_eq!(spec_session.spawn_op_id, None);
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+}
+
+#[tokio::test]
+async fn session_commit_exit_commits_session_and_runtime_in_lockstep() {
+    for (interpretation, exit_code) in [
+        (ExitInterpretation::Completed, Some(0)),
+        (
+            ExitInterpretation::Failed {
+                reason: "provider exited".into(),
+            },
+            Some(2),
+        ),
+    ] {
+        let repo = fresh_repo().await;
+        let (session_id, _) = mint_terminal_session(&repo, Some("task-exit")).await;
+        let probe_ms = now_ms() + 10;
+        let mapping = exit_commit_mapping(&interpretation).expect("exit commit mapping");
+        let outcome = repo
+            .session_commit_exit(
+                &session_id,
+                mapping.session_state,
+                probe_ms,
+                exit_code,
+                mapping.exit_interpretation,
+            )
+            .await
+            .unwrap();
+        let committed = match outcome {
+            CommitExitOutcome::Committed(session) => session,
+            CommitExitOutcome::Absorbed => panic!("exit commit should win"),
+        };
+        assert_eq!(committed.state, mapping.session_state);
+        assert_eq!(committed.liveness, LivenessTag::Exited);
+        assert_eq!(committed.liveness_probed_at_ms, Some(probe_ms));
+        assert_eq!(committed.exit_code, exit_code);
+        assert_eq!(
+            committed.exit_interpretation.as_deref(),
+            Some(mapping.exit_interpretation)
+        );
+        assert_eq!(committed.updated_at_ms, probe_ms);
+        assert_eq!(committed.completed_at_ms, Some(probe_ms));
+
+        let runtime = repo
+            .runtime_get_by_id(&session_id.0)
+            .await
+            .unwrap()
+            .expect("runtime row");
+        assert_eq!(runtime.status, mapping.runtime_status);
+        assert_eq!(runtime.updated_at_ms, probe_ms);
+        assert_eq!(runtime.completed_at_ms, Some(probe_ms));
+        assert_runtimes_worker_sessions_parity(repo.pool()).await;
+    }
+}
+
+#[tokio::test]
+async fn session_commit_exit_absorbs_lost_session_race_without_clobber() {
+    let repo = fresh_repo().await;
+    let (session_id, _) = mint_terminal_session(&repo, Some("task-race")).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_complete_tx(&mut tx, &session_id.0, RunStatus::Exited)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let before = repo
+        .session_get(&session_id)
+        .await
+        .unwrap()
+        .expect("terminal session before absorbed commit");
+
+    let outcome = repo
+        .session_commit_exit(
+            &session_id,
+            WorkerSessionState::Failed,
+            now_ms() + 30,
+            Some(9),
+            "failed",
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, CommitExitOutcome::Absorbed);
+    let after = repo
+        .session_get(&session_id)
+        .await
+        .unwrap()
+        .expect("terminal session after absorbed commit");
+    assert_eq!(after, before);
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+}
+
+#[tokio::test]
+async fn session_commit_exit_tx_conflicts_from_terminal_state() {
+    let repo = fresh_repo().await;
+    let (session_id, _) = mint_terminal_session(&repo, Some("task-illegal")).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_complete_tx(&mut tx, &session_id.0, RunStatus::Exited)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let err = session_commit_exit_tx(
+        &mut tx,
+        &session_id,
+        WorkerSessionState::Failed,
+        now_ms() + 40,
+        Some(1),
+        "failed",
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        calm_truth::error::CalmError::Core(calm_types::error::CoreError::Conflict(_))
+    ));
+    tx.rollback().await.unwrap();
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
+}
+
+#[tokio::test]
+async fn concurrent_session_commit_exit_has_single_winner() {
+    let repo = fresh_repo().await;
+    let (session_id, _) = mint_terminal_session(&repo, Some("task-concurrent")).await;
+    let left_id = session_id.clone();
+    let right_id = session_id.clone();
+    let probe_ms = now_ms() + 50;
+    let left = repo.session_commit_exit(
+        &left_id,
+        WorkerSessionState::Exited,
+        probe_ms,
+        Some(0),
+        "completed",
+    );
+    let right = repo.session_commit_exit(
+        &right_id,
+        WorkerSessionState::Exited,
+        probe_ms,
+        Some(0),
+        "completed",
+    );
+    let (left, right) = tokio::join!(left, right);
+    let outcomes = [left.unwrap(), right.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, CommitExitOutcome::Committed(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, CommitExitOutcome::Absorbed))
+            .count(),
+        1
+    );
+    let session = repo
+        .session_get(&session_id)
+        .await
+        .unwrap()
+        .expect("committed session");
+    assert_eq!(session.state, WorkerSessionState::Exited);
+    assert_eq!(session.updated_at_ms, probe_ms);
+    assert_runtimes_worker_sessions_parity(repo.pool()).await;
 }
 
 #[tokio::test]

@@ -798,6 +798,7 @@ async fn post_claude_restart_returns_403_without_resumable_session() {
             handle_state_json: None,
             lease_owner: None,
             lease_until_ms: None,
+            spawn_op_id: None,
             now_ms: now_ms(),
         },
     )

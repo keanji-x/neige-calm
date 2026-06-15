@@ -14,7 +14,7 @@ use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
 use calm_server::operation::{
     Operation, OperationCompletionBus, OperationKey, OperationOutcome, Phase, PhaseTag,
@@ -270,6 +270,31 @@ async fn worker_card_count_with_prefix(boot: &Boot, prefix: &str) -> usize {
                 .is_some_and(|idem| idem.starts_with(prefix))
         })
         .count()
+}
+
+async fn insert_pending_operation_row(repo: &SqlxRepo, op: &Operation) {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               phase, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
+    )
+    .bind(&op.id)
+    .bind(&op.operation_key)
+    .bind(&op.kind)
+    .bind(&op.idempotency_key)
+    .bind(&op.payload_hash)
+    .bind(&op.target_type)
+    .bind(op.target_id.as_deref())
+    .bind(serde_json::to_string(&op.target).unwrap())
+    .bind(serde_json::to_string(&op.payload).unwrap())
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
 }
 
 async fn assert_card_session_mcp_hash_parity(repo: &SqlxRepo, card_id: &str, runtime_id: &str) {
@@ -548,6 +573,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         state.card_role_cache.clone(),
         state.wave_cove_cache.clone(),
     );
+    insert_pending_operation_row(&repo, &op).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
