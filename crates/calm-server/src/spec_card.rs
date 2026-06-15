@@ -119,58 +119,76 @@ writes are transactional.
 
 ## Wave Report (issue #229)
 
-The wave has a user-facing Markdown report you maintain. The user sees \
-it as the top card on the Wave page. Treat it like a file you keep \
-updated. READ the current body with `neige cat report.md` (returns the \
-report body). WRITE/EDIT via MCP tools that target the wave's report \
-instead of a disk path:
+Wave 有一份面向用户的 Markdown 报告，由你维护。它显示在 Wave 页面顶部，\
+是用户了解这个 Wave 状态的主要入口。
 
-  * `calm.report.write(body, summary?, message, lifecycle?)` — wholesale replace (like Write).
-  * `calm.report.edit(old_string, new_string, replace_all?, message, lifecycle?)` — string \
-    replacement (like Edit; `old_string` must be unique in the body or \
-    you must pass `replace_all=true`).
+**写作原则 — 这是一份工作简报，不是你的工作日志：**
 
-Structure the `body` with H1 headings the UI renders as collapsible \
-sections. Canonical headings (use these names so the UI's section \
-styling matches):
+* **读者** — 假设读者是一位今天第一次接触这个 Wave 的人，3 分钟内要能搞 \
+  清楚现状和下一步。
+* **当前快照，不是历史日志** — 报告反映 *当下* 的状态。每次更新，REWRITE \
+  相关 section，让陈旧条目消失。历史由内核 event timeline 承载，不需要 \
+  你在报告里复述。
+* **长度上限** — body 控制在 **1000 字以内**，硬上限 2000。超了就 \
+  consolidate（合并相似条目、删掉已经不重要的细节、把长描述压成要点）。
+* **写产出，不写过程** — 不要写 \"重新读取了 wave state\"、\"分析了 worker \
+  结果\"、\"调用了 plan.upsert\"、\"incorporated the worker's analysis\" \
+  这类描述你内部动作的句子。读者不关心你怎么运转的；他们想知道 *做成 \
+  了什么*、*定下了什么*、*还差什么*。
+  ✗ 不好：\"重新读取 wave state，确认 worker 完成了 demo 实现。\"
+  ✓ 好：\"demo 已部署在 http://192.168.5.20:8000/，PR #76 已开。\"
+* **用中文写**。
 
-  * `# Goal` — what the wave is trying to accomplish, in 1–3 sentences.
-  * `# Progress` — what's been done so far, terse bullets.
-  * `# Needs attention` — anything you're blocked on or want the user \
-    to look at. The UI styles this section with a warning border so \
-    the user sees it on glance.
-  * `# Results` — links / paths / PRs you've produced.
-  * `# Timeline` — a chronological log of significant events. The UI \
-    collapses this by default.
+READ 当前 body 用 `neige cat report.md`。WRITE/EDIT 用：
 
-`summary` is the one-line preview the sidebar / wave-list shows. Keep \
-it under ~80 characters.
+  * `calm.report.write(body, summary?, message, lifecycle?)` — 整体替换 \
+    （首选 — 用来重写 section 或重组报告）。
+  * `calm.report.edit(old_string, new_string, replace_all?, message, lifecycle?)` \
+    — 字符串替换（精修局部时用）。
 
-Update the report whenever:
-  * the goal becomes clearer (overwrite `# Goal`);
-  * you make material progress (append to `# Progress`);
-  * you get blocked or need the user (write into `# Needs attention`);
-  * a worker produces an artifact (add to `# Results`).
+**Section 结构**（按这个顺序用 H1，UI 按 H1 切成可折叠卡片）：
 
-Do NOT duplicate the lifecycle state in the body — the user already \
-sees the lifecycle badge in the card header. Keep the report terse: \
-it's a status board, not a chat log.
+  * `# 概要` — 1-3 句话。当前状态 + 下一步。读者哪怕只看这一段也能 \
+    掌握局面。
+  * `# 已完成` — 具体产出物：PR 链接、文件路径、部署地址、已成事实。 \
+    每条都带链接或具体引用。任务完成后挪到这里。
+  * `# 决策` — 重要取舍。格式 \"决定 X，因为 Y\"。候选 / 讨论过程不写在 \
+    这里 — 只写已经定下来的事。
+  * `# 待你定` — 等用户拍板的事 / 阻塞项。UI 用 warning 样式高亮。 \
+    没有就省略这个 section。
+  * `# 进行中` — 当前活跃的任务（worker 在跑 / gate 在等结果）。完成 \
+    后从这里移除，挪到 `# 已完成`。没有就写 \"目前空闲，等待你的下一 \
+    步指令\"。
+
+`summary` 是侧栏的 1-行预览，~80 字符以内。
+
+**什么时候更新报告：**
+
+  * 任务完成 → 从 `# 进行中` 移除 + 加到 `# 已完成`
+  * 做了一个决定 → 在 `# 决策` 加一行
+  * 被阻塞 → 在 `# 待你定` 写明白具体要什么
+  * 当前状态发生变化 → 重写 `# 概要`
+
+**不要做的：**
+
+  * 不要用旧的 `# Goal / # Progress / # Results / # Timeline` 词汇 — \
+    那套词汇引导流水账式写作。
+  * 不要 append 后不删 — `# 已完成` 和 `# 进行中` 都会失效；旧条目失效 \
+    就删掉，不要堆积。
+  * 不要复述 lifecycle 状态（用户在卡头已经看到 badge 了）。
+  * 不要把工具调用、wave_state 读取等内部机械动作写进报告。
+  * 不要把对话历史 / 长引用 dump 进报告 — 摘要后写要点。
 
 ### Reacting to user edits
 
-The user can edit the report directly from the UI. When that happens, \
-the kernel re-invokes you with a `wave.report_edited` (author = \
-\"user\") observation as that turn's input. Before doing anything else \
-on that turn:
+用户可以直接编辑报告。当用户编辑后，内核会用 `wave.report_edited` \
+（author = \"user\"）observation 唤醒你。该 turn 开始时：
 
-1. Run `neige cat report.md` to fetch the latest body.
-2. Reconcile the user's changes with what you were about to write — \
-   treat their version as ground truth for the sections they touched.
-3. Then continue your task. Do NOT blindly `report.write` your \
-   previous draft; that would overwrite the user's edits.
+1. 跑 `neige cat report.md` 拿最新 body。
+2. 把用户的修改当作 ground truth — 不要覆盖。
+3. 然后继续你的任务。**不要** 盲目 `report.write` 你之前的草稿。
 
-You will never be pushed your own (`author = \"spec\"`) edits — the \
-kernel only re-invokes you for user-authored report edits.
+你不会被自己（`author = \"spec\"`）的编辑唤醒 — 只有用户的会。
 
 ## Reading worker outputs (issue #339)
 

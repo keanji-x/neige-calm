@@ -306,7 +306,7 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
             // exactly what the request body carried.
             assert_eq!(summary_before, "");
             assert_eq!(
-                body_before, "# Goal\n\n_The spec agent will fill this in._\n",
+                body_before, "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n",
                 "before-state matches the WaveReportPayload::initial seed",
             );
             assert_eq!(summary_after, "user wrote this");
@@ -374,7 +374,7 @@ async fn extra_author_field_in_body_is_rejected() {
     let report_card = cards.into_iter().find(|c| c.kind == "wave-report").unwrap();
     let persisted: WaveReportPayload = serde_json::from_value(report_card.payload).unwrap();
     assert_eq!(
-        persisted.body, "# Goal\n\n_The spec agent will fill this in._\n",
+        persisted.body, "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n",
         "spoof attempt did not mutate the report card",
     );
 }
@@ -518,7 +518,7 @@ async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing()
         let report_card = cards.into_iter().find(|c| c.kind == "wave-report").unwrap();
         let persisted: WaveReportPayload = serde_json::from_value(report_card.payload).unwrap();
         assert_eq!(
-            persisted.body, "# Goal\n\n_The spec agent will fill this in._\n",
+            persisted.body, "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n",
             "non-user actor `{declared_actor}` did not mutate the row",
         );
     }
