@@ -3605,31 +3605,15 @@ async fn runtime_get_projectable_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    // Project the card's CURRENT identity. We include terminal-status rows
-    // (failed/exited) so a card whose runtime just exited still surfaces its
-    // last-known thread_id/terminal_id/etc. for UI and history. 'superseded'
-    // is excluded — a superseded runtime has been replaced by a new active
-    // row, which the ORDER BY will pick up. Active states sort first.
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE card_id = ?1
-             AND status != 'superseded'
-           ORDER BY
-             CASE
-                 WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
-                 ELSE 1
-             END ASC,
-             updated_at_ms DESC, created_at_ms DESC, id DESC
+    let sql = format!(
+        r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+           WHERE c.id = ?1
+             AND ws.state != 'superseded'
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
            LIMIT 1"#,
-    )
-    .bind(card_id)
-    .fetch_optional(pool)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    );
+    let row = sqlx::query(&sql).bind(card_id).fetch_optional(pool).await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 async fn runtime_get_projectable_for_cards_from_pool(
@@ -6976,6 +6960,150 @@ mod runtime_read_flip_tests {
         runtime
     }
 
+    struct ProjectableHistory {
+        card_id: String,
+        superseded: CardRuntime,
+        exited: CardRuntime,
+        active: Option<CardRuntime>,
+    }
+
+    fn projectable_runtime_init(
+        card_id: &str,
+        label: &str,
+        slot: &str,
+        status: RunStatus,
+        now_ms: i64,
+    ) -> RuntimeInit {
+        RuntimeInit {
+            id: format!("rt-projectable-{label}-{slot}"),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status,
+            terminal_run_id: None,
+            thread_id: Some(format!("thread-{label}-{slot}")),
+            session_id: Some(format!("agent-session-{label}-{slot}")),
+            active_turn_id: Some(format!("turn-{label}-{slot}")),
+            handle_state_json: Some(json!({"label": label, "slot": slot})),
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_op_id: None,
+            now_ms,
+        }
+    }
+
+    fn deferred_projectable_placeholder_init(
+        card_id: &str,
+        placeholder_id: &str,
+        now_ms: i64,
+    ) -> RuntimeInit {
+        RuntimeInit {
+            id: placeholder_id.to_string(),
+            card_id: card_id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_op_id: None,
+            now_ms,
+        }
+    }
+
+    async fn seed_projectable_history(
+        repo: &SqlxRepo,
+        label: &'static str,
+        include_active: bool,
+    ) -> ProjectableHistory {
+        let mut tx = repo.pool().begin().await.expect("begin projectable tx");
+        let card_id = create_card_in_tx(repo, &mut tx, label, "codex").await;
+        let older = runtime_start_tx(
+            &mut tx,
+            projectable_runtime_init(&card_id, label, "older", RunStatus::Running, 10_000),
+        )
+        .await
+        .expect("start older runtime");
+        let exited = runtime_supersede_tx(
+            &mut tx,
+            &older.id,
+            projectable_runtime_init(&card_id, label, "exited", RunStatus::Exited, 20_000),
+        )
+        .await
+        .expect("supersede older runtime with exited runtime");
+        let superseded = runtime_get_by_id_tx(&mut tx, &older.id)
+            .await
+            .expect("read superseded runtime")
+            .expect("superseded runtime row");
+        let active = if include_active {
+            Some(
+                runtime_start_tx(
+                    &mut tx,
+                    projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 30_000),
+                )
+                .await
+                .expect("start active runtime"),
+            )
+        } else {
+            None
+        };
+        tx.commit().await.expect("commit projectable tx");
+
+        ProjectableHistory {
+            card_id,
+            superseded,
+            exited,
+            active,
+        }
+    }
+
+    async fn seed_deferred_projectable_placeholder(
+        repo: &SqlxRepo,
+        label: &'static str,
+    ) -> (String, String) {
+        let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
+        let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
+        let card_id = create_card_in_tx(repo, &mut tx, label, "codex").await;
+        session_prepare_deferred_spec_tx(
+            &mut tx,
+            &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
+        )
+        .await
+        .expect("prepare deferred projectable placeholder");
+        tx.commit().await.expect("commit placeholder tx");
+        (card_id, placeholder_id)
+    }
+
+    async fn runtime_get_projectable_for_card_from_runtimes_reference(
+        pool: &SqlitePool,
+        card_id: &str,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        let row = sqlx::query(
+            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE card_id = ?1
+             AND status != 'superseded'
+           ORDER BY
+             CASE
+                 WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
+                 ELSE 1
+             END ASC,
+             updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+        )
+        .bind(card_id)
+        .fetch_optional(pool)
+        .await?;
+        row.as_ref().map(card_runtime_from_row).transpose()
+    }
+
     fn assert_ws_backed_projection(expected: &CardRuntime, actual: &CardRuntime) {
         assert_eq!(actual, expected);
         assert!(actual.terminal_ref.is_none());
@@ -6984,6 +7112,27 @@ mod runtime_read_flip_tests {
         if matches!(&expected.kind, RuntimeKind::Terminal) {
             assert!(actual.agent_provider.is_none());
         }
+    }
+
+    async fn assert_projectable_card_matches_runtimes_reference(
+        repo: &SqlxRepo,
+        history: &ProjectableHistory,
+        expected_winner_id: &str,
+    ) {
+        let expected =
+            runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &history.card_id)
+                .await
+                .expect("runtimes-backed projectable reference")
+                .expect("reference projectable runtime");
+        assert_eq!(expected.id, expected_winner_id);
+
+        let actual = runtime_get_projectable_for_card_from_pool(repo.pool(), &history.card_id)
+            .await
+            .expect("worker-session projectable read")
+            .expect("projectable runtime from worker_sessions");
+        assert_ws_backed_projection(&expected, &actual);
+        assert_ne!(actual.id, history.superseded.id);
+        assert_ne!(actual.status, RunStatus::Superseded);
     }
 
     #[tokio::test]
@@ -7060,6 +7209,155 @@ mod runtime_read_flip_tests {
             );
             assert_ws_backed_projection(&runtime, &actual[0]);
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_get_projectable_for_card_from_pool_matches_reference_for_active_history() {
+        let repo = fresh_repo().await;
+        let history = seed_projectable_history(&repo, "projectable-active", true).await;
+        let active = history.active.as_ref().expect("active runtime");
+
+        assert_eq!(history.superseded.status, RunStatus::Superseded);
+        assert_eq!(history.exited.status, RunStatus::Exited);
+        assert_projectable_card_matches_runtimes_reference(&repo, &history, &active.id).await;
+    }
+
+    #[tokio::test]
+    async fn runtime_get_projectable_for_card_from_pool_matches_reference_without_active_history() {
+        let repo = fresh_repo().await;
+        let history = seed_projectable_history(&repo, "projectable-no-active", false).await;
+
+        assert_eq!(history.superseded.status, RunStatus::Superseded);
+        assert!(history.active.is_none());
+        assert_projectable_card_matches_runtimes_reference(&repo, &history, &history.exited.id)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn runtime_get_projectable_for_card_from_pool_skips_deferred_spec_placeholder() {
+        let repo = fresh_repo().await;
+        let (card_id, _placeholder_id) =
+            seed_deferred_projectable_placeholder(&repo, "projectable-placeholder").await;
+
+        let expected =
+            runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &card_id)
+                .await
+                .expect("runtimes-backed projectable reference");
+        assert_eq!(expected, None);
+
+        let actual = runtime_get_projectable_for_card_from_pool(repo.pool(), &card_id)
+            .await
+            .expect("worker-session projectable read");
+        assert_eq!(actual, None);
+    }
+
+    // This pins the intended Hole-1 / deferred-spec "eager session row, no
+    // card-fallback window" behavior (PR7 + PR9a): the flipped pool read
+    // deliberately returns None for the runtime-less placeholder even when a
+    // pre-existing active runtime exists. This is safe because the double-spawn
+    // gate uses the unflipped in-tx runtime_get_active_for_card_tx; the
+    // divergence self-retires at PR9b.
+    #[tokio::test]
+    async fn projectable_deferred_spec_gap_with_active_runtime_returns_none_by_design() {
+        let repo = fresh_repo().await;
+        let label = "projectable-gap";
+        let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
+        let mut tx = repo.pool().begin().await.expect("begin gap tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
+        let mut active_init =
+            projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 30_000);
+        active_init.kind = RuntimeKind::SharedSpec;
+        let active = runtime_start_tx(&mut tx, active_init)
+            .await
+            .expect("start active shared-spec runtime");
+        session_prepare_deferred_spec_tx(
+            &mut tx,
+            &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
+        )
+        .await
+        .expect("prepare deferred projectable placeholder");
+        tx.commit().await.expect("commit gap tx");
+
+        let flipped = runtime_get_projectable_for_card_from_pool(repo.pool(), &card_id)
+            .await
+            .expect("worker-session projectable read");
+        assert_eq!(flipped, None);
+
+        let batch = runtime_get_projectable_for_cards_from_pool(
+            repo.pool(),
+            std::slice::from_ref(&card_id),
+        )
+        .await
+        .expect("worker-session batch projectable read");
+        assert!(!batch.contains_key(&card_id));
+
+        let reference =
+            runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &card_id)
+                .await
+                .expect("runtimes-backed projectable reference")
+                .expect("pre-existing active runtime remains projectable");
+        assert_eq!(reference.id, active.id);
+        assert_eq!(reference.status, RunStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn runtime_get_projectable_for_cards_from_pool_matches_reference_for_pointer_histories() {
+        let repo = fresh_repo().await;
+        let active_history =
+            seed_projectable_history(&repo, "projectable-batch-active", true).await;
+        let no_active_history =
+            seed_projectable_history(&repo, "projectable-batch-no-active", false).await;
+        let (placeholder_card_id, _placeholder_id) =
+            seed_deferred_projectable_placeholder(&repo, "projectable-batch-placeholder").await;
+        let active = active_history.active.as_ref().expect("active runtime");
+
+        let card_ids = vec![
+            active_history.card_id.clone(),
+            no_active_history.card_id.clone(),
+            placeholder_card_id.clone(),
+        ];
+        let actual = runtime_get_projectable_for_cards_from_pool(repo.pool(), &card_ids)
+            .await
+            .expect("worker-session batch projectable read");
+
+        assert_eq!(actual.len(), 2);
+        let expected_active = runtime_get_projectable_for_card_from_runtimes_reference(
+            repo.pool(),
+            &active_history.card_id,
+        )
+        .await
+        .expect("active runtimes-backed reference")
+        .expect("active reference runtime");
+        let expected_no_active = runtime_get_projectable_for_card_from_runtimes_reference(
+            repo.pool(),
+            &no_active_history.card_id,
+        )
+        .await
+        .expect("no-active runtimes-backed reference")
+        .expect("no-active reference runtime");
+
+        assert_eq!(expected_active.id, active.id);
+        assert_eq!(expected_no_active.id, no_active_history.exited.id);
+        assert_ws_backed_projection(
+            &expected_active,
+            actual
+                .get(&active_history.card_id)
+                .expect("active card batch runtime"),
+        );
+        assert_ws_backed_projection(
+            &expected_no_active,
+            actual
+                .get(&no_active_history.card_id)
+                .expect("no-active card batch runtime"),
+        );
+        assert!(!actual.contains_key(&placeholder_card_id));
+        assert!(
+            actual
+                .values()
+                .all(|runtime| runtime.id != active_history.superseded.id
+                    && runtime.id != no_active_history.superseded.id
+                    && runtime.status != RunStatus::Superseded)
+        );
     }
 
     #[tokio::test]

@@ -7,20 +7,20 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite};
 use std::collections::HashMap;
 
-/// Projection semantics: include terminal-state rows so last-known identity surfaces, exclude 'superseded' so the replacement active row is preferred.
-pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE status != 'superseded'
-             AND card_id IN ({card_id_bindings})
-           ORDER BY card_id ASC,
-             CASE
-                 WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
-                 ELSE 1
-             END ASC,
-             updated_at_ms DESC, created_at_ms DESC, id DESC"#;
+/// Projection semantics: the card's current worker-session pointer is the winner.
+pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT ws.id, ws.wave_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
+                  ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
+                  ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
+                  ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
+                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id, ws.created_at_ms,
+                  ws.updated_at_ms, ws.completed_at_ms,
+                  c.id AS card_id
+           FROM worker_sessions ws
+           JOIN cards c ON c.session_id = ws.id
+           WHERE c.id IN ({card_id_bindings})
+             AND ws.state != 'superseded'
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
+           ORDER BY c.id"#;
 
 const PROJECTABLE_RUNTIMES_FOR_CARDS_BINDINGS: &str = "{card_id_bindings}";
 
@@ -54,7 +54,7 @@ pub(crate) fn projectable_runtimes_for_cards_from_rows(
 ) -> Result<HashMap<CardId, CardRuntime>> {
     let mut out = HashMap::new();
     for row in rows {
-        let runtime = card_runtime_from_row(&row)?;
+        let runtime = card_runtime_from_ws_join_row(&row)?;
         let card_id = runtime.card_id.clone();
         out.entry(card_id).or_insert(runtime);
     }
