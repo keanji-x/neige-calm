@@ -38,6 +38,8 @@
 //! | `reviewing → working`                      | no   | yes       | no     |
 //! | `reviewing → done`                         | no   | yes       | no     |
 //! | `reviewing → failed`                       | no   | yes       | no     |
+//! | `draft → failed`  (dead-root, #741-4)      | no   | yes       | no     |
+//! | `planning → failed` (lost-root, #741-4)    | no   | yes       | no     |
 //! | any non-terminal → `canceled`              | yes  | no        | no     |
 //! | `done`/`canceled`/`failed` → `planning`    | yes  | no        | no     |
 //! | (no-op) `state → same state`               | yes\*| yes\*     | no     |
@@ -249,6 +251,19 @@ pub fn validate_transition(
         // path is the "Start" button in the UI.
         (WaveLifecycle::Draft, WaveLifecycle::Planning) => (true, true),
 
+        // #741-4 (DR-1) — kernel dead-root convergence terminal edges.
+        // A failed-start root stalls inert in `Draft` (the spec-harness
+        // start-op failed; `create_wave_with_spec_harness` only warns) and a
+        // root that dies mid-plan stalls in `Planning`. The reaper's dead-root
+        // scan drives these to `Failed` on a POSITIVE dead signal only.
+        // Spec-authority (`allow_user=false, allow_spec=true`): authored by
+        // `ActorId::KernelDispatcher`, which classifies `SpecAgent` — the
+        // kernel can drive them, but a user cannot skip a live wave to Failed.
+        // This mirrors the existing `Reviewing→Failed` precedent (spec cards
+        // share the authority; accepted, not "kernel-only").
+        (WaveLifecycle::Draft, WaveLifecycle::Failed) => (false, true),
+        (WaveLifecycle::Planning, WaveLifecycle::Failed) => (false, true),
+
         // Spec-only progressions through the happy path.
         (WaveLifecycle::Planning, WaveLifecycle::Dispatching) => (false, true),
         (WaveLifecycle::Dispatching, WaveLifecycle::Working) => (false, true),
@@ -336,6 +351,9 @@ mod tests {
             (L::Reviewing, L::Working, ActorKind::SpecAgent),
             (L::Reviewing, L::Done, ActorKind::SpecAgent),
             (L::Reviewing, L::Failed, ActorKind::SpecAgent),
+            // #741-4 (DR-1) — kernel dead-root convergence (spec-authority)
+            (L::Draft, L::Failed, ActorKind::SpecAgent),
+            (L::Planning, L::Failed, ActorKind::SpecAgent),
             // unblock (both)
             (L::Blocked, L::Working, ActorKind::User),
             (L::Blocked, L::Working, ActorKind::SpecAgent),
@@ -568,6 +586,12 @@ mod tests {
             (WaveLifecycle::Reviewing, WaveLifecycle::Working),
             (WaveLifecycle::Reviewing, WaveLifecycle::Done),
             (WaveLifecycle::Reviewing, WaveLifecycle::Failed),
+            // #741-4 (DR-1) — dead-root convergence edges are spec-authority:
+            // a user must NOT be able to skip a live Draft/Planning wave to
+            // Failed (that's the kernel reaper's job, on a positive dead
+            // signal). An accidental flip to (true, true) surfaces here.
+            (WaveLifecycle::Draft, WaveLifecycle::Failed),
+            (WaveLifecycle::Planning, WaveLifecycle::Failed),
         ];
         for (from, to) in spec_only {
             let res = validate_transition(from, to, &user());

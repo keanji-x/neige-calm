@@ -424,6 +424,106 @@ impl Reaper {
     }
 }
 
+impl Reaper {
+    /// #741-4 (DR-2/DR-4/DR-5) — the dead-ROOT convergence scan. A sibling of
+    /// [`Reaper::sweep_all`]: same boot gate (DR-5 — must not fire before the
+    /// root backfill `0050` has settled), same reconcile loop. Drives a
+    /// POSITIVELY-dead root's wave `Draft|Planning → Failed` via the DR-1
+    /// kernel FSM edges. The soundness predicate (the CARDINAL SAFETY RULE:
+    /// never converge a live or merely just-created wave) is enforced inside
+    /// [`SessionRepo::dead_root_candidates`]; this loop only emits.
+    pub async fn sweep_dead_roots(&self) {
+        if !reaper_boot_completed() {
+            tracing::debug!(
+                "reaper: dead-root scan skipped - boot backfill/recovery has not completed yet"
+            );
+            return;
+        }
+
+        let candidates = match self.repo.dead_root_candidates().await {
+            Ok(candidates) => candidates,
+            Err(e) => {
+                tracing::warn!(error = %e, "reaper: failed to scan for dead-root candidates");
+                return;
+            }
+        };
+
+        for candidate in candidates {
+            if let Err(e) =
+                converge_dead_root(self.repo.as_ref(), &self.events, &self.write, &candidate).await
+            {
+                tracing::warn!(
+                    wave_id = %candidate.wave_id,
+                    lifecycle = candidate.lifecycle.as_db_str(),
+                    error = %e,
+                    "reaper: dead-root convergence failed; will retry next sweep"
+                );
+            }
+        }
+    }
+}
+
+/// #741-4 (DR-3) — the task-less dead-root emitter. FRESH code, NOT a reuse of
+/// `converge_dead_worker`'s no-op NULL `spawn_op_id` fall-through: a dead root
+/// has no task row, so there is NO `TaskFailed` and NO task-status flip — only
+/// the `WaveLifecycleChanged{from → Failed}` lifecycle event, authored by
+/// `ActorId::KernelDispatcher` (cardless → unrestricted emit, no recorder gate;
+/// DR-6).
+///
+/// Drives the edge via `auto_transition_if_current_in_tx`, which is a CAS on
+/// the current lifecycle: if the wave already moved (a live writer raced us, or
+/// the candidate read is stale), it returns `None` and we treat that as a
+/// race-loss (`Ok(())`).
+pub(crate) async fn converge_dead_root(
+    repo: &dyn Repo,
+    events: &EventBus,
+    write: &WriteContext,
+    candidate: &crate::db::prelude::DeadRootCandidate,
+) -> Result<()> {
+    let wave_id = candidate.wave_id.clone();
+    let from = candidate.lifecycle;
+    let scope = EventScope::Wave {
+        wave: candidate.wave_id.clone(),
+        cove: candidate.cove_id.clone(),
+    };
+    let agent_message = match from {
+        WaveLifecycle::Draft => "[auto] dead root: spec-harness start failed; wave never advanced",
+        _ => "[auto] dead root: planner session lost mid-plan",
+    }
+    .to_string();
+
+    let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
+        Box::pin(async move {
+            let Some(lifecycle_events) = auto_transition_if_current_in_tx(
+                tx,
+                &wave_id,
+                from,
+                WaveLifecycle::Failed,
+                &ActorId::KernelDispatcher,
+                Some(agent_message),
+            )
+            .await?
+            else {
+                // Wave already moved (auto_transition no-op / current != from)
+                // ⇒ race-lost. Return a race-lost error the outer match
+                // absorbs into Ok(()) so no partial/empty event batch lands.
+                return Err(race_lost_err());
+            };
+            let events = lifecycle_events
+                .into_iter()
+                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event))
+                .collect();
+            Ok(((), events))
+        })
+    })
+    .await;
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) if is_race_lost(&e) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 pub(crate) async fn converge_dead_worker(
     repo: &dyn Repo,
     events: &EventBus,
@@ -770,6 +870,435 @@ mod tests {
                 matches!(event, Event::WaveLifecycleChanged { .. }).then_some(event)
             })
             .collect()
+    }
+
+    // ----- #741-4 dead-root convergence test helpers -----------------------
+
+    /// Insert a `spec-harness-start` operation for `wave_id` and stamp its
+    /// terminal `phase` (DR-4's positive dead signal keys on `phase='failed'`).
+    /// The payload carries `wave_id` at top level — the immutable op→wave link
+    /// `dead_root_candidates` queries via `json_extract(payload_json,
+    /// '$.wave_id')`.
+    async fn insert_spec_harness_start_op(repo: &SqlxRepo, wave_id: &WaveId, phase: &str) {
+        let op_repo = SqlxOperationRepo::new(repo.pool().clone());
+        let op_id = op_repo
+            .insert_operation(
+                "spec-harness-start",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: None,
+                    payload_hash: format!("hash-{}", new_id()),
+                },
+                json!({
+                    "actor": ActorId::KernelDispatcher,
+                    "wave_id": wave_id.as_str(),
+                    "spec_card_id": "spec-card-1",
+                    "cwd": "/tmp",
+                }),
+            )
+            .await
+            .expect("insert spec-harness-start operation");
+        // `insert_operation` always lands `phase='pending'`; advance to the
+        // requested terminal phase (mirrors `mark_failed`, which sets `phase`
+        // and a completed timestamp without touching target columns).
+        sqlx::query("UPDATE operations SET phase = ?1, completed_at_ms = ?2 WHERE id = ?3")
+            .bind(phase)
+            .bind(if matches!(phase, "failed" | "succeeded") {
+                Some(now_ms())
+            } else {
+                None
+            })
+            .bind(&op_id)
+            .execute(repo.pool())
+            .await
+            .expect("stamp operation phase");
+    }
+
+    /// Insert a planner-contract session in `state` and (optionally) mark it the
+    /// wave's `root_session_id`.
+    async fn insert_planner_session(
+        repo: &SqlxRepo,
+        id: &str,
+        wave_id: &WaveId,
+        state: WorkerSessionState,
+        mark_root: bool,
+    ) {
+        let mut sess = session(id, wave_id.clone(), 1);
+        sess.provider = WorkerProviderKind::Codex;
+        sess.mode = SessionMode::Resumable;
+        sess.contract = WorkerContract::Planner;
+        sess.state = state;
+        let wave_id = wave_id.clone();
+        let session_id = WorkerSessionId::from(id);
+        crate::db::write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move {
+                session_insert_tx(tx, sess).await?;
+                if mark_root {
+                    calm_truth::db::sqlite::session_mark_wave_root_tx(tx, &wave_id, &session_id)
+                        .await?;
+                }
+                Ok(())
+            })
+        })
+        .await
+        .expect("insert planner session");
+    }
+
+    async fn wave_lifecycle_now(repo: &SqlxRepo, wave_id: &WaveId) -> WaveLifecycle {
+        repo.wave_get(wave_id.as_str())
+            .await
+            .expect("wave get")
+            .expect("wave exists")
+            .lifecycle
+    }
+
+    /// DR-4 failed-start: a `Draft` wave whose `spec-harness-start` op resolved
+    /// to `phase='failed'`, with NO active planner session, converges
+    /// `Draft → Failed` — exactly one `WaveLifecycleChanged` (KernelDispatcher),
+    /// and NO `TaskFailed` (a dead root has no task row).
+    #[tokio::test]
+    async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        // Wave starts Draft (default); record a FAILED start-op for it.
+        assert_eq!(
+            wave_lifecycle_now(&repo, &wave_id).await,
+            WaveLifecycle::Draft
+        );
+        insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+
+        let fake = Arc::new(FakeProvider::new());
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry(fake),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        reaper_on_boot();
+        reaper.sweep_dead_roots().await;
+
+        assert_eq!(
+            wave_lifecycle_now(&repo, &wave_id).await,
+            WaveLifecycle::Failed,
+            "failed-start Draft wave must converge to Failed"
+        );
+        let changes = lifecycle_changes(&repo, &wave_id).await;
+        assert_eq!(changes.len(), 1, "exactly one lifecycle change");
+        match &changes[0] {
+            Event::WaveLifecycleChanged { from, to, .. } => {
+                assert_eq!(*from, WaveLifecycle::Draft);
+                assert_eq!(*to, WaveLifecycle::Failed);
+            }
+            other => panic!("expected lifecycle change, got {other:?}"),
+        }
+        // No task row, so no TaskFailed event anywhere.
+        let task_failed = RepoEventWrite::events_since(repo.as_ref(), 0, None)
+            .await
+            .expect("events")
+            .into_iter()
+            .filter(|(_id, _v, _s, e)| matches!(e, Event::TaskFailed { .. }))
+            .count();
+        assert_eq!(task_failed, 0, "dead-root convergence emits no TaskFailed");
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// DR-4 SAFETY (the false-converge guard): a fresh `Draft` wave whose
+    /// start-op is PENDING (or SUCCEEDED, or absent) is NOT a positive dead
+    /// signal — it must stay `Draft`.
+    #[tokio::test]
+    async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_converged() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        // (a) pending start-op
+        let (repo_pending, wave_pending) = seeded_repo().await;
+        insert_spec_harness_start_op(&repo_pending, &wave_pending, "pending").await;
+        // (b) succeeded start-op (the wave hasn't advanced past Draft yet, but
+        //     the start succeeded — definitely not dead).
+        let (repo_succeeded, wave_succeeded) = seeded_repo().await;
+        insert_spec_harness_start_op(&repo_succeeded, &wave_succeeded, "succeeded").await;
+        // (c) NO start-op row at all (just-created / in-flight — absence is
+        //     ambiguous, must NOT converge).
+        let (repo_absent, wave_absent) = seeded_repo().await;
+
+        for (repo, wave_id, label) in [
+            (repo_pending, wave_pending, "pending"),
+            (repo_succeeded, wave_succeeded, "succeeded"),
+            (repo_absent, wave_absent, "absent"),
+        ] {
+            let fake = Arc::new(FakeProvider::new());
+            let repo_dyn: Arc<dyn Repo> = repo.clone();
+            let reaper = Reaper::new(
+                repo_dyn,
+                registry(fake),
+                EventBus::new(),
+                write_context(&repo).await,
+            );
+
+            reaper_on_boot();
+            reaper.sweep_dead_roots().await;
+
+            assert_eq!(
+                wave_lifecycle_now(&repo, &wave_id).await,
+                WaveLifecycle::Draft,
+                "Draft wave with {label} start-op must NOT converge (false-converge guard)"
+            );
+            assert_eq!(
+                lifecycle_changes(&repo, &wave_id).await.len(),
+                0,
+                "no lifecycle change for {label} start-op"
+            );
+        }
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// DR-4 latest-start-op guard (the stale-failed-plus-newer-retry hole):
+    /// start/reset re-submit `spec-harness-start` with a FRESH op id, so a
+    /// Draft wave can carry a STALE `failed` start-op AND a NEWER retry
+    /// (`pending` or `succeeded`) start-op simultaneously. During the retry's
+    /// setup window the planner session is not yet created, so the
+    /// `no_active_planner` guard is momentarily true — convergence must still
+    /// be refused because the LATEST start-op is non-failed. Keying on the
+    /// most-recent start-op (max `rowid`) closes the false-converge hole.
+    #[tokio::test]
+    async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        // (a) STALE failed start-op, then a NEWER pending retry start-op
+        //     (retry in flight, planner session not yet created).
+        let (repo_pending, wave_pending) = seeded_repo().await;
+        insert_spec_harness_start_op(&repo_pending, &wave_pending, "failed").await;
+        insert_spec_harness_start_op(&repo_pending, &wave_pending, "pending").await;
+        // (b) STALE failed start-op, then a NEWER succeeded retry start-op
+        //     (start ultimately succeeded — definitely not dead).
+        let (repo_succeeded, wave_succeeded) = seeded_repo().await;
+        insert_spec_harness_start_op(&repo_succeeded, &wave_succeeded, "failed").await;
+        insert_spec_harness_start_op(&repo_succeeded, &wave_succeeded, "succeeded").await;
+
+        for (repo, wave_id, label) in [
+            (repo_pending, wave_pending, "newer-pending"),
+            (repo_succeeded, wave_succeeded, "newer-succeeded"),
+        ] {
+            assert_eq!(
+                wave_lifecycle_now(&repo, &wave_id).await,
+                WaveLifecycle::Draft
+            );
+            let fake = Arc::new(FakeProvider::new());
+            let repo_dyn: Arc<dyn Repo> = repo.clone();
+            let reaper = Reaper::new(
+                repo_dyn,
+                registry(fake),
+                EventBus::new(),
+                write_context(&repo).await,
+            );
+
+            reaper_on_boot();
+            reaper.sweep_dead_roots().await;
+
+            assert_eq!(
+                wave_lifecycle_now(&repo, &wave_id).await,
+                WaveLifecycle::Draft,
+                "stale-failed + {label} retry start-op must NOT converge \
+                 (latest start-op is non-failed)"
+            );
+            assert_eq!(
+                lifecycle_changes(&repo, &wave_id).await.len(),
+                0,
+                "no lifecycle change for stale-failed + {label} retry"
+            );
+        }
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// DR-4 mid-respawn exclusion: a Draft (failed start-op) OR Planning
+    /// (NULL root) wave that has an ACTIVE planner-contract session is NOT
+    /// converged — a respawn is in flight.
+    #[tokio::test]
+    async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        // Draft + failed start-op, but a fresh planner session is `running`.
+        let (repo_draft, wave_draft) = seeded_repo().await;
+        insert_spec_harness_start_op(&repo_draft, &wave_draft, "failed").await;
+        insert_planner_session(
+            &repo_draft,
+            "planner-respawn-draft",
+            &wave_draft,
+            WorkerSessionState::Running,
+            false,
+        )
+        .await;
+
+        // Planning + NULL root, but a planner session is `starting` (respawn).
+        let (repo_planning, wave_planning) = seeded_repo().await;
+        set_wave_lifecycle(&repo_planning, &wave_planning, WaveLifecycle::Planning).await;
+        insert_planner_session(
+            &repo_planning,
+            "planner-respawn-planning",
+            &wave_planning,
+            WorkerSessionState::Starting,
+            false,
+        )
+        .await;
+
+        for (repo, wave_id, from) in [
+            (repo_draft, wave_draft, WaveLifecycle::Draft),
+            (repo_planning, wave_planning, WaveLifecycle::Planning),
+        ] {
+            let fake = Arc::new(FakeProvider::new());
+            let repo_dyn: Arc<dyn Repo> = repo.clone();
+            let reaper = Reaper::new(
+                repo_dyn,
+                registry(fake),
+                EventBus::new(),
+                write_context(&repo).await,
+            );
+
+            reaper_on_boot();
+            reaper.sweep_dead_roots().await;
+
+            assert_eq!(
+                wave_lifecycle_now(&repo, &wave_id).await,
+                from,
+                "{from:?} wave with an ACTIVE planner session must NOT converge (mid-respawn)"
+            );
+            assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+        }
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// DR-4 lost-root: a `Planning` wave whose root session is TERMINAL
+    /// (failed) with no active planner session converges `Planning → Failed`.
+    #[tokio::test]
+    async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Planning).await;
+        // Root session exists but is TERMINAL (Failed) — the worker reaper
+        // already terminalized it (S1/S2 for codex). No active planner.
+        insert_planner_session(
+            &repo,
+            "planner-dead-root",
+            &wave_id,
+            WorkerSessionState::Failed,
+            true,
+        )
+        .await;
+
+        let fake = Arc::new(FakeProvider::new());
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry(fake),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        reaper_on_boot();
+        reaper.sweep_dead_roots().await;
+
+        assert_eq!(
+            wave_lifecycle_now(&repo, &wave_id).await,
+            WaveLifecycle::Failed,
+            "Planning wave with a terminal root + no active planner must converge to Failed"
+        );
+        let changes = lifecycle_changes(&repo, &wave_id).await;
+        assert_eq!(changes.len(), 1);
+        match &changes[0] {
+            Event::WaveLifecycleChanged { from, to, .. } => {
+                assert_eq!(*from, WaveLifecycle::Planning);
+                assert_eq!(*to, WaveLifecycle::Failed);
+            }
+            other => panic!("expected lifecycle change, got {other:?}"),
+        }
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// DR-4 lost-root NULL: a `Planning` wave whose `root_session_id IS NULL`
+    /// with no active planner session converges `Planning → Failed`.
+    #[tokio::test]
+    async fn sweep_dead_roots_lost_root_null_planning_converges() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Planning).await;
+        // No root session at all, no active planner — a lost root.
+
+        let fake = Arc::new(FakeProvider::new());
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry(fake),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        reaper_on_boot();
+        reaper.sweep_dead_roots().await;
+
+        assert_eq!(
+            wave_lifecycle_now(&repo, &wave_id).await,
+            WaveLifecycle::Failed,
+            "Planning wave with NULL root + no active planner must converge to Failed"
+        );
+        assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 1);
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// DR-5 boot gate: `sweep_dead_roots` no-ops until `reaper_on_boot`.
+    #[tokio::test]
+    async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        // A genuinely-dead failed-start root that WOULD converge post-boot.
+        insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+
+        let fake = Arc::new(FakeProvider::new());
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry(fake),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        // Gate closed: must NOT converge.
+        reaper.sweep_dead_roots().await;
+        assert_eq!(
+            wave_lifecycle_now(&repo, &wave_id).await,
+            WaveLifecycle::Draft,
+            "dead-root scan must no-op before boot gate opens"
+        );
+        assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+
+        // Gate open: now it converges.
+        reaper_on_boot();
+        reaper.sweep_dead_roots().await;
+        assert_eq!(
+            wave_lifecycle_now(&repo, &wave_id).await,
+            WaveLifecycle::Failed,
+            "dead-root scan converges once the boot gate opens"
+        );
+        assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 1);
+
+        reset_reaper_boot_gate_for_test();
     }
 
     #[tokio::test]

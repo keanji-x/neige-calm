@@ -22,7 +22,7 @@ pub mod prelude {
         ServerRepoSyncDomainRawExt,
     };
     pub use crate::runtime_repo::RuntimeRepo;
-    pub use calm_truth::session_repo::{CommitExitOutcome, SessionRepo};
+    pub use calm_truth::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo};
 }
 
 #[async_trait]
