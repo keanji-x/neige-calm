@@ -747,6 +747,9 @@ impl Dispatcher {
                 loop {
                     interval.tick().await;
                     tick_reaper.sweep_all().await;
+                    // #741-4 (DR-2/DR-5) — the dead-ROOT convergence scan runs
+                    // as a sibling in the same boot-gated reconcile loop.
+                    tick_reaper.sweep_dead_roots().await;
                 }
             }))
         };

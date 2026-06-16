@@ -58,7 +58,7 @@ use crate::runtime_row::{
     projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
     run_status_from_db,
 };
-use crate::session_repo::{CommitExitOutcome, SessionRepo, Tx as SessionTx};
+use crate::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo, Tx as SessionTx};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
 };
@@ -5622,6 +5622,96 @@ impl SessionRepo for SqlxRepo {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(worker_session_from_row).collect()
+    }
+
+    async fn dead_root_candidates(&self) -> Result<Vec<DeadRootCandidate>> {
+        // The soundness predicate lives entirely here (#741-4 DR-4). Two arms,
+        // both gated on a POSITIVE dead signal AND the mid-respawn exclusion
+        // (no active planner-contract session). NEVER converges on absence or
+        // a just-created wave.
+        //
+        //  * Failed-start (Draft): the wave is still `draft` AND its
+        //    *most-recent* `spec-harness-start` operation resolved to
+        //    `phase='failed'`. The op→wave link is the immutable
+        //    `payload_json.wave_id` (`idempotency_key` is None and
+        //    `target_type/id` is later rewritten to the spec card, so neither
+        //    is a reliable key — the payload is stamped once at insert and
+        //    never changes). Start/reset re-submit `spec-harness-start` with a
+        //    FRESH op id, so a wave can carry a STALE `failed` start-op AND a
+        //    NEWER retry (`pending`/`running`/`succeeded`) start-op at once;
+        //    during the retry's setup window (new op submitted, planner session
+        //    not yet created) `no_active_planner` is momentarily true. Keying
+        //    on the LATEST start-op — `rowid = MAX(rowid)` over this wave's
+        //    start-ops — closes that hole: `rowid` is SQLite's monotonic
+        //    insertion order (the `operations` table is rowid-backed, not
+        //    `WITHOUT ROWID`; `id` is a random uuid-v4 and `created_at_ms` is
+        //    wall-clock ms that can tie, so neither orders insertions
+        //    reliably). If the latest start-op is non-failed (retry in flight
+        //    or a success), or there is no start-op row yet, the signal is NOT
+        //    positive ⇒ left.
+        //  * Lost-root (Planning): the wave is `planning` AND its root session
+        //    is NULL or points at a terminal/missing session. A `Resumable`
+        //    (codex) root that is still alive is `is_active_authority` ⇒ caught
+        //    by the active-planner exclusion below, so a codex root is never
+        //    declared dead on a bare PTY-`Exited` — only via its terminal
+        //    `worker_sessions.state` (set by the worker reaper's S1/S2 arbiter).
+        //
+        // Dispatching/Blocked are intentionally OUT OF SCOPE (no DR-1 edge).
+        let active = "('starting', 'running', 'idle', 'turn_pending')";
+        let no_active_planner = format!(
+            "NOT EXISTS (SELECT 1 FROM worker_sessions ws \
+               WHERE ws.wave_id = w.id AND ws.contract = 'planner' \
+                 AND ws.state IN {active})"
+        );
+        let sql = format!(
+            r#"SELECT w.id AS wave_id, w.cove_id AS cove_id, w.lifecycle AS lifecycle
+                 FROM waves w
+                WHERE w.lifecycle = 'draft'
+                  AND EXISTS (
+                      SELECT 1 FROM operations o
+                       WHERE o.kind = 'spec-harness-start'
+                         AND o.phase = 'failed'
+                         AND json_extract(o.payload_json, '$.wave_id') = w.id
+                         AND o.rowid = (
+                             SELECT MAX(o2.rowid) FROM operations o2
+                              WHERE o2.kind = 'spec-harness-start'
+                                AND json_extract(o2.payload_json, '$.wave_id') = w.id
+                         )
+                  )
+                  AND {no_active_planner}
+               UNION ALL
+               SELECT w.id AS wave_id, w.cove_id AS cove_id, w.lifecycle AS lifecycle
+                 FROM waves w
+                WHERE w.lifecycle = 'planning'
+                  AND (
+                      w.root_session_id IS NULL
+                      OR NOT EXISTS (
+                          SELECT 1 FROM worker_sessions rs
+                           WHERE rs.id = w.root_session_id
+                             AND rs.state IN {active}
+                      )
+                  )
+                  AND {no_active_planner}
+               ORDER BY wave_id ASC"#
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                let wave_id: String = row.try_get("wave_id")?;
+                let cove_id: String = row.try_get("cove_id")?;
+                let lifecycle_raw: String = row.try_get("lifecycle")?;
+                let lifecycle = WaveLifecycle::try_from(lifecycle_raw.clone()).map_err(|e| {
+                    CalmError::Internal(format!(
+                        "dead_root_candidates: unknown wave lifecycle {lifecycle_raw:?}: {e}"
+                    ))
+                })?;
+                Ok(DeadRootCandidate {
+                    wave_id: WaveId::from(wave_id),
+                    cove_id: CoveId::from(cove_id),
+                    lifecycle,
+                })
+            })
+            .collect()
     }
 }
 
