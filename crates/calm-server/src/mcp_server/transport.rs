@@ -693,10 +693,7 @@ fn thread_id_from<'a>(request_meta: &MetaLookupOutcome<'a>) -> Option<&'a str> {
 /// `pub(crate)` so it can't be reached from outside the crate's test
 /// module set.
 ///
-/// PR7a (#136) — integration tests for the MCP server are deferred to
-/// followup PR7a.1; the helper lands now so the followup can use it
-/// without churning this file again. `dead_code` allow until then.
-#[allow(dead_code)]
+/// PR7a (#136) — shared helper for production boot and integration tests.
 pub(crate) fn default_socket_path(data_dir: &Path) -> PathBuf {
     data_dir.join("mcp").join("kernel.sock")
 }
