@@ -9,6 +9,7 @@ use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::worker_sessions_parity_sweep::{is_expected_reverse_orphan, reverse_orphans};
 use calm_types::ids::WaveId;
 use calm_types::worker::{
     SessionMode, WorkerContract, WorkerProviderKind, WorkerSessionId, WorkerSessionState,
@@ -86,6 +87,19 @@ async fn worker_sessions_parity_sweep_detects_reverse_orphan() {
 
     assert_eq!(divergences, 1);
     assert_eq!(counter.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn unexpected_reverse_orphan_is_classified_unexpected() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let card_id = create_codex_card(&repo).await;
+    let wave_id = card_wave_id(&repo, &card_id).await;
+    insert_reverse_orphan_session(&repo, &wave_id, "reverse-orphan-1").await;
+
+    let orphans = reverse_orphans(repo.pool()).await.unwrap();
+
+    assert_eq!(orphans.len(), 1);
+    assert!(!is_expected_reverse_orphan(&orphans[0]));
 }
 
 #[tokio::test]
@@ -178,7 +192,7 @@ async fn boot_worker_sessions_parity_assertion_env_unset_divergence_returns_ok()
 }
 
 #[tokio::test]
-async fn deferred_spec_placeholder_session_is_warned_as_reverse_orphan() {
+async fn deferred_spec_placeholder_session_is_classified_expected_reverse_orphan() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let card_id = create_codex_card(&repo).await;
     let wave_id: String = sqlx::query_scalar("SELECT wave_id FROM cards WHERE id = ?1")
@@ -227,6 +241,10 @@ async fn deferred_spec_placeholder_session_is_warned_as_reverse_orphan() {
         .expect("deferred placeholder session");
     assert_eq!(session.state, WorkerSessionState::Starting);
     assert_eq!(session.wave_id.as_str(), wave_id);
+
+    let orphans = reverse_orphans(repo.pool()).await.unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert!(is_expected_reverse_orphan(&orphans[0]));
 
     let counter = AtomicU64::new(0);
     let divergences = calm_server::worker_sessions_parity_sweep::sweep(repo.pool(), &counter)
