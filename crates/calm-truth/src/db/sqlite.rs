@@ -4885,6 +4885,7 @@ impl RepoRead for SqlxRepo {
     async fn shared_spec_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>> {
+        let (provider, _mode, contract) = derive_session_identity(&RuntimeKind::SharedSpec);
         // Join `terminals` and require a LIVE row so a card whose TUI was
         // already reaped (reconcile_supervisor_on_boot marked it exited,
         // or a SIGKILL set signal_killed=1) is NOT re-registered into the
@@ -4898,30 +4899,39 @@ impl RepoRead for SqlxRepo {
         let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
             r#"SELECT c.id,
                       c.wave_id,
-                      r.terminal_run_id,
+                      ws.terminal_run_id,
                       0
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
-               JOIN runtimes r ON r.card_id = c.id
-                   AND r.kind = 'shared-spec'
-                   AND r.thread_id IS NULL
-                   AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
-               JOIN terminals t ON t.id = r.terminal_run_id
+               JOIN worker_sessions ws ON ws.id = c.session_id
+                   AND ws.provider = ?1
+                   AND ws.contract = ?2
+                   AND ws.thread_id IS NULL
+                   AND ws.state IN ('starting','running','idle','turn_pending')
+                   AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
+               JOIN terminals t ON t.id = ws.terminal_run_id
                WHERE c.role = 'spec'
                  AND t.exit_code IS NULL
                  AND COALESCE(t.signal_killed, 0) = 0
                  AND NOT EXISTS (
                        SELECT 1
-                         FROM runtimes hr
-                        WHERE hr.card_id = c.id
-                          AND hr.kind = 'shared-spec'
-                          AND hr.status IN ('starting', 'running', 'idle', 'turn_pending')
-                          AND hr.handle_state_json IS NOT NULL
-                          AND json_extract(hr.handle_state_json, '$.mode') = 'harness'
+                         FROM worker_sessions hws
+                         JOIN cards hc ON hc.session_id = hws.id
+                        WHERE hc.id = c.id
+                          AND hws.provider = ?3
+                          AND hws.contract = ?4
+                          AND hws.state IN ('starting','running','idle','turn_pending')
+                          AND hws.handle_state_json IS NOT NULL
+                          AND json_extract(hws.handle_state_json, '$.mode') = 'harness'
+                          AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = hws.id)
                  )
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
                ORDER BY c.created_at ASC, c.id ASC"#,
         )
+        .bind(provider.as_db_str())
+        .bind(contract.as_db_str())
+        .bind(provider.as_db_str())
+        .bind(contract.as_db_str())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -5316,35 +5326,29 @@ impl RuntimeRepo for SqlxRepo {
     }
 
     async fn runtimes_recover_harnesses_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
-        let rows = sqlx::query(
-            r#"SELECT r.id, r.card_id, r.kind, r.agent_provider, r.status, r.terminal_run_id,
-	                      r.thread_id, r.session_id, r.active_turn_id, r.handle_state_json,
-	                      r.lease_owner, r.lease_until_ms, r.created_at_ms, r.updated_at_ms,
-	                      r.completed_at_ms
-	               FROM runtimes r
-	               JOIN cards c ON c.id = r.card_id
-	               JOIN waves w ON w.id = c.wave_id
-	               WHERE r.kind = 'shared-spec'
-	                 AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
-	                 AND r.handle_state_json IS NOT NULL
-	                 AND json_extract(r.handle_state_json, '$.mode') = 'harness'
-	                 -- Keep harness boot recovery aligned with the legacy
-	                 -- takeover filters above: terminal waves must stay inert.
-	                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
-	               ORDER BY r.created_at_ms ASC, r.card_id ASC"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        let runtimes = rows
-            .iter()
-            .map(card_runtime_from_row)
-            .collect::<RuntimeResult<Vec<_>>>()?;
-        for runtime in &runtimes {
-            if let Some(value) = runtime.handle_state_json.clone() {
-                let _ = value;
-            }
-        }
-        Ok(runtimes)
+        let (provider, _mode, contract) = derive_session_identity(&RuntimeKind::SharedSpec);
+        let sql = format!(
+            r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+               JOIN waves w ON w.id = c.wave_id
+               WHERE ws.provider = ?1
+                 AND ws.contract = ?2
+                 AND ws.state IN ('starting','running','idle','turn_pending')
+                 AND ws.handle_state_json IS NOT NULL
+                 AND json_extract(ws.handle_state_json, '$.mode') = 'harness'
+                 -- Keep harness boot recovery aligned with the legacy
+                 -- takeover filters above: terminal waves must stay inert.
+                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
+                 AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
+               ORDER BY ws.created_at_ms ASC, c.id ASC"#
+        );
+        let rows = sqlx::query(&sql)
+            .bind(provider.as_db_str())
+            .bind(contract.as_db_str())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter()
+            .map(card_runtime_from_ws_join_row)
+            .collect::<RuntimeResult<Vec<_>>>()
     }
 }
 
