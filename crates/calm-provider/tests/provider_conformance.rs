@@ -78,6 +78,7 @@ struct StaticCodexDaemonProbe {
 }
 
 #[cfg(all(unix, feature = "codex-e2e"))]
+#[async_trait::async_trait]
 impl CodexDaemonProbe for StaticCodexDaemonProbe {
     fn is_running(&self) -> bool {
         self.running
@@ -89,5 +90,12 @@ impl CodexDaemonProbe for StaticCodexDaemonProbe {
 
     fn remote_uri(&self) -> String {
         self.remote_uri.clone()
+    }
+
+    async fn read_liveness_facts(
+        &self,
+        _thread_id: &str,
+    ) -> Option<calm_provider::CodexLivenessFacts> {
+        None
     }
 }

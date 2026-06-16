@@ -1814,6 +1814,7 @@ impl Drop for SharedCodexAppServer {
     }
 }
 
+#[async_trait::async_trait]
 impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
     fn is_running(&self) -> bool {
         SharedCodexAppServer::is_running(self)
@@ -1826,6 +1827,60 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
 
     fn remote_uri(&self) -> String {
         SharedCodexAppServer::remote_uri(self)
+    }
+
+    /// Pull the #741 §1.3 liveness facts via `thread/read(include_turns)`
+    /// (+ `thread/loaded/list` for the `loaded` flag). `None` on ANY RPC
+    /// error / unreachable daemon — the arbiter treats that as `Unknown`.
+    async fn read_liveness_facts(
+        &self,
+        thread_id: &str,
+    ) -> Option<calm_provider::provider::CodexLivenessFacts> {
+        let client = self.connected_client().await.ok()?;
+        let read = client.thread_read(thread_id, true).await.ok()?;
+        // Secondary `loaded` signal; a failed list shouldn't sink the pull.
+        let loaded = client
+            .thread_loaded_list()
+            .await
+            .ok()
+            .map(|ids| ids.iter().any(|id| id == thread_id))
+            .unwrap_or(false);
+        Some(liveness_facts_from_read(read, loaded))
+    }
+}
+
+/// Map the wire `thread/read` response (+ `loaded` flag) into the
+/// arbiter-facing [`CodexLivenessFacts`] (#741 §1.3). The "last turn" is the
+/// MOST RECENT element of `turns`; its `completedAt` is the died-mid-turn
+/// discriminator (§0.1).
+fn liveness_facts_from_read(
+    read: crate::codex_appserver::ThreadReadResponse,
+    loaded: bool,
+) -> calm_provider::provider::CodexLivenessFacts {
+    use crate::codex_appserver::{ThreadActiveFlag, ThreadStatus};
+    use calm_provider::provider::{CodexLivenessFacts, ThreadStatusLite};
+
+    let status = match read.thread.status {
+        ThreadStatus::NotLoaded => ThreadStatusLite::NotLoaded,
+        ThreadStatus::Idle => ThreadStatusLite::Idle,
+        ThreadStatus::SystemError => ThreadStatusLite::SystemError,
+        ThreadStatus::Active { active_flags } => ThreadStatusLite::Active {
+            waiting_on_user_input: active_flags.contains(&ThreadActiveFlag::WaitingOnUserInput),
+            waiting_on_approval: active_flags.contains(&ThreadActiveFlag::WaitingOnApproval),
+        },
+    };
+    // `last_turn_completed_at`: None = no turns present (None or empty list);
+    // Some(None) = last turn never finished; Some(Some(ts)) = finished/aborted.
+    let last_turn_completed_at = read
+        .thread
+        .turns
+        .as_deref()
+        .and_then(|turns| turns.last())
+        .map(|turn| turn.completed_at);
+    CodexLivenessFacts {
+        loaded,
+        status,
+        last_turn_completed_at,
     }
 }
 

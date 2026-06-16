@@ -197,6 +197,27 @@ pub enum Liveness {
     Unknown { since_ms: TimestampMs },
 }
 
+/// The codex worker death-arbiter's verdict (#741 §1.1 / §1.3).
+///
+/// Produced by `WorkerProvider::confirm_durable_death` from the §1.1 truth
+/// table: `Dead` is the only verdict that authorizes a reap (S1 daemon-down
+/// or S2 positive `thread/read` proof of no live turn); `Alive` and
+/// `Unknown` both mean **no reap**. Non-codex providers never reach the
+/// arbiter — the trait default returns `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeathVerdict {
+    /// Positively confirmed dead — S1 (daemon down) or S2 (live pull shows
+    /// no running turn and the last turn never finished). Authorizes reap.
+    Dead,
+    /// Positively confirmed alive — a turn is running or blocked on a human,
+    /// or the last turn finished/aborted cleanly. Never reap.
+    Alive,
+    /// Could not rule out a live turn (within rebuild grace, RPC unreachable,
+    /// or no positive death signal). Conservative no-reap; retry next sweep.
+    Unknown,
+}
+
 /// Which observer produced a piece of exit evidence (issue #679 §2).
 /// All of today's independent exit writers funnel through this vocabulary
 /// when PR8 makes `interpret_exit` the single exit authority.
@@ -615,6 +636,18 @@ mod tests {
             LivenessTag::Unknown
         );
         assert_eq!(LivenessTag::default(), LivenessTag::Unknown);
+    }
+
+    #[test]
+    fn death_verdict_serde_round_trip() {
+        for (verdict, wire) in [
+            (DeathVerdict::Dead, "\"dead\""),
+            (DeathVerdict::Alive, "\"alive\""),
+            (DeathVerdict::Unknown, "\"unknown\""),
+        ] {
+            assert_eq!(serde_json::to_string(&verdict).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<DeathVerdict>(wire).unwrap(), verdict);
+        }
     }
 
     #[test]

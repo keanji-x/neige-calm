@@ -4,7 +4,9 @@
 use async_trait::async_trait;
 use calm_types::error::CoreError;
 use calm_types::runtime::{RuntimeId, TimestampMs};
-use calm_types::worker::{ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession};
+use calm_types::worker::{
+    DeathVerdict, ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession,
+};
 
 /// Handle to whatever a successful spawn produced. Moved verbatim from
 /// calm-server's `operation` module (#679 PR1) — the operations saga
@@ -133,5 +135,29 @@ pub trait WorkerProvider: Send + Sync {
             "{} not resumable",
             self.kind()
         )))
+    }
+
+    /// The codex worker death-arbiter (#741 §1.1, design-of-record truth
+    /// table). Given a reap candidate's `thread_id`, the current time, the
+    /// daemon's last (re)connect time, and the rebuild-grace window, return
+    /// the only verdict that authorizes a reap ([`DeathVerdict::Dead`]) —
+    /// or `Alive` / `Unknown` (both = NO reap).
+    ///
+    /// **DORMANT in 741-2:** nothing on the live path calls this yet; the
+    /// reaper wiring is 741-3. Only [`CodexProvider`](crate) overrides it;
+    /// the default returns [`DeathVerdict::Unknown`] so non-codex providers
+    /// never manufacture a death (they never reach the arbiter path).
+    ///
+    /// MUST run UNLOCKED (it issues an async `thread/read` pull); the
+    /// reaper's CAS commit is guarded separately against a pull→commit flip
+    /// (design §1.5).
+    async fn confirm_durable_death(
+        &self,
+        _thread_id: &str,
+        _now_ms: TimestampMs,
+        _daemon_connected_at_ms: TimestampMs,
+        _rebuild_grace_ms: i64,
+    ) -> DeathVerdict {
+        DeathVerdict::Unknown
     }
 }

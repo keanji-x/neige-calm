@@ -252,6 +252,81 @@ pub struct TurnSteerResult {
 }
 
 // ===========================================================================
+// thread/read + thread/loaded/list responses (#741 death arbiter).
+//
+// These MIRROR upstream `app-server-protocol/src/protocol/v2.rs` (HEAD
+// 35aaa5d9, ~5 weeks older than deployed 0.137.0 — version skew flagged;
+// real wire validation is the D-6 e2e in 741-3). We define ONLY the fields
+// the arbiter reads: the thread `status` and, per turn, `completedAt`.
+// ===========================================================================
+
+/// Upstream `ThreadStatus` (`v2.rs:4386`): internally tagged on `type`,
+/// camelCase variants. The arbiter keys on `Active` (a turn is running or
+/// blocked on a human → never reap, design §1.1/§1.4); the other arms mean
+/// "no turn running" and hand the decision to the last-turn `completedAt`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ThreadStatus {
+    NotLoaded,
+    Idle,
+    SystemError,
+    #[serde(rename_all = "camelCase")]
+    Active {
+        active_flags: Vec<ThreadActiveFlag>,
+    },
+}
+
+/// Upstream `ThreadActiveFlag` (`v2.rs:4404`): the "blocked on a human"
+/// flags. Either flag on an `Active` thread is the idle-worker guard
+/// (design §1.4) — never reap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadActiveFlag {
+    WaitingOnApproval,
+    WaitingOnUserInput,
+}
+
+/// `thread/read` response (`v2.rs:4422`). We name the inner thread object
+/// [`ThreadView`] (vs upstream's `Thread`) and keep only the fields the
+/// arbiter needs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ThreadReadResponse {
+    pub thread: ThreadView,
+}
+
+/// The thread object inside [`ThreadReadResponse`] — a narrowed mirror of
+/// upstream `Thread` (`v2.rs:5121`).
+///
+/// Upstream types `turns` as a non-optional `Vec<Turn>` (an **empty list**
+/// when not requested, never absent). We type it `Option<Vec<TurnView>>`
+/// with `#[serde(default)]` so both `"turns": []` (→ `Some([])`) and an
+/// absent field (→ `None`) parse; the arbiter treats both as "no turns".
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadView {
+    pub status: ThreadStatus,
+    #[serde(default)]
+    pub turns: Option<Vec<TurnView>>,
+}
+
+/// A turn inside [`ThreadView`] — a narrowed mirror of upstream `Turn`
+/// (`v2.rs:5193`). `completedAt` is the ONLY field the arbiter reads
+/// (design §0.1): `null` = died mid-turn; `Some` = completed-or-aborted.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnView {
+    #[serde(default)]
+    pub completed_at: Option<i64>,
+}
+
+/// `thread/loaded/list` response (`v2.rs:4378`). We keep only `data` (the
+/// loaded thread ids) and drop the pagination cursor.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ThreadLoadedListResponse {
+    pub data: Vec<String>,
+}
+
+// ===========================================================================
 // Notification stream (server -> client).
 // ===========================================================================
 
@@ -581,6 +656,32 @@ impl CodexAppServer {
         self.request("thread/resume", value).await
     }
 
+    /// `thread/read` — read a thread's current status and (optionally) its
+    /// turn history. The #741 death arbiter calls this with
+    /// `include_turns = true` to inspect the last turn's `completed_at`
+    /// (the died-mid-turn discriminator, design §0.1). Mirrors upstream
+    /// `ThreadReadParams` (`v2.rs:4412`).
+    pub async fn thread_read(
+        &self,
+        thread_id: &str,
+        include_turns: bool,
+    ) -> Result<ThreadReadResponse> {
+        self.request(
+            "thread/read",
+            json!({ "threadId": thread_id, "includeTurns": include_turns }),
+        )
+        .await
+    }
+
+    /// `thread/loaded/list` — the thread ids currently loaded in daemon
+    /// memory. The arbiter uses this as a secondary signal (design §1.3).
+    /// Mirrors upstream `ThreadLoadedListResponse` (`v2.rs:4378`); we pluck
+    /// `data` and drop the pagination cursor.
+    pub async fn thread_loaded_list(&self) -> Result<Vec<String>> {
+        let resp: ThreadLoadedListResponse = self.request("thread/loaded/list", json!({})).await?;
+        Ok(resp.data)
+    }
+
     /// `turn/start` — begin a turn on `thread_id` with the given input.
     /// Returns quickly with the started turn's id; the actual work streams
     /// as notifications (`turn/started` → `item/*` → `turn/completed`).
@@ -806,6 +907,88 @@ async fn reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------
+    // thread/read + thread/loaded/list deser (#741 wire shapes).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn thread_read_parses_last_turn_completed_at_null() {
+        // (a) died-mid-turn: last turn `completedAt: null`.
+        let resp: ThreadReadResponse = serde_json::from_value(json!({
+            "thread": {
+                "status": { "type": "idle" },
+                "turns": [
+                    { "completedAt": 1700 },
+                    { "completedAt": null }
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(resp.thread.status, ThreadStatus::Idle);
+        let turns = resp.thread.turns.unwrap();
+        assert_eq!(turns.last().unwrap().completed_at, None);
+    }
+
+    #[test]
+    fn thread_read_parses_last_turn_completed_at_some() {
+        // (b) clean finish / deliberate abort: last turn `completedAt: <ts>`.
+        let resp: ThreadReadResponse = serde_json::from_value(json!({
+            "thread": {
+                "status": { "type": "idle" },
+                "turns": [ { "completedAt": 1700 }, { "completedAt": 1800 } ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            resp.thread.turns.unwrap().last().unwrap().completed_at,
+            Some(1800)
+        );
+    }
+
+    #[test]
+    fn thread_read_parses_active_waiting_on_user_input() {
+        // (c) status `active` with `activeFlags:["waitingOnUserInput"]`.
+        let resp: ThreadReadResponse = serde_json::from_value(json!({
+            "thread": {
+                "status": {
+                    "type": "active",
+                    "activeFlags": ["waitingOnUserInput"]
+                },
+                "turns": []
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            resp.thread.status,
+            ThreadStatus::Active {
+                active_flags: vec![ThreadActiveFlag::WaitingOnUserInput]
+            }
+        );
+        // empty list deserializes to Some([]) — "no turns" for the arbiter.
+        assert_eq!(resp.thread.turns, Some(vec![]));
+    }
+
+    #[test]
+    fn thread_read_parses_not_loaded_and_absent_turns() {
+        // (d) `notLoaded`, and `turns` absent (include_turns=false) → None.
+        let resp: ThreadReadResponse = serde_json::from_value(json!({
+            "thread": { "status": { "type": "notLoaded" } }
+        }))
+        .unwrap();
+        assert_eq!(resp.thread.status, ThreadStatus::NotLoaded);
+        assert_eq!(resp.thread.turns, None);
+    }
+
+    #[test]
+    fn thread_loaded_list_plucks_data_and_tolerates_cursor() {
+        let resp: ThreadLoadedListResponse = serde_json::from_value(json!({
+            "data": ["t-1", "t-2"],
+            "nextCursor": "opaque"
+        }))
+        .unwrap();
+        assert_eq!(resp.data, vec!["t-1".to_string(), "t-2".to_string()]);
+    }
 
     /// A test harness that wires a real WS-over-UnixStream connection: the
     /// client end is a fully-constructed [`CodexAppServer`] (real reader
