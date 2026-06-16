@@ -1614,7 +1614,7 @@ async fn clear_wave_root_session_refs_for_worker_session_delete_tx(
                 r#"UPDATE waves
                       SET root_session_id = NULL
                     WHERE root_session_id IN (
-                        SELECT id FROM runtimes WHERE card_id = ?1
+                        SELECT id FROM worker_sessions WHERE card_id = ?1
                     )"#,
             )
             .bind(card_id)
@@ -1895,12 +1895,10 @@ pub async fn card_delete_tx(
         WorkerSessionDeleteScope::Card { card_id: id },
     )
     .await?;
-    sqlx::query(
-        "DELETE FROM worker_sessions WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?1)",
-    )
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query("DELETE FROM worker_sessions WHERE card_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
 
     let res = sqlx::query("DELETE FROM cards WHERE id = ?1")
         .bind(id)
@@ -5408,29 +5406,6 @@ impl RuntimeRepo for SqlxRepo {
         runtime_complete_for_terminal_tx(tx, terminal_id, terminal_status).await
     }
 
-    /// Returns runtimes with an expired lease (lease_owner set,
-    /// lease_until_ms in the past). Non-leased runtimes have no orphan signal
-    /// without a heartbeat; they are out of scope for now.
-    async fn runtimes_recover_orphans_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
-        let now = now_ms();
-        let rows = sqlx::query(
-            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                      thread_id, session_id, active_turn_id, handle_state_json,
-                      lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                      completed_at_ms
-               FROM runtimes
-               WHERE status IN ('starting', 'running', 'idle', 'turn_pending')
-                 AND lease_owner IS NOT NULL
-                 AND lease_until_ms IS NOT NULL
-                 AND lease_until_ms < ?1
-               ORDER BY updated_at_ms ASC"#,
-        )
-        .bind(now)
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(card_runtime_from_row).collect()
-    }
-
     async fn backfill_worker_sessions_from_runtimes(&self) -> RuntimeResult<usize> {
         let mut tx = self.pool.begin().await?;
         let inserted = backfill_worker_sessions_from_runtimes(&mut tx).await?;
@@ -7688,6 +7663,82 @@ mod runtime_read_flip_tests {
             worker_session_card_id(repo.pool(), &placeholder_id).await,
             Some(init.card_id)
         );
+    }
+
+    #[tokio::test]
+    async fn card_delete_removes_placeholder_worker_session() {
+        let repo = fresh_repo().await;
+        #[cfg(feature = "worker-session-parity-drop")]
+        repo.disable_worker_session_parity_on_drop_for_test();
+
+        let label = "card-delete-placeholder";
+        let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
+        let mut tx = repo
+            .pool()
+            .begin()
+            .await
+            .expect("begin card delete placeholder tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
+        let active = runtime_start_tx(
+            &mut tx,
+            projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 10_000),
+        )
+        .await
+        .expect("start active runtime");
+        let placeholder = session_prepare_deferred_spec_tx(
+            &mut tx,
+            &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
+        )
+        .await
+        .expect("prepare deferred spec placeholder");
+        tx.commit()
+            .await
+            .expect("commit card delete placeholder tx");
+
+        let seeded_ws: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+                .bind(&card_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("count seeded worker sessions");
+        assert_eq!(seeded_ws, 2);
+
+        let placeholder_runtime_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
+                .bind(&placeholder_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("count placeholder runtime rows");
+        assert_eq!(placeholder_runtime_rows, 0);
+
+        let mut tx = repo
+            .pool()
+            .begin()
+            .await
+            .expect("begin card delete placeholder delete tx");
+        card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
+            .await
+            .expect("delete card");
+        tx.commit()
+            .await
+            .expect("commit card delete placeholder delete tx");
+
+        let remaining_ws: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+                .bind(&card_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("count remaining worker sessions");
+        assert_eq!(remaining_ws, 0);
+
+        let root_refs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE root_session_id IN (?1, ?2)")
+                .bind(active.id.as_str())
+                .bind(placeholder.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .expect("count wave root refs to deleted worker sessions");
+        assert_eq!(root_refs, 0);
     }
 
     #[tokio::test]

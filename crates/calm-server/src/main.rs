@@ -64,8 +64,6 @@ async fn main() -> anyhow::Result<()> {
     // supervisor PTY registry. No daemon binary respawn happens here.
     calm_server::reconcile_supervisor_on_boot(&state).await;
 
-    calm_server::runtimes_recover_orphans_on_boot(&state).await;
-
     if let Err(e) = calm_server::worker_flow::start_on_boot(&state).await {
         tracing::warn!(
             error = %e,

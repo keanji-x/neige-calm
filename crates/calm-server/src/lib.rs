@@ -113,37 +113,6 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
     reconcile_supervisor_on_boot(state).await;
 }
 
-pub async fn runtimes_recover_orphans_on_boot(state: &state::AppState) {
-    let orphans = match state.repo.runtimes_recover_orphans_on_boot().await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(
-                target: "runtime_orphans::recover_on_boot",
-                error = %e,
-                "runtime orphan scan failed; skipping",
-            );
-            return;
-        }
-    };
-    if !orphans.is_empty() {
-        tracing::warn!(
-            target: "runtime_orphans::recover_on_boot",
-            count = orphans.len(),
-            "runtime orphans detected on boot; no automatic action - see followup",
-        );
-        for runtime in &orphans {
-            tracing::warn!(
-                target: "runtime_orphans::recover_on_boot",
-                runtime_id = %runtime.id,
-                card_id = %runtime.card_id,
-                kind = ?runtime.kind,
-                status = ?runtime.status,
-                "orphan runtime",
-            );
-        }
-    }
-}
-
 pub async fn backfill_worker_sessions_from_runtimes_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
@@ -636,9 +605,6 @@ mod boot_order_tests {
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
             .expect("main boot calls reconcile_supervisor_on_boot");
-        let runtimes = main_rs
-            .find("runtimes_recover_orphans_on_boot(&state).await")
-            .expect("main boot calls runtimes_recover_orphans_on_boot");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
@@ -646,8 +612,7 @@ mod boot_order_tests {
         assert!(backfill < card_id_assert);
         assert!(card_id_assert < boot_harnesses);
         assert!(boot_harnesses < reconcile);
-        assert!(reconcile < runtimes);
-        assert!(runtimes < recover);
+        assert!(reconcile < recover);
     }
 
     #[test]
@@ -665,9 +630,6 @@ mod boot_order_tests {
         let reconcile = main_rs
             .find("reconcile_supervisor_on_boot(&state).await")
             .expect("main boot calls reconcile_supervisor_on_boot");
-        let runtimes = main_rs
-            .find("runtimes_recover_orphans_on_boot(&state).await")
-            .expect("main boot calls runtimes_recover_orphans_on_boot");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
@@ -675,8 +637,18 @@ mod boot_order_tests {
         assert!(backfill < card_id_assert);
         assert!(card_id_assert < boot_harnesses);
         assert!(backfill < reconcile);
-        assert!(reconcile < runtimes);
+        assert!(reconcile < recover);
         assert!(backfill < recover);
+    }
+
+    #[test]
+    fn lease_reaper_removed() {
+        let main_rs = include_str!("main.rs");
+        let retired = concat!("runtimes_recover_", "orphans_on_boot");
+        assert!(
+            !main_rs.contains(retired),
+            "retired lease scan must not be wired into main boot"
+        );
     }
 
     #[test]

@@ -207,21 +207,13 @@ pub trait RuntimeRepo {
         terminal_status: RunStatus,
     ) -> Result<()>;
 
-    /// Returns runtimes with an expired lease (lease_owner set,
-    /// lease_until_ms in the past). Non-leased runtimes have no orphan signal
-    /// without a heartbeat; they are out of scope for now.
-    async fn runtimes_recover_orphans_on_boot(&self) -> Result<Vec<CardRuntime>>;
-
     /// PR3b-i (#679): idempotently inserts same-id worker_sessions mirrors
     /// for pre-existing runtimes that were live before the dual-write seam.
     async fn backfill_worker_sessions_from_runtimes(&self) -> Result<usize>;
 
     /// Returns shared-spec runtimes whose `handle_state_json` carries a harness
     /// snapshot (`$.mode == 'harness'`) so the spec harness boot path can
-    /// rebuild their in-memory task + replay pending observations. Disjoint
-    /// from `runtimes_recover_orphans_on_boot`: that one detects expired-lease
-    /// orphans, this one detects opaque-state-bearing harnesses regardless of
-    /// lease state.
+    /// rebuild their in-memory task + replay pending observations.
     async fn runtimes_recover_harnesses_on_boot(&self) -> Result<Vec<CardRuntime>>;
 }
 
