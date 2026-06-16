@@ -2840,6 +2840,44 @@ pub async fn session_record_activity_tx(
     Ok(())
 }
 
+/// T2 durable codex worker-liveness feeder (#741 §1.3), keyed by codex
+/// `thread_id` instead of the internal session id. The durable notification
+/// subscriber sees only thread ids, so this is the path it writes through.
+///
+/// Like [`session_record_activity_tx`] these are `worker_sessions`-ONLY columns
+/// with no `runtimes` mirror, so this MUST NOT touch `updated_at_ms` (bumping it
+/// would break dual-write parity). The match is also pinned to `provider='codex'`
+/// (thread ids are codex-scoped). 0 rows affected is benign — no active codex
+/// session owns the thread — and returns `Ok(())`.
+pub async fn session_record_activity_by_thread_tx(
+    tx: &mut SessionTx<'_>,
+    thread_id: &str,
+    last_activity_ms: i64,
+    last_thread_status: &str,
+) -> Result<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET last_activity_ms = ?1,
+                  last_thread_status = ?2
+            WHERE thread_id = ?3
+              AND provider = 'codex'
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(last_activity_ms)
+    .bind(last_thread_status)
+    .bind(thread_id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        tracing::debug!(
+            thread_id,
+            last_thread_status,
+            "worker session activity-by-thread observation skipped for non-active or missing row"
+        );
+    }
+    Ok(())
+}
+
 pub async fn session_insert_tx(
     tx: &mut SessionTx<'_>,
     session: WorkerSession,
@@ -5486,6 +5524,24 @@ impl SessionRepo for SqlxRepo {
     ) -> Result<()> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         session_record_activity_tx(&mut tx, id, last_activity_ms, last_thread_status).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn session_record_activity_by_thread(
+        &self,
+        thread_id: &str,
+        last_activity_ms: i64,
+        last_thread_status: &str,
+    ) -> Result<()> {
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        session_record_activity_by_thread_tx(
+            &mut tx,
+            thread_id,
+            last_activity_ms,
+            last_thread_status,
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -8372,6 +8428,18 @@ mod session_record_activity_tests {
         state: WorkerSessionState,
         updated_at_ms: i64,
     ) -> WorkerSessionId {
+        seed_session_with_thread(repo, session_id, None, state, updated_at_ms).await
+    }
+
+    /// Like [`seed_session`] but lets the test pin a codex `thread_id` so the
+    /// thread-keyed feeder path can be exercised.
+    async fn seed_session_with_thread(
+        repo: &SqlxRepo,
+        session_id: &str,
+        thread_id: Option<&str>,
+        state: WorkerSessionState,
+        updated_at_ms: i64,
+    ) -> WorkerSessionId {
         let mut tx = repo.pool().begin().await.unwrap();
         let cove = cove_create_tx(
             &mut tx,
@@ -8411,7 +8479,7 @@ mod session_record_activity_tests {
                 requester_session_id: None,
                 state,
                 mcp_token_hash: None,
-                thread_id: None,
+                thread_id: thread_id.map(str::to_string),
                 agent_session_id: None,
                 active_turn_id: None,
                 terminal_run_id: None,
@@ -8500,5 +8568,88 @@ mod session_record_activity_tests {
             .await
             .unwrap();
         assert!(repo.session_get(&missing).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn records_activity_by_thread_on_active_session_without_bumping_updated_at_ms() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let updated_at_ms = 1_000;
+        let id = seed_session_with_thread(
+            &repo,
+            "ws-active-thread",
+            Some("th-active"),
+            WorkerSessionState::Running,
+            updated_at_ms,
+        )
+        .await;
+
+        repo.session_record_activity_by_thread("th-active", 5_000, "waitingOnUserInput")
+            .await
+            .unwrap();
+
+        let after = repo.session_get(&id).await.unwrap().unwrap();
+        assert_eq!(after.last_activity_ms, Some(5_000));
+        assert_eq!(
+            after.last_thread_status.as_deref(),
+            Some("waitingOnUserInput")
+        );
+        // The crux: ws-only columns must NOT touch updated_at_ms (parity).
+        assert_eq!(
+            after.updated_at_ms, updated_at_ms,
+            "session_record_activity_by_thread must not bump updated_at_ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_activity_by_thread_on_terminal_session_is_benign_noop() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let updated_at_ms = 2_000;
+        let id = seed_session_with_thread(
+            &repo,
+            "ws-exited-thread",
+            Some("th-exited"),
+            WorkerSessionState::Exited,
+            updated_at_ms,
+        )
+        .await;
+
+        // Terminal session: Ok, but no columns change.
+        repo.session_record_activity_by_thread("th-exited", 9_000, "idle")
+            .await
+            .unwrap();
+
+        let after = repo.session_get(&id).await.unwrap().unwrap();
+        assert!(
+            after.last_activity_ms.is_none(),
+            "terminal session must not record activity by thread"
+        );
+        assert!(after.last_thread_status.is_none());
+        assert_eq!(after.updated_at_ms, updated_at_ms);
+    }
+
+    #[tokio::test]
+    async fn record_activity_by_thread_on_unknown_thread_is_ok() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        // Seed an active session under a *different* thread id; the unknown
+        // thread must not touch it and must return Ok.
+        let id = seed_session_with_thread(
+            &repo,
+            "ws-other-thread",
+            Some("th-known"),
+            WorkerSessionState::Running,
+            3_000,
+        )
+        .await;
+
+        repo.session_record_activity_by_thread("th-unknown", 7_000, "active")
+            .await
+            .unwrap();
+
+        let after = repo.session_get(&id).await.unwrap().unwrap();
+        assert!(
+            after.last_activity_ms.is_none(),
+            "unknown thread must not bleed onto another session"
+        );
+        assert!(after.last_thread_status.is_none());
     }
 }

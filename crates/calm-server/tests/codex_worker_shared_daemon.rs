@@ -735,6 +735,16 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
                 == Some(idempotency_key.as_str())
                 && c.payload.get("codex_thread_id").and_then(Value::as_str)
                     == Some("fake-thread-0001")
+                // `codex_thread_id` is overlaid from the runtime row by
+                // `project_runtime_into_cards_payload`, while `appserver_sock`
+                // lives only in the base card payload read by `cards_by_wave`
+                // one statement earlier. Those are two separate, non-snapshot
+                // reads: the spawn's persist tx (which writes BOTH atomically)
+                // can commit between them, so an iteration can see the runtime
+                // thread id while still holding a pre-commit base payload with
+                // no `appserver_sock`. Require `appserver_sock` here so the wait
+                // only settles on a fully consistent snapshot before asserting.
+                && c.payload.get("appserver_sock").and_then(Value::as_str).is_some()
         })
     })
     .await

@@ -56,6 +56,12 @@ pub trait CodexDaemonProbe: Send + Sync {
     fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<String>;
     fn remote_uri(&self) -> String;
 
+    /// Wall-clock ms of the most recent successful daemon (re)connect (#741
+    /// §1.3). Feeds the 741-3 reaper's `REBUILD_GRACE` — within the grace the
+    /// loaded-thread roster isn't stable yet so S2 pulls are held off. Nothing
+    /// consumes this until 741-3; it is tracked always-on in the connect path.
+    fn daemon_connected_at_ms(&self) -> TimestampMs;
+
     /// Pull the §1.3 liveness facts for `thread_id` via a live `thread/read`
     /// (+ optional `thread/loaded/list`). Returns `None` on ANY RPC
     /// error / unreachable daemon — the arbiter treats that as "can't rule
@@ -284,6 +290,9 @@ mod tests {
         }
         fn remote_uri(&self) -> String {
             "unix:///tmp/fake.sock".into()
+        }
+        fn daemon_connected_at_ms(&self) -> TimestampMs {
+            0
         }
         async fn read_liveness_facts(&self, _thread_id: &str) -> Option<CodexLivenessFacts> {
             self.facts

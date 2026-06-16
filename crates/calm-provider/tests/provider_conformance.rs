@@ -92,6 +92,10 @@ impl CodexDaemonProbe for StaticCodexDaemonProbe {
         self.remote_uri.clone()
     }
 
+    fn daemon_connected_at_ms(&self) -> calm_types::runtime::TimestampMs {
+        0
+    }
+
     async fn read_liveness_facts(
         &self,
         _thread_id: &str,
