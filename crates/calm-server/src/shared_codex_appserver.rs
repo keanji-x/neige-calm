@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::Serialize;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
@@ -28,8 +29,11 @@ use crate::codex_appserver::{
     redact_thread_start_config,
 };
 use crate::config::Config;
-use crate::db::{Repo, SharedCodexDaemonUpdate};
+use crate::db::sqlite::runtime_get_active_for_card_tx;
+use crate::db::{Repo, SharedCodexDaemonUpdate, write_in_tx_typed};
 use crate::error::{CalmError, Result};
+use crate::mcp_server::transport;
+use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::proc_identity::{
@@ -197,6 +201,7 @@ pub type NotificationFanout = broadcast::Sender<Notification>;
 
 pub struct SharedCodexAppServer {
     sock: PathBuf,
+    kernel_mcp_socket_path: PathBuf,
     home: Arc<SharedCodexHome>,
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
@@ -358,6 +363,7 @@ impl SharedCodexAppServer {
         let (tx, _) = broadcast::channel(16);
         Arc::new(Self {
             sock: root.join("run/codex-appserver.sock"),
+            kernel_mcp_socket_path: transport::default_socket_path(&root),
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
@@ -396,6 +402,7 @@ impl SharedCodexAppServer {
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
             sock: data_dir.join("run/codex-appserver.sock"),
+            kernel_mcp_socket_path: transport::default_socket_path(&data_dir),
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
@@ -1255,15 +1262,64 @@ impl SharedCodexAppServer {
         };
         for entry in self.thread_cache.iter() {
             let thread_id = entry.key().clone();
+            let card_id = entry.value().clone();
             tracing::info!(
                 target = "shared_codex_daemon::resume",
                 %thread_id,
+                %card_id,
                 "resuming shared codex thread"
             );
-            if let Err(e) = client.thread_resume(&thread_id).await {
+            let raw_token = match write_in_tx_typed(self.repo.as_ref(), {
+                let thread_id = thread_id.clone();
+                let card_id = card_id.clone();
+                move |tx| {
+                    Box::pin(async move {
+                        let runtime = runtime_get_active_for_card_tx(tx, &card_id)
+                            .await?
+                            .ok_or_else(|| {
+                                CalmError::Internal(format!(
+                                    "cached shared codex thread {thread_id} has no active runtime for card {card_id}"
+                                ))
+                            })?;
+                        mint_and_persist_card_token(tx, &card_id, &runtime.id).await
+                    })
+                }
+            })
+            .await
+            {
+                Ok(raw_token) => raw_token,
+                Err(e) => {
+                    tracing::warn!(
+                        target = "shared_codex_daemon::resume",
+                        %thread_id,
+                        %card_id,
+                        error = %e,
+                        "shared codex thread token refresh failed; leaving mapping intact"
+                    );
+                    continue;
+                }
+            };
+            let mut set = serde_json::Map::new();
+            for (key, value) in card_mcp_env(&self.kernel_mcp_socket_path, raw_token.as_str()) {
+                set.insert(key.to_string(), serde_json::Value::String(value));
+            }
+            let config = json!({
+                "shell_environment_policy": {
+                    "set": set,
+                },
+            });
+            // Config overrides are honored by codex only on the cold-resume
+            // path; resume_cached_threads always runs against a freshly
+            // respawned process, so this is safe. A hot/loaded-thread resume
+            // would silently drop config.
+            if let Err(e) = client
+                .thread_resume_with_config(&thread_id, Some(config))
+                .await
+            {
                 tracing::warn!(
                     target = "shared_codex_daemon::resume",
                     %thread_id,
+                    %card_id,
                     error = %e,
                     "shared codex thread resume failed; leaving mapping intact"
                 );

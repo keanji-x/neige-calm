@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -29,9 +29,6 @@ use calm_server::wave_cove_cache::WaveCoveCache;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tracing_subscriber::layer::Context as TracingContext;
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::{Layer, registry as tracing_registry};
 
 /// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
 /// (or any other process env read by the fake codex shim). Peer test
@@ -46,23 +43,6 @@ impl Drop for EnvGuard {
         unsafe {
             std::env::remove_var(self.0);
         }
-    }
-}
-
-struct TargetCaptureLayer {
-    targets: Arc<Mutex<Vec<String>>>,
-}
-
-impl<S> Layer<S> for TargetCaptureLayer
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(&self, event: &tracing::Event<'_>, _ctx: TracingContext<'_, S>) {
-        self.targets.lock().unwrap().push(format!(
-            "{}:{}",
-            event.metadata().level(),
-            event.metadata().target()
-        ));
     }
 }
 
@@ -962,7 +942,7 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
 }
 
 #[tokio::test]
-async fn reusable_thread_without_token_logs_warning() {
+async fn reuse_arm_remints_when_token_row_missing() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
     let card_id = new_id();
@@ -988,7 +968,9 @@ async fn reusable_thread_without_token_logs_warning() {
         wait_op(&state, &op_id).await,
         OperationOutcome::Succeeded { .. }
     ));
-    assert!(card_mcp_hash(&repo, &card_id).await.is_some());
+    let original_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("initial start stores card MCP hash");
 
     sqlx::query("DELETE FROM card_mcp_tokens WHERE card_id = ?1")
         .bind(&card_id)
@@ -1039,23 +1021,68 @@ async fn reusable_thread_without_token_logs_warning() {
     .await
     .unwrap();
 
-    let targets = Arc::new(Mutex::new(Vec::new()));
-    let subscriber = tracing_registry().with(TargetCaptureLayer {
-        targets: targets.clone(),
-    });
-    let _guard = tracing::subscriber::set_default(subscriber);
     state.operation_runtime.drive().await.unwrap();
 
     assert!(matches!(
         wait_op(&state, &op_id).await,
         OperationOutcome::Succeeded { .. }
     ));
-    let observed_targets = targets.lock().unwrap().clone();
-    assert!(
-        observed_targets
-            .iter()
-            .any(|target| target == "WARN:spec_harness::reusable_thread_invariant"),
-        "expected spec reusable-thread invariant warning; observed targets: {observed_targets:?}"
+    let repaired_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("reuse repair remints missing card MCP hash");
+    assert_ne!(repaired_hash, original_hash);
+    assert_eq!(
+        assert_card_session_mcp_hash_parity(&repo, &card_id, &active.id).await,
+        repaired_hash
+    );
+
+    let (tx_output_json,): (String,) =
+        sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let mut output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
+    output
+        .data
+        .as_object_mut()
+        .expect("operation output data")
+        .remove("codex_thread_id");
+    sqlx::query(
+        r#"UPDATE operations
+              SET phase = 'app_server_interact',
+                  phase_detail_json = ?1,
+                  tx_output_json = ?2,
+                  lease_owner = NULL,
+                  lease_until_ms = NULL,
+                  completed_at_ms = NULL
+            WHERE id = ?3"#,
+    )
+    .bind(
+        serde_json::to_string(&serde_json::json!({
+            "kind": "mint_and_await",
+            "thread_id": Value::Null,
+        }))
+        .unwrap(),
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(&op_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    state.operation_runtime.drive().await.unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    assert_eq!(
+        card_mcp_hash(&repo, &card_id).await.as_deref(),
+        Some(repaired_hash.as_str()),
+        "reuse checkpoint with an existing token row must not re-mint"
+    );
+    assert_eq!(
+        assert_card_session_mcp_hash_parity(&repo, &card_id, &active.id).await,
+        repaired_hash
     );
 }
 

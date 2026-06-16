@@ -20,7 +20,8 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::mcp_server::wiring::{
-    card_mcp_env, mint_card_mcp_token_pair, mirror_session_mcp_token, persist_card_mcp_token_hash,
+    card_mcp_env, mint_and_persist_card_token, mint_card_mcp_token_pair, mirror_session_mcp_token,
+    persist_card_mcp_token_hash,
 };
 use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // Issue #649 i2 lifted the per-card lock-map machinery that used to live in
@@ -361,6 +362,22 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     thread_id = %thread_id,
                     "spec card reuses thread without per-card MCP token row - AI shell `neige` will fail -32401; migration 0035 should have nulled this thread_id"
                 );
+                let card_id_for_tx = card_id.clone();
+                write_in_tx_typed(self.repo.as_ref(), move |tx| {
+                    Box::pin(async move {
+                        let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                            .await?
+                            .ok_or_else(|| {
+                                CalmError::Internal(format!(
+                                    "spec card {card_id_for_tx} has no active runtime while repairing reusable thread MCP token"
+                                ))
+                            })?;
+                        mint_and_persist_card_token(tx, &card_id_for_tx, &runtime.id)
+                            .await
+                            .map(|_| ())
+                    })
+                })
+                .await?;
             }
             thread_id
         } else {

@@ -569,6 +569,18 @@ impl CodexAppServer {
             .await
     }
 
+    pub async fn thread_resume_with_config(
+        &self,
+        thread_id: &str,
+        config: Option<serde_json::Value>,
+    ) -> Result<ThreadResult> {
+        let mut value = json!({ "threadId": thread_id });
+        if let Some(config) = config {
+            value["config"] = config;
+        }
+        self.request("thread/resume", value).await
+    }
+
     /// `turn/start` — begin a turn on `thread_id` with the given input.
     /// Returns quickly with the started turn's id; the actual work streams
     /// as notifications (`turn/started` → `item/*` → `turn/completed`).
@@ -1405,6 +1417,88 @@ mod tests {
 
         let result = req_fut.await.expect("thread/start");
         assert_eq!(result.thread_id(), Some("without-config"));
+        let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thread_resume_with_config_sends_config_when_some() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let expected = json!({
+            "shell_environment_policy": {
+                "set": {
+                    "NEIGE_MCP_SOCKET": "/tmp/calm.sock",
+                    "NEIGE_MCP_TOKEN": "raw-per-card",
+                }
+            }
+        });
+        let req_fut = client.thread_resume_with_config("thread-123", Some(expected.clone()));
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            let params = req.get("params").expect("params");
+            assert_eq!(
+                params.get("threadId").and_then(Value::as_str),
+                Some("thread-123")
+            );
+            assert_eq!(params.get("config"), Some(&expected));
+
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "thread": { "id": "thread-123" }, "model": "m" },
+                }),
+            )
+            .await;
+            h.server
+        });
+
+        let result = req_fut.await.expect("thread/resume");
+        assert_eq!(result.thread_id(), Some("thread-123"));
+        let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thread_resume_with_config_omits_config_when_none() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let req_fut = client.thread_resume_with_config("thread-456", None);
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            let params = req.get("params").expect("params");
+            assert_eq!(
+                params.get("threadId").and_then(Value::as_str),
+                Some("thread-456")
+            );
+            assert!(!params.as_object().unwrap().contains_key("config"));
+
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "thread": { "id": "thread-456" }, "model": "m" },
+                }),
+            )
+            .await;
+            h.server
+        });
+
+        let result = req_fut.await.expect("thread/resume");
+        assert_eq!(result.thread_id(), Some("thread-456"));
         let _server = server_task.await.unwrap();
     }
 

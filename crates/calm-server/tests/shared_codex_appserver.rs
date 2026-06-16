@@ -4,10 +4,13 @@ use std::{path::Path, process::Stdio};
 
 use calm_server::codex_appserver::InputItem;
 use calm_server::config::Config;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_mcp_token_set_tx, runtime_start_tx, session_mcp_token_set_tx,
+};
 use calm_server::db::{
     Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
 };
+use calm_server::mcp_server::auth;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
@@ -17,7 +20,7 @@ use calm_server::shared_codex_appserver::{
     bounded_exponential_backoff, drop_spawned_child_guard_for_test,
 };
 use clap::Parser;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -343,8 +346,8 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
     .to_string()
 }
 
-async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
-    seed_runtime_thread_with_kind(repo, card_id, thread_id, RuntimeKind::CodexCard).await;
+async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
+    seed_runtime_thread_with_kind(repo, card_id, thread_id, RuntimeKind::CodexCard).await
 }
 
 async fn seed_runtime_thread_with_kind(
@@ -352,12 +355,13 @@ async fn seed_runtime_thread_with_kind(
     card_id: &str,
     thread_id: &str,
     kind: RuntimeKind,
-) {
+) -> String {
+    let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     runtime_start_tx(
         &mut tx,
         RuntimeInit {
-            id: new_id(),
+            id: runtime_id.clone(),
             card_id: card_id.to_string(),
             kind,
             agent_provider: Some(AgentProvider::Codex),
@@ -376,6 +380,45 @@ async fn seed_runtime_thread_with_kind(
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    runtime_id
+}
+
+async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
+    for _ in 0..100 {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            let rows = raw
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect::<Vec<Value>>();
+            if rows.len() >= min_count {
+                return rows;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for captured fake app-server requests");
+}
+
+async fn card_mcp_hash(repo: &SqlxRepo, card_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1")
+        .bind(card_id)
+        .fetch_optional(repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn session_mcp_hash(repo: &SqlxRepo, runtime_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1")
+        .bind(runtime_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+}
+
+fn thread_resume_token(req: &Value) -> &str {
+    req.pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_TOKEN")
+        .and_then(Value::as_str)
+        .expect("thread/resume config must carry NEIGE_MCP_TOKEN")
 }
 
 #[test]
@@ -666,17 +709,86 @@ async fn restart_resumes_rollout_backed_threads() {
 
     let repo = repo().await;
     let card_id = seed_card(&repo, 1).await;
-    seed_runtime_thread_with_kind(&repo, &card_id, "thread-resume", RuntimeKind::SharedSpec).await;
+    let runtime_id =
+        seed_runtime_thread_with_kind(&repo, &card_id, "thread-resume", RuntimeKind::SharedSpec)
+            .await;
+    let old_hash = auth::hash_token("old-resume-token");
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
+        .await
+        .unwrap();
+    session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 
     let daemon = server(&root, repo.clone()).await;
     daemon.start_or_takeover().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let rows = wait_for_requests(&capture, 2).await;
+    let resumes = rows
+        .iter()
+        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/resume"))
+        .collect::<Vec<_>>();
+    assert_eq!(resumes.len(), 1);
+    let first_resume_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("initial resume remints card MCP hash");
+    assert_ne!(first_resume_hash, old_hash);
+    assert_eq!(
+        auth::hash_token(thread_resume_token(resumes[0])),
+        first_resume_hash
+    );
+    assert_eq!(
+        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+        Some(first_resume_hash.as_str())
+    );
+
+    let trigger_card_id = seed_card(&repo, 2).await;
+    daemon.mark_needs_respawn();
+    daemon
+        .thread_start_mint_for_card(
+            &trigger_card_id,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: None,
+            },
+        )
+        .await
+        .unwrap();
+    let rows = wait_for_requests(&capture, rows.len() + 3).await;
+    let resumes = rows
+        .iter()
+        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/resume"))
+        .collect::<Vec<_>>();
+    assert_eq!(resumes.len(), 2);
+    let resumed = resumes.last().unwrap();
+    let expected_socket = root
+        .path()
+        .join("mcp/kernel.sock")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        resumed
+            .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
+            .and_then(Value::as_str),
+        Some(expected_socket.as_str())
+    );
+    let respawn_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("respawn resume remints card MCP hash");
+    assert_ne!(respawn_hash, first_resume_hash);
+    assert_eq!(auth::hash_token(thread_resume_token(resumed)), respawn_hash);
+    assert_eq!(
+        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+        Some(respawn_hash.as_str())
+    );
 
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
-    let requests = std::fs::read_to_string(capture).unwrap();
-    assert!(requests.contains("\"method\":\"thread/resume\""));
 }
 
 #[tokio::test]
