@@ -286,6 +286,13 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    // Production parity: the boot backfill mirrors every migrated `runtimes`
+    // row into `worker_sessions` (with card_id) — so terminals_orphaned's
+    // flipped `ws.card_id` scan (PR9b-i) sees the active session.
+    concrete
+        .backfill_worker_sessions_from_runtimes()
+        .await
+        .unwrap();
     (card.id.to_string(), term.id)
 }
 
