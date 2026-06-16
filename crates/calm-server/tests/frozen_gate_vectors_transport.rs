@@ -667,6 +667,7 @@ fn worker_session(id: &str, wave_id: WaveId, contract: WorkerContract) -> Worker
         agent_session_id: None,
         active_turn_id: None,
         terminal_run_id: None,
+        card_id: Some(CardId(format!("card-{id}"))),
         handle_state_json: None,
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,

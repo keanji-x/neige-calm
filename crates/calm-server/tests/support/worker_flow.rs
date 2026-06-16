@@ -253,6 +253,7 @@ pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
         agent_session_id: seed.runtime.session_id.clone(),
         active_turn_id: None,
         terminal_run_id: None,
+        card_id: Some(seed.card.id.clone()),
         handle_state_json: None,
         liveness: LivenessTag::Alive,
         liveness_probed_at_ms: None,

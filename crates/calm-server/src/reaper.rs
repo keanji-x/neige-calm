@@ -616,7 +616,7 @@ mod tests {
     use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx, task_insert_tx};
     use calm_truth::session_repo::SessionRepo;
     use calm_truth_test_harness::FakeProvider;
-    use calm_types::ids::WaveId;
+    use calm_types::ids::{CardId, WaveId};
     use calm_types::worker::{
         ExitEvidence, ExitSource, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind,
         WorkerSession, WorkerSessionId, WorkerSessionState,
@@ -680,6 +680,7 @@ mod tests {
             agent_session_id: None,
             active_turn_id: None,
             terminal_run_id: None,
+            card_id: Some(CardId(format!("card-{id}"))),
             handle_state_json: None,
             liveness: LivenessTag::Unknown,
             liveness_probed_at_ms: None,

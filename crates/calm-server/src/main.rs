@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(&cfg, repo).await?;
 
     calm_server::backfill_worker_sessions_from_runtimes_on_boot(&state).await?;
+    calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
 
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
     // only codex app-server path; failures are logged so boot can still bind

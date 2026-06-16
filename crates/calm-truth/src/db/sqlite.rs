@@ -273,6 +273,24 @@ impl SqlxRepo {
     }
 }
 
+pub async fn assert_worker_sessions_card_id_complete(pool: &SqlitePool) -> Result<()> {
+    let count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM worker_sessions
+            WHERE card_id IS NULL
+              AND state IN ('starting','running','idle','turn_pending')"#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if count > 0 {
+        return Err(CalmError::Internal(format!(
+            "worker_sessions.card_id boot assertion failed: {count} active worker_sessions rows have NULL card_id"
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(feature = "worker-session-parity-drop")]
 impl Drop for SqlxRepo {
     fn drop(&mut self) {
@@ -2540,7 +2558,7 @@ pub async fn session_get_by_active_token_hash(
     let row = sqlx::query(
         r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
                   requester_session_id, state, mcp_token_hash, thread_id,
-                  agent_session_id, active_turn_id, terminal_run_id,
+                  agent_session_id, active_turn_id, terminal_run_id, card_id,
                   handle_state_json, liveness, liveness_probed_at_ms,
                   exit_code, exit_interpretation, spawn_op_id,
                   last_activity_ms, last_thread_status, created_at_ms,
@@ -2562,7 +2580,7 @@ pub async fn session_get_by_id(
     let row = sqlx::query(
         r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
                   requester_session_id, state, mcp_token_hash, thread_id,
-                  agent_session_id, active_turn_id, terminal_run_id,
+                  agent_session_id, active_turn_id, terminal_run_id, card_id,
                   handle_state_json, liveness, liveness_probed_at_ms,
                   exit_code, exit_interpretation, spawn_op_id,
                   last_activity_ms, last_thread_status, created_at_ms,
@@ -2735,6 +2753,7 @@ pub(crate) fn worker_session_from_row(row: &SqliteRow) -> Result<WorkerSession> 
         agent_session_id: row.try_get("agent_session_id")?,
         active_turn_id: row.try_get("active_turn_id")?,
         terminal_run_id: row.try_get("terminal_run_id")?,
+        card_id: row.try_get::<Option<String>, _>("card_id")?.map(CardId),
         handle_state_json,
         liveness: worker_session_parse("liveness", row.try_get("liveness")?)?,
         liveness_probed_at_ms: row.try_get("liveness_probed_at_ms")?,
@@ -2756,7 +2775,7 @@ pub async fn session_get_tx(
     let row = sqlx::query(
         r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
                   requester_session_id, state, mcp_token_hash, thread_id,
-                  agent_session_id, active_turn_id, terminal_run_id,
+                  agent_session_id, active_turn_id, terminal_run_id, card_id,
                   handle_state_json, liveness, liveness_probed_at_ms,
                   exit_code, exit_interpretation, spawn_op_id,
                   last_activity_ms, last_thread_status, created_at_ms,
@@ -2895,11 +2914,11 @@ pub async fn session_insert_tx(
                handle_state_json, liveness, liveness_probed_at_ms, exit_code,
                exit_interpretation, spawn_op_id, last_activity_ms,
                last_thread_status, created_at_ms, updated_at_ms,
-               completed_at_ms
+               completed_at_ms, card_id
            )
            VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-               ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+               ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
            )"#,
     )
     .bind(session.id.as_str())
@@ -2936,6 +2955,7 @@ pub async fn session_insert_tx(
     .bind(session.created_at_ms)
     .bind(session.updated_at_ms)
     .bind(session.completed_at_ms)
+    .bind(session.card_id.as_ref().map(|c| c.0.as_str()))
     .execute(&mut **tx)
     .await?;
     session_get_tx(tx, &session.id).await?.ok_or_else(|| {
@@ -3114,6 +3134,7 @@ fn worker_session_from_runtime_init(init: &RuntimeInit, wave_id: WaveId) -> Work
         agent_session_id: init.session_id.clone(),
         active_turn_id: init.active_turn_id.clone(),
         terminal_run_id: init.terminal_run_id.clone(),
+        card_id: Some(CardId(init.card_id.clone())),
         handle_state_json: init.handle_state_json.clone(),
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,
@@ -3144,6 +3165,7 @@ fn worker_session_from_card_runtime(runtime: &CardRuntime, wave_id: WaveId) -> W
         agent_session_id: runtime.session_id.clone(),
         active_turn_id: runtime.active_turn_id.clone(),
         terminal_run_id: runtime.terminal_run_id.clone(),
+        card_id: Some(CardId(runtime.card_id.clone())),
         handle_state_json: runtime.handle_state_json.clone(),
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,
@@ -5485,7 +5507,7 @@ impl SessionRepo for SqlxRepo {
         let row = sqlx::query(
             r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
                       requester_session_id, state, mcp_token_hash, thread_id,
-                      agent_session_id, active_turn_id, terminal_run_id,
+                      agent_session_id, active_turn_id, terminal_run_id, card_id,
                       handle_state_json, liveness, liveness_probed_at_ms,
                       exit_code, exit_interpretation, spawn_op_id,
                       last_activity_ms, last_thread_status, created_at_ms,
@@ -5503,7 +5525,7 @@ impl SessionRepo for SqlxRepo {
         let rows = sqlx::query(
             r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
                       requester_session_id, state, mcp_token_hash, thread_id,
-                      agent_session_id, active_turn_id, terminal_run_id,
+                      agent_session_id, active_turn_id, terminal_run_id, card_id,
                       handle_state_json, liveness, liveness_probed_at_ms,
                       exit_code, exit_interpretation, spawn_op_id,
                       last_activity_ms, last_thread_status, created_at_ms,
@@ -5609,7 +5631,7 @@ impl SessionRepo for SqlxRepo {
         let rows = sqlx::query(
             r#"SELECT id, wave_id, provider, mode, contract, parent_session_id,
                       requester_session_id, state, mcp_token_hash, thread_id,
-                      agent_session_id, active_turn_id, terminal_run_id,
+                      agent_session_id, active_turn_id, terminal_run_id, card_id,
                       handle_state_json, liveness, liveness_probed_at_ms,
                       exit_code, exit_interpretation, spawn_op_id,
                       last_activity_ms, last_thread_status, created_at_ms,
@@ -7046,6 +7068,7 @@ mod runtime_read_flip_tests {
     use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme, new_id};
     use crate::runtime_repo::RuntimeRepoError;
     use serde_json::json;
+    use sqlx::SqlitePool;
 
     #[derive(Clone)]
     struct RuntimeReadCase {
@@ -7513,6 +7536,29 @@ mod runtime_read_flip_tests {
         }
     }
 
+    async fn worker_session_card_id(pool: &SqlitePool, id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id = ?1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("worker session card_id")
+    }
+
+    async fn run_worker_sessions_card_id_backfill(pool: &SqlitePool) -> u64 {
+        sqlx::query(
+            r#"UPDATE worker_sessions
+                  SET card_id = COALESCE(
+                      (SELECT r.card_id FROM runtimes r WHERE r.id = worker_sessions.id),
+                      (SELECT c.id      FROM cards    c WHERE c.session_id = worker_sessions.id)
+                  )
+                WHERE card_id IS NULL"#,
+        )
+        .execute(pool)
+        .await
+        .expect("run worker_sessions card_id backfill")
+        .rows_affected()
+    }
+
     async fn assert_projectable_card_matches_runtimes_reference(
         repo: &SqlxRepo,
         history: &ProjectableHistory,
@@ -7532,6 +7578,168 @@ mod runtime_read_flip_tests {
         assert_ws_backed_projection(&expected, &actual);
         assert_ne!(actual.id, history.superseded.id);
         assert_ne!(actual.status, RunStatus::Superseded);
+    }
+
+    #[tokio::test]
+    async fn worker_sessions_card_id_dual_write_on_runtime_start() {
+        let repo = fresh_repo().await;
+        let mut tx = repo.pool().begin().await.expect("begin runtime start tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, "card-id-start", "codex").await;
+        let init = projectable_runtime_init(
+            &card_id,
+            "card-id-start",
+            "active",
+            RunStatus::Running,
+            10_000,
+        );
+        let runtime = runtime_start_tx(&mut tx, init.clone())
+            .await
+            .expect("start runtime");
+        tx.commit().await.expect("commit runtime start tx");
+
+        assert_eq!(
+            worker_session_card_id(repo.pool(), &runtime.id).await,
+            Some(init.card_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_sessions_card_id_dual_write_on_deferred_spec_placeholder() {
+        let repo = fresh_repo().await;
+        let placeholder_id = format!("rt-card-id-placeholder-{}", new_id());
+        let mut tx = repo
+            .pool()
+            .begin()
+            .await
+            .expect("begin deferred placeholder tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, "card-id-placeholder", "codex").await;
+        let init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 10_000);
+        session_prepare_deferred_spec_tx(&mut tx, &init)
+            .await
+            .expect("prepare deferred placeholder");
+        tx.commit().await.expect("commit deferred placeholder tx");
+
+        let runtime_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
+            .bind(&placeholder_id)
+            .fetch_one(repo.pool())
+            .await
+            .expect("count placeholder runtime rows");
+        assert_eq!(runtime_count, 0);
+        assert_eq!(
+            worker_session_card_id(repo.pool(), &placeholder_id).await,
+            Some(init.card_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_sessions_card_id_backfill_from_runtimes() {
+        let repo = fresh_repo().await;
+        let runtime = seed_runtime(
+            &repo,
+            RuntimeReadCase {
+                label: "card-id-backfill-runtime",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+            },
+            10_000,
+        )
+        .await;
+
+        sqlx::query("UPDATE worker_sessions SET card_id = NULL WHERE id = ?1")
+            .bind(&runtime.id)
+            .execute(repo.pool())
+            .await
+            .expect("clear worker session card_id");
+        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 1);
+        assert_eq!(
+            worker_session_card_id(repo.pool(), &runtime.id).await,
+            Some(runtime.card_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_sessions_card_id_backfill_from_cards_session_id() {
+        let repo = fresh_repo().await;
+        let (card_id, placeholder_id) =
+            seed_deferred_projectable_placeholder(&repo, "card-id-backfill-card").await;
+
+        sqlx::query("UPDATE worker_sessions SET card_id = NULL WHERE id = ?1")
+            .bind(&placeholder_id)
+            .execute(repo.pool())
+            .await
+            .expect("clear placeholder card_id");
+        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 1);
+        assert_eq!(
+            worker_session_card_id(repo.pool(), &placeholder_id).await,
+            Some(card_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_sessions_card_id_backfill_idempotent() {
+        let repo = fresh_repo().await;
+        let runtime = seed_runtime(
+            &repo,
+            RuntimeReadCase {
+                label: "card-id-backfill-idempotent",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+            },
+            10_000,
+        )
+        .await;
+
+        sqlx::query("UPDATE worker_sessions SET card_id = NULL WHERE id = ?1")
+            .bind(&runtime.id)
+            .execute(repo.pool())
+            .await
+            .expect("clear worker session card_id");
+        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 1);
+        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 0);
+    }
+
+    #[tokio::test]
+    async fn assert_worker_sessions_card_id_complete_flags_active_null() {
+        let repo = fresh_repo().await;
+        repo.disable_worker_session_parity_on_drop_for_test();
+        let runtime = seed_runtime(
+            &repo,
+            RuntimeReadCase {
+                label: "card-id-assert-active-null",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+            },
+            10_000,
+        )
+        .await;
+
+        sqlx::query("UPDATE worker_sessions SET card_id = NULL WHERE id = ?1")
+            .bind(&runtime.id)
+            .execute(repo.pool())
+            .await
+            .expect("clear active worker session card_id");
+        assert!(
+            assert_worker_sessions_card_id_complete(repo.pool())
+                .await
+                .is_err()
+        );
+
+        sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
+            .bind(&runtime.id)
+            .execute(repo.pool())
+            .await
+            .expect("mark worker session terminal");
+        assert!(
+            assert_worker_sessions_card_id_complete(repo.pool())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -8231,6 +8439,7 @@ mod worker_flow_items_tests {
                 agent_session_id: Some(format!("agent-{session_id}")),
                 active_turn_id: None,
                 terminal_run_id: None,
+                card_id: Some(card.id.clone()),
                 handle_state_json: None,
                 liveness: LivenessTag::Alive,
                 liveness_probed_at_ms: None,
@@ -8586,6 +8795,7 @@ mod session_record_activity_tests {
                 agent_session_id: None,
                 active_turn_id: None,
                 terminal_run_id: None,
+                card_id: Some(crate::ids::CardId(format!("card-{session_id}"))),
                 handle_state_json: None,
                 liveness: LivenessTag::Alive,
                 liveness_probed_at_ms: None,

@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{CoveId, WaveId};
+use crate::ids::{CardId, CoveId, WaveId};
 use crate::runtime::{RunStatus, TimestampMs};
 
 // ---------------------------------------------------------------------------
@@ -500,6 +500,11 @@ pub struct WorkerSession {
     pub agent_session_id: Option<String>,
     pub active_turn_id: Option<String>,
     pub terminal_run_id: Option<String>,
+    /// Owning card. `Some` for every live/reachable session — dual-written on
+    /// insert and backfilled from runtimes/cards.session_id in migration 0054.
+    /// `None` ONLY for a pre-existing leaked terminal deferred-spec placeholder
+    /// (card deleted before Phase-2 minted the runtimes mirror). #679 PR9b-0.
+    pub card_id: Option<CardId>,
     /// Spec `HarnessSnapshot` moves here as-is (opaque to the kernel).
     pub handle_state_json: Option<Value>,
     // --- liveness (execution-period observation, persisted; T2) ---

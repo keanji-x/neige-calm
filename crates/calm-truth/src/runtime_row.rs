@@ -207,7 +207,7 @@ fn agent_provider_from_db(value: &str) -> Result<AgentProvider> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::ids::WaveId;
+    use calm_types::ids::{CardId, WaveId};
     use calm_types::worker::{LivenessTag, SessionMode, WorkerSessionId};
     use serde_json::json;
 
@@ -230,6 +230,7 @@ mod tests {
             agent_session_id: Some("agent-session-1".into()),
             active_turn_id: Some("turn-1".into()),
             terminal_run_id: Some("terminal-run-1".into()),
+            card_id: Some(CardId("card-1".into())),
             handle_state_json: Some(json!({"mode": "harness"})),
             liveness: LivenessTag::Alive,
             liveness_probed_at_ms: Some(111),
