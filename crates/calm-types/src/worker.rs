@@ -491,6 +491,15 @@ pub struct WorkerSession {
     /// The saga that minted this session (`operations.id`). Coordination
     /// breadcrumb, not truth (T4).
     pub spawn_op_id: Option<String>,
+    /// Durable codex worker-liveness signal (#741 §1.2; T2, push-fed):
+    /// timestamp of the last observed thread activity. `worker_sessions`-only
+    /// (no `runtimes` mirror), never bumps `updated_at_ms`. `None` until the
+    /// activity feeder first stamps it.
+    pub last_activity_ms: Option<TimestampMs>,
+    /// Durable codex worker-liveness signal (#741 §1.2; T2, push-fed): the
+    /// last observed thread status string (idle|active|waitingOnUserInput|
+    /// waitingOnApproval|systemError|notLoaded). `worker_sessions`-only.
+    pub last_thread_status: Option<String>,
     pub created_at_ms: TimestampMs,
     pub updated_at_ms: TimestampMs,
     pub completed_at_ms: Option<TimestampMs>,

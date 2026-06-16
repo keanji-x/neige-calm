@@ -12,7 +12,8 @@ pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT ws.id, ws.
                   ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
                   ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
                   ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
-                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id, ws.created_at_ms,
+                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id,
+                  ws.last_activity_ms, ws.last_thread_status, ws.created_at_ms,
                   ws.updated_at_ms, ws.completed_at_ms,
                   c.id AS card_id
            FROM worker_sessions ws
@@ -28,7 +29,8 @@ pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.wave_
                   ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
                   ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
                   ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
-                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id, ws.created_at_ms,
+                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id,
+                  ws.last_activity_ms, ws.last_thread_status, ws.created_at_ms,
                   ws.updated_at_ms, ws.completed_at_ms,
                   c.id AS card_id
            FROM worker_sessions ws
@@ -234,6 +236,8 @@ mod tests {
             exit_code: Some(0),
             exit_interpretation: Some("clean".into()),
             spawn_op_id: Some("op-1".into()),
+            last_activity_ms: None,
+            last_thread_status: None,
             created_at_ms: 10,
             updated_at_ms: 20,
             completed_at_ms: Some(30),
