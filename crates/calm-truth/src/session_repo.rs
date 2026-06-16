@@ -43,6 +43,17 @@ pub trait SessionRepo: Send + Sync {
         last_thread_status: &str,
     ) -> Result<()>;
 
+    /// T2 durable codex worker-liveness feeder (#741 §1.3), keyed by codex
+    /// `thread_id`. The durable notification subscriber only sees thread ids,
+    /// so it writes through this. Pinned to `provider='codex'`, never touches
+    /// `updated_at_ms`, and is a benign no-op on a terminal/missing row.
+    async fn session_record_activity_by_thread(
+        &self,
+        thread_id: &str,
+        last_activity_ms: i64,
+        last_thread_status: &str,
+    ) -> Result<()>;
+
     async fn session_state_transition_tx(
         &self,
         tx: &mut Tx<'_>,

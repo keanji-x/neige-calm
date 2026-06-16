@@ -12,7 +12,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 #[cfg(feature = "fixtures")]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -220,6 +220,11 @@ pub struct SharedCodexAppServer {
     codex_bin: String,
     log_dir: PathBuf,
     restart_count: std::sync::atomic::AtomicU64,
+    /// Wall-clock ms of the most recent successful daemon (re)connect (#741
+    /// §1.3). Stamped in `install_client` (the common connect/respawn path).
+    /// Feeds the 741-3 reaper's `REBUILD_GRACE`; nothing consumes it yet. `0`
+    /// until the first connect.
+    daemon_connected_at_ms: AtomicI64,
     needs_respawn_on_next_thread_start: Arc<AtomicBool>,
     /// #480 §C — typestate-companion state machine. PR5b migrates readers.
     core: Arc<tokio::sync::Mutex<SupervisorCore>>,
@@ -382,6 +387,7 @@ impl SharedCodexAppServer {
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
             restart_count: std::sync::atomic::AtomicU64::new(0),
+            daemon_connected_at_ms: AtomicI64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
             core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
                 state: SupervisorState::Idle,
@@ -424,6 +430,7 @@ impl SharedCodexAppServer {
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
             restart_count: std::sync::atomic::AtomicU64::new(0),
+            daemon_connected_at_ms: AtomicI64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
             core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
                 state: SupervisorState::Idle,
@@ -640,6 +647,12 @@ impl SharedCodexAppServer {
 
     pub fn remote_uri(&self) -> String {
         format!("unix://{}", self.sock.display())
+    }
+
+    /// Wall-clock ms of the most recent successful daemon (re)connect (#741
+    /// §1.3). `0` before the first connect. Stamped in `install_client`.
+    pub fn daemon_connected_at_ms(&self) -> calm_types::runtime::TimestampMs {
+        self.daemon_connected_at_ms.load(Ordering::SeqCst)
     }
 
     pub fn mark_needs_respawn(&self) {
@@ -1185,6 +1198,12 @@ impl SharedCodexAppServer {
     }
 
     async fn install_client(&self, mut notifications: crate::codex_appserver::NotificationStream) {
+        // #741 §1.3 — stamp the daemon (re)connect wall-clock. This is the
+        // common path for BOTH fresh-spawn and hot-takeover connects, so the
+        // 741-3 reaper's REBUILD_GRACE is reset on every reconnect. Always-on
+        // (cheap); nothing consumes it until 741-3.
+        self.daemon_connected_at_ms
+            .store(now_ms(), Ordering::SeqCst);
         let tx = self.notifications.clone();
         let pending = self.pending_codex_threads_handle.clone();
         let repo = self.repo.clone();
@@ -1827,6 +1846,10 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
 
     fn remote_uri(&self) -> String {
         SharedCodexAppServer::remote_uri(self)
+    }
+
+    fn daemon_connected_at_ms(&self) -> calm_types::runtime::TimestampMs {
+        SharedCodexAppServer::daemon_connected_at_ms(self)
     }
 
     /// Pull the #741 §1.3 liveness facts via `thread/read(include_turns)`

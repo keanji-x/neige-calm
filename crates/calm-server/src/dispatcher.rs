@@ -311,6 +311,13 @@ pub struct Dispatcher {
     /// `None` when `NEIGE_REAPER_DISABLED` is set.
     #[allow(dead_code)]
     reaper_handle: Option<JoinHandle<()>>,
+    /// #741 §1.3 — the durable codex worker-liveness feeder (OBSERVATIONAL).
+    /// Push-feeds `worker_sessions.{last_activity_ms,last_thread_status}` from
+    /// the daemon notification stream. `None` (not spawned) when the reaper is
+    /// disabled, since nothing consumes the columns then. Held so a future
+    /// shutdown can `abort()` it.
+    #[allow(dead_code)]
+    liveness_feeder_handle: Option<JoinHandle<()>>,
 }
 
 impl Dispatcher {
@@ -580,6 +587,13 @@ impl Dispatcher {
             Arc::downgrade(&operation_runtime),
             Arc::clone(&semaphore),
         );
+        // #741 §1.3 — take the durable-liveness feeder's notification
+        // subscription BEFORE `shared_codex_appserver` is moved into the
+        // provider registry below, and clone the repo before it is moved into
+        // `Inner`. The feeder is spawned (behind the same kill-switch as the
+        // reaper) further down.
+        let liveness_feeder_rx = shared_codex_appserver.subscribe_notifications();
+        let liveness_feeder_repo = repo.clone();
         let provider_registry = WorkerProviderRegistry::new(
             supervisor_sock_for_provider_registry(&daemon),
             shared_codex_appserver,
@@ -732,6 +746,19 @@ impl Dispatcher {
             }))
         };
 
+        // #741 §1.3 — the durable liveness feeder, gated behind the SAME
+        // kill-switch as the reaper: if the reaper is disabled, its writes
+        // would be unused, so don't spawn it. (`daemon_connected_at_ms`
+        // tracking stays always-on in the connect path — it's cheap.)
+        let liveness_feeder_handle = if reaper_disabled_from_env() {
+            None
+        } else {
+            Some(crate::liveness_feeder::spawn_liveness_feeder(
+                liveness_feeder_repo,
+                liveness_feeder_rx,
+            ))
+        };
+
         Self {
             semaphore,
             permits,
@@ -741,6 +768,7 @@ impl Dispatcher {
             scheduler,
             reconcile_handle,
             reaper_handle,
+            liveness_feeder_handle,
         }
     }
 }
