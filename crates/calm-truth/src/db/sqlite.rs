@@ -4962,7 +4962,7 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
-        // Orphan: this terminal's card has no active runtime, AND the row
+        // Orphan: this terminal's card has no active worker_session, AND the row
         // was created more than `grace_seconds` ago.
         //
         // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
@@ -4975,9 +4975,9 @@ impl RepoRead for SqlxRepo {
                       t.created_at
                FROM terminals t
                WHERE NOT EXISTS (
-                   SELECT 1 FROM runtimes r
-                   WHERE r.card_id = t.card_id
-                     AND r.status IN ('starting', 'running', 'idle', 'turn_pending')
+                   SELECT 1 FROM worker_sessions ws
+                   WHERE ws.card_id = t.card_id
+                     AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
                )
                AND t.created_at < ?1"#,
         )
@@ -7285,6 +7285,72 @@ mod runtime_read_flip_tests {
         (runtime, terminal.id)
     }
 
+    async fn seed_codex_terminal_card(
+        repo: &SqlxRepo,
+        label: &'static str,
+    ) -> (String, String, RuntimeId) {
+        let mut tx = repo
+            .pool()
+            .begin()
+            .await
+            .expect("begin codex terminal seed tx");
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: format!("read flip {label}"),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .expect("create codex terminal cove");
+        let wave = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: format!("read flip {label}"),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .expect("create codex terminal wave");
+        let runtime_id = format!("rt-read-flip-{label}-initial");
+        let (card, terminal, _mcp_token) = card_with_codex_create_tx(
+            &mut tx,
+            format!("card-read-flip-{label}"),
+            &runtime_id,
+            None,
+            wave.id,
+            None,
+            "/tmp".into(),
+            json!({}),
+            None,
+            None,
+            None,
+            CardRole::Spec,
+            false,
+            repo.card_role_cache(),
+            RequestTheme::default_dark(),
+        )
+        .await
+        .expect("create codex terminal card");
+        tx.commit().await.expect("commit codex terminal seed tx");
+        (card.id.to_string(), terminal.id, runtime_id)
+    }
+
+    async fn age_terminal_past_grace(repo: &SqlxRepo, terminal_id: &str) {
+        let res = sqlx::query("UPDATE terminals SET created_at = 1 WHERE id = ?1")
+            .bind(terminal_id)
+            .execute(repo.pool())
+            .await
+            .expect("age terminal past grace");
+        assert_eq!(res.rows_affected(), 1);
+    }
+
     struct ProjectableHistory {
         card_id: String,
         superseded: CardRuntime,
@@ -8136,6 +8202,113 @@ mod runtime_read_flip_tests {
                 .expect("pre-existing active runtime remains projectable");
         assert_eq!(reference.id, active.id);
         assert_eq!(reference.status, RunStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn terminals_orphaned_protects_terminal_when_old_session_active_and_placeholder_present()
+    {
+        let repo = fresh_repo().await;
+        #[cfg(feature = "worker-session-parity-drop")]
+        repo.disable_worker_session_parity_on_drop_for_test();
+        let label = "terminals-orphaned-placeholder";
+        let (card_id, terminal_id, initial_runtime_id) =
+            seed_codex_terminal_card(&repo, label).await;
+        let old_runtime_id = format!("rt-read-flip-{label}-old");
+        let placeholder_id = format!("rt-read-flip-{label}-placeholder-{}", new_id());
+
+        let mut tx = repo.pool().begin().await.expect("begin #744 seed tx");
+        runtime_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
+            .await
+            .expect("complete initial codex runtime");
+        let old_runtime = runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: old_runtime_id,
+                card_id: card_id.clone(),
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+                terminal_run_id: None,
+                thread_id: Some(format!("thread-{label}-old")),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_op_id: None,
+                now_ms: 10_000,
+            },
+        )
+        .await
+        .expect("start old active shared-spec runtime");
+        session_prepare_deferred_spec_tx(
+            &mut tx,
+            &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
+        )
+        .await
+        .expect("prepare deferred shared-spec placeholder");
+        tx.commit().await.expect("commit #744 seed tx");
+        age_terminal_past_grace(&repo, &terminal_id).await;
+
+        let card_session_id: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+                .bind(&card_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("read card session pointer");
+        let placeholder_runtime_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
+                .bind(&placeholder_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("count placeholder runtime rows");
+        assert_eq!(old_runtime.status, RunStatus::Running);
+        assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
+        assert_eq!(placeholder_runtime_count, 0);
+
+        let orphans = repo
+            .terminals_orphaned(60)
+            .await
+            .expect("scan orphaned terminals");
+        assert!(
+            !orphans.iter().any(|terminal| terminal.id == terminal_id),
+            "old active worker_session.card_id must protect terminal, got: {orphans:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminals_orphaned_reaps_terminal_when_card_has_no_active_session() {
+        let repo = fresh_repo().await;
+        let label = "terminals-orphaned-no-active";
+        let (card_id, terminal_id, initial_runtime_id) =
+            seed_codex_terminal_card(&repo, label).await;
+
+        let mut tx = repo.pool().begin().await.expect("begin no-active seed tx");
+        runtime_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
+            .await
+            .expect("complete initial codex runtime");
+        tx.commit().await.expect("commit no-active seed tx");
+        age_terminal_past_grace(&repo, &terminal_id).await;
+
+        let active_session_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM worker_sessions
+               WHERE card_id = ?1
+                 AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+        )
+        .bind(&card_id)
+        .fetch_one(repo.pool())
+        .await
+        .expect("count active worker sessions");
+        assert_eq!(active_session_count, 0);
+
+        let orphans = repo
+            .terminals_orphaned(60)
+            .await
+            .expect("scan orphaned terminals");
+        assert!(
+            orphans.iter().any(|terminal| terminal.id == terminal_id),
+            "terminal without active worker_session.card_id should be orphaned, got: {orphans:?}"
+        );
     }
 
     #[tokio::test]
