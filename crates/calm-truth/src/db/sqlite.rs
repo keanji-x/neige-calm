@@ -3269,9 +3269,9 @@ pub async fn session_prepare_deferred_spec_tx(
             "deferred spec session placeholders require a starting shared-spec runtime init",
         ));
     }
-    if init.thread_id.is_some() || init.terminal_run_id.is_some() {
+    if init.thread_id.is_some() || init.terminal_run_id.is_some() || init.session_id.is_some() {
         return Err(runtime_message(
-            "deferred spec session placeholders must not have a thread or terminal run",
+            "deferred spec session placeholders must not have a thread, terminal run, or session",
         ));
     }
     let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
@@ -3634,23 +3634,19 @@ async fn runtime_get_active_by_thread_from_pool(
     provider: AgentProvider,
     thread_id: &str,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE agent_provider = ?1
-             AND thread_id = ?2
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+    let sql = format!(
+        r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+           WHERE ws.provider = ?1 AND ws.thread_id = ?2
+             AND ws.state IN ('starting','running','idle','turn_pending')
+           ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
-    )
-    .bind(agent_provider_to_db(&provider))
-    .bind(thread_id)
-    .fetch_optional(pool)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    );
+    let row = sqlx::query(&sql)
+        .bind(agent_provider_to_db(&provider))
+        .bind(thread_id)
+        .fetch_optional(pool)
+        .await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 async fn runtime_get_active_by_session_from_pool(
@@ -3658,36 +3654,30 @@ async fn runtime_get_active_by_session_from_pool(
     provider: AgentProvider,
     session_id: &str,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE agent_provider = ?1
-             AND session_id = ?2
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+    let sql = format!(
+        r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+           WHERE ws.provider = ?1 AND ws.agent_session_id = ?2
+             AND ws.state IN ('starting','running','idle','turn_pending')
+           ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
-    )
-    .bind(agent_provider_to_db(&provider))
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    );
+    let row = sqlx::query(&sql)
+        .bind(agent_provider_to_db(&provider))
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 async fn runtime_active_shared_thread_attribution_from_pool(
     pool: &SqlitePool,
 ) -> RuntimeResult<Vec<(String, String)>> {
     sqlx::query_as::<_, (String, String)>(
-        r#"SELECT thread_id, card_id
-           FROM runtimes
-           WHERE kind IN ('shared-spec', 'codex')
-             AND agent_provider = 'codex'
-             AND thread_id IS NOT NULL
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY created_at_ms ASC, card_id ASC"#,
+        r#"SELECT ws.thread_id, c.id AS card_id
+           FROM worker_sessions ws JOIN cards c ON c.session_id = ws.id
+           WHERE ws.provider = 'codex' AND ws.thread_id IS NOT NULL
+             AND ws.state IN ('starting','running','idle','turn_pending')
+           ORDER BY ws.created_at_ms ASC, c.id ASC"#,
     )
     .fetch_all(pool)
     .await
@@ -4194,21 +4184,18 @@ pub async fn runtime_get_active_for_terminal_tx(
     tx: &mut RuntimeTx<'_>,
     terminal_id: &str,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE terminal_run_id = ?1
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+    let sql = format!(
+        r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+           WHERE ws.terminal_run_id = ?1
+             AND ws.state IN ('starting','running','idle','turn_pending')
+           ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
-    )
-    .bind(terminal_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    );
+    let row = sqlx::query(&sql)
+        .bind(terminal_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 pub async fn runtime_complete_for_terminal_tx(
@@ -6844,6 +6831,16 @@ mod runtime_read_flip_tests {
         status: RunStatus,
     }
 
+    struct KeyedRuntimeSeed {
+        label: &'static str,
+        card_kind: &'static str,
+        kind: RuntimeKind,
+        agent_provider: Option<AgentProvider>,
+        thread_id: Option<&'static str>,
+        session_id: Option<&'static str>,
+        now_ms: i64,
+    }
+
     fn runtime_read_cases() -> Vec<RuntimeReadCase> {
         vec![
             RuntimeReadCase {
@@ -6958,6 +6955,86 @@ mod runtime_read_flip_tests {
         .expect("start runtime");
         tx.commit().await.expect("commit seed tx");
         runtime
+    }
+
+    async fn seed_runtime_with_keys(repo: &SqlxRepo, seed: KeyedRuntimeSeed) -> CardRuntime {
+        let mut tx = repo.pool().begin().await.expect("begin keyed seed tx");
+        let card_id = create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind).await;
+        let runtime = runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: format!("rt-read-flip-{}", seed.label),
+                card_id,
+                kind: seed.kind,
+                agent_provider: seed.agent_provider,
+                status: RunStatus::Running,
+                terminal_run_id: None,
+                thread_id: seed.thread_id.map(str::to_string),
+                session_id: seed.session_id.map(str::to_string),
+                active_turn_id: Some(format!("turn-{}", seed.label)),
+                handle_state_json: Some(json!({"case": seed.label})),
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_op_id: None,
+                now_ms: seed.now_ms,
+            },
+        )
+        .await
+        .expect("start keyed runtime");
+        tx.commit().await.expect("commit keyed seed tx");
+        runtime
+    }
+
+    async fn seed_terminal_runtime(repo: &SqlxRepo, label: &'static str) -> (CardRuntime, String) {
+        let mut tx = repo.pool().begin().await.expect("begin terminal seed tx");
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: format!("read flip {label}"),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .expect("create terminal cove");
+        let wave = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: format!("read flip {label}"),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .expect("create terminal wave");
+        let runtime_id = format!("rt-read-flip-{label}");
+        let (_card, terminal) = card_with_terminal_create_tx(
+            &mut tx,
+            format!("card-read-flip-{label}"),
+            &runtime_id,
+            None,
+            wave.id,
+            None,
+            "bash".into(),
+            "/tmp".into(),
+            json!({}),
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+            RequestTheme::default_dark(),
+        )
+        .await
+        .expect("create terminal card");
+        let runtime = runtime_get_by_id_tx(&mut tx, &runtime_id)
+            .await
+            .expect("read seeded terminal runtime")
+            .expect("seeded terminal runtime exists");
+        tx.commit().await.expect("commit terminal seed tx");
+        (runtime, terminal.id)
     }
 
     struct ProjectableHistory {
@@ -7104,6 +7181,92 @@ mod runtime_read_flip_tests {
         row.as_ref().map(card_runtime_from_row).transpose()
     }
 
+    async fn runtime_get_active_by_thread_from_runtimes_reference(
+        pool: &SqlitePool,
+        provider: AgentProvider,
+        thread_id: &str,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        let row = sqlx::query(
+            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE agent_provider = ?1
+             AND thread_id = ?2
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+        )
+        .bind(agent_provider_to_db(&provider))
+        .bind(thread_id)
+        .fetch_optional(pool)
+        .await?;
+        row.as_ref().map(card_runtime_from_row).transpose()
+    }
+
+    async fn runtime_get_active_by_session_from_runtimes_reference(
+        pool: &SqlitePool,
+        provider: AgentProvider,
+        session_id: &str,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        let row = sqlx::query(
+            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE agent_provider = ?1
+             AND session_id = ?2
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+        )
+        .bind(agent_provider_to_db(&provider))
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+        row.as_ref().map(card_runtime_from_row).transpose()
+    }
+
+    async fn runtime_active_shared_thread_attribution_from_runtimes_reference(
+        pool: &SqlitePool,
+    ) -> RuntimeResult<Vec<(String, String)>> {
+        sqlx::query_as::<_, (String, String)>(
+            r#"SELECT thread_id, card_id
+           FROM runtimes
+           WHERE kind IN ('shared-spec', 'codex')
+             AND agent_provider = 'codex'
+             AND thread_id IS NOT NULL
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY created_at_ms ASC, card_id ASC"#,
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn runtime_get_active_for_terminal_from_runtimes_reference_tx(
+        tx: &mut RuntimeTx<'_>,
+        terminal_id: &str,
+    ) -> RuntimeResult<Option<CardRuntime>> {
+        let row = sqlx::query(
+            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
+                  thread_id, session_id, active_turn_id, handle_state_json,
+                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+                  completed_at_ms
+           FROM runtimes
+           WHERE terminal_run_id = ?1
+             AND status IN ('starting', 'running', 'idle', 'turn_pending')
+           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+           LIMIT 1"#,
+        )
+        .bind(terminal_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        row.as_ref().map(card_runtime_from_row).transpose()
+    }
+
     fn assert_ws_backed_projection(expected: &CardRuntime, actual: &CardRuntime) {
         assert_eq!(actual, expected);
         assert!(actual.terminal_ref.is_none());
@@ -7111,6 +7274,17 @@ mod runtime_read_flip_tests {
         assert!(actual.lease_until_ms.is_none());
         if matches!(&expected.kind, RuntimeKind::Terminal) {
             assert!(actual.agent_provider.is_none());
+        }
+    }
+
+    fn assert_optional_ws_backed_projection(
+        expected: Option<CardRuntime>,
+        actual: Option<CardRuntime>,
+    ) {
+        match (expected, actual) {
+            (Some(expected), Some(actual)) => assert_ws_backed_projection(&expected, &actual),
+            (None, None) => {}
+            (expected, actual) => panic!("runtime projection mismatch: {expected:?} != {actual:?}"),
         }
     }
 
@@ -7209,6 +7383,237 @@ mod runtime_read_flip_tests {
             );
             assert_ws_backed_projection(&runtime, &actual[0]);
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_get_active_by_thread_from_pool_matches_reference_and_uses_thread_key() {
+        let repo = fresh_repo().await;
+        let codex = seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "thread-codex",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                thread_id: Some("cohort-b-thread"),
+                session_id: Some("codex-agent-session"),
+                now_ms: 10_000,
+            },
+        )
+        .await;
+        seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "thread-claude",
+                card_kind: "claude",
+                kind: RuntimeKind::ClaudeCard,
+                agent_provider: Some(AgentProvider::Claude),
+                thread_id: Some("claude-real-thread"),
+                session_id: Some("cohort-b-thread"),
+                now_ms: 20_000,
+            },
+        )
+        .await;
+
+        let expected = runtime_get_active_by_thread_from_runtimes_reference(
+            repo.pool(),
+            AgentProvider::Codex,
+            "cohort-b-thread",
+        )
+        .await
+        .expect("runtimes-backed by-thread reference");
+        assert_eq!(
+            expected.as_ref().map(|runtime| runtime.id.as_str()),
+            Some(codex.id.as_str())
+        );
+        let actual = runtime_get_active_by_thread_from_pool(
+            repo.pool(),
+            AgentProvider::Codex,
+            "cohort-b-thread",
+        )
+        .await
+        .expect("worker-session by-thread read");
+        assert_optional_ws_backed_projection(expected, actual);
+
+        let claude_reference = runtime_get_active_by_thread_from_runtimes_reference(
+            repo.pool(),
+            AgentProvider::Claude,
+            "cohort-b-thread",
+        )
+        .await
+        .expect("runtimes-backed claude by-thread reference");
+        let claude_actual = runtime_get_active_by_thread_from_pool(
+            repo.pool(),
+            AgentProvider::Claude,
+            "cohort-b-thread",
+        )
+        .await
+        .expect("worker-session claude by-thread read");
+        assert_eq!(claude_reference, None);
+        assert_eq!(claude_actual, None);
+    }
+
+    #[tokio::test]
+    async fn runtime_get_active_by_session_from_pool_matches_reference_and_uses_agent_session_key()
+    {
+        let repo = fresh_repo().await;
+        let claude = seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "session-claude",
+                card_kind: "claude",
+                kind: RuntimeKind::ClaudeCard,
+                agent_provider: Some(AgentProvider::Claude),
+                thread_id: Some("claude-thread-not-session"),
+                session_id: Some("cohort-b-claude-session"),
+                now_ms: 10_000,
+            },
+        )
+        .await;
+        seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "session-codex",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                thread_id: Some("cohort-b-codex-thread"),
+                session_id: Some("codex-agent-session"),
+                now_ms: 20_000,
+            },
+        )
+        .await;
+
+        let expected = runtime_get_active_by_session_from_runtimes_reference(
+            repo.pool(),
+            AgentProvider::Claude,
+            "cohort-b-claude-session",
+        )
+        .await
+        .expect("runtimes-backed by-session reference");
+        assert_eq!(
+            expected.as_ref().map(|runtime| runtime.id.as_str()),
+            Some(claude.id.as_str())
+        );
+        let actual = runtime_get_active_by_session_from_pool(
+            repo.pool(),
+            AgentProvider::Claude,
+            "cohort-b-claude-session",
+        )
+        .await
+        .expect("worker-session by-session read");
+        assert_optional_ws_backed_projection(expected, actual);
+
+        let codex_thread_reference = runtime_get_active_by_session_from_runtimes_reference(
+            repo.pool(),
+            AgentProvider::Codex,
+            "cohort-b-codex-thread",
+        )
+        .await
+        .expect("runtimes-backed codex by-session reference");
+        let codex_thread_actual = runtime_get_active_by_session_from_pool(
+            repo.pool(),
+            AgentProvider::Codex,
+            "cohort-b-codex-thread",
+        )
+        .await
+        .expect("worker-session codex by-session read");
+        assert_eq!(codex_thread_reference, None);
+        assert_eq!(codex_thread_actual, None);
+    }
+
+    #[tokio::test]
+    async fn runtime_active_shared_thread_attribution_from_pool_matches_reference_ordering() {
+        let repo = fresh_repo().await;
+        let shared = seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "attribution-shared",
+                card_kind: "codex",
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                thread_id: Some("thread-shared"),
+                session_id: Some("session-shared"),
+                now_ms: 10_000,
+            },
+        )
+        .await;
+        let codex = seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "attribution-codex",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                thread_id: Some("thread-codex"),
+                session_id: Some("session-codex"),
+                now_ms: 20_000,
+            },
+        )
+        .await;
+        seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "attribution-no-thread",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                thread_id: None,
+                session_id: Some("session-no-thread"),
+                now_ms: 30_000,
+            },
+        )
+        .await;
+        seed_runtime_with_keys(
+            &repo,
+            KeyedRuntimeSeed {
+                label: "attribution-claude",
+                card_kind: "claude",
+                kind: RuntimeKind::ClaudeCard,
+                agent_provider: Some(AgentProvider::Claude),
+                thread_id: Some("thread-claude"),
+                session_id: Some("session-claude"),
+                now_ms: 15_000,
+            },
+        )
+        .await;
+
+        let expected =
+            runtime_active_shared_thread_attribution_from_runtimes_reference(repo.pool())
+                .await
+                .expect("runtimes-backed attribution reference");
+        let actual = runtime_active_shared_thread_attribution_from_pool(repo.pool())
+            .await
+            .expect("worker-session attribution read");
+
+        assert_eq!(
+            expected,
+            vec![
+                ("thread-shared".to_string(), shared.card_id.clone()),
+                ("thread-codex".to_string(), codex.card_id.clone()),
+            ]
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn runtime_get_active_for_terminal_tx_matches_reference_inside_tx() {
+        let repo = fresh_repo().await;
+        let (runtime, terminal_id) = seed_terminal_runtime(&repo, "terminal-key").await;
+        let mut tx = repo.pool().begin().await.expect("begin terminal read tx");
+        let expected =
+            runtime_get_active_for_terminal_from_runtimes_reference_tx(&mut tx, &terminal_id)
+                .await
+                .expect("runtimes-backed terminal reference");
+        assert_eq!(
+            expected.as_ref().map(|runtime| runtime.id.as_str()),
+            Some(runtime.id.as_str())
+        );
+        let actual = runtime_get_active_for_terminal_tx(&mut tx, &terminal_id)
+            .await
+            .expect("worker-session terminal read");
+        tx.commit().await.expect("commit terminal read tx");
+        assert_optional_ws_backed_projection(expected, actual);
     }
 
     #[tokio::test]
@@ -7416,6 +7821,111 @@ mod runtime_read_flip_tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn deferred_spec_placeholder_rejects_non_null_session_id() {
+        let repo = fresh_repo().await;
+        let placeholder_id = format!("rt-placeholder-session-key-{}", new_id());
+        let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, "placeholder-session-key", "codex").await;
+        let mut init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 5_000);
+        init.session_id = Some("future-placeholder-session".to_string());
+
+        let err = session_prepare_deferred_spec_tx(&mut tx, &init)
+            .await
+            .expect_err("non-null session_id must be rejected");
+        tx.commit().await.expect("commit placeholder tx");
+
+        match err {
+            RuntimeRepoError::Message { message } => assert_eq!(
+                message,
+                "deferred spec session placeholders must not have a thread, terminal run, or session"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cohort_b_reads_exclude_deferred_spec_placeholder_by_null_keys() {
+        let repo = fresh_repo().await;
+        let placeholder_id = format!("rt-cohort-b-placeholder-{}", new_id());
+        let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, "cohort-b-placeholder", "codex").await;
+        session_prepare_deferred_spec_tx(
+            &mut tx,
+            &RuntimeInit {
+                id: placeholder_id.clone(),
+                card_id,
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_op_id: None,
+                now_ms: 5_000,
+            },
+        )
+        .await
+        .expect("prepare deferred placeholder");
+        tx.commit().await.expect("commit placeholder tx");
+
+        let runtime_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
+            .bind(&placeholder_id)
+            .fetch_one(repo.pool())
+            .await
+            .expect("count runtime rows");
+        let session_keys: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            r#"SELECT thread_id, agent_session_id, terminal_run_id
+               FROM worker_sessions
+               WHERE id = ?1"#,
+        )
+        .bind(&placeholder_id)
+        .fetch_one(repo.pool())
+        .await
+        .expect("placeholder worker session");
+        assert_eq!(runtime_count, 0);
+        assert_eq!(session_keys, (None, None, None));
+
+        let by_thread = runtime_get_active_by_thread_from_pool(
+            repo.pool(),
+            AgentProvider::Codex,
+            "missing-placeholder-thread",
+        )
+        .await
+        .expect("by-thread read");
+        assert_eq!(by_thread, None);
+
+        let by_session = runtime_get_active_by_session_from_pool(
+            repo.pool(),
+            AgentProvider::Claude,
+            "missing-placeholder-session",
+        )
+        .await
+        .expect("by-session read");
+        assert_eq!(by_session, None);
+
+        let attribution = runtime_active_shared_thread_attribution_from_pool(repo.pool())
+            .await
+            .expect("attribution read");
+        assert_eq!(attribution, Vec::<(String, String)>::new());
+
+        let mut tx = repo
+            .pool()
+            .begin()
+            .await
+            .expect("begin terminal placeholder tx");
+        let by_terminal =
+            runtime_get_active_for_terminal_tx(&mut tx, "missing-placeholder-terminal")
+                .await
+                .expect("terminal read");
+        tx.commit().await.expect("commit terminal placeholder tx");
+        assert_eq!(by_terminal, None);
     }
 }
 
