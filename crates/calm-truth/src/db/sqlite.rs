@@ -54,9 +54,9 @@ use crate::runtime_repo::{
     Tx as RuntimeTx,
 };
 use crate::runtime_row::{
-    WS_BACKED_CARD_RUNTIME_SELECT, card_runtime_from_row, card_runtime_from_ws_join_row,
-    projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
-    run_status_from_db,
+    WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT, card_runtime_from_row,
+    card_runtime_from_ws_join_row, projectable_runtimes_for_cards_from_rows,
+    projectable_runtimes_for_cards_query, run_status_from_db,
 };
 use crate::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo, Tx as SessionTx};
 use crate::validation::{
@@ -3816,39 +3816,32 @@ pub async fn runtime_get_by_id_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE id = ?1"#,
-    )
-    .bind(id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    let sql = format!(
+        r#"{WS_CARD_KEYED_RUNTIME_SELECT}
+           WHERE ws.id = ?1
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)"#
+    );
+    let row = sqlx::query(&sql).bind(id).fetch_optional(&mut **tx).await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 pub async fn runtime_get_active_for_card_tx(
     tx: &mut RuntimeTx<'_>,
     card_id: &str,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE card_id = ?1
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+    let sql = format!(
+        r#"{WS_CARD_KEYED_RUNTIME_SELECT}
+           WHERE ws.card_id = ?1
+             AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
+           ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
-    )
-    .bind(card_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    );
+    let row = sqlx::query(&sql)
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 pub async fn runtime_start_tx(
@@ -7863,6 +7856,112 @@ mod runtime_read_flip_tests {
     }
 
     #[tokio::test]
+    async fn runtime_get_active_for_card_tx_matches_runtimes_backed_for_all_kinds() {
+        let repo = fresh_repo().await;
+        for (index, case) in runtime_read_cases().into_iter().enumerate() {
+            let runtime = seed_runtime(&repo, case, 3_500 + index as i64).await;
+            let mut tx = repo.pool().begin().await.expect("begin active read tx");
+            let actual = runtime_get_active_for_card_tx(&mut tx, &runtime.card_id)
+                .await
+                .expect("worker-session active-for-card tx read")
+                .expect("active runtime from worker_sessions");
+            tx.commit().await.expect("commit active read tx");
+
+            assert_ws_backed_projection(&runtime, &actual);
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_get_by_id_tx_returns_superseded_runtime_by_id() {
+        let repo = fresh_repo().await;
+        let label = "by-id-superseded";
+        let mut tx = repo.pool().begin().await.expect("begin supersede tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
+        let older = runtime_start_tx(
+            &mut tx,
+            projectable_runtime_init(&card_id, label, "older", RunStatus::Running, 10_000),
+        )
+        .await
+        .expect("start older runtime");
+        let newer = runtime_supersede_tx(
+            &mut tx,
+            &older.id,
+            projectable_runtime_init(&card_id, label, "newer", RunStatus::Running, 20_000),
+        )
+        .await
+        .expect("supersede older runtime");
+        tx.commit().await.expect("commit supersede tx");
+
+        let card_session_id: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+                .bind(&card_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("read card session pointer");
+        assert_eq!(card_session_id.as_deref(), Some(newer.id.as_str()));
+
+        let mut tx = repo.pool().begin().await.expect("begin by-id read tx");
+        let actual = runtime_get_by_id_tx(&mut tx, &older.id)
+            .await
+            .expect("worker-session by-id tx read")
+            .expect("superseded runtime remains readable by id");
+        tx.commit().await.expect("commit by-id read tx");
+
+        let mut expected = older;
+        expected.status = RunStatus::Superseded;
+        expected.updated_at_ms = 20_000;
+        expected.completed_at_ms = Some(20_000);
+        assert_ws_backed_projection(&expected, &actual);
+    }
+
+    #[tokio::test]
+    async fn runtime_get_active_for_card_tx_returns_old_runtime_in_deferred_spec_gap() {
+        let repo = fresh_repo().await;
+        #[cfg(feature = "worker-session-parity-drop")]
+        repo.disable_worker_session_parity_on_drop_for_test();
+
+        let label = "active-card-gap";
+        let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
+        let mut tx = repo.pool().begin().await.expect("begin deferred gap tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
+        let mut active_init =
+            projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 10_000);
+        active_init.kind = RuntimeKind::SharedSpec;
+        let active = runtime_start_tx(&mut tx, active_init)
+            .await
+            .expect("start old active runtime");
+        session_prepare_deferred_spec_tx(
+            &mut tx,
+            &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
+        )
+        .await
+        .expect("prepare deferred spec placeholder");
+
+        let card_session_id: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+                .bind(&card_id)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("read card session pointer");
+        let placeholder_runtime_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
+                .bind(&placeholder_id)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("count placeholder runtime rows");
+        assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
+        assert_eq!(placeholder_runtime_count, 0);
+
+        let actual = runtime_get_active_for_card_tx(&mut tx, &card_id)
+            .await
+            .expect("worker-session active-for-card tx read")
+            .expect("old active runtime remains visible");
+        tx.commit().await.expect("commit deferred gap tx");
+
+        assert_ws_backed_projection(&active, &actual);
+    }
+
+    #[tokio::test]
     async fn runtimes_active_for_kind_from_pool_matches_runtimes_backed_for_all_kinds() {
         let repo = fresh_repo().await;
         let mut expected = Vec::new();
@@ -8159,8 +8258,8 @@ mod runtime_read_flip_tests {
     // card-fallback window" behavior (PR7 + PR9a): the flipped pool read
     // deliberately returns None for the runtime-less placeholder even when a
     // pre-existing active runtime exists. This is safe because the double-spawn
-    // gate uses the unflipped in-tx runtime_get_active_for_card_tx; the
-    // divergence self-retires at PR9b.
+    // gate uses the card-keyed in-tx runtime_get_active_for_card_tx, which
+    // retains the runtimes EXISTS guard while scanning worker_sessions.card_id.
     #[tokio::test]
     async fn projectable_deferred_spec_gap_with_active_runtime_returns_none_by_design() {
         let repo = fresh_repo().await;

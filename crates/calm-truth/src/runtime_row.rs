@@ -36,6 +36,17 @@ pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.wave_
            FROM worker_sessions ws
            JOIN cards c ON c.session_id = ws.id"#;
 
+pub(crate) const WS_CARD_KEYED_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.wave_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
+                  ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
+                  ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
+                  ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
+                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id,
+                  ws.last_activity_ms, ws.last_thread_status, ws.created_at_ms,
+                  ws.updated_at_ms, ws.completed_at_ms,
+                  c.id AS card_id
+           FROM worker_sessions ws
+           JOIN cards c ON c.id = ws.card_id"#;
+
 pub(crate) fn projectable_runtimes_for_cards_query<'a>(
     card_ids: &'a [CardId],
 ) -> QueryBuilder<'a, Sqlite> {
