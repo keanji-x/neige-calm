@@ -84,11 +84,11 @@ pub const DEFAULT_RECONCILE_SECS: u64 = 300;
 /// into a silent no-op.
 const RACE_LOST: &str = "scheduler: race lost (guarded write no-op)";
 
-fn race_lost_err() -> CalmError {
+pub(crate) fn race_lost_err() -> CalmError {
     CalmError::Conflict(RACE_LOST.into())
 }
 
-fn is_race_lost(e: &CalmError) -> bool {
+pub(crate) fn is_race_lost(e: &CalmError) -> bool {
     matches!(e, CalmError::Conflict(m) if m == RACE_LOST)
 }
 

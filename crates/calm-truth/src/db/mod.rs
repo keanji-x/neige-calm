@@ -347,6 +347,10 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Backed by `tasks_wave_status_idx`. Used by the scheduler's sweep
     /// (boot, periodic reconcile, post-`Lagged`) — design §8.
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
+    /// Minimal operation lookup for session-owned worker convergence:
+    /// `worker_sessions.spawn_op_id` resolves to `operations.idempotency_key`,
+    /// which is the immutable task id the worker operation was submitted with.
+    async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>>;
 
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;

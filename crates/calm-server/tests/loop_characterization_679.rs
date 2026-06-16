@@ -33,9 +33,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use calm_exec::WorkerProvider;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx, task_insert_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_create_with_id_tx, runtime_start_tx, session_insert_tx, task_insert_tx,
+};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, EventScope};
@@ -54,11 +57,18 @@ use calm_server::operation::{
     OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome,
     SqlxOperationRepo, Tx, TxOutput,
 };
+use calm_server::provider_registry::WorkerProviderRegistry;
+use calm_server::reaper::{Reaper, reaper_on_boot};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_truth_test_harness::FakeProvider;
+use calm_types::worker::{
+    ExitEvidence, ExitSource, Liveness, LivenessTag, SessionMode, WorkerContract,
+    WorkerProviderKind, WorkerSession, WorkerSessionId, WorkerSessionState,
+};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -537,7 +547,7 @@ async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_p
 }
 
 // ---------------------------------------------------------------------------
-// 4. Dead-worker stall.
+// 4. Dead-worker convergence.
 // ---------------------------------------------------------------------------
 
 /// No-op "spawn succeeds, worker never reports" adapter. Stands in for a
@@ -623,18 +633,12 @@ impl ProviderAdapter for SilentSpawnAdapter {
     }
 }
 
-/// Pins the CURRENT dead-worker stall: a worker whose spawn succeeds but
-/// which never produces `task.completed` / `task.failed` leaves the wave
-/// parked in `Working` with **no kernel-side convergence whatsoever** — no
-/// fallback `task.failed`, no Working→Reviewing promotion, nothing. Only the
-/// spawn-failure path has a fallback today (`dispatcher.rs` ~855).
-///
-/// PR8 of #679 (the reaper) will change this — at that point this test must
-/// be consciously replaced by a convergence assertion (dead worker ⇒ a
-/// reaper-authored `task.failed` + lifecycle convergence), not silently
-/// "fixed" to keep passing.
+/// A worker whose spawn succeeds but which never produces
+/// `task.completed` / `task.failed` is now converged by the reaper once the
+/// worker session is durably observed as exited: the session terminalizes,
+/// the kernel emits one `task.failed`, and the wave parks at `Reviewing`.
 #[tokio::test]
-async fn dead_worker_never_reporting_stalls_wave_in_working() {
+async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let cove = repo
         .cove_create(NewCove {
@@ -787,67 +791,176 @@ async fn dead_worker_never_reporting_stalls_wave_in_working() {
     }
     assert!(saw_working, "dispatcher must promote Dispatching → Working");
 
-    // The stall: nothing else ever happens. Drain the bus until it goes
-    // quiet (bounded settle window) and assert no convergence event of any
-    // kind was produced for the wave.
-    // (`Ok(Err(_))` = bus closed, `Err(_)` = 250ms of quiet — settled.)
-    while let Ok(Ok(env)) = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
-        match &env.event {
-            Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                panic!(
-                    "current behavior has NO dead-worker fallback; unexpected task event: {:?}",
-                    env.event
-                );
-            }
-            Event::WaveLifecycleChanged { id, .. } if id == &wave.id => {
-                panic!(
-                    "current behavior has NO dead-worker lifecycle convergence; got {:?}",
-                    env.event
-                );
-            }
-            _ => continue,
-        }
-    }
+    let baseline_id = repo
+        .events_since(0, None)
+        .await
+        .unwrap()
+        .last()
+        .map(|(id, _version, _scope, _event)| *id)
+        .unwrap_or(0);
+    let op_id: String = sqlx::query_scalar(
+        "SELECT id FROM operations WHERE kind = 'terminal-worker' AND idempotency_key = ?1 \
+         ORDER BY created_at_ms DESC, id DESC LIMIT 1",
+    )
+    .bind(&task_id)
+    .fetch_one(&pool)
+    .await
+    .expect("worker operation row");
 
-    // DB-level audit: the only lifecycle motion is the single
-    // Dispatching → Working promotion; zero task terminal events exist.
-    let rows = repo.events_since(0, None).await.unwrap();
-    let mut lifecycle_changes = 0usize;
-    for (_id, _version, scope, event) in rows {
+    let session_id = WorkerSessionId::from(new_id());
+    let session_now = now_ms();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        r#"INSERT INTO runtimes (
+               id, card_id, kind, agent_provider, status, terminal_run_id,
+               thread_id, session_id, active_turn_id, handle_state_json,
+               lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
+               completed_at_ms
+           )
+           VALUES (?1, ?2, 'terminal', NULL, 'running', NULL, NULL, NULL, NULL, NULL,
+                   NULL, NULL, ?3, ?3, NULL)"#,
+    )
+    .bind(session_id.as_str())
+    .bind(worker_card.id.as_str())
+    .bind(session_now)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    session_insert_tx(
+        &mut tx,
+        WorkerSession {
+            id: session_id.clone(),
+            wave_id: wave.id.clone(),
+            provider: WorkerProviderKind::Terminal,
+            mode: SessionMode::Ephemeral,
+            contract: WorkerContract::Executor,
+            parent_session_id: None,
+            requester_session_id: None,
+            state: WorkerSessionState::Running,
+            mcp_token_hash: None,
+            thread_id: None,
+            agent_session_id: None,
+            active_turn_id: None,
+            terminal_run_id: None,
+            handle_state_json: None,
+            liveness: LivenessTag::Unknown,
+            liveness_probed_at_ms: None,
+            exit_code: None,
+            exit_interpretation: None,
+            spawn_op_id: Some(op_id),
+            last_activity_ms: None,
+            last_thread_status: None,
+            created_at_ms: session_now,
+            updated_at_ms: session_now,
+            completed_at_ms: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let fake = Arc::new(FakeProvider::new().with_probe_script([Liveness::Exited {
+        evidence: ExitEvidence {
+            exit_code: Some(-1),
+            signal_killed: false,
+            observed_at_ms: now_ms(),
+            source: ExitSource::Probe,
+        },
+    }]));
+    let registry = WorkerProviderRegistry::from_entries([(
+        WorkerProviderKind::Terminal,
+        fake as Arc<dyn WorkerProvider>,
+    )]);
+    let reaper = Reaper::new(
+        repo.clone(),
+        registry,
+        events.clone(),
+        WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+    );
+    reaper_on_boot();
+    reaper.sweep_all().await;
+
+    // DB-level audit after the dispatcher reached Working: exactly one
+    // kernel task.failed plus exactly one Working → Reviewing promotion.
+    let rows = repo.events_since(baseline_id, None).await.unwrap();
+    let mut failed_events = Vec::new();
+    let mut lifecycle_changes = Vec::new();
+    for (id, _version, scope, event) in rows {
         if scope.wave_id() != Some(&wave.id) {
             continue;
         }
         match event {
-            Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                panic!("dead-worker stall must produce no task terminal events; got {event:?}")
+            Event::TaskFailed {
+                ref idempotency_key,
+                ..
+            } if idempotency_key == &task_id => {
+                let actor_text: String =
+                    sqlx::query_scalar("SELECT actor FROM events WHERE id = ?1")
+                        .bind(id)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                let actor: ActorId = serde_json::from_str(&actor_text).unwrap();
+                assert_eq!(actor, ActorId::KernelDispatcher);
+                failed_events.push(event);
+            }
+            Event::TaskCompleted {
+                idempotency_key, ..
+            } if idempotency_key == task_id => {
+                panic!("dead-worker reaper must not emit task.completed")
             }
             Event::WaveLifecycleChanged { from, to, .. } => {
-                assert_eq!(from, WaveLifecycle::Dispatching);
-                assert_eq!(to, WaveLifecycle::Working);
-                lifecycle_changes += 1;
+                lifecycle_changes.push((from, to));
             }
             _ => {}
         }
     }
+    assert_eq!(failed_events.len(), 1, "exactly one reaper task.failed");
+    match &failed_events[0] {
+        Event::TaskFailed {
+            idempotency_key,
+            reason,
+            agent_message,
+        } => {
+            assert_eq!(idempotency_key, &task_id);
+            // FIX 3: the kernel TaskFailed carries the provider's interpreted
+            // reason — the `-1` probe sentinel is hidden behind "outcome
+            // unknown", not leaked as the old `"exit Some(-1)"` format.
+            assert!(
+                reason.contains("outcome unknown") && reason.contains("supervisor probe"),
+                "expected provider reason, got {reason:?}"
+            );
+            assert!(!reason.contains("exit Some(-1)"));
+            assert_eq!(agent_message, &None);
+        }
+        other => panic!("expected task.failed, got {other:?}"),
+    }
     assert_eq!(
-        lifecycle_changes, 1,
-        "exactly one lifecycle event: the pre-spawn Dispatching → Working promotion"
+        lifecycle_changes,
+        vec![(WaveLifecycle::Working, WaveLifecycle::Reviewing)],
+        "exactly one reaper lifecycle event: Working → Reviewing"
     );
 
-    let stalled = repo
+    let task_row = repo.task_get(&task_id).await.unwrap().expect("task exists");
+    assert_eq!(task_row.status, TaskStatus::Failed);
+    assert_eq!(task_row.status_detail.as_deref(), Some("spawn-failed"));
+    let session = repo
+        .session_get(&session_id)
+        .await
+        .unwrap()
+        .expect("session exists");
+    assert_eq!(session.state, WorkerSessionState::Failed);
+    assert_eq!(session.exit_code, Some(-1));
+
+    let parked = repo
         .wave_get(wave.id.as_str())
         .await
         .unwrap()
         .expect("wave exists");
-    assert_eq!(
-        stalled.lifecycle,
-        WaveLifecycle::Working,
-        "the wave stalls in Working forever — this is the pinned CURRENT behavior \
-         (PR8 of #679 replaces this with reaper-driven convergence)"
-    );
+    assert_eq!(parked.lifecycle, WaveLifecycle::Reviewing);
     let cards = repo.cards_by_wave(wave.id.as_str()).await.unwrap();
     assert!(
         cards.iter().any(|c| c.id == worker_card.id),
-        "the dead worker's card is still present; nothing reaps it"
+        "dead-worker convergence does not reap the worker card"
     );
 }

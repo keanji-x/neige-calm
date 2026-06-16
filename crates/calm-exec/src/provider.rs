@@ -160,4 +160,14 @@ pub trait WorkerProvider: Send + Sync {
     ) -> DeathVerdict {
         DeathVerdict::Unknown
     }
+
+    /// Wall-clock ms of the provider daemon's most recent successful
+    /// (re)connect (#741 §1.3). Feeds the reaper's `REBUILD_GRACE` window so
+    /// `confirm_durable_death` can hold off S2 pulls while the daemon's
+    /// loaded-thread roster is still rebuilding. Only [`CodexProvider`] has a
+    /// daemon; the default returns `None` (no grace concept for ephemeral
+    /// providers, which never reach the arbiter path anyway).
+    fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
+        None
+    }
 }

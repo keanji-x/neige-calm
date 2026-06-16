@@ -598,7 +598,12 @@ impl Dispatcher {
             supervisor_sock_for_provider_registry(&daemon),
             shared_codex_appserver,
         );
-        let reaper = Arc::new(Reaper::new(repo.clone(), provider_registry));
+        let reaper = Arc::new(Reaper::new(
+            repo.clone(),
+            provider_registry,
+            events.clone(),
+            write.clone(),
+        ));
         // Issue #644 M2 (live path) — install the terminal-exit
         // completion bundle on the renderer registry so the
         // attach-reader exit branch can flip plan-task rows.

@@ -24,16 +24,41 @@ use calm_types::error::CoreError;
 use calm_types::ids::{CoveId, WaveId};
 use calm_types::model::WaveLifecycle;
 use calm_types::observation::Observation;
+use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
-    ExitEvidence, ExitInterpretation, ExitSource, Liveness, Principal, SessionMode, WorkerSession,
-    WorkerSessionId,
+    DeathVerdict, ExitEvidence, ExitInterpretation, ExitSource, Liveness, Principal, SessionMode,
+    WorkerSession, WorkerSessionId,
 };
 use serde_json::json;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FakeProvider {
     probe_script: Mutex<VecDeque<Liveness>>,
     probe_calls: AtomicUsize,
+    session_mode: SessionMode,
+    // The verdict `confirm_durable_death` returns, scripting the reaper's
+    // Resumable arbiter gate (#741-3). `None` ⇒ trait default (`Unknown`).
+    death_verdict: Option<DeathVerdict>,
+    death_verdict_calls: AtomicUsize,
+    // The value `daemon_connected_at_ms` returns (#741 §1.3). `None` ⇒ trait
+    // default (`None` → reaper treats it as 0).
+    daemon_connected_at_ms: Option<TimestampMs>,
+}
+
+impl Default for FakeProvider {
+    fn default() -> Self {
+        Self {
+            probe_script: Mutex::default(),
+            probe_calls: AtomicUsize::default(),
+            // Terminal/claude one-shot processes are ephemeral; this is the
+            // common fake. Use `with_session_mode(SessionMode::Resumable)`
+            // to exercise the reaper's codex arbiter gate (#741-3).
+            session_mode: SessionMode::Ephemeral,
+            death_verdict: None,
+            death_verdict_calls: AtomicUsize::default(),
+            daemon_connected_at_ms: None,
+        }
+    }
 }
 
 impl FakeProvider {
@@ -50,8 +75,37 @@ impl FakeProvider {
         self
     }
 
+    /// Override the reported [`SessionMode`] (default [`SessionMode::Ephemeral`]).
+    /// A `Resumable` fake stands in for codex, whose torn-down PTY does not
+    /// mean the codex thread died — the reaper must NOT converge it.
+    pub fn with_session_mode(mut self, mode: SessionMode) -> Self {
+        self.session_mode = mode;
+        self
+    }
+
+    /// Script the [`DeathVerdict`] returned by `confirm_durable_death`, driving
+    /// the reaper's Resumable arbiter gate (#741-3). Default (`None`) defers to
+    /// the trait default (`Unknown`).
+    pub fn with_death_verdict(mut self, verdict: DeathVerdict) -> Self {
+        self.death_verdict = Some(verdict);
+        self
+    }
+
+    /// Override the value `daemon_connected_at_ms` reports (#741 §1.3). Default
+    /// (`None`) defers to the trait default (`None`).
+    pub fn with_daemon_connected_at_ms(mut self, ms: TimestampMs) -> Self {
+        self.daemon_connected_at_ms = Some(ms);
+        self
+    }
+
     pub fn probe_call_count(&self) -> usize {
         self.probe_calls.load(Ordering::SeqCst)
+    }
+
+    /// How many times `confirm_durable_death` was consulted — lets a test
+    /// assert the reaper's pre-gate short-circuited (count == 0).
+    pub fn death_verdict_call_count(&self) -> usize {
+        self.death_verdict_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -62,7 +116,7 @@ impl WorkerProvider for FakeProvider {
     }
 
     fn session_mode(&self) -> SessionMode {
-        SessionMode::Ephemeral
+        self.session_mode
     }
 
     async fn probe_liveness(
@@ -87,6 +141,15 @@ impl WorkerProvider for FakeProvider {
         if evidence.exit_code == Some(0) && !evidence.signal_killed {
             return Ok(ExitInterpretation::Completed);
         }
+        // Mirror the real ephemeral providers: a `Probe`-sourced exit carries
+        // the `-1` sentinel from the supervisor, so the reason must HIDE the
+        // sentinel and say "outcome unknown" rather than leak `code -1`.
+        if evidence.source == ExitSource::Probe {
+            return Ok(ExitInterpretation::Failed {
+                reason: "fake worker exited (outcome unknown; observed via supervisor probe)"
+                    .into(),
+            });
+        }
         Ok(ExitInterpretation::Failed {
             reason: match (evidence.exit_code, evidence.signal_killed) {
                 (Some(code), false) => format!("fake worker exited with code {code}"),
@@ -94,6 +157,21 @@ impl WorkerProvider for FakeProvider {
                 (None, false) => "fake worker exited without a code".into(),
             },
         })
+    }
+
+    async fn confirm_durable_death(
+        &self,
+        _thread_id: &str,
+        _now_ms: TimestampMs,
+        _daemon_connected_at_ms: TimestampMs,
+        _rebuild_grace_ms: i64,
+    ) -> DeathVerdict {
+        self.death_verdict_calls.fetch_add(1, Ordering::SeqCst);
+        self.death_verdict.unwrap_or(DeathVerdict::Unknown)
+    }
+
+    fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
+        self.daemon_connected_at_ms
     }
 }
 
