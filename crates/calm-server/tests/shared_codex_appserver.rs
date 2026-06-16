@@ -30,6 +30,16 @@ use tokio::process::Command;
 /// process.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+struct EnvGuard(&'static str);
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            std::env::remove_var(self.0);
+        }
+    }
+}
+
 fn fake_codex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_osc-probe-child")
 }
@@ -698,6 +708,74 @@ async fn takeover_rebuilds_thread_cache_from_db() {
 }
 
 #[tokio::test]
+async fn hot_takeover_plain_resumes_without_rotating_cached_thread_token() {
+    let _guard = ENV_LOCK.lock().await;
+
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    let capture = root.path().join("requests.ndjson");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .env("FAKE_CODEX_CAPTURE_REQUESTS", &capture)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server for takeover");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    let card_id = seed_card(&repo, 1).await;
+    let runtime_id =
+        seed_runtime_thread_with_kind(&repo, &card_id, "thread-hot", RuntimeKind::SharedSpec).await;
+    let old_hash = auth::hash_token("old-hot-token");
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
+        .await
+        .unwrap();
+    session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    let rows = wait_for_requests(&capture, 2).await;
+    let resumes = rows
+        .iter()
+        .filter(|row| {
+            row.get("method").and_then(Value::as_str) == Some("thread/resume")
+                && row.pointer("/params/threadId").and_then(Value::as_str) == Some("thread-hot")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(resumes.len(), 1);
+    assert!(
+        resumes[0].pointer("/params/config").is_none(),
+        "hot takeover must plain-resume without config"
+    );
+    assert_eq!(
+        card_mcp_hash(&repo, &card_id).await.as_deref(),
+        Some(old_hash.as_str())
+    );
+    assert_eq!(
+        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+        Some(old_hash.as_str())
+    );
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[tokio::test]
 async fn restart_resumes_rollout_backed_threads() {
     let _guard = ENV_LOCK.lock().await;
 
@@ -789,6 +867,97 @@ async fn restart_resumes_rollout_backed_threads() {
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
+}
+
+#[tokio::test]
+async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_token() {
+    let _guard = ENV_LOCK.lock().await;
+
+    let root = tempfile::tempdir().unwrap();
+    let capture = root.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture);
+    }
+    let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
+
+    let repo = repo().await;
+    let card_id = seed_card(&repo, 1).await;
+    let runtime_id =
+        seed_runtime_thread_with_kind(&repo, &card_id, "thread-active", RuntimeKind::SharedSpec)
+            .await;
+    let old_hash = auth::hash_token("old-active-token");
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
+        .await
+        .unwrap();
+    session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let rows = wait_for_requests(&capture, 2).await;
+    let first_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("initial cold resume remints active hash");
+    assert_ne!(first_hash, old_hash);
+
+    let stale_thread_id = daemon
+        .thread_start_mint_for_card(
+            &card_id,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_thread_id, "fake-thread-0001");
+    assert_ne!(stale_thread_id, "thread-active");
+    let rows = wait_for_requests(&capture, rows.len() + 1).await;
+
+    daemon.mark_needs_respawn();
+    daemon.ensure_respawn_for_current_settings().await.unwrap();
+    let rows = wait_for_requests(&capture, rows.len() + 3).await;
+    let resumes = rows
+        .iter()
+        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/resume"))
+        .collect::<Vec<_>>();
+    assert_eq!(resumes.len(), 3);
+    let respawn_resumes = &resumes[1..];
+    let active_resume = respawn_resumes
+        .iter()
+        .copied()
+        .find(|row| {
+            row.pointer("/params/threadId").and_then(Value::as_str) == Some("thread-active")
+        })
+        .expect("cold respawn must resume the active cached thread");
+    let stale_resume = respawn_resumes
+        .iter()
+        .copied()
+        .find(|row| {
+            row.pointer("/params/threadId").and_then(Value::as_str)
+                == Some(stale_thread_id.as_str())
+        })
+        .expect("cold respawn must plain-resume the stale cached thread");
+    assert!(
+        stale_resume.pointer("/params/config").is_none(),
+        "stale cache entries must not receive reemitted MCP config"
+    );
+    let respawn_hash = auth::hash_token(thread_resume_token(active_resume));
+    assert_ne!(respawn_hash, first_hash);
+    assert_eq!(
+        card_mcp_hash(&repo, &card_id).await.as_deref(),
+        Some(respawn_hash.as_str())
+    );
+    assert_eq!(
+        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+        Some(respawn_hash.as_str())
+    );
 }
 
 #[tokio::test]

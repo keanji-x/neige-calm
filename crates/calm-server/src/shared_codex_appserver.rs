@@ -101,6 +101,12 @@ pub struct SharedDaemonStatus {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeMode {
+    ColdRespawn,
+    HotTakeover,
+}
+
 #[derive(Clone)]
 pub struct SharedThreadStartParams {
     pub cwd: String,
@@ -894,7 +900,7 @@ impl SharedCodexAppServer {
                     })
                 })
                 .await?;
-                self.resume_cached_threads().await;
+                self.resume_cached_threads(ResumeMode::HotTakeover).await;
                 Ok(true)
             }
             Err(e) => {
@@ -925,7 +931,7 @@ impl SharedCodexAppServer {
             }
         })
         .await?;
-        self.resume_cached_threads().await;
+        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
         Ok(())
     }
 
@@ -1256,7 +1262,7 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    async fn resume_cached_threads(&self) {
+    async fn resume_cached_threads(&self, mode: ResumeMode) {
         let Some(client) = self.running_client().await else {
             return;
         };
@@ -1269,32 +1275,44 @@ impl SharedCodexAppServer {
                 %card_id,
                 "resuming shared codex thread"
             );
+            if mode == ResumeMode::HotTakeover {
+                Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                continue;
+            }
+
             let raw_token = match write_in_tx_typed(self.repo.as_ref(), {
                 let thread_id = thread_id.clone();
                 let card_id = card_id.clone();
                 move |tx| {
                     Box::pin(async move {
-                        let runtime = runtime_get_active_for_card_tx(tx, &card_id)
-                            .await?
-                            .ok_or_else(|| {
-                                CalmError::Internal(format!(
-                                    "cached shared codex thread {thread_id} has no active runtime for card {card_id}"
-                                ))
-                            })?;
-                        mint_and_persist_card_token(tx, &card_id, &runtime.id).await
+                        let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id).await?
+                        else {
+                            return Ok(None);
+                        };
+                        if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
+                            return Ok(None);
+                        }
+                        mint_and_persist_card_token(tx, &card_id, &runtime.id)
+                            .await
+                            .map(Some)
                     })
                 }
             })
             .await
             {
-                Ok(raw_token) => raw_token,
+                Ok(Some(raw_token)) => raw_token,
+                Ok(None) => {
+                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                    continue;
+                }
                 Err(e) => {
+                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
                     tracing::warn!(
                         target = "shared_codex_daemon::resume",
                         %thread_id,
                         %card_id,
                         error = %e,
-                        "shared codex thread token refresh failed; leaving mapping intact"
+                        "shared codex thread token refresh failed; resumed without config"
                     );
                     continue;
                 }
@@ -1308,10 +1326,10 @@ impl SharedCodexAppServer {
                     "set": set,
                 },
             });
-            // Config overrides are honored by codex only on the cold-resume
-            // path; resume_cached_threads always runs against a freshly
-            // respawned process, so this is safe. A hot/loaded-thread resume
-            // would silently drop config.
+            // Invariant: only the cold respawn caller may rotate and reemit
+            // per-card MCP config, and only for the card's active thread.
+            // Hot takeover always plain-resumes because loaded threads ignore
+            // resume config and keep using their existing environment.
             if let Err(e) = client
                 .thread_resume_with_config(&thread_id, Some(config))
                 .await
@@ -1324,6 +1342,18 @@ impl SharedCodexAppServer {
                     "shared codex thread resume failed; leaving mapping intact"
                 );
             }
+        }
+    }
+
+    async fn resume_thread_plain(client: &CodexAppServer, thread_id: &str, card_id: &str) {
+        if let Err(e) = client.thread_resume(thread_id).await {
+            tracing::warn!(
+                target = "shared_codex_daemon::resume",
+                %thread_id,
+                %card_id,
+                error = %e,
+                "shared codex thread resume failed; leaving mapping intact"
+            );
         }
     }
 
