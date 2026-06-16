@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx, session_prepare_deferred_spec_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
@@ -525,6 +525,93 @@ async fn boot_recovery_skips_terminal_waves() {
     .unwrap();
     assert_eq!(recovered, 0);
     assert!(registry.get(&runtime_id).is_none());
+}
+
+#[tokio::test]
+async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "boot-phantom".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "boot-phantom".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+    let placeholder_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(
+        1,
+        vec![Observation::WaveGoal {
+            text: "must not recover".into(),
+        }],
+    );
+    snapshot.phase = HarnessPhaseTag::Idle;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_prepare_deferred_spec_tx(
+        &mut tx,
+        &RuntimeInit {
+            id: placeholder_id.clone(),
+            card_id: card.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mirror: Option<String> = sqlx::query_scalar("SELECT id FROM runtimes WHERE id = ?1")
+        .bind(&placeholder_id)
+        .fetch_optional(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(mirror, None);
+
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let registry = HarnessRegistry::new();
+    let recovered = recover_harnesses_on_boot(
+        repo,
+        EventBus::new(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon,
+        &registry,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered, 0);
+    assert!(registry.get(&placeholder_id).is_none());
 }
 
 /// Issue #644 PR-C (§6.5/§8) — the boot replay applies the SAME

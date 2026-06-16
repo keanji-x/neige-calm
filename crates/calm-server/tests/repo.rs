@@ -6,7 +6,9 @@
 //! and terminal-per-card uniqueness.
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, overlay_delete_by_entity_tx, runtime_start_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, overlay_delete_by_entity_tx, runtime_start_tx, session_prepare_deferred_spec_tx,
+};
 use calm_server::error::CalmError;
 use calm_server::model::*;
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
@@ -1781,6 +1783,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     let c = make_cove(&repo, "shared-boot-exclusion").await;
     let mapped_wave = make_wave(&repo, c.id.as_str(), "mapped").await;
     let pending_wave = make_wave(&repo, c.id.as_str(), "").await;
+    let phantom_wave = make_wave(&repo, c.id.as_str(), "phantom").await;
     let cache = CardRoleCache::new();
 
     let pending_card_id = calm_server::model::new_id();
@@ -1821,6 +1824,23 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     )
     .await
     .expect("create pending shared spec card");
+    let phantom = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: phantom_wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "appserver_sock": "unix:///tmp/shared.sock",
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create deferred placeholder shared spec card");
     tx.commit().await.unwrap();
 
     // Shared takeover now keys off an active shared-spec runtime pointing
@@ -1870,7 +1890,37 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     )
     .await
     .unwrap();
+    let phantom_session_id = calm_server::model::new_id();
+    session_prepare_deferred_spec_tx(
+        &mut tx,
+        &RuntimeInit {
+            id: phantom_session_id.clone(),
+            card_id: phantom.id.to_string(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(json!({"mode": "harness"})),
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_op_id: None,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
+
+    let phantom_mirror: Option<String> =
+        sqlx::query_scalar("SELECT id FROM runtimes WHERE id = ?1")
+            .bind(&phantom_session_id)
+            .fetch_optional(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(phantom_mirror, None);
 
     assert_eq!(
         repo.shared_spec_cards_for_initial_prompt_takeover()
