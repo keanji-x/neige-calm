@@ -57,6 +57,8 @@ fn session(state: WorkerSessionState, wave_id: WaveId, created_at_ms: i64) -> Wo
         exit_code: None,
         exit_interpretation: None,
         spawn_op_id: None,
+        last_activity_ms: None,
+        last_thread_status: None,
         created_at_ms,
         updated_at_ms: created_at_ms,
         completed_at_ms: state.is_terminal().then_some(created_at_ms),

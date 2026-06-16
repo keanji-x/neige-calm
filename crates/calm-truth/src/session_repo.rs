@@ -33,6 +33,16 @@ pub trait SessionRepo: Send + Sync {
         probed_at_ms: i64,
     ) -> Result<Option<WorkerSession>>;
 
+    /// T2 durable codex worker-liveness feeder (#741 §1.3). Stamps the push-fed
+    /// `last_activity_ms` / `last_thread_status` columns on an *active* session
+    /// without touching `updated_at_ms`. Benign no-op on a terminal/missing row.
+    async fn session_record_activity(
+        &self,
+        id: &WorkerSessionId,
+        last_activity_ms: i64,
+        last_thread_status: &str,
+    ) -> Result<()>;
+
     async fn session_state_transition_tx(
         &self,
         tx: &mut Tx<'_>,

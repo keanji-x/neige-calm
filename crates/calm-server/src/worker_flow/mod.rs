@@ -509,6 +509,8 @@ fn session_from_runtime(runtime: &CardRuntime, card: &Card) -> WorkerSession {
         exit_code: None,
         exit_interpretation: None,
         spawn_op_id: None,
+        last_activity_ms: None,
+        last_thread_status: None,
         created_at_ms: runtime.created_at_ms,
         updated_at_ms: runtime.updated_at_ms,
         completed_at_ms: runtime.completed_at_ms,

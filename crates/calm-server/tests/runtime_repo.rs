@@ -236,6 +236,8 @@ fn worker_session(
         exit_code: None,
         exit_interpretation: None,
         spawn_op_id: None,
+        last_activity_ms: None,
+        last_thread_status: None,
         created_at_ms: now,
         updated_at_ms: now,
         completed_at_ms: state.is_terminal().then_some(now),

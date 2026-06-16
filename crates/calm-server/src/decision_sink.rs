@@ -560,6 +560,8 @@ mod tests {
             exit_code: None,
             exit_interpretation: None,
             spawn_op_id: None,
+            last_activity_ms: None,
+            last_thread_status: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             completed_at_ms: None,
