@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use calm_exec::SpawnCtx;
 use calm_types::worker::{
-    ExitInterpretation, Liveness, SessionMode, WorkerSession, WorkerSessionState,
+    DeathVerdict, ExitInterpretation, Liveness, SessionMode, WorkerSession, WorkerSessionState,
 };
 
 use crate::db::prelude::*;
@@ -21,7 +21,29 @@ use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
 pub const DEFAULT_REAPER_RECONCILE_SECS: u64 = 30;
 
+/// §1.1(d) pre-gate: a codex worker whose `last_activity_ms` is within this
+/// window (or whose thread is busy) is never reaped — no arbiter RPC. Default
+/// 15 min; override with `NEIGE_REAPER_DEADLINE_SECS`.
+pub const DEFAULT_REAPER_DEADLINE_SECS: u64 = 900;
+
+/// §1.3 rebuild grace: after a daemon (re)connect, hold off S2 `thread/read`
+/// pulls until the loaded-thread roster has stabilised. Default 5 min;
+/// override with `NEIGE_REAPER_REBUILD_GRACE_SECS`.
+pub const DEFAULT_REAPER_REBUILD_GRACE_SECS: u64 = 300;
+
 static REAPER_BOOT_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Resolve a positive seconds value from `var` (non-positive / garbage →
+/// `default`), mirroring `Scheduler::reconcile_secs_from_env_var`.
+fn reaper_secs_from_env_var(var: &str, default: u64) -> u64 {
+    match std::env::var(var) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(n) if n > 0 => n,
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
 
 pub fn reaper_on_boot() {
     REAPER_BOOT_DONE.store(true, Ordering::SeqCst);
@@ -41,6 +63,11 @@ pub struct Reaper {
     providers: WorkerProviderRegistry,
     events: EventBus,
     write: WriteContext,
+    /// §1.1(d) inactivity deadline in ms (from `NEIGE_REAPER_DEADLINE_SECS`).
+    deadline_ms: i64,
+    /// §1.3 daemon-reconnect rebuild grace in ms
+    /// (from `NEIGE_REAPER_REBUILD_GRACE_SECS`).
+    rebuild_grace_ms: i64,
 }
 
 impl Reaper {
@@ -50,11 +77,22 @@ impl Reaper {
         events: EventBus,
         write: WriteContext,
     ) -> Self {
+        let deadline_ms =
+            reaper_secs_from_env_var("NEIGE_REAPER_DEADLINE_SECS", DEFAULT_REAPER_DEADLINE_SECS)
+                as i64
+                * 1_000;
+        let rebuild_grace_ms = reaper_secs_from_env_var(
+            "NEIGE_REAPER_REBUILD_GRACE_SECS",
+            DEFAULT_REAPER_REBUILD_GRACE_SECS,
+        ) as i64
+            * 1_000;
         Self {
             repo,
             providers,
             events,
             write,
+            deadline_ms,
+            rebuild_grace_ms,
         }
     }
 
@@ -104,56 +142,18 @@ impl Reaper {
 
             match liveness {
                 Liveness::Exited { evidence } => {
-                    // FIX 1 (A1): 8b-ii converges EPHEMERAL workers only. A
-                    // resumable provider (codex) whose PTY tore down does NOT
-                    // mean the codex thread died — e.g. a proc-supervisor
-                    // restart empties the registry while the codex thread
-                    // survives on the separate daemon — so converging on a
-                    // PTY `Exited` would FALSE-KILL live work. Record the
-                    // probe as a T2 liveness observation (no terminalize, no
-                    // event) and defer to the durable-codex-liveness design.
-                    if provider.session_mode() != SessionMode::Ephemeral {
-                        tracing::debug!(
-                            session_id = %session.id,
-                            provider = session.provider.as_db_str(),
-                            "reaper: resumable provider Exited; convergence deferred to durable-codex-liveness design"
-                        );
-                        let observed = Liveness::Exited {
-                            evidence: evidence.clone(),
-                        };
-                        if let Err(e) = self
-                            .repo
-                            .session_set_liveness(&session.id, &observed, now)
-                            .await
-                        {
-                            tracing::warn!(
-                                session_id = %session.id,
-                                provider = session.provider.as_db_str(),
-                                error = %e,
-                                "reaper: failed to persist resumable Exited liveness observation"
-                            );
-                        }
-                        continue;
-                    }
-
-                    // P2 (spawn-window false-convergence): `sessions_nonterminal`
-                    // includes `starting`. A `starting` row exists BEFORE the
+                    // P2 (spawn-window false-convergence), HOISTED above the
+                    // session-mode branch so BOTH providers skip it: a
+                    // `starting` row exists in `sessions_nonterminal` BEFORE the
                     // spawn registers a PTY with the proc-supervisor, so a
-                    // supervisor `ProbeOk{proc_running:false}` here means
-                    // "not spawned/registered YET", NOT "exited". A slow/stuck
-                    // spawn outliving a reaper tick would otherwise be FALSELY
-                    // converged as a dead worker while the spawn operation is
-                    // still responsible for completing/failing it. The spawn
-                    // saga owns `starting` sessions — only converge a session
-                    // that has actually STARTED. Record the probe as a T2
-                    // liveness observation (no terminalize, no event) and let
-                    // the spawn operation own convergence.
-                    if !matches!(
-                        session.state,
-                        WorkerSessionState::Running
-                            | WorkerSessionState::Idle
-                            | WorkerSessionState::TurnPending
-                    ) {
+                    // supervisor `ProbeOk{proc_running:false}` here means "not
+                    // spawned/registered YET", NOT "exited". A slow/stuck spawn
+                    // outliving a reaper tick would otherwise be FALSELY
+                    // converged while the spawn operation is still responsible
+                    // for completing/failing it. The spawn saga owns `starting`
+                    // sessions — record the probe as a T2 liveness observation
+                    // (no terminalize, no event) and let the spawn op converge.
+                    if session.state == WorkerSessionState::Starting {
                         tracing::debug!(
                             session_id = %session.id,
                             provider = session.provider.as_db_str(),
@@ -176,6 +176,111 @@ impl Reaper {
                             );
                         }
                         continue;
+                    }
+
+                    // #741-3: un-defer the codex drive. A resumable provider
+                    // (codex) whose PTY tore down does NOT itself mean the codex
+                    // thread died (e.g. a proc-supervisor restart empties the
+                    // registry while the thread survives on the separate
+                    // daemon), so PTY `Exited` is necessary but NOT sufficient.
+                    // Gate convergence on the death arbiter `confirm_durable_death`
+                    // (§1.1 S1/S2) — only a positive `Dead` verdict authorizes
+                    // a reap. The ephemeral path below is UNCHANGED.
+                    if provider.session_mode() == SessionMode::Resumable {
+                        // §1.1(d) cheap pre-gate: a recently-active or busy
+                        // thread is never reaped, and never costs an RPC. NULL
+                        // `last_activity_ms` ⇒ `created_at_ms` (NOT `now`, which
+                        // would make a never-active session look perpetually
+                        // fresh).
+                        let last = session.last_activity_ms.unwrap_or(session.created_at_ms);
+                        let busy = matches!(
+                            session.last_thread_status.as_deref(),
+                            Some("active" | "waitingOnUserInput" | "waitingOnApproval")
+                        );
+                        if busy || now.saturating_sub(last) <= self.deadline_ms {
+                            tracing::debug!(
+                                session_id = %session.id,
+                                provider = session.provider.as_db_str(),
+                                busy,
+                                "reaper: resumable worker recently active / busy; pre-gate refuses reap"
+                            );
+                            let observed = Liveness::Exited {
+                                evidence: evidence.clone(),
+                            };
+                            if let Err(e) = self
+                                .repo
+                                .session_set_liveness(&session.id, &observed, now)
+                                .await
+                            {
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    provider = session.provider.as_db_str(),
+                                    error = %e,
+                                    "reaper: failed to persist resumable pre-gate liveness observation"
+                                );
+                            }
+                            continue;
+                        }
+                        // No `thread_id` ⇒ nothing to `thread/read` ⇒ can't
+                        // confirm death ⇒ no reap.
+                        let Some(thread_id) = session.thread_id.as_deref() else {
+                            tracing::debug!(
+                                session_id = %session.id,
+                                provider = session.provider.as_db_str(),
+                                "reaper: resumable worker has no thread_id; cannot confirm death, no reap"
+                            );
+                            let observed = Liveness::Exited {
+                                evidence: evidence.clone(),
+                            };
+                            if let Err(e) = self
+                                .repo
+                                .session_set_liveness(&session.id, &observed, now)
+                                .await
+                            {
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    provider = session.provider.as_db_str(),
+                                    error = %e,
+                                    "reaper: failed to persist resumable no-thread liveness observation"
+                                );
+                            }
+                            continue;
+                        };
+                        let connected = provider.daemon_connected_at_ms().unwrap_or(0);
+                        let verdict = provider
+                            .confirm_durable_death(thread_id, now, connected, self.rebuild_grace_ms)
+                            .await;
+                        match verdict {
+                            // Positively dead — fall through to the EXISTING
+                            // converge path (converge_dead_worker FIRST, then
+                            // session_commit_exit), shared with ephemeral.
+                            DeathVerdict::Dead => {}
+                            // Alive / Unknown ⇒ NO reap; record T2 only.
+                            _ => {
+                                tracing::debug!(
+                                    session_id = %session.id,
+                                    provider = session.provider.as_db_str(),
+                                    verdict = ?verdict,
+                                    "reaper: arbiter did not confirm death; no reap"
+                                );
+                                let observed = Liveness::Exited {
+                                    evidence: evidence.clone(),
+                                };
+                                if let Err(e) = self
+                                    .repo
+                                    .session_set_liveness(&session.id, &observed, now)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        session_id = %session.id,
+                                        provider = session.provider.as_db_str(),
+                                        error = %e,
+                                        "reaper: failed to persist arbiter no-reap liveness observation"
+                                    );
+                                }
+                                continue;
+                            }
+                        }
                     }
 
                     let verdict = match provider.interpret_exit(&session, &evidence, &ctx).await {
@@ -212,6 +317,12 @@ impl Reaper {
                             // FIX 3: carry the provider's Failed `reason` (it
                             // hides the `-1` probe sentinel and explains real
                             // non-zero/signal exits) into the TaskFailed event.
+                            //
+                            // §1.5 commit-CAS resume guard DEFERRED — neige does
+                            // not wire codex worker resume today (§0.2), so the
+                            // pull→commit resume TOCTOU is unreachable for
+                            // workers; add `last_activity_ms <= :pull_ts` to
+                            // `session_commit_exit_tx` when 8c wires resume.
                             if let Err(e) = converge_dead_worker(
                                 self.repo.as_ref(),
                                 &self.events,
@@ -506,7 +617,7 @@ mod tests {
                    lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
                    completed_at_ms
                )
-               VALUES (?1, ?2, 'terminal', NULL, ?5, ?3, NULL, NULL, NULL, NULL,
+               VALUES (?1, ?2, 'terminal', NULL, ?5, ?3, ?6, NULL, NULL, NULL,
                        NULL, NULL, ?4, ?4, NULL)"#,
         )
         .bind(session.id.as_str())
@@ -514,6 +625,7 @@ mod tests {
         .bind(&session.terminal_run_id)
         .bind(session.created_at_ms)
         .bind(session.state.as_db_str())
+        .bind(&session.thread_id)
         .execute(&mut *tx)
         .await
         .expect("insert runtime row");
@@ -833,32 +945,33 @@ mod tests {
         reset_reaper_boot_gate_for_test();
     }
 
-    /// FIX 1 (A1): a CODEX (`SessionMode::Resumable`) session observed
-    /// `Exited` must NOT converge — a torn-down PTY does not mean the codex
-    /// thread died. The reaper records the liveness as a T2 observation
-    /// (`liveness` column set) and leaves the session non-terminal with no
-    /// `TaskFailed` and no lifecycle change.
+    /// #741-3 (a): a CODEX (`SessionMode::Resumable`) session observed `Exited`
+    /// whose death arbiter returns `Dead` (with a stale `last_activity_ms` so
+    /// the §1.1(d) pre-gate lets it through) MUST converge — mirroring the
+    /// ephemeral convergence: cardless `TaskFailed`, park Working→Reviewing,
+    /// session terminalized.
     #[tokio::test]
-    async fn sweep_resumable_codex_exited_records_liveness_without_convergence() {
+    async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
         let _guard = REAPER_TEST_LOCK.lock().await;
         reset_reaper_boot_gate_for_test();
 
         let (repo, wave_id) = seeded_repo().await;
         set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
-        let task = insert_task(&repo, &wave_id, "codex-resumable", TaskStatus::Running).await;
+        let task = insert_task(&repo, &wave_id, "codex-dead", TaskStatus::Running).await;
         let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-        let mut worker = session("ws-codex-resumable", wave_id.clone(), 1);
-        // A real codex session: resumable + codex provider.
+        // `created_at_ms = 1` ⇒ `now - last` (NULL last_activity ⇒ created_at)
+        // is far past the deadline, so the pre-gate does not short-circuit.
+        let mut worker = session("ws-codex-dead", wave_id.clone(), 1);
         worker.provider = WorkerProviderKind::Codex;
         worker.mode = SessionMode::Resumable;
+        worker.thread_id = Some("t-codex-dead".into());
         worker.spawn_op_id = Some(op_id);
         insert_session(&repo, worker).await;
 
-        // Resumable fake registered under the Codex kind so the reaper looks
-        // it up and observes its `session_mode() == Resumable`.
         let fake = Arc::new(
             FakeProvider::new()
                 .with_session_mode(SessionMode::Resumable)
+                .with_death_verdict(DeathVerdict::Dead)
                 .with_probe_script([exited_liveness()]),
         );
         let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -873,24 +986,107 @@ mod tests {
         reaper.sweep_all().await;
 
         assert_eq!(fake.probe_call_count(), 1);
+        assert_eq!(
+            fake.death_verdict_call_count(),
+            1,
+            "arbiter must be consulted for a stale resumable Exited"
+        );
+
         let worker = repo
-            .session_get(&WorkerSessionId::from("ws-codex-resumable"))
+            .session_get(&WorkerSessionId::from("ws-codex-dead"))
             .await
             .expect("session get")
             .expect("session exists");
-        // T2 observation recorded: liveness column set, NOT terminalized.
+        assert_eq!(worker.state, WorkerSessionState::Failed);
+        assert_eq!(worker.liveness, LivenessTag::Exited);
+        assert_eq!(worker.exit_code, Some(7));
+        assert_eq!(worker.exit_interpretation.as_deref(), Some("failed"));
+        assert!(worker.completed_at_ms.is_some());
+
+        let task_row = repo
+            .task_get(&task.id)
+            .await
+            .expect("task get")
+            .expect("task exists");
+        assert_eq!(task_row.status, TaskStatus::Failed);
+        assert_eq!(task_row.status_detail.as_deref(), Some("spawn-failed"));
+
+        let failed = task_failed_events(&repo, &task.id).await;
+        assert_eq!(failed.len(), 1);
+
+        let changes = lifecycle_changes(&repo, &wave_id).await;
+        assert_eq!(changes.len(), 1);
+        match &changes[0] {
+            Event::WaveLifecycleChanged { from, to, .. } => {
+                assert_eq!(*from, WaveLifecycle::Working);
+                assert_eq!(*to, WaveLifecycle::Reviewing);
+            }
+            other => panic!("expected lifecycle change, got {other:?}"),
+        }
+        let wave = repo
+            .wave_get(wave_id.as_str())
+            .await
+            .expect("wave get")
+            .expect("wave exists");
+        assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// #741-3 (b): a resumable Exited whose arbiter returns `Alive` records a
+    /// T2 liveness observation and does NOT converge.
+    #[tokio::test]
+    async fn sweep_resumable_codex_exited_arbiter_alive_records_t2_only() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
+        let task = insert_task(&repo, &wave_id, "codex-alive", TaskStatus::Running).await;
+        let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
+        let mut worker = session("ws-codex-alive", wave_id.clone(), 1);
+        worker.provider = WorkerProviderKind::Codex;
+        worker.mode = SessionMode::Resumable;
+        worker.thread_id = Some("t-codex-alive".into());
+        worker.spawn_op_id = Some(op_id);
+        insert_session(&repo, worker).await;
+
+        let fake = Arc::new(
+            FakeProvider::new()
+                .with_session_mode(SessionMode::Resumable)
+                .with_death_verdict(DeathVerdict::Alive)
+                .with_probe_script([exited_liveness()]),
+        );
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry_for(WorkerProviderKind::Codex, fake.clone()),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        reaper_on_boot();
+        reaper.sweep_all().await;
+
+        assert_eq!(fake.probe_call_count(), 1);
+        assert_eq!(fake.death_verdict_call_count(), 1);
+
+        let worker = repo
+            .session_get(&WorkerSessionId::from("ws-codex-alive"))
+            .await
+            .expect("session get")
+            .expect("session exists");
         assert_eq!(worker.liveness, LivenessTag::Exited);
         assert!(worker.liveness_probed_at_ms.is_some());
         assert_eq!(
             worker.state,
             WorkerSessionState::Running,
-            "resumable codex Exited must NOT terminalize the session"
+            "arbiter Alive must NOT terminalize the session"
         );
-        assert_eq!(worker.exit_code, None, "no exit committed for codex");
+        assert_eq!(worker.exit_code, None);
         assert_eq!(worker.exit_interpretation, None);
         assert!(worker.completed_at_ms.is_none());
 
-        // No convergence: no task.failed, task stays running, wave stays Working.
         assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
         assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
         let task_row = repo
@@ -899,12 +1095,133 @@ mod tests {
             .expect("task get")
             .expect("task exists");
         assert_eq!(task_row.status, TaskStatus::Running);
-        let wave = repo
-            .wave_get(wave_id.as_str())
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// #741-3 (c): a resumable Exited whose arbiter returns `Unknown` records a
+    /// T2 liveness observation and does NOT converge.
+    #[tokio::test]
+    async fn sweep_resumable_codex_exited_arbiter_unknown_records_t2_only() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
+        let task = insert_task(&repo, &wave_id, "codex-unknown", TaskStatus::Running).await;
+        let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
+        let mut worker = session("ws-codex-unknown", wave_id.clone(), 1);
+        worker.provider = WorkerProviderKind::Codex;
+        worker.mode = SessionMode::Resumable;
+        worker.thread_id = Some("t-codex-unknown".into());
+        worker.spawn_op_id = Some(op_id);
+        insert_session(&repo, worker).await;
+
+        let fake = Arc::new(
+            FakeProvider::new()
+                .with_session_mode(SessionMode::Resumable)
+                .with_death_verdict(DeathVerdict::Unknown)
+                .with_probe_script([exited_liveness()]),
+        );
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry_for(WorkerProviderKind::Codex, fake.clone()),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        reaper_on_boot();
+        reaper.sweep_all().await;
+
+        assert_eq!(fake.probe_call_count(), 1);
+        assert_eq!(fake.death_verdict_call_count(), 1);
+
+        let worker = repo
+            .session_get(&WorkerSessionId::from("ws-codex-unknown"))
             .await
-            .expect("wave get")
-            .expect("wave exists");
-        assert_eq!(wave.lifecycle, WaveLifecycle::Working);
+            .expect("session get")
+            .expect("session exists");
+        assert_eq!(worker.liveness, LivenessTag::Exited);
+        assert!(worker.liveness_probed_at_ms.is_some());
+        assert_eq!(
+            worker.state,
+            WorkerSessionState::Running,
+            "arbiter Unknown must NOT terminalize the session"
+        );
+        assert_eq!(worker.exit_code, None);
+        assert_eq!(worker.exit_interpretation, None);
+        assert!(worker.completed_at_ms.is_none());
+
+        assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
+        assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    /// #741-3 (d): a resumable Exited whose `last_activity_ms` is RECENT — the
+    /// §1.1(d) pre-gate short-circuits to a T2 observation WITHOUT consulting
+    /// the arbiter (no RPC). Arbiter would say `Dead`, but it is never asked.
+    #[tokio::test]
+    async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
+        let task = insert_task(&repo, &wave_id, "codex-recent", TaskStatus::Running).await;
+        let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
+        let mut worker = session("ws-codex-recent", wave_id.clone(), 1);
+        worker.provider = WorkerProviderKind::Codex;
+        worker.mode = SessionMode::Resumable;
+        worker.thread_id = Some("t-codex-recent".into());
+        // RECENT activity: well within the default 15-min deadline window.
+        worker.last_activity_ms = Some(now_ms());
+        worker.spawn_op_id = Some(op_id);
+        insert_session(&repo, worker).await;
+
+        let fake = Arc::new(
+            FakeProvider::new()
+                .with_session_mode(SessionMode::Resumable)
+                // Arbiter WOULD reap, proving the pre-gate is what holds it.
+                .with_death_verdict(DeathVerdict::Dead)
+                .with_probe_script([exited_liveness()]),
+        );
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry_for(WorkerProviderKind::Codex, fake.clone()),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        reaper_on_boot();
+        reaper.sweep_all().await;
+
+        assert_eq!(fake.probe_call_count(), 1);
+        assert_eq!(
+            fake.death_verdict_call_count(),
+            0,
+            "recent-activity pre-gate must short-circuit WITHOUT consulting the arbiter"
+        );
+
+        let worker = repo
+            .session_get(&WorkerSessionId::from("ws-codex-recent"))
+            .await
+            .expect("session get")
+            .expect("session exists");
+        assert_eq!(worker.liveness, LivenessTag::Exited);
+        assert!(worker.liveness_probed_at_ms.is_some());
+        assert_eq!(
+            worker.state,
+            WorkerSessionState::Running,
+            "recent-activity pre-gate must NOT terminalize the session"
+        );
+        assert_eq!(worker.exit_code, None);
+        assert_eq!(worker.exit_interpretation, None);
+
+        assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
+        assert_eq!(lifecycle_changes(&repo, &wave_id).await.len(), 0);
 
         reset_reaper_boot_gate_for_test();
     }

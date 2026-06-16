@@ -149,6 +149,10 @@ impl WorkerProvider for CodexProvider {
         verdict_from_facts(facts)
     }
 
+    fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
+        Some(self.daemon.daemon_connected_at_ms())
+    }
+
     /// PR8 will wire the returned command into the terminal/renderer spawn path.
     async fn resume(
         &self,
