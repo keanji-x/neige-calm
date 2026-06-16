@@ -903,6 +903,9 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
         .expect("runtime row")
         .thread_id;
     assert_eq!(first_thread.as_deref(), Some("fake-thread-0001"));
+    let original_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("initial start stores card MCP hash");
 
     let (tx_output_json,): (String,) =
         sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
@@ -959,10 +962,15 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
             .is_none(),
         "recovery must reuse runtime thread_id instead of minting another spec thread"
     );
+    assert_eq!(
+        card_mcp_hash(&repo, &card_id).await.as_deref(),
+        Some(original_hash.as_str()),
+        "reuse with a valid per-card token row must leave the card MCP hash in place"
+    );
 }
 
 #[tokio::test]
-async fn reusable_thread_without_token_logs_warning() {
+async fn reusable_thread_without_token_fails_op() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
     let card_id = new_id();
@@ -1004,6 +1012,9 @@ async fn reusable_thread_without_token_logs_warning() {
         .unwrap()
         .expect("active runtime before reusable-thread recovery");
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+    let active_runtime_id = active.id.clone();
+    let active_status = active.status.clone();
+    let active_thread_id = active.thread_id.clone();
 
     let (tx_output_json,): (String,) =
         sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
@@ -1048,10 +1059,28 @@ async fn reusable_thread_without_token_logs_warning() {
     let _guard = tracing::subscriber::set_default(subscriber);
     state.operation_runtime.drive().await.unwrap();
 
-    assert!(matches!(
-        wait_op(&state, &op_id).await,
-        OperationOutcome::Succeeded { .. }
-    ));
+    match wait_op(&state, &op_id).await {
+        OperationOutcome::Failed {
+            from_phase,
+            last_error,
+            ..
+        } => {
+            assert_eq!(from_phase, PhaseTag::AppServerInteract);
+            assert!(
+                last_error.contains("no per-card MCP token row"),
+                "unexpected error: {last_error}"
+            );
+            assert!(
+                last_error.contains(&card_id),
+                "missing card id in error: {last_error}"
+            );
+            assert!(
+                last_error.contains("fake-thread-0001"),
+                "missing thread id in error: {last_error}"
+            );
+        }
+        other => panic!("expected failed reusable-thread operation, got {other:?}"),
+    }
     let observed_targets = targets.lock().unwrap().clone();
     assert!(
         observed_targets
@@ -1061,19 +1090,39 @@ async fn reusable_thread_without_token_logs_warning() {
     );
     assert!(
         card_mcp_hash(&repo, &card_id).await.is_none(),
-        "reuse warning path must not re-mint a card MCP token"
+        "failed reuse path must not re-mint a card MCP token"
+    );
+    let active_after = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("active runtime after failed reusable-thread recovery");
+    assert_eq!(active_after.id, active_runtime_id);
+    assert_eq!(active_after.status, active_status);
+    assert_eq!(active_after.thread_id, active_thread_id);
+    assert_eq!(
+        card_session_id(&repo, &card_id).await.as_deref(),
+        Some(active_runtime_id.as_str()),
+        "failed reuse path must keep the card linked to the existing session"
+    );
+    assert_eq!(
+        wave_root_session_id(&repo, wave.id.as_str())
+            .await
+            .as_deref(),
+        Some(active_runtime_id.as_str()),
+        "failed reuse path must keep the wave root linked to the existing session"
     );
     assert_eq!(
         sqlx::query_scalar::<_, Option<String>>(
             "SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1"
         )
-        .bind(&active.id)
+        .bind(&active_runtime_id)
         .fetch_one(repo.pool())
         .await
         .unwrap()
         .as_deref(),
         Some(original_hash.as_str()),
-        "reuse warning path must leave the running session token unchanged"
+        "failed reuse path must leave the running session token unchanged"
     );
 }
 

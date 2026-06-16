@@ -48,6 +48,9 @@ const START_PHASES: &[PhaseTag] = &[
     PhaseTag::Succeeded,
 ];
 
+const REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR: &str =
+    "no per-card MCP token row; refusing to start an unauthenticated shell";
+
 #[cfg(feature = "fixtures")]
 pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
 
@@ -355,12 +358,19 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let mut new_mcp_token_hash = None;
         let thread_id = if let Some(thread_id) = reusable_thread_id {
             if !self.repo.card_mcp_token_exists_for_card(&card_id).await? {
+                let message = format!(
+                    "spec card {card_id} reuses thread {thread_id} with \
+                     {REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR} \
+                     (re-run to mint a fresh thread)"
+                );
                 tracing::warn!(
                     target: "spec_harness::reusable_thread_invariant",
                     %card_id,
                     thread_id = %thread_id,
-                    "spec card reuses thread without per-card MCP token row - AI shell `neige` will fail -32401; migration 0035 should have nulled this thread_id"
+                    error = %message,
+                    "refusing to reuse spec thread without per-card MCP token row; migration 0035 should have nulled this thread_id"
                 );
+                return Err(CalmError::Conflict(message));
             }
             thread_id
         } else {
@@ -622,6 +632,16 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_id = output_string(output, "runtime_id")?;
         let thread_id = output_optional_string(output, "codex_thread_id")?;
         let mut steps = Vec::new();
+        if from_phase == PhaseTag::AppServerInteract
+            && is_reusable_thread_missing_card_mcp_token_failure(reason)
+        {
+            return Ok(CompensationStateVersioned {
+                version: 1,
+                from_phase,
+                reason: reason.to_string(),
+                steps,
+            });
+        }
         if matches!(
             from_phase,
             PhaseTag::SpawnStarted | PhaseTag::SpawnSucceeded
@@ -734,6 +754,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             ))),
         }
     }
+}
+
+fn is_reusable_thread_missing_card_mcp_token_failure(reason: &str) -> bool {
+    reason.contains(REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR)
 }
 
 fn step(op: &str, args: Value) -> CompensationStep {
