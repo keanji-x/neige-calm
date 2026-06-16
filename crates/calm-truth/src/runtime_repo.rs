@@ -69,7 +69,7 @@ pub struct RuntimeInit {
 #[async_trait]
 pub trait RuntimeRepo {
     /// Active = starting/running/idle/turn_pending, matching the
-    /// active-per-card partial unique constraint. Looks up a runtime by
+    /// active-per-card partial unique constraint. Looks up a worker session by
     /// provider-owned thread id for bridge/app-server attribution.
     async fn runtime_get_active_by_thread(
         &self,

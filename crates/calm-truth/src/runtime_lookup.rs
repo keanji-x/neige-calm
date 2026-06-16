@@ -11,7 +11,7 @@ use crate::runtime_repo::{
 };
 use serde_json::Value;
 
-/// Resolve an active codex thread for a card. Runtime rows are the source of
+/// Resolve an active codex thread for a card. Worker sessions are the source of
 /// truth.
 pub async fn resolve_active_thread_for_card(
     repo: &dyn RouteRepo,
@@ -26,7 +26,7 @@ pub async fn resolve_active_thread_for_card(
     Ok(non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned))
 }
 
-/// Resolve the owning card for a provider thread id. Runtime rows are the
+/// Resolve the owning card for a provider thread id. Worker sessions are the
 /// source of truth.
 pub async fn resolve_card_for_thread(
     repo: &dyn RouteRepo,
@@ -46,7 +46,7 @@ pub async fn resolve_card_for_thread(
     Ok(active.map(|runtime| runtime.card_id))
 }
 
-/// Resolve a Claude session for a card. Runtime rows are the source of truth;
+/// Resolve a Claude session for a card. Worker sessions are the source of truth;
 /// `cards.payload.claude_session_id` is a transitional fallback for
 /// pre-backfill rows and tracked edge cases.
 pub async fn resolve_claude_session_for_card(
@@ -81,7 +81,7 @@ pub async fn resolve_claude_session_for_card(
     Ok(legacy_session)
 }
 
-/// Return active shared codex thread attribution from runtime rows.
+/// Return active shared codex thread attribution from worker sessions.
 pub async fn merge_active_shared_thread_attribution(
     repo: &dyn RouteRepo,
 ) -> Result<HashMap<String, String>> {
