@@ -849,7 +849,8 @@ impl AppState {
         // so the dispatcher can take an `Arc<McpServer>` at construction
         // time and use it for worker codex daemon spawn (mirrors the
         // spec card path in `routes::waves::create_wave`).
-        let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
+        let mcp_socket_path =
+            crate::mcp_server::transport::default_socket_path(&cfg.data_dir_resolved());
         let mcp_shim_bin = resolve_mcp_stdio_shim_bin(cfg);
         let mcp_registry = crate::mcp_server::build_default_registry();
         let daemon_mcp_token =

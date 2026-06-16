@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -7,10 +7,9 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_mcp_token_set_tx, card_update_tx, harness_items_delete_by_card_tx,
-    runtime_bind_attribution_tx, runtime_fail_if_active_tx, runtime_get_active_for_card_tx,
-    runtime_restore_from_superseded_tx, runtime_start_tx, runtime_supersede_tx,
-    session_mcp_token_set_tx, session_prepare_deferred_spec_tx,
+    card_update_tx, harness_items_delete_by_card_tx, runtime_bind_attribution_tx,
+    runtime_fail_if_active_tx, runtime_get_active_for_card_tx, runtime_restore_from_superseded_tx,
+    runtime_start_tx, runtime_supersede_tx, session_prepare_deferred_spec_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -20,6 +19,9 @@ use crate::harness::{
     SpecHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, WaveId};
+use crate::mcp_server::wiring::{
+    card_mcp_env, mint_card_mcp_token_pair, mirror_session_mcp_token, persist_card_mcp_token_hash,
+};
 use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // Issue #649 i2 lifted the per-card lock-map machinery that used to live in
 // this module into `crate::per_card_lock` so the `/spec/input` lazy-recovery
@@ -366,15 +368,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 crate::spec_card::SeededCardRole::Spec.prompt_template(),
                 &wave_id,
             );
-            let raw = crate::mcp_server::auth::CardMcpToken::generate();
-            let hashed = crate::mcp_server::auth::hash_token(raw.as_str());
+            let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
+            let env = card_mcp_env(Path::new(&socket_path), raw.as_str());
             let cfg = serde_json::to_value(SpecThreadStartConfig {
                 shell_environment_policy: SpecThreadEnvPolicy {
                     set: SpecThreadEnvSet {
-                        neige_mcp_socket: socket_path.as_str(),
-                        neige_mcp_token: raw.as_str(),
+                        neige_mcp_socket: env[0].1.as_str(),
+                        neige_mcp_token: env[1].1.as_str(),
                     },
                 },
             })?;
@@ -439,7 +441,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     let mut old_runtime_id = None;
                     let mut old_runtime_status = None;
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
-                        card_mcp_token_set_tx(tx, &card_id, hashed).await?;
+                        persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
                     }
                     if runtime_deferred {
                         let runtime_init = RuntimeInit {
@@ -499,7 +501,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         .await?;
                     }
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
-                        session_mcp_token_set_tx(tx, &runtime_id, hashed).await?;
+                        mirror_session_mcp_token(tx, &runtime_id, hashed).await?;
                     }
                     if reset_harness_items {
                         harness_items_delete_by_card_tx(tx, &card_id).await?;

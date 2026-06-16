@@ -47,6 +47,7 @@ pub mod handshake;
 pub mod registry;
 pub mod tools;
 pub mod transport;
+pub mod wiring;
 
 pub use registry::{AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolRegistry};
 pub use transport::{McpServer, McpShimConfig};

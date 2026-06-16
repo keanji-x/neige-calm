@@ -13,6 +13,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::mcp_server::McpShimConfig;
+use crate::mcp_server::wiring::daemon_shim_env;
 use toml_edit::DocumentMut;
 
 /// Layout: <data_dir>/codex-home/  <- shared, no per-card subdir
@@ -142,9 +143,9 @@ impl SharedCodexHome {
                     calm_table["args"] = toml_edit::value(toml_edit::Array::new());
                     let env = calm_table.entry("env").or_insert(toml_edit::table());
                     if let Some(env_table) = env.as_table_mut() {
-                        env_table["NEIGE_MCP_SOCKET"] =
-                            toml_edit::value(shim.socket_path.to_string_lossy().to_string());
-                        env_table["NEIGE_MCP_DAEMON_TOKEN"] = toml_edit::value(daemon_token);
+                        for (key, value) in daemon_shim_env(&shim.socket_path, daemon_token) {
+                            env_table[key] = toml_edit::value(value);
+                        }
                     }
                 }
             }

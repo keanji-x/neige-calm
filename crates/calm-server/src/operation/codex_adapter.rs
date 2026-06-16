@@ -9,15 +9,16 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
+    append_decision_event_in_tx, card_update_tx, card_with_codex_create_tx,
     runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_get_by_id_tx,
-    runtime_set_status_tx, session_mcp_token_set_tx,
+    runtime_set_status_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::mcp_server::McpServer;
+use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{
     WorkerCleanupOutcome, compensate_worker_rows, worker_spawn_failure_preserved,
@@ -1115,14 +1116,10 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             "CODEX_HOME".into(),
             Value::String(ctx.shared_codex_appserver.status_snapshot().codex_home),
         );
-        if let Some(token) = ctx.mcp_token {
-            map.insert("NEIGE_MCP_TOKEN".into(), Value::String(token.to_string()));
-        }
-        if let Some(server) = ctx.mcp_server {
-            map.insert(
-                "NEIGE_MCP_SOCKET".into(),
-                Value::String(server.shim_config.socket_path.to_string_lossy().to_string()),
-            );
+        if let (Some(token), Some(server)) = (ctx.mcp_token, ctx.mcp_server) {
+            for (key, value) in card_mcp_env(&server.shim_config.socket_path, token) {
+                map.insert(key.into(), Value::String(value));
+            }
         }
     }
 
@@ -1167,26 +1164,14 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
 }
 
 async fn mint_card_mcp_token(ctx: &SpawnCtx, card_id: &str, runtime_id: &str) -> Result<String> {
-    let token = crate::mcp_server::auth::CardMcpToken::generate();
-    let hashed = crate::mcp_server::auth::hash_token(token.as_str());
     let card_id = card_id.to_string();
     let runtime_id = runtime_id.to_string();
     write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         let card_id = card_id.clone();
         let runtime_id = runtime_id.clone();
-        let hashed = hashed.clone();
-        Box::pin(async move {
-            card_mcp_token_set_tx(tx, &card_id, &hashed)
-                .await
-                .map_err(CalmError::from)?;
-            session_mcp_token_set_tx(tx, &runtime_id, &hashed)
-                .await
-                .map_err(CalmError::from)?;
-            Ok(())
-        })
+        Box::pin(async move { mint_and_persist_card_token(tx, &card_id, &runtime_id).await })
     })
-    .await?;
-    Ok(token.into_inner())
+    .await
 }
 
 async fn log_worker_card_added(
