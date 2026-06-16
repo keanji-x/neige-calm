@@ -5,6 +5,7 @@ use std::time::Duration;
 use sqlx::{Row, SqlitePool};
 
 use crate::error::Result;
+use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind, WorkerSessionState};
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -32,8 +33,11 @@ pub(crate) struct ParityDivergence {
 }
 
 #[derive(Debug)]
-struct ReverseOrphan {
+pub struct ReverseOrphan {
     session_id: String,
+    provider: String,
+    mode: String,
+    contract: String,
     state: String,
     thread_id: Option<String>,
 }
@@ -79,7 +83,7 @@ pub async fn sweep(pool: &SqlitePool, counter: &AtomicU64) -> Result<usize> {
 
     counter.fetch_add(divergence_count as u64, Ordering::Relaxed);
     for divergence in &divergences {
-        tracing::warn!(
+        tracing::error!(
             target: "worker_sessions::parity",
             runtime_id = %divergence.runtime_id,
             runtime_status = %divergence.runtime_status,
@@ -104,16 +108,26 @@ pub async fn sweep(pool: &SqlitePool, counter: &AtomicU64) -> Result<usize> {
         );
     }
     for orphan in &reverse_orphans {
-        tracing::warn!(
-            target: "worker_sessions::parity",
-            session_id = %orphan.session_id,
-            state = %orphan.state,
-            thread_id = ?orphan.thread_id,
-            "worker_sessions reverse orphan"
-        );
+        if is_expected_reverse_orphan(orphan) {
+            tracing::warn!(
+                target: "worker_sessions::parity",
+                session_id = %orphan.session_id,
+                state = %orphan.state,
+                thread_id = ?orphan.thread_id,
+                "worker_sessions reverse orphan (expected: deferred-spec placeholder)"
+            );
+        } else {
+            tracing::error!(
+                target: "worker_sessions::parity",
+                session_id = %orphan.session_id,
+                state = %orphan.state,
+                thread_id = ?orphan.thread_id,
+                "worker_sessions reverse orphan"
+            );
+        }
     }
     for duplicate in &card_session_duplicates {
-        tracing::warn!(
+        tracing::error!(
             target: "worker_sessions::parity",
             session_id = %duplicate.session_id,
             card_count = duplicate.n,
@@ -189,9 +203,17 @@ pub(crate) async fn diff(pool: &SqlitePool) -> Result<Vec<ParityDivergence>> {
         .collect())
 }
 
-async fn reverse_orphans(pool: &SqlitePool) -> Result<Vec<ReverseOrphan>> {
+pub fn is_expected_reverse_orphan(o: &ReverseOrphan) -> bool {
+    o.state == WorkerSessionState::Starting.as_db_str()
+        && o.thread_id.is_none()
+        && o.provider == WorkerProviderKind::Codex.as_db_str()
+        && o.mode == SessionMode::Resumable.as_db_str()
+        && o.contract == WorkerContract::Planner.as_db_str()
+}
+
+pub async fn reverse_orphans(pool: &SqlitePool) -> Result<Vec<ReverseOrphan>> {
     let rows = sqlx::query(
-        r#"SELECT ws.id, ws.state, ws.thread_id FROM worker_sessions ws
+        r#"SELECT ws.id, ws.provider, ws.mode, ws.contract, ws.state, ws.thread_id FROM worker_sessions ws
            LEFT JOIN runtimes r ON r.id = ws.id WHERE r.id IS NULL"#,
     )
     .fetch_all(pool)
@@ -201,6 +223,9 @@ async fn reverse_orphans(pool: &SqlitePool) -> Result<Vec<ReverseOrphan>> {
         .into_iter()
         .map(|row| ReverseOrphan {
             session_id: row.get("id"),
+            provider: row.get("provider"),
+            mode: row.get("mode"),
+            contract: row.get("contract"),
             state: row.get("state"),
             thread_id: row.get("thread_id"),
         })
