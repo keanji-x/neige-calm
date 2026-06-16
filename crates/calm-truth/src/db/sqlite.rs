@@ -7615,6 +7615,7 @@ mod runtime_read_flip_tests {
     #[tokio::test]
     async fn assert_worker_sessions_card_id_complete_flags_active_null() {
         let repo = fresh_repo().await;
+        repo.disable_worker_session_parity_on_drop_for_test();
         let runtime = seed_runtime(
             &repo,
             RuntimeReadCase {
