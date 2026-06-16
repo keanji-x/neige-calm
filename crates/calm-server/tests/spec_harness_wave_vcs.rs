@@ -587,11 +587,25 @@ async fn persist_runtime_snapshot(boot: &Boot, snapshot: &HarnessSnapshot) {
             WHERE card_id = ?2
               AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
-    .bind(state_text)
+    .bind(&state_text)
     .bind(boot.spec_card_id.as_str())
     .execute(boot.repo.pool())
     .await
     .expect("persist runtime snapshot");
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET handle_state_json = ?1
+            WHERE id IN (
+                SELECT id FROM runtimes
+                 WHERE card_id = ?2
+                   AND status IN ('starting', 'running', 'idle', 'turn_pending')
+            )"#,
+    )
+    .bind(&state_text)
+    .bind(boot.spec_card_id.as_str())
+    .execute(boot.repo.pool())
+    .await
+    .expect("persist worker session snapshot");
 }
 
 async fn update_card_payload_with_event(boot: &Boot, card: &Card, payload: Value) -> Card {

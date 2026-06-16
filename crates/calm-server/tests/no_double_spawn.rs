@@ -954,6 +954,32 @@ async fn assert_active_codex_runtime_thread(boot: &Boot, card_id: &str, expected
     assert_eq!(runtime.thread_id.as_deref(), Some(expected_thread_id));
 }
 
+async fn force_codex_runtime_thread_running(boot: &Boot, card_id: &str, thread_id: &str) {
+    sqlx::query(
+        r#"UPDATE runtimes
+           SET status = 'running',
+               agent_provider = 'codex',
+               thread_id = ?1
+           WHERE card_id = ?2"#,
+    )
+    .bind(thread_id)
+    .bind(card_id)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE worker_sessions
+           SET state = 'running',
+               thread_id = ?1
+           WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?2)"#,
+    )
+    .bind(thread_id)
+    .bind(card_id)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+}
+
 async fn assert_projected_codex_thread(
     boot: &Boot,
     card_id: &str,
@@ -1559,17 +1585,7 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
     let card_id = new_id();
     let (card, terminal_id, env_for_output, runtime_id) =
         seed_codex_card_for_operation(&boot, card_id, Some("recover prompt")).await;
-    sqlx::query(
-        r#"UPDATE runtimes
-           SET status = 'running',
-               agent_provider = 'codex',
-               thread_id = 'T-original'
-           WHERE card_id = ?1"#,
-    )
-    .bind(card.id.as_str())
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+    force_codex_runtime_thread_running(&boot, card.id.as_str(), "T-original").await;
     let mut output = TxOutput::new(
         "runtime",
         Some(runtime_id.clone()),
@@ -1682,17 +1698,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
         )
         .await
         .unwrap();
-    sqlx::query(
-        r#"UPDATE runtimes
-           SET status = 'running',
-               agent_provider = 'codex',
-               thread_id = 't1'
-           WHERE card_id = ?1"#,
-    )
-    .bind(card.id.as_str())
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+    force_codex_runtime_thread_running(&boot, card.id.as_str(), "t1").await;
     let mut output = TxOutput::new(
         "runtime",
         Some(runtime_id.clone()),
@@ -1804,17 +1810,7 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
         )
         .await
         .unwrap();
-    sqlx::query(
-        r#"UPDATE runtimes
-           SET status = 'running',
-               agent_provider = 'codex',
-               thread_id = 't1'
-           WHERE card_id = ?1"#,
-    )
-    .bind(card.id.as_str())
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+    force_codex_runtime_thread_running(&boot, card.id.as_str(), "t1").await;
     let mut output = TxOutput::new(
         "runtime",
         Some(runtime_id.clone()),
@@ -1932,17 +1928,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
         )
         .await
         .unwrap();
-    sqlx::query(
-        r#"UPDATE runtimes
-           SET status = 'running',
-               agent_provider = 'codex',
-               thread_id = 't1'
-           WHERE card_id = ?1"#,
-    )
-    .bind(card.id.as_str())
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+    force_codex_runtime_thread_running(&boot, card.id.as_str(), "t1").await;
     let mut output = TxOutput::new(
         "runtime",
         Some(runtime_id.clone()),
