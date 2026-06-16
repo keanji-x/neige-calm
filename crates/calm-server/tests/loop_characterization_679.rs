@@ -842,6 +842,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
             agent_session_id: None,
             active_turn_id: None,
             terminal_run_id: None,
+            card_id: Some(worker_card.id.clone()),
             handle_state_json: None,
             liveness: LivenessTag::Unknown,
             liveness_probed_at_ms: None,

@@ -12,6 +12,7 @@ use calm_server::db::sqlite::{
     runtime_start_tx, runtime_supersede_tx, session_commit_exit_tx, session_insert_tx,
     session_mcp_token_set_tx, session_prepare_deferred_spec_tx,
 };
+use calm_server::ids::CardId;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{
@@ -230,6 +231,7 @@ fn worker_session(
         agent_session_id: None,
         active_turn_id: None,
         terminal_run_id: None,
+        card_id: Some(CardId(format!("card-{id}"))),
         handle_state_json: Some(json!({"mode": "harness"})),
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,

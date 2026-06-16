@@ -2323,6 +2323,7 @@ mod tests {
                 agent_session_id: Some("agent-card-big".into()),
                 active_turn_id: None,
                 terminal_run_id: None,
+                card_id: Some(calm_types::ids::CardId(card_id.clone())),
                 handle_state_json: None,
                 liveness: LivenessTag::Alive,
                 liveness_probed_at_ms: None,

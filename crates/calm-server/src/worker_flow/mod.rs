@@ -503,6 +503,7 @@ fn session_from_runtime(runtime: &CardRuntime, card: &Card) -> WorkerSession {
         agent_session_id: runtime.session_id.clone(),
         active_turn_id: runtime.active_turn_id.clone(),
         terminal_run_id: runtime.terminal_run_id.clone(),
+        card_id: Some(card.id.clone()),
         handle_state_json: runtime.handle_state_json.clone(),
         liveness: liveness_from_runtime(runtime.status.clone()),
         liveness_probed_at_ms: None,

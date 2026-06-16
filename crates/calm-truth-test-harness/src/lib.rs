@@ -22,7 +22,7 @@ use calm_truth::decision_gate::{
 };
 use calm_truth::error::{Result as TruthResult, TruthError};
 use calm_truth::event::{Event, EventBus, EventScope};
-use calm_truth::ids::ActorId;
+use calm_truth::ids::{ActorId, CardId};
 use calm_truth::model::{NewCard, NewCove, NewWave, RequestTheme, new_id, now_ms};
 use calm_truth::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepo};
 use calm_truth::session_repo::SessionRepo;
@@ -80,6 +80,7 @@ fn session(id: &str, wave_id: WaveId) -> WorkerSession {
         agent_session_id: None,
         active_turn_id: None,
         terminal_run_id: None,
+        card_id: Some(CardId(format!("card-{id}"))),
         handle_state_json: None,
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,
@@ -616,6 +617,7 @@ fn provider_session(kind: &str, mode: SessionMode) -> WorkerSession {
         agent_session_id: None,
         active_turn_id: None,
         terminal_run_id: Some("term-provider-conformance".into()),
+        card_id: Some(CardId("card-provider-conformance".into())),
         handle_state_json: None,
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,

@@ -161,6 +161,19 @@ pub async fn backfill_worker_sessions_from_runtimes_on_boot(
     }
 }
 
+pub async fn assert_worker_sessions_card_id_complete_on_boot(
+    state: &state::AppState,
+) -> crate::error::Result<()> {
+    let pool = state.sqlite_pool().ok_or_else(|| {
+        crate::error::CalmError::Internal(
+            "worker_sessions.card_id boot assertion requires sqlite-backed Repo".into(),
+        )
+    })?;
+    calm_truth::db::sqlite::assert_worker_sessions_card_id_complete(&pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn assert_worker_sessions_parity_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
@@ -614,6 +627,9 @@ mod boot_order_tests {
         let backfill = main_rs
             .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await?")
             .expect("main boot calls worker_sessions backfill");
+        let card_id_assert = main_rs
+            .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
+            .expect("main boot asserts worker_sessions.card_id completeness");
         let boot_harnesses = main_rs
             .find("boot_harnesses(&state).await")
             .expect("main boot starts daemon and gates spec harness recovery");
@@ -627,6 +643,8 @@ mod boot_order_tests {
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
         assert!(backfill < boot_harnesses);
+        assert!(backfill < card_id_assert);
+        assert!(card_id_assert < boot_harnesses);
         assert!(boot_harnesses < reconcile);
         assert!(reconcile < runtimes);
         assert!(runtimes < recover);
@@ -638,6 +656,9 @@ mod boot_order_tests {
         let backfill = main_rs
             .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await?")
             .expect("main boot calls worker_sessions backfill");
+        let card_id_assert = main_rs
+            .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
+            .expect("main boot asserts worker_sessions.card_id completeness");
         let boot_harnesses = main_rs
             .find("boot_harnesses(&state).await")
             .expect("main boot starts daemon and gates spec harness recovery");
@@ -651,6 +672,8 @@ mod boot_order_tests {
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
         assert!(backfill < boot_harnesses);
+        assert!(backfill < card_id_assert);
+        assert!(card_id_assert < boot_harnesses);
         assert!(backfill < reconcile);
         assert!(reconcile < runtimes);
         assert!(backfill < recover);
@@ -662,6 +685,10 @@ mod boot_order_tests {
         assert!(
             main_rs.contains("backfill_worker_sessions_from_runtimes_on_boot(&state).await?"),
             "worker_sessions boot backfill must ?-propagate so serving never starts after a failed invariant backfill"
+        );
+        assert!(
+            main_rs.contains("assert_worker_sessions_card_id_complete_on_boot(&state).await?"),
+            "worker_sessions.card_id boot assertion must ?-propagate so serving never starts with active NULL card_id rows"
         );
     }
 

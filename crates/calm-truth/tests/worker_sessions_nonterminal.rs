@@ -4,7 +4,7 @@ use calm_truth::db::sqlite::{
 };
 use calm_truth::model::{NewCove, NewWave, RequestTheme};
 use calm_truth::session_repo::SessionRepo;
-use calm_types::ids::WaveId;
+use calm_types::ids::{CardId, WaveId};
 use calm_types::worker::{
     Liveness, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
     WorkerSessionId, WorkerSessionState,
@@ -51,6 +51,7 @@ fn session(state: WorkerSessionState, wave_id: WaveId, created_at_ms: i64) -> Wo
         agent_session_id: None,
         active_turn_id: None,
         terminal_run_id: None,
+        card_id: Some(CardId(format!("card-{}", state.as_db_str()))),
         handle_state_json: None,
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,
