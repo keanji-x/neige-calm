@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, runtime_get_by_id_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::CodexAdapter;
@@ -22,6 +22,17 @@ use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_types::worker::WorkerSessionId;
 use serde_json::json;
 use tokio::sync::Mutex;
+
+async fn runtime_by_id_tx_snapshot(
+    repo: &SqlxRepo,
+    runtime_id: &str,
+) -> Option<calm_server::runtime_repo::CardRuntime> {
+    let id = runtime_id.to_string();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_get_by_id_tx(&mut tx, &id).await.unwrap();
+    tx.commit().await.unwrap();
+    runtime
+}
 
 async fn boot() -> (Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -586,10 +597,8 @@ async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
 
     assert_eq!(dropped, 1);
     assert_eq!(registry.pending_count().await, 1);
-    let old_runtime = repo
-        .runtime_get_by_id(&r1)
+    let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
         .await
-        .unwrap()
         .expect("old runtime");
     assert_eq!(old_runtime.status, RunStatus::Superseded);
     let replacement_runtime = repo
@@ -719,10 +728,8 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
 
     assert_eq!(bound, None);
     assert_eq!(registry.pending_count().await, 1);
-    let old_runtime = repo
-        .runtime_get_by_id(&r1)
+    let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
         .await
-        .unwrap()
         .expect("old runtime");
     assert_eq!(old_runtime.thread_id, None);
     let new_runtime = repo
@@ -805,10 +812,8 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
 
     assert_eq!(r1_bound, None);
     assert_eq!(registry.pending_count().await, 1);
-    let old_runtime = repo
-        .runtime_get_by_id(&r1)
+    let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
         .await
-        .unwrap()
         .expect("old runtime");
     assert_eq!(old_runtime.status, RunStatus::Superseded);
     assert_eq!(old_runtime.thread_id, None);

@@ -1,3 +1,4 @@
+use crate::db::sqlite::worker_session_from_row;
 use crate::runtime_repo::{
     AgentProvider, CardId, CardRuntime, Result, RunStatus, RuntimeKind, RuntimeRepoError,
 };
@@ -22,6 +23,16 @@ pub(crate) const PROJECTABLE_RUNTIMES_FOR_CARDS_SQL: &str = r#"SELECT id, card_i
              updated_at_ms DESC, created_at_ms DESC, id DESC"#;
 
 const PROJECTABLE_RUNTIMES_FOR_CARDS_BINDINGS: &str = "{card_id_bindings}";
+
+pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.wave_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
+                  ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
+                  ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,
+                  ws.handle_state_json, ws.liveness, ws.liveness_probed_at_ms,
+                  ws.exit_code, ws.exit_interpretation, ws.spawn_op_id, ws.created_at_ms,
+                  ws.updated_at_ms, ws.completed_at_ms,
+                  c.id AS card_id
+           FROM worker_sessions ws
+           JOIN cards c ON c.session_id = ws.id"#;
 
 pub(crate) fn projectable_runtimes_for_cards_query<'a>(
     card_ids: &'a [CardId],
@@ -84,7 +95,6 @@ pub(crate) fn card_runtime_from_row(row: &SqliteRow) -> Result<CardRuntime> {
     })
 }
 
-#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
 pub(crate) fn card_runtime_from_session(
     ws: &WorkerSession,
     card_id: String,
@@ -110,7 +120,14 @@ pub(crate) fn card_runtime_from_session(
     })
 }
 
-#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
+pub(crate) fn card_runtime_from_ws_join_row(row: &SqliteRow) -> Result<CardRuntime> {
+    let ws = worker_session_from_row(row).map_err(|err| RuntimeRepoError::Message {
+        message: err.to_string(),
+    })?;
+    let card_id: String = row.try_get("card_id")?;
+    card_runtime_from_session(&ws, card_id)
+}
+
 fn runtime_kind_from_session_identity(
     provider: WorkerProviderKind,
     contract: WorkerContract,
@@ -128,7 +145,6 @@ fn runtime_kind_from_session_identity(
     }
 }
 
-#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
 fn agent_provider_from_session_provider(provider: WorkerProviderKind) -> Option<AgentProvider> {
     match provider {
         WorkerProviderKind::Terminal => None,
@@ -137,7 +153,6 @@ fn agent_provider_from_session_provider(provider: WorkerProviderKind) -> Option<
     }
 }
 
-#[allow(dead_code)] // first consumer: 9a-i; remove this allow then
 fn run_status_from_worker_session_state(state: WorkerSessionState) -> RunStatus {
     match state {
         WorkerSessionState::Starting => RunStatus::Starting,

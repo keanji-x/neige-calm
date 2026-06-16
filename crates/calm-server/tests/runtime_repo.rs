@@ -104,6 +104,17 @@ async fn runtime_row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64
     .expect("runtime row snapshot")
 }
 
+async fn runtime_by_id_tx_snapshot(
+    repo: &SqlxRepo,
+    runtime_id: &str,
+) -> Option<calm_server::runtime_repo::CardRuntime> {
+    let id = runtime_id.to_string();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_get_by_id_tx(&mut tx, &id).await.unwrap();
+    tx.commit().await.unwrap();
+    runtime
+}
+
 async fn mint_terminal_session(
     repo: &SqlxRepo,
     spawn_op_id: Option<&str>,
@@ -1011,10 +1022,8 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    let old_after = repo
-        .runtime_get_by_id(&old.id)
+    let old_after = runtime_by_id_tx_snapshot(&repo, &old.id)
         .await
-        .unwrap()
         .expect("old runtime");
     assert_eq!(old_after.status, RunStatus::Superseded);
     assert_eq!(old_after.thread_id, None);
@@ -1083,10 +1092,8 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    let replaced_old_after = repo
-        .runtime_get_by_id(&replaced_old.id)
+    let replaced_old_after = runtime_by_id_tx_snapshot(&repo, &replaced_old.id)
         .await
-        .unwrap()
         .expect("replaced old runtime");
     assert_eq!(replaced_old_after.status, RunStatus::Superseded);
     assert_eq!(replaced_old_after.thread_id, None);
@@ -1809,10 +1816,8 @@ async fn runtime_supersede_tx_atomic() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    let old = repo
-        .runtime_get_by_id(&first.id)
+    let old = runtime_by_id_tx_snapshot(&repo, &first.id)
         .await
-        .unwrap()
         .expect("old runtime");
     assert_eq!(old.status, RunStatus::Superseded);
     assert_eq!(second.status, RunStatus::Running);
@@ -2163,10 +2168,8 @@ async fn runtime_set_handle_state_tx_noops_for_superseded_runtime() {
         .expect("superseded handle-state write should no-op");
     tx.commit().await.unwrap();
 
-    let stale_runtime = repo
-        .runtime_get_by_id(&runtime.id)
+    let stale_runtime = runtime_by_id_tx_snapshot(&repo, &runtime.id)
         .await
-        .unwrap()
         .expect("superseded runtime");
     assert_eq!(stale_runtime.status, RunStatus::Superseded);
     assert_eq!(stale_runtime.handle_state_json, Some(original.clone()));
@@ -2407,10 +2410,8 @@ async fn runtime_shared_spec_reset_supersedes_active_runtime() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    let old = repo
-        .runtime_get_by_id(&first.id)
+    let old = runtime_by_id_tx_snapshot(&repo, &first.id)
         .await
-        .unwrap()
         .expect("old runtime");
     assert_eq!(old.status, RunStatus::Superseded);
     assert_eq!(old.thread_id.as_deref(), Some("T1"));

@@ -6,8 +6,8 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, runtime_start_tx,
-    session_mcp_token_set_tx,
+    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, runtime_get_by_id_tx,
+    runtime_start_tx, session_mcp_token_set_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -764,11 +764,12 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     assert_eq!(active.status, RunStatus::Idle);
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
 
-    let old = repo
-        .runtime_get_by_id(&old_runtime_id)
+    let mut tx = repo.pool().begin().await.unwrap();
+    let old = runtime_get_by_id_tx(&mut tx, &old_runtime_id)
         .await
         .unwrap()
         .expect("old runtime");
+    tx.commit().await.unwrap();
     assert_eq!(old.status, RunStatus::Superseded);
     assert_eq!(old.thread_id.as_deref(), Some(old_thread_id.as_str()));
     assert!(
@@ -1104,6 +1105,15 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         .execute(repo.pool())
         .await
         .unwrap();
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET thread_id = NULL
+            WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?1)"#,
+    )
+    .bind(&card_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
     sqlx::query(
         r#"UPDATE operations
               SET phase = 'app_server_interact',

@@ -504,6 +504,16 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
     .execute(repo.pool())
     .await
     .unwrap();
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = 'running',
+                  completed_at_ms = NULL
+            WHERE id = ?1"#,
+    )
+    .bind(&runtime_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
 
     state.operation_runtime.drive().await.unwrap();
     assert!(matches!(
@@ -586,6 +596,20 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     sqlx::query(
         r#"UPDATE runtimes
               SET status = 'running',
+                  thread_id = ?1,
+                  active_turn_id = ?2,
+                  completed_at_ms = NULL
+            WHERE id = ?3"#,
+    )
+    .bind(thread_id)
+    .bind(turn_id)
+    .bind(&runtime_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET state = 'running',
                   thread_id = ?1,
                   active_turn_id = ?2,
                   completed_at_ms = NULL

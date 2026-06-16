@@ -54,8 +54,9 @@ use crate::runtime_repo::{
     Tx as RuntimeTx,
 };
 use crate::runtime_row::{
-    card_runtime_from_row, projectable_runtimes_for_cards_from_rows,
-    projectable_runtimes_for_cards_query, run_status_from_db,
+    WS_BACKED_CARD_RUNTIME_SELECT, card_runtime_from_row, card_runtime_from_ws_join_row,
+    projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
+    run_status_from_db,
 };
 use crate::session_repo::{CommitExitOutcome, SessionRepo, Tx as SessionTx};
 use crate::validation::{
@@ -2709,7 +2710,7 @@ where
     })
 }
 
-fn worker_session_from_row(row: &SqliteRow) -> Result<WorkerSession> {
+pub(crate) fn worker_session_from_row(row: &SqliteRow) -> Result<WorkerSession> {
     let handle_state_json = row
         .try_get::<Option<String>, _>("handle_state_json")?
         .map(|json| serde_json::from_str(&json))
@@ -3557,53 +3558,47 @@ async fn runtime_current_status_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
 ) -> RuntimeResult<RunStatus> {
-    let row = sqlx::query("SELECT status FROM runtimes WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await?;
+    let row = sqlx::query(
+        r#"SELECT state FROM worker_sessions ws
+           WHERE ws.id = ?1
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
     let Some(row) = row else {
         return Err(runtime_message(format!("runtime {id} not found")));
     };
-    run_status_from_db(row.try_get::<String, _>("status")?.as_str())
+    run_status_from_db(row.try_get::<String, _>("state")?.as_str())
 }
 
 async fn runtime_get_by_id_from_pool(
     pool: &SqlitePool,
     id: &RuntimeId,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE id = ?1"#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    let sql = format!(
+        r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+           WHERE ws.id = ?1
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)"#
+    );
+    let row = sqlx::query(&sql).bind(id).fetch_optional(pool).await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 async fn runtime_get_active_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
 ) -> RuntimeResult<Option<CardRuntime>> {
-    let row = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE card_id = ?1
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+    let sql = format!(
+        r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+           WHERE c.id = ?1
+             AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
+           ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
-    )
-    .bind(card_id)
-    .fetch_optional(pool)
-    .await?;
-    row.as_ref().map(card_runtime_from_row).transpose()
+    );
+    let row = sqlx::query(&sql).bind(card_id).fetch_optional(pool).await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
 async fn runtime_get_projectable_for_card_from_pool(
@@ -3719,20 +3714,21 @@ async fn runtimes_active_for_kind_from_pool(
     pool: &SqlitePool,
     kind: RuntimeKind,
 ) -> RuntimeResult<Vec<CardRuntime>> {
-    let rows = sqlx::query(
-        r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE kind = ?1
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY created_at_ms ASC, card_id ASC"#,
-    )
-    .bind(runtime_kind_to_db(&kind))
-    .fetch_all(pool)
-    .await?;
-    rows.iter().map(card_runtime_from_row).collect()
+    let (provider, _mode, contract) = derive_session_identity(&kind);
+    let sql = format!(
+        r#"{WS_BACKED_CARD_RUNTIME_SELECT}
+           WHERE ws.provider = ?1
+             AND ws.contract = ?2
+             AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
+             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
+           ORDER BY ws.created_at_ms ASC, c.id ASC"#
+    );
+    let rows = sqlx::query(&sql)
+        .bind(provider.as_db_str())
+        .bind(contract.as_db_str())
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(card_runtime_from_ws_join_row).collect()
 }
 
 pub async fn runtime_get_by_id_tx(
@@ -4171,7 +4167,9 @@ pub async fn runtime_status_flip_tx(
     }
 
     let current = runtime_current_status_tx(tx, id).await?;
-    ensure_runtime_status_transition(id, &current, &terminal_status)?;
+    if current != terminal_status {
+        ensure_runtime_status_transition(id, &current, &terminal_status)?;
+    }
 
     let lockstep_ms: Option<i64> =
         sqlx::query_scalar("SELECT updated_at_ms FROM worker_sessions WHERE id = ?1")
@@ -6842,6 +6840,283 @@ mod tests {
                 actual.2.as_db_str(),
                 "planner" | "executor" | "validator"
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_read_flip_tests {
+    use super::*;
+    use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme, new_id};
+    use crate::runtime_repo::RuntimeRepoError;
+    use serde_json::json;
+
+    #[derive(Clone)]
+    struct RuntimeReadCase {
+        label: &'static str,
+        card_kind: &'static str,
+        kind: RuntimeKind,
+        agent_provider: Option<AgentProvider>,
+        status: RunStatus,
+    }
+
+    fn runtime_read_cases() -> Vec<RuntimeReadCase> {
+        vec![
+            RuntimeReadCase {
+                label: "terminal",
+                card_kind: "terminal",
+                kind: RuntimeKind::Terminal,
+                agent_provider: None,
+                status: RunStatus::Starting,
+            },
+            RuntimeReadCase {
+                label: "codex-card",
+                card_kind: "codex",
+                kind: RuntimeKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Running,
+            },
+            RuntimeReadCase {
+                label: "claude-card",
+                card_kind: "claude",
+                kind: RuntimeKind::ClaudeCard,
+                agent_provider: Some(AgentProvider::Claude),
+                status: RunStatus::Idle,
+            },
+            RuntimeReadCase {
+                label: "shared-spec",
+                card_kind: "codex",
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::TurnPending,
+            },
+        ]
+    }
+
+    async fn fresh_repo() -> SqlxRepo {
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo")
+    }
+
+    async fn create_card_in_tx(
+        repo: &SqlxRepo,
+        tx: &mut RuntimeTx<'_>,
+        label: &str,
+        card_kind: &str,
+    ) -> String {
+        let cove = cove_create_tx(
+            tx,
+            NewCove {
+                name: format!("read flip {label}"),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .expect("create cove");
+        let wave = wave_create_tx(
+            tx,
+            NewWave {
+                cove_id: cove.id,
+                title: format!("read flip {label}"),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .expect("create wave");
+        let card_id = format!("card-read-flip-{label}");
+        let card = card_create_with_id_tx(
+            tx,
+            card_id,
+            NewCard {
+                wave_id: wave.id,
+                kind: card_kind.into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "case": label}),
+            },
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+        )
+        .await
+        .expect("create card");
+        card.id.to_string()
+    }
+
+    async fn seed_runtime(repo: &SqlxRepo, case: RuntimeReadCase, now_ms: i64) -> CardRuntime {
+        let mut tx = repo.pool().begin().await.expect("begin seed tx");
+        let card_id = create_card_in_tx(repo, &mut tx, case.label, case.card_kind).await;
+        let runtime = runtime_start_tx(
+            &mut tx,
+            RuntimeInit {
+                id: format!("rt-read-flip-{}", case.label),
+                card_id,
+                kind: case.kind,
+                agent_provider: case.agent_provider,
+                status: case.status,
+                terminal_run_id: None,
+                thread_id: Some(format!("thread-{}", case.label)),
+                session_id: Some(format!("agent-session-{}", case.label)),
+                active_turn_id: Some(format!("turn-{}", case.label)),
+                handle_state_json: Some(json!({"case": case.label})),
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_op_id: None,
+                now_ms,
+            },
+        )
+        .await
+        .expect("start runtime");
+        tx.commit().await.expect("commit seed tx");
+        runtime
+    }
+
+    fn assert_ws_backed_projection(expected: &CardRuntime, actual: &CardRuntime) {
+        assert_eq!(actual, expected);
+        assert!(actual.terminal_ref.is_none());
+        assert!(actual.lease_owner.is_none());
+        assert!(actual.lease_until_ms.is_none());
+        if matches!(&expected.kind, RuntimeKind::Terminal) {
+            assert!(actual.agent_provider.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_current_status_tx_matches_runtimes_backed_start_for_all_kinds() {
+        let repo = fresh_repo().await;
+        for (index, case) in runtime_read_cases().into_iter().enumerate() {
+            let runtime = seed_runtime(&repo, case, 1_000 + index as i64).await;
+            let mut tx = repo.pool().begin().await.expect("begin read tx");
+            let actual = runtime_current_status_tx(&mut tx, &runtime.id)
+                .await
+                .expect("status from worker_sessions");
+            tx.commit().await.expect("commit read tx");
+            assert_eq!(actual, runtime.status, "runtime {}", runtime.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_get_by_id_from_pool_matches_runtimes_backed_for_all_kinds() {
+        let repo = fresh_repo().await;
+        for (index, case) in runtime_read_cases().into_iter().enumerate() {
+            let runtime = seed_runtime(&repo, case, 2_000 + index as i64).await;
+            let mut tx = repo.pool().begin().await.expect("begin reference tx");
+            let expected = runtime_get_by_id_tx(&mut tx, &runtime.id)
+                .await
+                .expect("reference by-id read")
+                .expect("runtime row");
+            tx.commit().await.expect("commit reference tx");
+
+            let actual = runtime_get_by_id_from_pool(repo.pool(), &runtime.id)
+                .await
+                .expect("worker-session by-id read")
+                .expect("runtime from worker_sessions");
+            assert_ws_backed_projection(&expected, &actual);
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_get_active_for_card_from_pool_matches_runtimes_backed_for_all_kinds() {
+        let repo = fresh_repo().await;
+        for (index, case) in runtime_read_cases().into_iter().enumerate() {
+            let runtime = seed_runtime(&repo, case, 3_000 + index as i64).await;
+            let mut tx = repo.pool().begin().await.expect("begin reference tx");
+            let expected = runtime_get_active_for_card_tx(&mut tx, &runtime.card_id)
+                .await
+                .expect("reference active-for-card read")
+                .expect("active runtime");
+            tx.commit().await.expect("commit reference tx");
+
+            let actual = runtime_get_active_for_card_from_pool(repo.pool(), &runtime.card_id)
+                .await
+                .expect("worker-session active-for-card read")
+                .expect("active runtime from worker_sessions");
+            assert_ws_backed_projection(&expected, &actual);
+        }
+    }
+
+    #[tokio::test]
+    async fn runtimes_active_for_kind_from_pool_matches_runtimes_backed_for_all_kinds() {
+        let repo = fresh_repo().await;
+        let mut expected = Vec::new();
+        for (index, case) in runtime_read_cases().into_iter().enumerate() {
+            expected.push(seed_runtime(&repo, case, 4_000 + index as i64).await);
+        }
+
+        for runtime in expected {
+            let actual = runtimes_active_for_kind_from_pool(repo.pool(), runtime.kind.clone())
+                .await
+                .expect("worker-session active-for-kind read");
+            assert_eq!(
+                actual.len(),
+                1,
+                "kind {:?} should not collapse with other contracts/providers",
+                runtime.kind
+            );
+            assert_ws_backed_projection(&runtime, &actual[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_session_backed_reads_skip_deferred_spec_placeholder_without_runtime_row() {
+        let repo = fresh_repo().await;
+        let placeholder_id = format!("rt-read-flip-placeholder-{}", new_id());
+        let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
+        let card_id = create_card_in_tx(&repo, &mut tx, "placeholder", "codex").await;
+        session_prepare_deferred_spec_tx(
+            &mut tx,
+            &RuntimeInit {
+                id: placeholder_id.clone(),
+                card_id: card_id.clone(),
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_op_id: None,
+                now_ms: 5_000,
+            },
+        )
+        .await
+        .expect("prepare deferred placeholder");
+        tx.commit().await.expect("commit placeholder tx");
+
+        let by_id = runtime_get_by_id_from_pool(repo.pool(), &placeholder_id)
+            .await
+            .expect("by-id read");
+        assert_eq!(by_id, None);
+
+        let active_for_card = runtime_get_active_for_card_from_pool(repo.pool(), &card_id)
+            .await
+            .expect("active-for-card read");
+        assert_eq!(active_for_card, None);
+
+        let active_for_kind =
+            runtimes_active_for_kind_from_pool(repo.pool(), RuntimeKind::SharedSpec)
+                .await
+                .expect("active-for-kind read");
+        assert_eq!(active_for_kind, Vec::<CardRuntime>::new());
+
+        let mut tx = repo.pool().begin().await.expect("begin status tx");
+        let err = runtime_current_status_tx(&mut tx, &placeholder_id)
+            .await
+            .expect_err("placeholder has no runtime row");
+        tx.commit().await.expect("commit status tx");
+        match err {
+            RuntimeRepoError::Message { message } => {
+                assert_eq!(message, format!("runtime {placeholder_id} not found"));
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 }

@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, runtime_get_by_id_tx, runtime_start_tx};
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -48,6 +48,17 @@ struct Boot {
     repo: Arc<SqlxRepo>,
     wave_id: String,
     _tmp: TempDir,
+}
+
+async fn runtime_by_id_tx_snapshot(
+    repo: &SqlxRepo,
+    runtime_id: &str,
+) -> Option<calm_server::runtime_repo::CardRuntime> {
+    let id = runtime_id.to_string();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = runtime_get_by_id_tx(&mut tx, &id).await.unwrap();
+    tx.commit().await.unwrap();
+    runtime
 }
 
 struct FailingSpawnSpecHarnessStartAdapter {
@@ -1678,10 +1689,8 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
             .is_none()
     );
     assert_eq!(
-        boot.repo
-            .runtime_get_by_id(&old_runtime_id)
+        runtime_by_id_tx_snapshot(boot.repo.as_ref(), &old_runtime_id)
             .await
-            .unwrap()
             .unwrap()
             .status,
         RunStatus::Superseded
@@ -1767,10 +1776,8 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
     assert_eq!(body["card_id"], json!(card.id.as_str()));
     assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
     assert_eq!(
-        boot.repo
-            .runtime_get_by_id(&old_runtime_id)
+        runtime_by_id_tx_snapshot(boot.repo.as_ref(), &old_runtime_id)
             .await
-            .unwrap()
             .unwrap()
             .status,
         RunStatus::Superseded
