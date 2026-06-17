@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -25,7 +25,7 @@ use tower::ServiceExt;
 
 async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),

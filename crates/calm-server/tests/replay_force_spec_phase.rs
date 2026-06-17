@@ -149,7 +149,7 @@ async fn probe_replay_boot_wave_create_leaves_spec_card_inert() {
         .unwrap();
     assert!(
         runtime.is_none(),
-        "stub daemon: spec-harness-start must have failed before runtime_start_tx; got {runtime:?}"
+        "stub daemon: spec-harness-start must have failed before session_start_runtime_tx; got {runtime:?}"
     );
 
     let (status, body) = get(

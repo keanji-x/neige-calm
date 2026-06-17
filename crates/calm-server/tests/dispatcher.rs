@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, EventScope, SubscribeFilter, SubscribeScope};
@@ -140,7 +140,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
         let card_id = spec_card.id.to_string();
         move |tx| {
             Box::pin(async move {
-                let runtime = runtime_start_tx(
+                let runtime = session_start_runtime_tx(
                     tx,
                     RuntimeInit {
                         id: new_id(),

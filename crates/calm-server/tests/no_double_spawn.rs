@@ -956,22 +956,10 @@ async fn assert_active_codex_runtime_thread(boot: &Boot, card_id: &str, expected
 
 async fn force_codex_runtime_thread_running(boot: &Boot, card_id: &str, thread_id: &str) {
     sqlx::query(
-        r#"UPDATE runtimes
-           SET status = 'running',
-               agent_provider = 'codex',
-               thread_id = ?1
-           WHERE card_id = ?2"#,
-    )
-    .bind(thread_id)
-    .bind(card_id)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
-    sqlx::query(
         r#"UPDATE worker_sessions
            SET state = 'running',
                thread_id = ?1
-           WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?2)"#,
+           WHERE card_id = ?2"#,
     )
     .bind(thread_id)
     .bind(card_id)

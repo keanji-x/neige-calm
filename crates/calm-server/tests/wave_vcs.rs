@@ -4,8 +4,8 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, card_update_tx, runtime_mark_superseded_tx,
-    runtime_set_status_tx, runtime_start_tx, terminal_create_tx, wave_update_tx,
+    SqlxRepo, card_create_with_id_tx, card_update_tx, session_mark_superseded_runtime_tx,
+    session_set_status_tx, session_start_runtime_tx, terminal_create_tx, wave_update_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope, WaveUpdatedPayload};
 use calm_server::harness::HarnessSnapshot;
@@ -326,7 +326,7 @@ async fn start_codex_runtime_with_event(
                     },
                 )
                 .await?;
-                let runtime = runtime_start_tx(
+                let runtime = session_start_runtime_tx(
                     tx,
                     RuntimeInit {
                         id: runtime_id,
@@ -392,7 +392,7 @@ async fn set_runtime_status_with_event(
             let old_status = old_status.clone();
             let new_status = new_status.clone();
             Box::pin(async move {
-                runtime_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
+                session_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
                 Ok(Event::RuntimeStatusChanged {
                     runtime_id,
                     card_id: card_id.to_string(),
@@ -3019,7 +3019,7 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
     .await;
 
     let mut tx = repo.pool().begin().await.expect("begin runtime");
-    let runtime = runtime_start_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),
@@ -3040,7 +3040,7 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
     )
     .await
     .expect("runtime start");
-    runtime_mark_superseded_tx(&mut tx, &runtime.id)
+    session_mark_superseded_runtime_tx(&mut tx, &runtime.id)
         .await
         .expect("mark superseded");
     tx.commit().await.expect("commit runtime");
@@ -3115,7 +3115,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
         .await
         .expect("terminal create");
         let terminal_id = terminal.id.clone();
-        let runtime = runtime_start_tx(
+        let runtime = session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: new_id(),

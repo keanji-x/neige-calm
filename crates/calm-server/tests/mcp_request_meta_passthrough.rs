@@ -13,8 +13,8 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, runtime_bind_attribution_tx,
-    runtime_get_active_for_card_tx, runtime_start_tx,
+    SqlxRepo, card_with_codex_create_tx, runtime_get_active_for_card_tx,
+    session_bind_attribution_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::auth;
@@ -159,7 +159,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
         .await
         .unwrap()
     {
-        runtime_bind_attribution_tx(
+        session_bind_attribution_tx(
             &mut tx,
             &runtime.id,
             ThreadAttribution {
@@ -173,7 +173,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
         .await
         .unwrap();
     } else {
-        runtime_start_tx(
+        session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: calm_server::model::new_id(),

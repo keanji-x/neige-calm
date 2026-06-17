@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
-    runtime_set_status_tx, runtime_start_tx, terminal_get_by_card_tx,
+    append_decision_event_in_tx, runtime_get_active_for_card_tx, session_complete_tx,
+    session_set_status_tx, session_start_runtime_tx, terminal_get_by_card_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -155,7 +155,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                     "kill or wait for child exit before restart".into(),
                 ));
             }
-            runtime_complete_tx(tx, &active.id, RunStatus::Exited).await?;
+            session_complete_tx(tx, &active.id, RunStatus::Exited).await?;
         }
 
         let command_line = format!(
@@ -166,7 +166,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         );
         let env = build_claude_env(self.repo.as_ref(), &self.codex, &card_id).await?;
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
-        runtime_start_tx(
+        session_start_runtime_tx(
             tx,
             RuntimeInit {
                 id: runtime_id.clone(),
@@ -353,7 +353,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                                         })?;
                                 let old_status = runtime.status.clone();
                                 let runtime_id = runtime.id.clone();
-                                runtime_set_status_tx(tx, &runtime.id, RunStatus::Running)
+                                session_set_status_tx(tx, &runtime.id, RunStatus::Running)
                                     .await?;
                                 Ok((
                                     (),

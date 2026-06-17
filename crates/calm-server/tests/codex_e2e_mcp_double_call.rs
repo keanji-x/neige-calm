@@ -66,7 +66,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::{InputItem, Notification};
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
@@ -164,7 +164,7 @@ async fn seed_spec_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (St
 
 async fn seed_shared_spec_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),

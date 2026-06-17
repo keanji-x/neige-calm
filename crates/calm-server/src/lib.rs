@@ -43,9 +43,6 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT_ENV: &str =
-    "NEIGE_ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT";
-
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
 /// daemon binaries at boot. If the supervisor does not know a supposedly
@@ -113,23 +110,6 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
     reconcile_supervisor_on_boot(state).await;
 }
 
-pub async fn backfill_worker_sessions_from_runtimes_on_boot(
-    state: &state::AppState,
-) -> crate::error::Result<()> {
-    match state.repo.backfill_worker_sessions_from_runtimes().await {
-        Ok(count) if count > 0 => {
-            tracing::info!(
-                target: "worker_sessions::backfill",
-                count,
-                "backfilled worker_sessions mirrors from runtimes"
-            );
-            Ok(())
-        }
-        Ok(_) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
-}
-
 pub async fn assert_worker_sessions_card_id_complete_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
@@ -141,55 +121,6 @@ pub async fn assert_worker_sessions_card_id_complete_on_boot(
     calm_truth::db::sqlite::assert_worker_sessions_card_id_complete(&pool)
         .await
         .map_err(Into::into)
-}
-
-pub async fn assert_worker_sessions_parity_on_boot(
-    state: &state::AppState,
-) -> crate::error::Result<()> {
-    if !worker_sessions_parity_assertion_enabled_on_boot() {
-        return Ok(());
-    }
-
-    let pool = state.sqlite_pool().ok_or_else(|| {
-        crate::error::CalmError::Internal(
-            "worker_sessions parity boot assertion requires sqlite-backed Repo".into(),
-        )
-    })?;
-    let divergences = worker_sessions_parity_sweep::diff(&pool).await?;
-    if divergences.is_empty() {
-        tracing::info!(
-            target: "worker_sessions::parity",
-            "worker_sessions parity OK on boot"
-        );
-        return Ok(());
-    }
-
-    let sample_ids = divergences
-        .iter()
-        .take(5)
-        .map(|divergence| divergence.runtime_id())
-        .collect::<Vec<_>>();
-    tracing::error!(
-        target: "worker_sessions::parity",
-        count = divergences.len(),
-        sample_runtime_ids = %sample_ids.join(","),
-        "worker_sessions parity assertion failed on boot"
-    );
-    Err(crate::error::CalmError::Internal(format!(
-        "worker_sessions parity assertion failed on boot: {} divergence(s)",
-        divergences.len()
-    )))
-}
-
-fn worker_sessions_parity_assertion_enabled_on_boot() -> bool {
-    match std::env::var(ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT_ENV) {
-        Ok(value) => {
-            let value = value.trim();
-            !(value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false"))
-        }
-        Err(std::env::VarError::NotPresent) => false,
-        Err(std::env::VarError::NotUnicode(_)) => true,
-    }
 }
 
 pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error::Result<()> {
@@ -563,7 +494,6 @@ pub mod wave_lifecycle;
 pub mod wave_report;
 pub mod wave_report_doc;
 pub mod wave_vcs;
-pub mod worker_sessions_parity_sweep;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {
@@ -591,11 +521,8 @@ pub async fn recover_harnesses_after_daemon_boot(
 #[cfg(test)]
 mod boot_order_tests {
     #[test]
-    fn main_boot_order_backfill_harness_supervisor_runtimes_operations() {
+    fn main_boot_order_card_id_assert_harness_supervisor_operations() {
         let main_rs = include_str!("main.rs");
-        let backfill = main_rs
-            .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await?")
-            .expect("main boot calls worker_sessions backfill");
         let card_id_assert = main_rs
             .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
             .expect("main boot asserts worker_sessions.card_id completeness");
@@ -608,19 +535,14 @@ mod boot_order_tests {
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
-        assert!(backfill < boot_harnesses);
-        assert!(backfill < card_id_assert);
         assert!(card_id_assert < boot_harnesses);
         assert!(boot_harnesses < reconcile);
         assert!(reconcile < recover);
     }
 
     #[test]
-    fn boot_order_calls_backfill_before_harness_reconcile_and_operations() {
+    fn boot_order_calls_card_id_assert_before_harness_reconcile_and_operations() {
         let main_rs = include_str!("main.rs");
-        let backfill = main_rs
-            .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await?")
-            .expect("main boot calls worker_sessions backfill");
         let card_id_assert = main_rs
             .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
             .expect("main boot asserts worker_sessions.card_id completeness");
@@ -633,12 +555,10 @@ mod boot_order_tests {
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
-        assert!(backfill < boot_harnesses);
-        assert!(backfill < card_id_assert);
         assert!(card_id_assert < boot_harnesses);
-        assert!(backfill < reconcile);
+        assert!(card_id_assert < reconcile);
         assert!(reconcile < recover);
-        assert!(backfill < recover);
+        assert!(card_id_assert < recover);
     }
 
     #[test]
@@ -652,12 +572,8 @@ mod boot_order_tests {
     }
 
     #[test]
-    fn boot_backfill_failure_is_fatal() {
+    fn boot_card_id_assertion_failure_is_fatal() {
         let main_rs = include_str!("main.rs");
-        assert!(
-            main_rs.contains("backfill_worker_sessions_from_runtimes_on_boot(&state).await?"),
-            "worker_sessions boot backfill must ?-propagate so serving never starts after a failed invariant backfill"
-        );
         assert!(
             main_rs.contains("assert_worker_sessions_card_id_complete_on_boot(&state).await?"),
             "worker_sessions.card_id boot assertion must ?-propagate so serving never starts with active NULL card_id rows"
@@ -666,8 +582,7 @@ mod boot_order_tests {
 
     /// Issue #644 PR-B — the scheduler's boot sweep runs AFTER operation
     /// recovery (design §8: harness recovery → supervisor reconcile →
-    /// runtime orphans → operations → scheduler sweep). Worker-session
-    /// backfill now runs before those runtime mutations. Operation recovery is
+    /// runtime orphans → operations → scheduler sweep). Operation recovery is
     /// synchronous apply-then-drive, so the sweep's
     /// `dispatched` arm reads already-recovered operation rows instead
     /// of racing the recovery's re-drive.
@@ -684,18 +599,18 @@ mod boot_order_tests {
     }
 
     #[test]
-    fn boot_order_reaper_gate_after_backfill_and_operation_recovery() {
+    fn boot_order_reaper_gate_after_card_id_assert_and_operation_recovery() {
         let main_rs = include_str!("main.rs");
-        let backfill = main_rs
-            .find("backfill_worker_sessions_from_runtimes_on_boot(&state).await?")
-            .expect("main boot calls worker_sessions backfill");
+        let card_id_assert = main_rs
+            .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
+            .expect("main boot asserts worker_sessions.card_id completeness");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
         let reaper = main_rs
             .find("reaper_on_boot()")
             .expect("main boot opens reaper gate");
-        assert!(backfill < reaper);
+        assert!(card_id_assert < reaper);
         assert!(recover < reaper);
     }
 }

@@ -1,5 +1,5 @@
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::{
     resolve_active_thread_for_card, resolve_card_for_thread, resolve_claude_session_for_card,
@@ -80,7 +80,7 @@ async fn resolve_active_thread_for_card_prefers_runtime() {
     );
     init.thread_id = Some("thread-runtime".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(&mut tx, init).await.unwrap();
+    session_start_runtime_tx(&mut tx, init).await.unwrap();
     tx.commit().await.unwrap();
 
     let thread = resolve_active_thread_for_card(&repo, card.id.as_str())
@@ -111,7 +111,7 @@ async fn resolve_card_for_thread_prefers_runtime() {
     );
     init.thread_id = Some("thread-runtime".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(&mut tx, init).await.unwrap();
+    session_start_runtime_tx(&mut tx, init).await.unwrap();
     tx.commit().await.unwrap();
 
     let card_id = resolve_card_for_thread(&repo, AgentProvider::Codex, "thread-runtime")
@@ -146,7 +146,7 @@ async fn resolve_claude_session_for_card_prefers_runtime() {
     );
     init.session_id = Some("runtime-session".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(&mut tx, init).await.unwrap();
+    session_start_runtime_tx(&mut tx, init).await.unwrap();
     tx.commit().await.unwrap();
 
     let session = resolve_claude_session_for_card(&repo, card.id.as_str())

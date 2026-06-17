@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -128,7 +128,7 @@ async fn boot() -> Boot {
     snapshot.phase = HarnessPhaseTag::Resumed;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo_sqlx.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

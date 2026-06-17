@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_get_by_id_tx, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, runtime_get_by_id_tx, session_start_runtime_tx};
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -425,7 +425,7 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
         .await
         .expect("seed shared worker card");
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),
@@ -514,7 +514,7 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -566,7 +566,7 @@ async fn seed_inactive_spec_runtime(boot: &Boot, card: &Card) -> String {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -1112,7 +1112,7 @@ async fn seed_spec_runtime_row_with_status(
 ) -> String {
     let runtime_id = new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -1647,7 +1647,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-old".into());
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -1737,7 +1737,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
     );
     let old_runtime_id = new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -1844,7 +1844,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -1940,7 +1940,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
 }
 
 #[tokio::test]
-async fn reset_spec_card_spawn_failure_keeps_old_runtime_and_harness() {
+async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_teardown() {
     let _guard = ENV_LOCK.lock().await;
     let mut boot = boot_shared().await;
     install_failing_spec_start_runtime(&mut boot);
@@ -1968,7 +1968,7 @@ async fn reset_spec_card_spawn_failure_keeps_old_runtime_and_harness() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(old_thread_id.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -2035,13 +2035,13 @@ async fn reset_spec_card_spawn_failure_keeps_old_runtime_and_harness() {
         .expect("old runtime remains active");
     assert_eq!(active.id, old_runtime_id);
     assert!(
-        boot.state.harness.get(&old_runtime_id).is_some(),
-        "old harness remains registered after new spawn failure"
+        boot.state.harness.get(&old_runtime_id).is_none(),
+        "old harness is torn down before the replacement spawn can fail"
     );
 
     let new_rows: Vec<(String, String)> = sqlx::query_as(
-        r#"SELECT id, status
-             FROM runtimes
+        r#"SELECT id, state
+             FROM worker_sessions
             WHERE card_id = ?1
               AND id != ?2"#,
     )
@@ -2148,7 +2148,7 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-old".into());
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),

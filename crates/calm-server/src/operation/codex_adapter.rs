@@ -10,8 +10,8 @@ use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_update_tx, card_with_codex_create_tx,
-    runtime_bind_attribution_tx, runtime_get_active_for_card_tx, runtime_get_by_id_tx,
-    runtime_set_status_tx,
+    runtime_get_active_for_card_tx, runtime_get_by_id_tx, session_bind_attribution_tx,
+    session_set_status_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -1296,7 +1296,7 @@ async fn persist_shared_worker_runtime_fields(
                     ))
                 })?;
             let old_status = runtime.status.clone();
-            runtime_bind_attribution_tx(
+            session_bind_attribution_tx(
                 tx,
                 &runtime.id,
                 ThreadAttribution {
@@ -1309,7 +1309,7 @@ async fn persist_shared_worker_runtime_fields(
             )
             .await?;
             if old_status != RunStatus::Running {
-                runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                session_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
             }
             Ok(updated)
         })
@@ -1431,7 +1431,7 @@ async fn persist_prompt_thread(
                         ))
                     })?;
                 let terminal_id_for_projection = runtime.terminal_run_id.clone();
-                runtime_bind_attribution_tx(
+                session_bind_attribution_tx(
                     tx,
                     &runtime.id,
                     ThreadAttribution {
@@ -1446,7 +1446,7 @@ async fn persist_prompt_thread(
                 let old_status = runtime.status.clone();
                 let runtime_id = runtime.id.clone();
                 if runtime.status != RunStatus::Running {
-                    runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                    session_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
                 }
                 let card = project_codex_runtime_fields_for_response(
                     card_for_event,
@@ -1550,7 +1550,7 @@ async fn persist_pending_thread_status(
                 let old_status = runtime.status.clone();
                 let runtime_id = runtime.id.clone();
                 if old_status != RunStatus::TurnPending {
-                    runtime_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
+                    session_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
                 }
                 let card = project_codex_runtime_fields_for_response(
                     card_for_event,

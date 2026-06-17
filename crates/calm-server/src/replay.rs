@@ -420,7 +420,7 @@ pub struct ForceSpecPhaseOutcome {
 ///
 /// 1. card guard mirrors the production `/spec/*` routes (404 unknown
 ///    card / role, 403 non-spec-codex);
-/// 2. no active runtime row → insert one (`runtime_start_tx`, kind
+/// 2. no active worker session → insert one (`session_start_runtime_tx`, kind
 ///    `SharedSpec`) carrying an initial [`HarnessSnapshot`] and the
 ///    [`DEV_FORCED_THREAD_ID`] sentinel;
 /// 3. registry miss → [`crate::harness::spawn_recovered_harness`] — the
@@ -504,7 +504,7 @@ pub async fn force_spec_phase(
             let card_id_for_tx = card_id_string.clone();
             write_in_tx_typed(repo.as_ref(), move |tx| {
                 Box::pin(async move {
-                    crate::db::sqlite::runtime_start_tx(
+                    crate::db::sqlite::session_start_runtime_tx(
                         tx,
                         RuntimeInit {
                             id: runtime_id_for_tx,
@@ -563,7 +563,7 @@ pub async fn force_spec_phase(
             let runtime_id_for_tx = runtime.id.clone();
             write_in_tx_typed(repo.as_ref(), move |tx| {
                 Box::pin(async move {
-                    crate::db::sqlite::runtime_set_handle_state_tx(
+                    crate::db::sqlite::session_set_handle_state_tx(
                         tx,
                         &runtime_id_for_tx,
                         Some(snapshot_value),

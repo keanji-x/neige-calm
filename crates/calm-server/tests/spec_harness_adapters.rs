@@ -7,7 +7,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, runtime_get_by_id_tx,
-    runtime_start_tx, session_mcp_token_set_tx,
+    session_mcp_token_set_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -392,7 +392,7 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
     let thread_id = "thread-crash-replay".to_string();
     let turn_id = "turn-crash-replay".to_string();
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -566,7 +566,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
         .await
         .unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -679,6 +679,107 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
 }
 
 #[tokio::test]
+async fn force_new_thread_kills_old_pty_immediately() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+
+    let old_runtime_id = new_id();
+    let old_thread_id = "thread-force-reset-old-pty".to_string();
+    let old_snapshot = HarnessSnapshot::initial(0, vec![]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        RuntimeInit {
+            id: old_runtime_id.clone(),
+            card_id: card_id.clone(),
+            kind: RuntimeKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: RunStatus::Idle,
+            terminal_run_id: None,
+            thread_id: Some(old_thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&old_snapshot).unwrap()),
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let old_harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: old_runtime_id.clone(),
+        wave_id: WaveId::from(wave.id.to_string()),
+        card_id: CardId::from(card_id.clone()),
+        thread_id: Some(old_thread_id.clone()),
+        repo: repo_dyn,
+        events: state.events.clone(),
+        card_role_cache: role_cache.clone(),
+        wave_cove_cache: state.wave_cove_cache.clone(),
+        daemon: state.shared_codex_appserver.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot: old_snapshot,
+    });
+    state.harness.insert(old_runtime_id.clone(), old_harness);
+    assert!(state.harness.get(&old_runtime_id).is_some());
+
+    state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: Some("adapter goal".into()),
+        reset_harness_items: false,
+        force_new_thread: true,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+
+    match wait_op(&state, &op_id).await {
+        OperationOutcome::Failed {
+            from_phase,
+            last_error,
+            ..
+        } => {
+            assert_eq!(from_phase, PhaseTag::AppServerInteract);
+            assert!(
+                last_error.contains("forced thread/start failure"),
+                "unexpected error: {last_error}"
+            );
+        }
+        other => panic!("expected forced thread/start failure, got {other:?}"),
+    }
+    assert_eq!(
+        state.shared_codex_appserver.turn_start_count_for_test(),
+        0,
+        "replacement harness must not spawn in this failure pin"
+    );
+    assert!(
+        state.harness.get(&old_runtime_id).is_none(),
+        "force_new_thread must remove the old PTY handle before replacement spawn"
+    );
+}
+
+#[tokio::test]
 async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
@@ -689,7 +790,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     let old_thread_id = "thread-existing-spec-runtime".to_string();
     let old_snapshot = HarnessSnapshot::initial(0, vec![]);
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -779,9 +880,9 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
 
     let active_count: (i64,) = sqlx::query_as(
         r#"SELECT COUNT(*)
-             FROM runtimes
+             FROM worker_sessions
             WHERE card_id = ?1
-              AND status NOT IN ('failed', 'exited', 'superseded')"#,
+              AND state NOT IN ('failed', 'exited', 'superseded')"#,
     )
     .bind(&card_id)
     .fetch_one(repo.pool())
@@ -1167,15 +1268,10 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         .expect("operation output data")
         .remove("codex_thread_id");
 
-    sqlx::query("UPDATE runtimes SET thread_id = NULL WHERE card_id = ?1")
-        .bind(&card_id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
     sqlx::query(
         r#"UPDATE worker_sessions
               SET thread_id = NULL
-            WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?1)"#,
+            WHERE card_id = ?1"#,
     )
     .bind(&card_id)
     .execute(repo.pool())

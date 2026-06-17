@@ -495,8 +495,8 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
     .await
     .unwrap();
     sqlx::query(
-        r#"UPDATE runtimes
-              SET status = 'running',
+        r#"UPDATE worker_sessions
+              SET state = 'running',
                   completed_at_ms = NULL
             WHERE id = ?1"#,
     )
@@ -594,8 +594,8 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let thread_id = "thread-crash-replay-worker";
     let turn_id = "turn-crash-replay-worker";
     sqlx::query(
-        r#"UPDATE runtimes
-              SET status = 'running',
+        r#"UPDATE worker_sessions
+              SET state = 'running',
                   thread_id = ?1,
                   active_turn_id = ?2,
                   completed_at_ms = NULL

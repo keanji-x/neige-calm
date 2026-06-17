@@ -2,23 +2,30 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx, session_prepare_deferred_spec_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, session_prepare_deferred_spec_tx, session_start_runtime_tx,
+};
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, recover_harnesses_on_boot,
 };
-use calm_server::ids::ActorId;
-use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::operation::TxOutput;
+use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
+use tempfile::TempDir;
 
-fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
+fn app_state_for_boot_test_with_role_cache(
+    repo: Arc<SqlxRepo>,
+    role_cache: calm_server::card_role_cache::CardRoleCache,
+) -> AppState {
     let events = EventBus::new();
-    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
     let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     AppState::from_parts(
         repo.clone(),
@@ -37,6 +44,17 @@ fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
         Some(role_cache),
         Some(cove_cache),
     )
+}
+
+fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
+    app_state_for_boot_test_with_role_cache(
+        repo,
+        calm_server::card_role_cache::CardRoleCache::new(),
+    )
+}
+
+fn sqlite_url(tmp: &TempDir, name: &str) -> String {
+    format!("sqlite://{}?mode=rwc", tmp.path().join(name).display())
 }
 
 #[tokio::test]
@@ -81,7 +99,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     snapshot.last_thread_id = Some("thread-recovered".into());
     snapshot.last_turn_id = Some("turn-recovered".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -166,7 +184,7 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-unavailable".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -246,7 +264,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-deferred".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -391,7 +409,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-recovered".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -488,7 +506,7 @@ async fn boot_recovery_skips_terminal_waves() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-terminal".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -591,12 +609,12 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    let mirror: Option<String> = sqlx::query_scalar("SELECT id FROM runtimes WHERE id = ?1")
+    let mirror: Option<String> = sqlx::query_scalar("SELECT id FROM worker_sessions WHERE id = ?1")
         .bind(&placeholder_id)
         .fetch_optional(repo.pool())
         .await
         .unwrap();
-    assert_eq!(mirror, None);
+    assert_eq!(mirror.as_deref(), Some(placeholder_id.as_str()));
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
@@ -612,6 +630,220 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     .unwrap();
     assert_eq!(recovered, 0);
     assert!(registry.get(&placeholder_id).is_none());
+}
+
+#[tokio::test]
+async fn force_new_thread_recovery_after_phase2_crash() {
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "phase2-crash.db");
+    let (card_id, wave_id, old_runtime_id, placeholder_id, op_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let cove = repo
+            .cove_create(NewCove {
+                name: "phase2-crash".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "phase2 crash".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({
+                    "schemaVersion": 1,
+                    "codex_source": "shared",
+                    "spec_harness": true
+                }),
+            })
+            .await
+            .unwrap();
+        let old_runtime_id = new_id();
+        let old_snapshot = HarnessSnapshot::initial(0, vec![]);
+        let placeholder_id = new_id();
+        let placeholder_snapshot = HarnessSnapshot::initial(0, vec![]);
+        let now = now_ms();
+        let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+            actor: ActorId::User,
+            wave_id: wave.id.to_string(),
+            spec_card_id: card.id.clone(),
+            report_card_id: None,
+            sort: None,
+            cwd: wave.cwd.clone(),
+            goal: Some("recover after crash".into()),
+            reset_harness_items: false,
+            force_new_thread: true,
+        })
+        .unwrap();
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "wave_id": wave.id.to_string(),
+            "runtime_id": placeholder_id.clone(),
+            "runtime_deferred": true,
+            "cwd": wave.cwd.clone(),
+            "goal": "recover after crash",
+            "report_card_id": null,
+            "snapshot": serde_json::to_value(&placeholder_snapshot).unwrap(),
+            "old_runtime_id": old_runtime_id.clone(),
+            "old_runtime_status": RunStatus::Idle,
+        });
+        let op_id = new_id();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            RuntimeInit {
+                id: old_runtime_id.clone(),
+                card_id: card.id.to_string(),
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Idle,
+                terminal_run_id: None,
+                thread_id: Some("thread-old-before-crash".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&old_snapshot).unwrap()),
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        session_prepare_deferred_spec_tx(
+            &mut tx,
+            &RuntimeInit {
+                id: placeholder_id.clone(),
+                card_id: card.id.to_string(),
+                kind: RuntimeKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: RunStatus::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&placeholder_snapshot).unwrap()),
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_op_id: None,
+                now_ms: now + 1,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, phase, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'spec-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, 'tx_committed', ?8, ?8)"#,
+        )
+        .bind(&op_id)
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(now + 2)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (
+            card.id.to_string(),
+            wave.id.to_string(),
+            old_runtime_id,
+            placeholder_id,
+            op_id,
+        )
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
+    role_cache.insert(
+        CardId::from(card_id.clone()),
+        CardRole::Spec,
+        WaveId::from(wave_id.clone()),
+    );
+    let state = app_state_for_boot_test_with_role_cache(repo.clone(), role_cache)
+        .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
+            repo.clone(),
+            None,
+        ));
+
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+
+    let active = repo
+        .runtime_get_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("phase-2 recovery should leave a new active session");
+    assert_eq!(active.id, placeholder_id);
+    assert_eq!(active.status, RunStatus::Idle);
+    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert_ne!(active.id, old_runtime_id);
+
+    let old_state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+        .bind(&old_runtime_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(old_state, "superseded");
+
+    let active_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM worker_sessions
+            WHERE card_id = ?1
+              AND state IN ('starting','running','idle','turn_pending')"#,
+    )
+    .bind(&card_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(active_count, 1);
+
+    let card_session: Option<String> =
+        sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+            .bind(&card_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(card_session.as_deref(), Some(placeholder_id.as_str()));
+
+    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+        .bind(&op_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(phase, "succeeded");
+
+    if let Some(handle) = state.harness.remove(&placeholder_id) {
+        handle.shutdown().await.unwrap();
+    }
 }
 
 /// Issue #644 PR-C (§6.5/§8) — the boot replay applies the SAME
@@ -779,7 +1011,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-recovered".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

@@ -176,7 +176,7 @@ async fn token_rows(repo: &SqlxRepo, card_id: &str) -> i64 {
 async fn runtime_rows(repo: &SqlxRepo, card_id: &str) -> i64 {
     count(
         repo,
-        "SELECT COUNT(*) FROM runtimes WHERE card_id = ?1",
+        "SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1",
         card_id,
     )
     .await
@@ -272,7 +272,7 @@ async fn delete_card_route_cascades_mcp_token_and_runtime() {
     assert_eq!(
         count(
             &boot.repo,
-            "SELECT COUNT(*) FROM runtimes WHERE terminal_run_id = ?1",
+            "SELECT COUNT(*) FROM worker_sessions WHERE terminal_run_id = ?1",
             &term.id,
         )
         .await,

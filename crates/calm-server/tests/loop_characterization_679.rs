@@ -37,7 +37,7 @@ use calm_exec::WorkerProvider;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, runtime_start_tx, session_insert_tx, task_insert_tx,
+    SqlxRepo, card_create_with_id_tx, session_insert_tx, session_start_runtime_tx, task_insert_tx,
 };
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
@@ -161,7 +161,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -810,22 +810,6 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let session_id = WorkerSessionId::from(new_id());
     let session_now = now_ms();
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query(
-        r#"INSERT INTO runtimes (
-               id, card_id, kind, agent_provider, status, terminal_run_id,
-               thread_id, session_id, active_turn_id, handle_state_json,
-               lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-               completed_at_ms
-           )
-           VALUES (?1, ?2, 'terminal', NULL, 'running', NULL, NULL, NULL, NULL, NULL,
-                   NULL, NULL, ?3, ?3, NULL)"#,
-    )
-    .bind(session_id.as_str())
-    .bind(worker_card.id.as_str())
-    .bind(session_now)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
     session_insert_tx(
         &mut tx,
         WorkerSession {

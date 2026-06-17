@@ -50,7 +50,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx, task_insert_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, task_insert_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::{
@@ -114,7 +114,7 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
         .await
         .expect("create reset root card");
     let mut tx = repo.pool().begin().await.expect("begin runtime tx");
-    let runtime = runtime_start_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),

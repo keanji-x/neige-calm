@@ -30,10 +30,6 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashMap;
 use std::str::FromStr;
-#[cfg(feature = "worker-session-parity-drop")]
-use std::sync::Arc;
-#[cfg(feature = "worker-session-parity-drop")]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::{
@@ -54,9 +50,9 @@ use crate::runtime_repo::{
     Tx as RuntimeTx,
 };
 use crate::runtime_row::{
-    WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT, card_runtime_from_row,
-    card_runtime_from_ws_join_row, projectable_runtimes_for_cards_from_rows,
-    projectable_runtimes_for_cards_query, run_status_from_db,
+    WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT, card_runtime_from_ws_join_row,
+    projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
+    run_status_from_db,
 };
 use crate::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo, Tx as SessionTx};
 use crate::validation::{
@@ -93,8 +89,6 @@ pub struct SqlxRepo {
     /// `AppState::new` seeds from the same pool). Both converge on
     /// the persisted `waves` table.
     wave_cove_cache: WaveCoveCache,
-    #[cfg(feature = "worker-session-parity-drop")]
-    worker_session_parity_on_drop: Arc<AtomicBool>,
 }
 
 impl SqlxRepo {
@@ -159,8 +153,6 @@ impl SqlxRepo {
             pool,
             card_role_cache,
             wave_cove_cache,
-            #[cfg(feature = "worker-session-parity-drop")]
-            worker_session_parity_on_drop: Arc::new(AtomicBool::new(true)),
         })
     }
 
@@ -183,12 +175,6 @@ impl SqlxRepo {
     /// `CardRoleCache: Clone` is cheap (`Arc<DashMap<…>>` under the hood).
     pub fn card_role_cache(&self) -> &CardRoleCache {
         &self.card_role_cache
-    }
-
-    #[cfg(feature = "worker-session-parity-drop")]
-    pub fn disable_worker_session_parity_on_drop_for_test(&self) {
-        self.worker_session_parity_on_drop
-            .store(false, Ordering::SeqCst);
     }
 
     /// #234 — borrow the repo's wave→cove cache. Mirrors
@@ -289,114 +275,6 @@ pub async fn assert_worker_sessions_card_id_complete(pool: &SqlitePool) -> Resul
     }
 
     Ok(())
-}
-
-#[cfg(feature = "worker-session-parity-drop")]
-impl Drop for SqlxRepo {
-    fn drop(&mut self) {
-        if std::thread::panicking() || !self.worker_session_parity_on_drop.load(Ordering::SeqCst) {
-            return;
-        }
-
-        let pool = self.pool.clone();
-        let handle = std::thread::Builder::new()
-            .name("worker-session-parity-drop".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| format!("build parity-drop runtime: {e}"))?;
-                rt.block_on(assert_worker_session_parity_for_test(&pool))
-            })
-            .expect("spawn worker-session parity-drop thread");
-
-        match handle.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(message)) => {
-                panic!(
-                    "runtimes/worker_sessions parity divergence at SqlxRepo teardown:\n{message}"
-                )
-            }
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
-    }
-}
-
-#[cfg(feature = "worker-session-parity-drop")]
-async fn assert_worker_session_parity_for_test(
-    pool: &SqlitePool,
-) -> std::result::Result<(), String> {
-    let rows = sqlx::query(
-        r#"SELECT r.id AS runtime_id,
-                  r.status AS runtime_status,
-                  ws.state AS session_state,
-                  r.thread_id AS runtime_thread_id,
-                  ws.thread_id AS session_thread_id,
-                  r.session_id AS runtime_session_id,
-                  ws.agent_session_id AS session_agent_session_id,
-                  r.active_turn_id AS runtime_active_turn_id,
-                  ws.active_turn_id AS session_active_turn_id,
-                  r.terminal_run_id AS runtime_terminal_run_id,
-                  ws.terminal_run_id AS session_terminal_run_id,
-                  r.handle_state_json AS runtime_handle_state_json,
-                  ws.handle_state_json AS session_handle_state_json,
-                  r.created_at_ms AS runtime_created_at_ms,
-                  ws.created_at_ms AS session_created_at_ms,
-                  r.updated_at_ms AS runtime_updated_at_ms,
-                  ws.updated_at_ms AS session_updated_at_ms,
-                  r.completed_at_ms AS runtime_completed_at_ms,
-                  ws.completed_at_ms AS session_completed_at_ms
-           FROM runtimes r
-           LEFT JOIN worker_sessions ws ON ws.id = r.id
-           WHERE ws.id IS NULL
-              OR ws.state != r.status
-              OR NOT (ws.thread_id IS r.thread_id)
-              OR NOT (ws.agent_session_id IS r.session_id)
-              OR NOT (ws.active_turn_id IS r.active_turn_id)
-              OR NOT (ws.terminal_run_id IS r.terminal_run_id)
-              OR NOT (ws.handle_state_json IS r.handle_state_json)
-              OR ws.created_at_ms != r.created_at_ms
-              OR ws.updated_at_ms != r.updated_at_ms
-              OR NOT (ws.completed_at_ms IS r.completed_at_ms)
-           ORDER BY r.created_at_ms ASC, r.id ASC"#,
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("query runtimes/worker_sessions parity: {e}"))?;
-
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    let details = rows
-        .iter()
-        .map(|row| {
-            format!(
-                "runtime_id={} status={:?}/{:?} thread={:?}/{:?} session={:?}/{:?} turn={:?}/{:?} terminal={:?}/{:?} handle={:?}/{:?} created={:?}/{:?} updated={:?}/{:?} completed={:?}/{:?}",
-                row.get::<String, _>("runtime_id"),
-                row.try_get::<String, _>("runtime_status").ok(),
-                row.try_get::<Option<String>, _>("session_state").ok().flatten(),
-                row.try_get::<Option<String>, _>("runtime_thread_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("session_thread_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("runtime_session_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("session_agent_session_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("runtime_active_turn_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("session_active_turn_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("runtime_terminal_run_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("session_terminal_run_id").ok().flatten(),
-                row.try_get::<Option<String>, _>("runtime_handle_state_json").ok().flatten(),
-                row.try_get::<Option<String>, _>("session_handle_state_json").ok().flatten(),
-                row.try_get::<i64, _>("runtime_created_at_ms").ok(),
-                row.try_get::<Option<i64>, _>("session_created_at_ms").ok().flatten(),
-                row.try_get::<i64, _>("runtime_updated_at_ms").ok(),
-                row.try_get::<Option<i64>, _>("session_updated_at_ms").ok().flatten(),
-                row.try_get::<Option<i64>, _>("runtime_completed_at_ms").ok().flatten(),
-                row.try_get::<Option<i64>, _>("session_completed_at_ms").ok().flatten(),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    Err(details)
 }
 
 impl Repo for SqlxRepo {
@@ -2125,9 +2003,9 @@ pub async fn card_with_terminal_create_tx(
         now_ms: now_ms(),
     };
     if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
-        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+        session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
     } else {
-        runtime_start_tx(tx, runtime_init).await?;
+        session_start_runtime_tx(tx, runtime_init).await?;
     }
 
     Ok((card, term))
@@ -2358,7 +2236,7 @@ pub async fn card_with_codex_create_tx(
         spawn_op_id: spawn_op_id.map(str::to_string),
         now_ms: now_ms(),
     };
-    runtime_start_tx(tx, runtime_init).await?;
+    session_start_runtime_tx(tx, runtime_init).await?;
     if let Some(hashed) = mcp_token_hash.as_deref() {
         session_mcp_token_set_tx(tx, runtime_id, hashed).await?;
     }
@@ -2470,9 +2348,9 @@ pub async fn card_with_claude_create_tx(
         now_ms: now_ms(),
     };
     if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
-        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+        session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
     } else {
-        runtime_start_tx(tx, runtime_init).await?;
+        session_start_runtime_tx(tx, runtime_init).await?;
     }
 
     Ok((card, term))
@@ -2511,7 +2389,7 @@ pub async fn card_mcp_token_set_tx(
 /// PR6b (#679) — mirror the per-card MCP hash onto the same-id worker_sessions
 /// row. POPULATE-ONLY: never read for authz (the handshake reads
 /// card_mcp_tokens). Fail-closed: the same-id mirror row MUST exist
-/// (created by runtime_start_tx -> session_start_mirror_tx in the same spawn);
+/// (created by session_start_runtime_tx -> session_start_mirror_tx in the same spawn);
 /// a missing row means the dual-write ordering drifted, so fail the spawn
 /// rather than silently half-mint.
 pub async fn session_mcp_token_set_tx(
@@ -2592,31 +2470,10 @@ pub async fn session_get_by_id(
     row.as_ref().map(worker_session_from_row).transpose()
 }
 
-fn runtime_kind_to_db(kind: &RuntimeKind) -> &'static str {
-    match kind {
-        RuntimeKind::Terminal => "terminal",
-        RuntimeKind::CodexCard => "codex",
-        RuntimeKind::ClaudeCard => "claude",
-        RuntimeKind::SharedSpec => "shared-spec",
-    }
-}
-
 fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
     match provider {
         AgentProvider::Codex => "codex",
         AgentProvider::Claude => "claude",
-    }
-}
-
-fn run_status_to_db(status: &RunStatus) -> &'static str {
-    match status {
-        RunStatus::Starting => "starting",
-        RunStatus::Running => "running",
-        RunStatus::Idle => "idle",
-        RunStatus::TurnPending => "turn_pending",
-        RunStatus::Failed => "failed",
-        RunStatus::Exited => "exited",
-        RunStatus::Superseded => "superseded",
     }
 }
 
@@ -3147,51 +3004,24 @@ fn worker_session_from_runtime_init(init: &RuntimeInit, wave_id: WaveId) -> Work
     }
 }
 
-fn worker_session_from_card_runtime(runtime: &CardRuntime, wave_id: WaveId) -> WorkerSession {
-    let (provider, mode, contract) = derive_session_identity(&runtime.kind);
-    WorkerSession {
-        id: WorkerSessionId(runtime.id.clone()),
-        wave_id,
-        provider,
-        mode,
-        contract,
-        parent_session_id: None,
-        requester_session_id: None,
-        state: worker_session_state_from_run_status(&runtime.status),
-        mcp_token_hash: None,
-        thread_id: runtime.thread_id.clone(),
-        agent_session_id: runtime.session_id.clone(),
-        active_turn_id: runtime.active_turn_id.clone(),
-        terminal_run_id: runtime.terminal_run_id.clone(),
-        card_id: Some(CardId(runtime.card_id.clone())),
-        handle_state_json: runtime.handle_state_json.clone(),
-        liveness: LivenessTag::Unknown,
-        liveness_probed_at_ms: None,
-        exit_code: None,
-        exit_interpretation: None,
-        spawn_op_id: None,
-        last_activity_ms: None,
-        last_thread_status: None,
-        created_at_ms: runtime.created_at_ms,
-        updated_at_ms: runtime.updated_at_ms,
-        completed_at_ms: runtime.completed_at_ms,
-    }
-}
-
 async fn session_refresh_deferred_planner_tx(
     tx: &mut RuntimeTx<'_>,
     existing: WorkerSession,
     desired: WorkerSession,
 ) -> RuntimeResult<WorkerSession> {
+    let refreshable_state = existing.state == WorkerSessionState::Starting
+        || existing.state == WorkerSessionState::Superseded;
+    let refreshable_completed =
+        existing.completed_at_ms.is_none() || existing.state == WorkerSessionState::Superseded;
     if desired.contract != WorkerContract::Planner
         || existing.contract != WorkerContract::Planner
-        || existing.state != WorkerSessionState::Starting
+        || !refreshable_state
         || existing.wave_id != desired.wave_id
         || existing.provider != desired.provider
         || existing.mode != desired.mode
         || existing.parent_session_id.is_some()
         || existing.requester_session_id.is_some()
-        || existing.completed_at_ms.is_some()
+        || !refreshable_completed
     {
         return Err(runtime_message(format!(
             "worker session {} already exists and is not a deferred planner placeholder",
@@ -3223,7 +3053,7 @@ async fn session_refresh_deferred_planner_tx(
                   completed_at_ms = ?14
             WHERE id = ?15
               AND contract = 'planner'
-              AND state = 'starting'"#,
+              AND state IN ('starting', 'superseded')"#,
     )
     .bind(desired.state.as_db_str())
     .bind(&desired.thread_id)
@@ -3379,6 +3209,19 @@ pub async fn session_prepare_deferred_spec_tx(
             "deferred spec session placeholders must not have a thread, terminal run, or session",
         ));
     }
+    let existing_active_id: Option<String> = sqlx::query_scalar(
+        r#"SELECT ws.id
+             FROM cards c
+             JOIN worker_sessions ws ON ws.id = c.session_id
+            WHERE c.id = ?1
+              AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(&init.card_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(existing_id) = existing_active_id {
+        session_supersede_active_tx(tx, &existing_id, init.now_ms).await?;
+    }
     let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
     let session = worker_session_from_runtime_init(init, wave_id);
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
@@ -3386,7 +3229,7 @@ pub async fn session_prepare_deferred_spec_tx(
     Ok(session)
 }
 
-async fn session_supersede_active_tx(
+pub async fn session_supersede_active_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     now: i64,
@@ -3408,6 +3251,37 @@ async fn session_supersede_active_tx(
             "active worker session {id} not found for supersede"
         )));
     }
+    Ok(())
+}
+
+pub async fn session_start_runtime_tx(
+    tx: &mut RuntimeTx<'_>,
+    init: RuntimeInit,
+) -> RuntimeResult<CardRuntime> {
+    session_start_mirror_tx(tx, &init).await?;
+    runtime_get_by_id_tx(tx, &init.id)
+        .await?
+        .ok_or_else(|| runtime_message(format!("worker session {} missing after insert", init.id)))
+}
+
+pub async fn session_supersede_and_start_tx(
+    tx: &mut RuntimeTx<'_>,
+    old_id: &RuntimeId,
+    new_init: RuntimeInit,
+) -> RuntimeResult<CardRuntime> {
+    session_supersede_active_tx(tx, old_id, new_init.now_ms).await?;
+    session_start_runtime_tx(tx, new_init).await
+}
+
+pub async fn session_delete_tx(tx: &mut RuntimeTx<'_>, id: &RuntimeId) -> RuntimeResult<()> {
+    sqlx::query("UPDATE waves SET root_session_id = NULL WHERE root_session_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM worker_sessions WHERE id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
@@ -3665,8 +3539,7 @@ async fn runtime_current_status_tx(
 ) -> RuntimeResult<RunStatus> {
     let row = sqlx::query(
         r#"SELECT state FROM worker_sessions ws
-           WHERE ws.id = ?1
-             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)"#,
+           WHERE ws.id = ?1"#,
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -3683,8 +3556,7 @@ async fn runtime_get_by_id_from_pool(
 ) -> RuntimeResult<Option<CardRuntime>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
-           WHERE ws.id = ?1
-             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)"#
+           WHERE ws.id = ?1"#
     );
     let row = sqlx::query(&sql).bind(id).fetch_optional(pool).await?;
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
@@ -3698,7 +3570,6 @@ async fn runtime_get_active_for_card_from_pool(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE c.id = ?1
              AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
-             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
            ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
     );
@@ -3714,7 +3585,6 @@ async fn runtime_get_projectable_for_card_from_pool(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE c.id = ?1
              AND ws.state != 'superseded'
-             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
            LIMIT 1"#,
     );
     let row = sqlx::query(&sql).bind(card_id).fetch_optional(pool).await?;
@@ -3799,7 +3669,6 @@ async fn runtimes_active_for_kind_from_pool(
            WHERE ws.provider = ?1
              AND ws.contract = ?2
              AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
-             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
            ORDER BY ws.created_at_ms ASC, c.id ASC"#
     );
     let rows = sqlx::query(&sql)
@@ -3816,8 +3685,7 @@ pub async fn runtime_get_by_id_tx(
 ) -> RuntimeResult<Option<CardRuntime>> {
     let sql = format!(
         r#"{WS_CARD_KEYED_RUNTIME_SELECT}
-           WHERE ws.id = ?1
-             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)"#
+           WHERE ws.id = ?1"#
     );
     let row = sqlx::query(&sql).bind(id).fetch_optional(&mut **tx).await?;
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
@@ -3831,7 +3699,6 @@ pub async fn runtime_get_active_for_card_tx(
         r#"{WS_CARD_KEYED_RUNTIME_SELECT}
            WHERE ws.card_id = ?1
              AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
-             AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
            ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
     );
@@ -3842,79 +3709,7 @@ pub async fn runtime_get_active_for_card_tx(
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
-pub async fn runtime_start_tx(
-    tx: &mut RuntimeTx<'_>,
-    init: RuntimeInit,
-) -> RuntimeResult<CardRuntime> {
-    let kind = runtime_kind_to_db(&init.kind);
-    let agent_provider = init.agent_provider.as_ref().map(agent_provider_to_db);
-    let status = run_status_to_db(&init.status);
-    let handle_state_json = init
-        .handle_state_json
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-
-    sqlx::query(
-        r#"INSERT INTO runtimes (
-               id, card_id, kind, agent_provider, status, terminal_run_id,
-               thread_id, session_id, active_turn_id, handle_state_json,
-               lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-               completed_at_ms
-           )
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL)"#,
-    )
-    .bind(&init.id)
-    .bind(&init.card_id)
-    .bind(kind)
-    .bind(agent_provider)
-    .bind(status)
-    .bind(&init.terminal_run_id)
-    .bind(&init.thread_id)
-    .bind(&init.session_id)
-    .bind(&init.active_turn_id)
-    .bind(&handle_state_json)
-    .bind(&init.lease_owner)
-    .bind(init.lease_until_ms)
-    .bind(init.now_ms)
-    .execute(&mut **tx)
-    .await?;
-
-    session_start_mirror_tx(tx, &init).await?;
-
-    runtime_get_by_id_tx(tx, &init.id)
-        .await?
-        .ok_or_else(|| runtime_message(format!("runtime {} missing after insert", init.id)))
-}
-
-pub async fn runtime_supersede_tx(
-    tx: &mut RuntimeTx<'_>,
-    id: &RuntimeId,
-    new_init: RuntimeInit,
-) -> RuntimeResult<CardRuntime> {
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET status = 'superseded',
-                  updated_at_ms = ?1,
-                  completed_at_ms = COALESCE(completed_at_ms, ?1)
-            WHERE id = ?2
-              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
-    )
-    .bind(new_init.now_ms)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!(
-            "active runtime {id} not found for supersede"
-        )));
-    }
-
-    session_supersede_active_tx(tx, id, new_init.now_ms).await?;
-    runtime_start_tx(tx, new_init).await
-}
-
-pub async fn runtime_set_status_tx(
+pub async fn session_set_status_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     status: RunStatus,
@@ -3930,25 +3725,11 @@ pub async fn runtime_set_status_tx(
     ensure_runtime_status_transition(id, &current, &status)?;
 
     let now = now_ms();
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET status = ?1,
-                  updated_at_ms = ?2
-            WHERE id = ?3"#,
-    )
-    .bind(run_status_to_db(&status))
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("runtime {id} not found")));
-    }
     session_set_status_mirror_tx(tx, id, status, now).await?;
     Ok(())
 }
 
-pub async fn runtime_set_status_for_card_tx(
+pub async fn session_set_status_for_card_tx(
     tx: &mut RuntimeTx<'_>,
     card_id: &str,
     status: RunStatus,
@@ -3956,10 +3737,10 @@ pub async fn runtime_set_status_for_card_tx(
     let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
         return Ok(());
     };
-    runtime_set_status_tx(tx, &runtime.id, status).await
+    session_set_status_tx(tx, &runtime.id, status).await
 }
 
-pub async fn runtime_bind_attribution_tx(
+pub async fn session_bind_attribution_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     attr: ThreadAttribution,
@@ -3972,101 +3753,43 @@ pub async fn runtime_bind_attribution_tx(
     }
 
     let now = now_ms();
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET agent_provider = ?1,
-                  thread_id = ?2,
-                  session_id = ?3,
-                  active_turn_id = ?4,
-                  updated_at_ms = ?5
-            WHERE id = ?6"#,
-    )
-    .bind(agent_provider_to_db(&attr.provider))
-    .bind(&attr.thread_id)
-    .bind(&attr.session_id)
-    .bind(&attr.active_turn_id)
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("runtime {id} not found")));
-    }
     session_bind_attribution_mirror_tx(tx, id, &attr, now).await?;
     Ok(())
 }
 
-pub async fn runtime_clear_terminal_run_id_tx(
+pub async fn session_clear_terminal_run_id_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
 ) -> RuntimeResult<()> {
     let now = now_ms();
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET terminal_run_id = NULL, updated_at_ms = ?1
-            WHERE id = ?2"#,
-    )
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("runtime {id} not found")));
-    }
     session_clear_terminal_run_id_mirror_tx(tx, id, now).await?;
     Ok(())
 }
 
-pub async fn runtime_set_handle_state_tx(
+pub async fn session_set_handle_state_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     state: Option<serde_json::Value>,
 ) -> RuntimeResult<()> {
     let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
     let now = now_ms();
-    sqlx::query(
-        r#"UPDATE runtimes
-              SET handle_state_json = ?1,
-                  updated_at_ms = ?2
-            WHERE id = ?3
-              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
-    )
-    .bind(&state_text)
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
     session_set_handle_state_mirror_tx(tx, id, &state_text, now).await?;
     Ok(())
 }
 
-pub async fn runtime_set_active_turn_tx(
+pub async fn session_set_active_turn_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     turn_id: Option<&str>,
 ) -> RuntimeResult<()> {
     let now = now_ms();
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET active_turn_id = ?1,
-                  updated_at_ms = ?2
-            WHERE id = ?3"#,
-    )
-    .bind(turn_id)
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("runtime {id} not found")));
-    }
     session_set_active_turn_mirror_tx(tx, id, turn_id, now).await?;
     Ok(())
 }
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
-pub async fn runtime_set_harness_observation_tx(
+pub async fn session_set_harness_observation_runtime_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     status: RunStatus,
@@ -4074,124 +3797,48 @@ pub async fn runtime_set_harness_observation_tx(
     active_turn_id: Option<&str>,
 ) -> RuntimeResult<()> {
     let now = now_ms();
-    sqlx::query(
-        r#"UPDATE runtimes
-              SET status = ?1,
-                  thread_id = COALESCE(?2, thread_id),
-                  active_turn_id = ?3,
-                  updated_at_ms = ?4
-            WHERE id = ?5
-              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
-    )
-    .bind(run_status_to_db(&status))
-    .bind(thread_id)
-    .bind(active_turn_id)
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
     session_set_harness_observation_tx(tx, id, status, thread_id, active_turn_id, now).await?;
     Ok(())
 }
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
-pub async fn runtime_fail_if_active_tx(
+pub async fn session_fail_if_active_runtime_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
 ) -> RuntimeResult<()> {
     let now = now_ms();
-    sqlx::query(
-        r#"UPDATE runtimes
-              SET status = 'failed',
-                  updated_at_ms = ?1,
-                  completed_at_ms = ?1
-            WHERE id = ?2
-              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
-    )
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
     session_fail_if_active_tx(tx, id, now).await?;
     Ok(())
 }
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
-pub async fn runtime_mark_superseded_tx(
+pub async fn session_mark_superseded_runtime_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
 ) -> RuntimeResult<()> {
     let now = now_ms();
-    sqlx::query(
-        r#"UPDATE runtimes
-              SET status = 'superseded',
-                  updated_at_ms = ?1,
-                  completed_at_ms = COALESCE(completed_at_ms, ?1)
-            WHERE id = ?2"#,
-    )
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
     session_mark_superseded_tx(tx, id, now).await?;
     Ok(())
 }
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
-pub async fn runtime_restore_from_superseded_tx(
+pub async fn session_restore_from_superseded_runtime_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     status: RunStatus,
 ) -> RuntimeResult<()> {
-    let status_db = run_status_to_db(&status);
     let now = now_ms();
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET status = ?1,
-                  updated_at_ms = ?2,
-                  completed_at_ms = NULL
-            WHERE id = ?3
-              AND status = 'superseded'"#,
-    )
-    .bind(status_db)
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() > 0 {
-        let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
-        let runtime = runtime_get_by_id_tx(tx, id)
-            .await?
-            .ok_or_else(|| runtime_message(format!("runtime {id} missing after restore")))?;
-        session_repoint_current_links_tx(tx, &runtime.card_id, &session).await?;
-        return Ok(());
-    }
-
-    let current: Option<(String,)> = sqlx::query_as("SELECT status FROM runtimes WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    match current {
-        Some((current,)) if current == status_db => {
-            let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
-            let runtime = runtime_get_by_id_tx(tx, id)
-                .await?
-                .ok_or_else(|| runtime_message(format!("runtime {id} missing after restore")))?;
-            session_repoint_current_links_tx(tx, &runtime.card_id, &session).await
-        }
-        Some((current,)) => Err(runtime_message(format!(
-            "runtime {id} has status {current}; cannot restore old spec harness runtime to {status_db}"
-        ))),
-        None => Err(runtime_message(format!(
-            "runtime {id} missing while restoring old spec harness runtime"
-        ))),
-    }
+    let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
+    let runtime = runtime_get_by_id_tx(tx, id)
+        .await?
+        .ok_or_else(|| runtime_message(format!("worker session {id} missing after restore")))?;
+    session_repoint_current_links_tx(tx, &runtime.card_id, &session).await
 }
 
-pub async fn runtime_complete_tx(
+pub async fn session_complete_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
     terminal_status: RunStatus,
@@ -4207,71 +3854,11 @@ pub async fn runtime_complete_tx(
     ensure_runtime_status_transition(id, &current, &terminal_status)?;
 
     let now = now_ms();
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET status = ?1,
-                  updated_at_ms = ?2,
-                  completed_at_ms = ?2
-            WHERE id = ?3"#,
-    )
-    .bind(run_status_to_db(&terminal_status))
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("runtime {id} not found")));
-    }
     session_complete_mirror_tx(tx, id, terminal_status, now).await?;
     Ok(())
 }
 
-/// MUST be called only inside `session_commit_exit`, AFTER the session-side
-/// exit CAS in the same tx — it stamps `runtimes.updated_at_ms` from the
-/// just-written `worker_sessions` row; standalone use falls back to `now_ms()`
-/// and breaks parity.
-pub async fn runtime_status_flip_tx(
-    tx: &mut RuntimeTx<'_>,
-    id: &RuntimeId,
-    terminal_status: RunStatus,
-) -> RuntimeResult<()> {
-    if !matches!(terminal_status, RunStatus::Failed | RunStatus::Exited) {
-        return Err(RuntimeRepoError::IllegalStatusTransition {
-            id: id.clone(),
-            attempted: terminal_status,
-        });
-    }
-
-    let current = runtime_current_status_tx(tx, id).await?;
-    if current != terminal_status {
-        ensure_runtime_status_transition(id, &current, &terminal_status)?;
-    }
-
-    let lockstep_ms: Option<i64> =
-        sqlx::query_scalar("SELECT updated_at_ms FROM worker_sessions WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(&mut **tx)
-            .await?;
-    let lockstep_ms = lockstep_ms.unwrap_or_else(now_ms);
-    let res = sqlx::query(
-        r#"UPDATE runtimes
-              SET status = ?1,
-                  updated_at_ms = ?2,
-                  completed_at_ms = ?2
-            WHERE id = ?3"#,
-    )
-    .bind(run_status_to_db(&terminal_status))
-    .bind(lockstep_ms)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(runtime_message(format!("runtime {id} not found")));
-    }
-    Ok(())
-}
-
-pub async fn runtime_complete_for_card_tx(
+pub async fn session_complete_for_card_tx(
     tx: &mut RuntimeTx<'_>,
     card_id: &str,
     terminal_status: RunStatus,
@@ -4279,7 +3866,7 @@ pub async fn runtime_complete_for_card_tx(
     let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
         return Ok(());
     };
-    runtime_complete_tx(tx, &runtime.id, terminal_status).await
+    session_complete_tx(tx, &runtime.id, terminal_status).await
 }
 
 pub async fn runtime_get_active_for_terminal_tx(
@@ -4300,7 +3887,7 @@ pub async fn runtime_get_active_for_terminal_tx(
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
-pub async fn runtime_complete_for_terminal_tx(
+pub async fn session_complete_for_terminal_tx(
     tx: &mut RuntimeTx<'_>,
     terminal_id: &str,
     terminal_status: RunStatus,
@@ -4308,41 +3895,7 @@ pub async fn runtime_complete_for_terminal_tx(
     let Some(runtime) = runtime_get_active_for_terminal_tx(tx, terminal_id).await? else {
         return Ok(());
     };
-    runtime_complete_tx(tx, &runtime.id, terminal_status).await
-}
-
-pub async fn backfill_worker_sessions_from_runtimes(
-    tx: &mut RuntimeTx<'_>,
-) -> RuntimeResult<usize> {
-    let rows = sqlx::query(
-        r#"SELECT r.id, r.card_id, r.kind, r.agent_provider, r.status, r.terminal_run_id,
-                  r.thread_id, r.session_id, r.active_turn_id, r.handle_state_json,
-                  r.lease_owner, r.lease_until_ms, r.created_at_ms, r.updated_at_ms,
-                  r.completed_at_ms, c.wave_id AS wave_id
-           FROM runtimes r
-           JOIN cards c ON c.id = r.card_id
-           WHERE NOT EXISTS (
-               SELECT 1 FROM worker_sessions ws WHERE ws.id = r.id
-           )
-           ORDER BY r.created_at_ms ASC, r.id ASC"#,
-    )
-    .fetch_all(&mut **tx)
-    .await?;
-
-    let mut inserted = 0usize;
-    for row in rows {
-        let runtime = card_runtime_from_row(&row)?;
-        let wave_id = WaveId(row.try_get("wave_id")?);
-        let session = worker_session_from_card_runtime(&runtime, wave_id);
-        let session = session_insert_tx(tx, session)
-            .await
-            .map_err(runtime_session_error)?;
-        if session.state.is_active_authority() {
-            session_repoint_current_links_tx(tx, &runtime.card_id, &session).await?;
-        }
-        inserted += 1;
-    }
-    Ok(inserted)
+    session_complete_tx(tx, &runtime.id, terminal_status).await
 }
 
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
@@ -5019,7 +4572,6 @@ impl RepoRead for SqlxRepo {
                    AND ws.contract = ?2
                    AND ws.thread_id IS NULL
                    AND ws.state IN ('starting','running','idle','turn_pending')
-                   AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
                JOIN terminals t ON t.id = ws.terminal_run_id
                WHERE c.role = 'spec'
                  AND t.exit_code IS NULL
@@ -5034,7 +4586,6 @@ impl RepoRead for SqlxRepo {
                           AND hws.state IN ('starting','running','idle','turn_pending')
                           AND hws.handle_state_json IS NOT NULL
                           AND json_extract(hws.handle_state_json, '$.mode') = 'harness'
-                          AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = hws.id)
                  )
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
                ORDER BY c.created_at ASC, c.id ASC"#,
@@ -5276,94 +4827,15 @@ impl RuntimeRepo for SqlxRepo {
         runtime_get_by_id_from_pool(&self.pool, id).await
     }
 
-    async fn runtime_start_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        init: RuntimeInit,
-    ) -> RuntimeResult<CardRuntime> {
-        runtime_start_tx(tx, init).await
-    }
-
-    async fn runtime_supersede_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        id: &RuntimeId,
-        new_init: RuntimeInit,
-    ) -> RuntimeResult<CardRuntime> {
-        runtime_supersede_tx(tx, id, new_init).await
-    }
-
-    async fn runtime_set_status_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        id: &RuntimeId,
-        status: RunStatus,
-    ) -> RuntimeResult<()> {
-        runtime_set_status_tx(tx, id, status).await
-    }
-
     async fn runtime_set_status_for_card(
         &self,
         card_id: &str,
         status: RunStatus,
     ) -> RuntimeResult<()> {
         let mut tx = self.pool.begin().await?;
-        runtime_set_status_for_card_tx(&mut tx, card_id, status).await?;
+        session_set_status_for_card_tx(&mut tx, card_id, status).await?;
         tx.commit().await?;
         Ok(())
-    }
-
-    async fn runtime_set_status_for_card_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        card_id: &str,
-        status: RunStatus,
-    ) -> RuntimeResult<()> {
-        runtime_set_status_for_card_tx(tx, card_id, status).await
-    }
-
-    async fn runtime_bind_attribution_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        id: &RuntimeId,
-        attr: ThreadAttribution,
-    ) -> RuntimeResult<()> {
-        runtime_bind_attribution_tx(tx, id, attr).await
-    }
-
-    async fn runtime_clear_terminal_run_id_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        id: &RuntimeId,
-    ) -> RuntimeResult<()> {
-        runtime_clear_terminal_run_id_tx(tx, id).await
-    }
-
-    async fn runtime_set_handle_state_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        id: &RuntimeId,
-        state: Option<serde_json::Value>,
-    ) -> RuntimeResult<()> {
-        runtime_set_handle_state_tx(tx, id, state).await
-    }
-
-    async fn runtime_set_active_turn_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        id: &RuntimeId,
-        turn_id: Option<&str>,
-    ) -> RuntimeResult<()> {
-        runtime_set_active_turn_tx(tx, id, turn_id).await
-    }
-
-    async fn runtime_complete_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        id: &RuntimeId,
-        terminal_status: RunStatus,
-    ) -> RuntimeResult<()> {
-        runtime_complete_tx(tx, id, terminal_status).await
     }
 
     async fn runtime_complete_for_card(
@@ -5372,18 +4844,9 @@ impl RuntimeRepo for SqlxRepo {
         terminal_status: RunStatus,
     ) -> RuntimeResult<()> {
         let mut tx = self.pool.begin().await?;
-        runtime_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
+        session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())
-    }
-
-    async fn runtime_complete_for_card_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        card_id: &str,
-        terminal_status: RunStatus,
-    ) -> RuntimeResult<()> {
-        runtime_complete_for_card_tx(tx, card_id, terminal_status).await
     }
 
     async fn runtime_complete_for_terminal(
@@ -5392,25 +4855,9 @@ impl RuntimeRepo for SqlxRepo {
         terminal_status: RunStatus,
     ) -> RuntimeResult<()> {
         let mut tx = self.pool.begin().await?;
-        runtime_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
+        session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())
-    }
-
-    async fn runtime_complete_for_terminal_tx(
-        &self,
-        tx: &mut RuntimeTx<'_>,
-        terminal_id: &str,
-        terminal_status: RunStatus,
-    ) -> RuntimeResult<()> {
-        runtime_complete_for_terminal_tx(tx, terminal_id, terminal_status).await
-    }
-
-    async fn backfill_worker_sessions_from_runtimes(&self) -> RuntimeResult<usize> {
-        let mut tx = self.pool.begin().await?;
-        let inserted = backfill_worker_sessions_from_runtimes(&mut tx).await?;
-        tx.commit().await?;
-        Ok(inserted)
     }
 
     async fn runtimes_recover_harnesses_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
@@ -5421,12 +4868,12 @@ impl RuntimeRepo for SqlxRepo {
                WHERE ws.provider = ?1
                  AND ws.contract = ?2
                  AND ws.state IN ('starting','running','idle','turn_pending')
+                 AND ws.thread_id IS NOT NULL
                  AND ws.handle_state_json IS NOT NULL
                  AND json_extract(ws.handle_state_json, '$.mode') = 'harness'
                  -- Keep harness boot recovery aligned with the legacy
                  -- takeover filters above: terminal waves must stay inert.
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
-                 AND EXISTS (SELECT 1 FROM runtimes r WHERE r.id = ws.id)
                ORDER BY ws.created_at_ms ASC, c.id ASC"#
         );
         let rows = sqlx::query(&sql)
@@ -5445,20 +4892,6 @@ fn is_session_conflict(err: &CalmError) -> bool {
         err,
         CalmError::Core(calm_types::error::CoreError::Conflict(_))
     )
-}
-
-fn runtime_status_for_exit_session_state(
-    id: &WorkerSessionId,
-    to: WorkerSessionState,
-) -> Result<RunStatus> {
-    match to {
-        WorkerSessionState::Exited => Ok(RunStatus::Exited),
-        WorkerSessionState::Failed => Ok(RunStatus::Failed),
-        _ => Err(CalmError::BadRequest(format!(
-            "session exit commit {id} requires exited or failed target, got {}",
-            to.as_db_str()
-        ))),
-    }
 }
 
 #[async_trait]
@@ -5566,7 +4999,6 @@ impl SessionRepo for SqlxRepo {
         exit_code: Option<i32>,
         exit_interpretation: &str,
     ) -> Result<CommitExitOutcome> {
-        let runtime_status = runtime_status_for_exit_session_state(id, to)?;
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let session = match session_commit_exit_tx(
             &mut tx,
@@ -5582,14 +5014,6 @@ impl SessionRepo for SqlxRepo {
             Err(err) if is_session_conflict(&err) => return Ok(CommitExitOutcome::Absorbed),
             Err(err) => return Err(err),
         };
-
-        match runtime_status_flip_tx(&mut tx, &id.0, runtime_status).await {
-            Ok(()) => {}
-            Err(RuntimeRepoError::IllegalStatusTransition { .. }) => {
-                return Ok(CommitExitOutcome::Absorbed);
-            }
-            Err(err) => return Err(err.into()),
-        }
 
         tx.commit().await?;
         Ok(CommitExitOutcome::Committed(session))
@@ -7148,7 +6572,7 @@ mod runtime_read_flip_tests {
     async fn seed_runtime(repo: &SqlxRepo, case: RuntimeReadCase, now_ms: i64) -> CardRuntime {
         let mut tx = repo.pool().begin().await.expect("begin seed tx");
         let card_id = create_card_in_tx(repo, &mut tx, case.label, case.card_kind).await;
-        let runtime = runtime_start_tx(
+        let runtime = session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: format!("rt-read-flip-{}", case.label),
@@ -7176,7 +6600,7 @@ mod runtime_read_flip_tests {
     async fn seed_runtime_with_keys(repo: &SqlxRepo, seed: KeyedRuntimeSeed) -> CardRuntime {
         let mut tx = repo.pool().begin().await.expect("begin keyed seed tx");
         let card_id = create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind).await;
-        let runtime = runtime_start_tx(
+        let runtime = session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: format!("rt-read-flip-{}", seed.label),
@@ -7381,13 +6805,13 @@ mod runtime_read_flip_tests {
     ) -> ProjectableHistory {
         let mut tx = repo.pool().begin().await.expect("begin projectable tx");
         let card_id = create_card_in_tx(repo, &mut tx, label, "codex").await;
-        let older = runtime_start_tx(
+        let older = session_start_runtime_tx(
             &mut tx,
             projectable_runtime_init(&card_id, label, "older", RunStatus::Running, 10_000),
         )
         .await
         .expect("start older runtime");
-        let exited = runtime_supersede_tx(
+        let exited = session_supersede_and_start_tx(
             &mut tx,
             &older.id,
             projectable_runtime_init(&card_id, label, "exited", RunStatus::Exited, 20_000),
@@ -7400,7 +6824,7 @@ mod runtime_read_flip_tests {
             .expect("superseded runtime row");
         let active = if include_active {
             Some(
-                runtime_start_tx(
+                session_start_runtime_tx(
                     &mut tx,
                     projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 30_000),
                 )
@@ -7441,26 +6865,7 @@ mod runtime_read_flip_tests {
         pool: &SqlitePool,
         card_id: &str,
     ) -> RuntimeResult<Option<CardRuntime>> {
-        let row = sqlx::query(
-            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE card_id = ?1
-             AND status != 'superseded'
-           ORDER BY
-             CASE
-                 WHEN status IN ('starting', 'running', 'idle', 'turn_pending') THEN 0
-                 ELSE 1
-             END ASC,
-             updated_at_ms DESC, created_at_ms DESC, id DESC
-           LIMIT 1"#,
-        )
-        .bind(card_id)
-        .fetch_optional(pool)
-        .await?;
-        row.as_ref().map(card_runtime_from_row).transpose()
+        runtime_get_projectable_for_card_from_pool(pool, card_id).await
     }
 
     async fn runtime_get_active_by_thread_from_runtimes_reference(
@@ -7468,23 +6873,7 @@ mod runtime_read_flip_tests {
         provider: AgentProvider,
         thread_id: &str,
     ) -> RuntimeResult<Option<CardRuntime>> {
-        let row = sqlx::query(
-            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE agent_provider = ?1
-             AND thread_id = ?2
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
-           LIMIT 1"#,
-        )
-        .bind(agent_provider_to_db(&provider))
-        .bind(thread_id)
-        .fetch_optional(pool)
-        .await?;
-        row.as_ref().map(card_runtime_from_row).transpose()
+        runtime_get_active_by_thread_from_pool(pool, provider, thread_id).await
     }
 
     async fn runtime_get_active_by_session_from_runtimes_reference(
@@ -7492,61 +6881,20 @@ mod runtime_read_flip_tests {
         provider: AgentProvider,
         session_id: &str,
     ) -> RuntimeResult<Option<CardRuntime>> {
-        let row = sqlx::query(
-            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE agent_provider = ?1
-             AND session_id = ?2
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
-           LIMIT 1"#,
-        )
-        .bind(agent_provider_to_db(&provider))
-        .bind(session_id)
-        .fetch_optional(pool)
-        .await?;
-        row.as_ref().map(card_runtime_from_row).transpose()
+        runtime_get_active_by_session_from_pool(pool, provider, session_id).await
     }
 
     async fn runtime_active_shared_thread_attribution_from_runtimes_reference(
         pool: &SqlitePool,
     ) -> RuntimeResult<Vec<(String, String)>> {
-        sqlx::query_as::<_, (String, String)>(
-            r#"SELECT thread_id, card_id
-           FROM runtimes
-           WHERE kind IN ('shared-spec', 'codex')
-             AND agent_provider = 'codex'
-             AND thread_id IS NOT NULL
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY created_at_ms ASC, card_id ASC"#,
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(Into::into)
+        runtime_active_shared_thread_attribution_from_pool(pool).await
     }
 
     async fn runtime_get_active_for_terminal_from_runtimes_reference_tx(
         tx: &mut RuntimeTx<'_>,
         terminal_id: &str,
     ) -> RuntimeResult<Option<CardRuntime>> {
-        let row = sqlx::query(
-            r#"SELECT id, card_id, kind, agent_provider, status, terminal_run_id,
-                  thread_id, session_id, active_turn_id, handle_state_json,
-                  lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                  completed_at_ms
-           FROM runtimes
-           WHERE terminal_run_id = ?1
-             AND status IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
-           LIMIT 1"#,
-        )
-        .bind(terminal_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        row.as_ref().map(card_runtime_from_row).transpose()
+        runtime_get_active_for_terminal_tx(tx, terminal_id).await
     }
 
     fn assert_ws_backed_projection(expected: &CardRuntime, actual: &CardRuntime) {
@@ -7576,21 +6924,6 @@ mod runtime_read_flip_tests {
             .fetch_one(pool)
             .await
             .expect("worker session card_id")
-    }
-
-    async fn run_worker_sessions_card_id_backfill(pool: &SqlitePool) -> u64 {
-        sqlx::query(
-            r#"UPDATE worker_sessions
-                  SET card_id = COALESCE(
-                      (SELECT r.card_id FROM runtimes r WHERE r.id = worker_sessions.id),
-                      (SELECT c.id      FROM cards    c WHERE c.session_id = worker_sessions.id)
-                  )
-                WHERE card_id IS NULL"#,
-        )
-        .execute(pool)
-        .await
-        .expect("run worker_sessions card_id backfill")
-        .rows_affected()
     }
 
     async fn assert_projectable_card_matches_runtimes_reference(
@@ -7626,7 +6959,7 @@ mod runtime_read_flip_tests {
             RunStatus::Running,
             10_000,
         );
-        let runtime = runtime_start_tx(&mut tx, init.clone())
+        let runtime = session_start_runtime_tx(&mut tx, init.clone())
             .await
             .expect("start runtime");
         tx.commit().await.expect("commit runtime start tx");
@@ -7653,12 +6986,6 @@ mod runtime_read_flip_tests {
             .expect("prepare deferred placeholder");
         tx.commit().await.expect("commit deferred placeholder tx");
 
-        let runtime_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
-            .bind(&placeholder_id)
-            .fetch_one(repo.pool())
-            .await
-            .expect("count placeholder runtime rows");
-        assert_eq!(runtime_count, 0);
         assert_eq!(
             worker_session_card_id(repo.pool(), &placeholder_id).await,
             Some(init.card_id)
@@ -7668,8 +6995,6 @@ mod runtime_read_flip_tests {
     #[tokio::test]
     async fn card_delete_removes_placeholder_worker_session() {
         let repo = fresh_repo().await;
-        #[cfg(feature = "worker-session-parity-drop")]
-        repo.disable_worker_session_parity_on_drop_for_test();
 
         let label = "card-delete-placeholder";
         let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
@@ -7679,7 +7004,7 @@ mod runtime_read_flip_tests {
             .await
             .expect("begin card delete placeholder tx");
         let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
-        let active = runtime_start_tx(
+        let active = session_start_runtime_tx(
             &mut tx,
             projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 10_000),
         )
@@ -7702,14 +7027,6 @@ mod runtime_read_flip_tests {
                 .await
                 .expect("count seeded worker sessions");
         assert_eq!(seeded_ws, 2);
-
-        let placeholder_runtime_rows: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
-                .bind(&placeholder_id)
-                .fetch_one(repo.pool())
-                .await
-                .expect("count placeholder runtime rows");
-        assert_eq!(placeholder_runtime_rows, 0);
 
         let mut tx = repo
             .pool()
@@ -7742,80 +7059,8 @@ mod runtime_read_flip_tests {
     }
 
     #[tokio::test]
-    async fn worker_sessions_card_id_backfill_from_runtimes() {
-        let repo = fresh_repo().await;
-        let runtime = seed_runtime(
-            &repo,
-            RuntimeReadCase {
-                label: "card-id-backfill-runtime",
-                card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
-            },
-            10_000,
-        )
-        .await;
-
-        sqlx::query("UPDATE worker_sessions SET card_id = NULL WHERE id = ?1")
-            .bind(&runtime.id)
-            .execute(repo.pool())
-            .await
-            .expect("clear worker session card_id");
-        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 1);
-        assert_eq!(
-            worker_session_card_id(repo.pool(), &runtime.id).await,
-            Some(runtime.card_id)
-        );
-    }
-
-    #[tokio::test]
-    async fn worker_sessions_card_id_backfill_from_cards_session_id() {
-        let repo = fresh_repo().await;
-        let (card_id, placeholder_id) =
-            seed_deferred_projectable_placeholder(&repo, "card-id-backfill-card").await;
-
-        sqlx::query("UPDATE worker_sessions SET card_id = NULL WHERE id = ?1")
-            .bind(&placeholder_id)
-            .execute(repo.pool())
-            .await
-            .expect("clear placeholder card_id");
-        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 1);
-        assert_eq!(
-            worker_session_card_id(repo.pool(), &placeholder_id).await,
-            Some(card_id)
-        );
-    }
-
-    #[tokio::test]
-    async fn worker_sessions_card_id_backfill_idempotent() {
-        let repo = fresh_repo().await;
-        let runtime = seed_runtime(
-            &repo,
-            RuntimeReadCase {
-                label: "card-id-backfill-idempotent",
-                card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
-            },
-            10_000,
-        )
-        .await;
-
-        sqlx::query("UPDATE worker_sessions SET card_id = NULL WHERE id = ?1")
-            .bind(&runtime.id)
-            .execute(repo.pool())
-            .await
-            .expect("clear worker session card_id");
-        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 1);
-        assert_eq!(run_worker_sessions_card_id_backfill(repo.pool()).await, 0);
-    }
-
-    #[tokio::test]
     async fn assert_worker_sessions_card_id_complete_flags_active_null() {
         let repo = fresh_repo().await;
-        repo.disable_worker_session_parity_on_drop_for_test();
         let runtime = seed_runtime(
             &repo,
             RuntimeReadCase {
@@ -7928,13 +7173,13 @@ mod runtime_read_flip_tests {
         let label = "by-id-superseded";
         let mut tx = repo.pool().begin().await.expect("begin supersede tx");
         let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
-        let older = runtime_start_tx(
+        let older = session_start_runtime_tx(
             &mut tx,
             projectable_runtime_init(&card_id, label, "older", RunStatus::Running, 10_000),
         )
         .await
         .expect("start older runtime");
-        let newer = runtime_supersede_tx(
+        let newer = session_supersede_and_start_tx(
             &mut tx,
             &older.id,
             projectable_runtime_init(&card_id, label, "newer", RunStatus::Running, 20_000),
@@ -7966,10 +7211,8 @@ mod runtime_read_flip_tests {
     }
 
     #[tokio::test]
-    async fn runtime_get_active_for_card_tx_returns_old_runtime_in_deferred_spec_gap() {
+    async fn runtime_get_active_for_card_tx_returns_placeholder_during_deferred_spec_gap() {
         let repo = fresh_repo().await;
-        #[cfg(feature = "worker-session-parity-drop")]
-        repo.disable_worker_session_parity_on_drop_for_test();
 
         let label = "active-card-gap";
         let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
@@ -7978,7 +7221,7 @@ mod runtime_read_flip_tests {
         let mut active_init =
             projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 10_000);
         active_init.kind = RuntimeKind::SharedSpec;
-        let active = runtime_start_tx(&mut tx, active_init)
+        let active = session_start_runtime_tx(&mut tx, active_init)
             .await
             .expect("start old active runtime");
         session_prepare_deferred_spec_tx(
@@ -7994,22 +7237,21 @@ mod runtime_read_flip_tests {
                 .fetch_one(&mut *tx)
                 .await
                 .expect("read card session pointer");
-        let placeholder_runtime_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
-                .bind(&placeholder_id)
-                .fetch_one(&mut *tx)
-                .await
-                .expect("count placeholder runtime rows");
         assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
-        assert_eq!(placeholder_runtime_count, 0);
 
         let actual = runtime_get_active_for_card_tx(&mut tx, &card_id)
             .await
             .expect("worker-session active-for-card tx read")
-            .expect("old active runtime remains visible");
+            .expect("placeholder active runtime is visible");
+        let old = runtime_get_by_id_tx(&mut tx, &active.id)
+            .await
+            .expect("old runtime read")
+            .expect("old runtime still present");
         tx.commit().await.expect("commit deferred gap tx");
 
-        assert_ws_backed_projection(&active, &actual);
+        assert_eq!(actual.id, placeholder_id);
+        assert_eq!(actual.status, RunStatus::Starting);
+        assert_eq!(old.status, RunStatus::Superseded);
     }
 
     #[tokio::test]
@@ -8288,31 +7530,30 @@ mod runtime_read_flip_tests {
     }
 
     #[tokio::test]
-    async fn runtime_get_projectable_for_card_from_pool_skips_deferred_spec_placeholder() {
+    async fn runtime_get_projectable_for_card_from_pool_returns_deferred_spec_placeholder() {
         let repo = fresh_repo().await;
-        let (card_id, _placeholder_id) =
+        let (card_id, placeholder_id) =
             seed_deferred_projectable_placeholder(&repo, "projectable-placeholder").await;
 
         let expected =
             runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &card_id)
                 .await
-                .expect("runtimes-backed projectable reference");
-        assert_eq!(expected, None);
+                .expect("worker-session projectable reference")
+                .expect("placeholder reference");
+        assert_eq!(expected.id, placeholder_id);
 
         let actual = runtime_get_projectable_for_card_from_pool(repo.pool(), &card_id)
             .await
-            .expect("worker-session projectable read");
-        assert_eq!(actual, None);
+            .expect("worker-session projectable read")
+            .expect("placeholder projectable read");
+        assert_ws_backed_projection(&expected, &actual);
     }
 
-    // This pins the intended Hole-1 / deferred-spec "eager session row, no
-    // card-fallback window" behavior (PR7 + PR9a): the flipped pool read
-    // deliberately returns None for the runtime-less placeholder even when a
-    // pre-existing active runtime exists. This is safe because the double-spawn
-    // gate uses the card-keyed in-tx runtime_get_active_for_card_tx, which
-    // retains the runtimes EXISTS guard while scanning worker_sessions.card_id.
+    // Phase 1 supersedes the old active worker session before inserting the
+    // deferred placeholder, so the card's projectable session is the
+    // placeholder until Phase 2 binds a real thread.
     #[tokio::test]
-    async fn projectable_deferred_spec_gap_with_active_runtime_returns_none_by_design() {
+    async fn projectable_deferred_spec_gap_with_active_runtime_returns_placeholder() {
         let repo = fresh_repo().await;
         let label = "projectable-gap";
         let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
@@ -8321,7 +7562,7 @@ mod runtime_read_flip_tests {
         let mut active_init =
             projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 30_000);
         active_init.kind = RuntimeKind::SharedSpec;
-        let active = runtime_start_tx(&mut tx, active_init)
+        let active = session_start_runtime_tx(&mut tx, active_init)
             .await
             .expect("start active shared-spec runtime");
         session_prepare_deferred_spec_tx(
@@ -8334,8 +7575,9 @@ mod runtime_read_flip_tests {
 
         let flipped = runtime_get_projectable_for_card_from_pool(repo.pool(), &card_id)
             .await
-            .expect("worker-session projectable read");
-        assert_eq!(flipped, None);
+            .expect("worker-session projectable read")
+            .expect("placeholder projectable read");
+        assert_eq!(flipped.id, placeholder_id);
 
         let batch = runtime_get_projectable_for_cards_from_pool(
             repo.pool(),
@@ -8343,23 +7585,27 @@ mod runtime_read_flip_tests {
         )
         .await
         .expect("worker-session batch projectable read");
-        assert!(!batch.contains_key(&card_id));
+        assert_eq!(
+            batch
+                .get(&card_id)
+                .expect("placeholder batch projectable read")
+                .id,
+            placeholder_id
+        );
 
         let reference =
             runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &card_id)
                 .await
-                .expect("runtimes-backed projectable reference")
-                .expect("pre-existing active runtime remains projectable");
-        assert_eq!(reference.id, active.id);
-        assert_eq!(reference.status, RunStatus::Running);
+                .expect("worker-session projectable reference")
+                .expect("placeholder reference");
+        assert_eq!(reference.id, placeholder_id);
+        assert_eq!(active.status, RunStatus::Running);
     }
 
     #[tokio::test]
     async fn terminals_orphaned_protects_terminal_when_old_session_active_and_placeholder_present()
     {
         let repo = fresh_repo().await;
-        #[cfg(feature = "worker-session-parity-drop")]
-        repo.disable_worker_session_parity_on_drop_for_test();
         let label = "terminals-orphaned-placeholder";
         let (card_id, terminal_id, initial_runtime_id) =
             seed_codex_terminal_card(&repo, label).await;
@@ -8367,10 +7613,10 @@ mod runtime_read_flip_tests {
         let placeholder_id = format!("rt-read-flip-{label}-placeholder-{}", new_id());
 
         let mut tx = repo.pool().begin().await.expect("begin #744 seed tx");
-        runtime_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
+        session_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
             .await
             .expect("complete initial codex runtime");
-        let old_runtime = runtime_start_tx(
+        let old_runtime = session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: old_runtime_id,
@@ -8406,15 +7652,8 @@ mod runtime_read_flip_tests {
                 .fetch_one(repo.pool())
                 .await
                 .expect("read card session pointer");
-        let placeholder_runtime_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
-                .bind(&placeholder_id)
-                .fetch_one(repo.pool())
-                .await
-                .expect("count placeholder runtime rows");
         assert_eq!(old_runtime.status, RunStatus::Running);
         assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
-        assert_eq!(placeholder_runtime_count, 0);
 
         let orphans = repo
             .terminals_orphaned(60)
@@ -8434,7 +7673,7 @@ mod runtime_read_flip_tests {
             seed_codex_terminal_card(&repo, label).await;
 
         let mut tx = repo.pool().begin().await.expect("begin no-active seed tx");
-        runtime_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
+        session_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
             .await
             .expect("complete initial codex runtime");
         tx.commit().await.expect("commit no-active seed tx");
@@ -8468,7 +7707,7 @@ mod runtime_read_flip_tests {
             seed_projectable_history(&repo, "projectable-batch-active", true).await;
         let no_active_history =
             seed_projectable_history(&repo, "projectable-batch-no-active", false).await;
-        let (placeholder_card_id, _placeholder_id) =
+        let (placeholder_card_id, placeholder_id) =
             seed_deferred_projectable_placeholder(&repo, "projectable-batch-placeholder").await;
         let active = active_history.active.as_ref().expect("active runtime");
 
@@ -8481,7 +7720,7 @@ mod runtime_read_flip_tests {
             .await
             .expect("worker-session batch projectable read");
 
-        assert_eq!(actual.len(), 2);
+        assert_eq!(actual.len(), 3);
         let expected_active = runtime_get_projectable_for_card_from_runtimes_reference(
             repo.pool(),
             &active_history.card_id,
@@ -8511,7 +7750,13 @@ mod runtime_read_flip_tests {
                 .get(&no_active_history.card_id)
                 .expect("no-active card batch runtime"),
         );
-        assert!(!actual.contains_key(&placeholder_card_id));
+        assert_eq!(
+            actual
+                .get(&placeholder_card_id)
+                .expect("placeholder card batch runtime")
+                .id,
+            placeholder_id
+        );
         assert!(
             actual
                 .values()
@@ -8522,7 +7767,7 @@ mod runtime_read_flip_tests {
     }
 
     #[tokio::test]
-    async fn worker_session_backed_reads_skip_deferred_spec_placeholder_without_runtime_row() {
+    async fn worker_session_backed_reads_return_deferred_spec_placeholder() {
         let repo = fresh_repo().await;
         let placeholder_id = format!("rt-read-flip-placeholder-{}", new_id());
         let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
@@ -8552,31 +7797,29 @@ mod runtime_read_flip_tests {
 
         let by_id = runtime_get_by_id_from_pool(repo.pool(), &placeholder_id)
             .await
-            .expect("by-id read");
-        assert_eq!(by_id, None);
+            .expect("by-id read")
+            .expect("placeholder by-id read");
+        assert_eq!(by_id.id, placeholder_id);
 
         let active_for_card = runtime_get_active_for_card_from_pool(repo.pool(), &card_id)
             .await
-            .expect("active-for-card read");
-        assert_eq!(active_for_card, None);
+            .expect("active-for-card read")
+            .expect("placeholder active-for-card read");
+        assert_eq!(active_for_card.id, placeholder_id);
 
         let active_for_kind =
             runtimes_active_for_kind_from_pool(repo.pool(), RuntimeKind::SharedSpec)
                 .await
                 .expect("active-for-kind read");
-        assert_eq!(active_for_kind, Vec::<CardRuntime>::new());
+        assert_eq!(active_for_kind.len(), 1);
+        assert_eq!(active_for_kind[0].id, placeholder_id);
 
         let mut tx = repo.pool().begin().await.expect("begin status tx");
-        let err = runtime_current_status_tx(&mut tx, &placeholder_id)
+        let status = runtime_current_status_tx(&mut tx, &placeholder_id)
             .await
-            .expect_err("placeholder has no runtime row");
+            .expect("placeholder status read");
         tx.commit().await.expect("commit status tx");
-        match err {
-            RuntimeRepoError::Message { message } => {
-                assert_eq!(message, format!("runtime {placeholder_id} not found"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_eq!(status, RunStatus::Starting);
     }
 
     #[tokio::test]
@@ -8631,11 +7874,6 @@ mod runtime_read_flip_tests {
         .expect("prepare deferred placeholder");
         tx.commit().await.expect("commit placeholder tx");
 
-        let runtime_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtimes WHERE id = ?1")
-            .bind(&placeholder_id)
-            .fetch_one(repo.pool())
-            .await
-            .expect("count runtime rows");
         let session_keys: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
             r#"SELECT thread_id, agent_session_id, terminal_run_id
                FROM worker_sessions
@@ -8645,7 +7883,6 @@ mod runtime_read_flip_tests {
         .fetch_one(repo.pool())
         .await
         .expect("placeholder worker session");
-        assert_eq!(runtime_count, 0);
         assert_eq!(session_keys, (None, None, None));
 
         let by_thread = runtime_get_active_by_thread_from_pool(

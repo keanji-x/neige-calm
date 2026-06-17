@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
@@ -52,7 +52,7 @@ struct Boot {
 
 async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: SPEC_SESSION_ID.to_string(),
@@ -486,7 +486,7 @@ async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
 async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> CardRuntime {
     let runtime_id = calm_server::model::new_id();
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    let runtime = runtime_start_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

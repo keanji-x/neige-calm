@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, SpecHarness, SpecHarnessParams,
@@ -53,7 +53,7 @@ async fn seed_harness(
     snapshot.last_thread_id = Some(thread_id.clone());
 
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

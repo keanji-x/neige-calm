@@ -110,70 +110,10 @@ pub trait RuntimeRepo {
 
     async fn runtime_get_by_id(&self, id: &RuntimeId) -> Result<Option<CardRuntime>>;
 
-    async fn runtime_start_tx(&self, tx: &mut Tx<'_>, init: RuntimeInit) -> Result<CardRuntime>;
-
-    async fn runtime_supersede_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        id: &RuntimeId,
-        new_init: RuntimeInit,
-    ) -> Result<CardRuntime>;
-
-    /// `status` MUST NOT be `RunStatus::Superseded`; passing it returns
-    /// `RuntimeRepoError::IllegalStatusTransition`. Use `runtime_supersede_tx`
-    /// for the atomic old-to-Superseded + new insert sequence.
-    async fn runtime_set_status_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        id: &RuntimeId,
-        status: RunStatus,
-    ) -> Result<()>;
-
     /// Idempotent: if no active runtime exists for this card, returns
     /// `Ok(())` without writing. This handles fast-exit races and
     /// pre-#488-backfilled-but-already-completed cards.
     async fn runtime_set_status_for_card(&self, card_id: &str, status: RunStatus) -> Result<()>;
-
-    /// Idempotent: if no active runtime exists for this card, returns
-    /// `Ok(())` without writing. This handles fast-exit races and
-    /// pre-#488-backfilled-but-already-completed cards.
-    async fn runtime_set_status_for_card_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        card_id: &str,
-        status: RunStatus,
-    ) -> Result<()>;
-
-    async fn runtime_bind_attribution_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        id: &RuntimeId,
-        attr: ThreadAttribution,
-    ) -> Result<()>;
-
-    async fn runtime_clear_terminal_run_id_tx(&self, tx: &mut Tx<'_>, id: &RuntimeId)
-    -> Result<()>;
-
-    async fn runtime_set_handle_state_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        id: &RuntimeId,
-        state: Option<serde_json::Value>,
-    ) -> Result<()>;
-
-    async fn runtime_set_active_turn_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        id: &RuntimeId,
-        turn_id: Option<&str>,
-    ) -> Result<()>;
-
-    async fn runtime_complete_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        id: &RuntimeId,
-        terminal_status: RunStatus,
-    ) -> Result<()>;
 
     /// Idempotent: if no active runtime exists for this card, returns
     /// `Ok(())` without writing. This handles fast-exit races and
@@ -184,32 +124,11 @@ pub trait RuntimeRepo {
         terminal_status: RunStatus,
     ) -> Result<()>;
 
-    /// Idempotent: if no active runtime exists for this card, returns
-    /// `Ok(())` without writing. This handles fast-exit races and
-    /// pre-#488-backfilled-but-already-completed cards.
-    async fn runtime_complete_for_card_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        card_id: &str,
-        terminal_status: RunStatus,
-    ) -> Result<()>;
-
     async fn runtime_complete_for_terminal(
         &self,
         terminal_id: &str,
         terminal_status: RunStatus,
     ) -> Result<()>;
-
-    async fn runtime_complete_for_terminal_tx(
-        &self,
-        tx: &mut Tx<'_>,
-        terminal_id: &str,
-        terminal_status: RunStatus,
-    ) -> Result<()>;
-
-    /// PR3b-i (#679): idempotently inserts same-id worker_sessions mirrors
-    /// for pre-existing runtimes that were live before the dual-write seam.
-    async fn backfill_worker_sessions_from_runtimes(&self) -> Result<usize>;
 
     /// Returns shared-spec runtimes whose `handle_state_json` carries a harness
     /// snapshot (`$.mode == 'harness'`) so the spec harness boot path can

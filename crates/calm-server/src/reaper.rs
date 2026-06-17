@@ -695,7 +695,7 @@ mod tests {
         }
     }
 
-    async fn insert_session(repo: &SqlxRepo, session: WorkerSession) -> Card {
+    async fn insert_session(repo: &SqlxRepo, mut session: WorkerSession) -> Card {
         let card = RepoSyncDomainRaw::card_create(
             repo,
             NewCard {
@@ -708,31 +708,17 @@ mod tests {
         .await
         .expect("seed runtime card");
         let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-        // Mirror the session's state into the runtime row so the dual-write
-        // parity-drop check (runtimes.status == worker_sessions.state) holds
-        // for seeds in any state (e.g. `starting`), not just `running`.
-        sqlx::query(
-            r#"INSERT INTO runtimes (
-                   id, card_id, kind, agent_provider, status, terminal_run_id,
-                   thread_id, session_id, active_turn_id, handle_state_json,
-                   lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-                   completed_at_ms
-               )
-               VALUES (?1, ?2, 'terminal', NULL, ?5, ?3, ?6, NULL, NULL, NULL,
-                       NULL, NULL, ?4, ?4, NULL)"#,
-        )
-        .bind(session.id.as_str())
-        .bind(card.id.as_str())
-        .bind(&session.terminal_run_id)
-        .bind(session.created_at_ms)
-        .bind(session.state.as_db_str())
-        .bind(&session.thread_id)
-        .execute(&mut *tx)
-        .await
-        .expect("insert runtime row");
+        let session_id = session.id.clone();
+        session.card_id = Some(CardId(card.id.to_string()));
         session_insert_tx(&mut tx, session)
             .await
             .expect("insert session");
+        sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+            .bind(session_id.as_str())
+            .bind(card.id.as_str())
+            .execute(&mut *tx)
+            .await
+            .expect("link card session");
         tx.commit().await.expect("commit tx");
         card
     }

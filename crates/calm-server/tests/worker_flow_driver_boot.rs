@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_update_tx, runtime_bind_attribution_tx, runtime_set_status_tx,
+    SqlxRepo, card_update_tx, session_bind_attribution_tx, session_set_status_tx,
     terminal_create_tx,
 };
 use calm_server::event::{Event, EventBus};
@@ -113,7 +113,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
         ],
     );
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_bind_attribution_tx(
+    session_bind_attribution_tx(
         &mut tx,
         &seed.runtime.id,
         ThreadAttribution {
@@ -126,7 +126,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
     )
     .await
     .unwrap();
-    runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Running)
+    session_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Running)
         .await
         .unwrap();
     tx.commit().await.unwrap();

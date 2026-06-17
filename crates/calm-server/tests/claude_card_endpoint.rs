@@ -460,7 +460,7 @@ async fn latest_claude_operation_phase(repo: &SqlxRepo) -> (String, Value) {
 }
 
 async fn runtime_status(repo: &SqlxRepo, card_id: &str) -> String {
-    let row = sqlx::query("SELECT status FROM runtimes WHERE card_id = ?1")
+    let row = sqlx::query("SELECT state AS status FROM worker_sessions WHERE card_id = ?1")
         .bind(card_id)
         .fetch_one(repo.pool())
         .await
@@ -598,7 +598,7 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     assert!(!restart_call.program.contains("first prompt"));
 
     let rows = sqlx::query(
-        "SELECT status, terminal_run_id, session_id FROM runtimes WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
+        "SELECT state AS status, terminal_run_id, agent_session_id AS session_id FROM worker_sessions WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
     )
     .bind(card_id)
     .fetch_all(boot.repo.pool())
@@ -696,7 +696,7 @@ async fn post_claude_restart_spawn_failure_restores_terminal_exit_and_marks_runt
     assert!(!term.signal_killed);
 
     let rows = sqlx::query(
-        "SELECT status, terminal_run_id FROM runtimes WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
+        "SELECT state AS status, terminal_run_id FROM worker_sessions WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
     )
     .bind(card_id)
     .fetch_all(boot.repo.pool())
@@ -783,7 +783,7 @@ async fn post_claude_restart_returns_403_without_resumable_session() {
         .await
         .unwrap();
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::runtime_start_tx(
+    calm_server::db::sqlite::session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),
