@@ -83,7 +83,8 @@ UPDATE worker_sessions
         SELECT 1 FROM worker_sessions sib
          WHERE sib.card_id = ws.card_id
            AND sib.state IN ('starting','running','idle','turn_pending')
-           AND sib.updated_at_ms > ws.updated_at_ms
+           AND (sib.updated_at_ms, sib.created_at_ms, sib.id)
+             > (ws.updated_at_ms, ws.created_at_ms, ws.id)
       )
  );
 

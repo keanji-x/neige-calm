@@ -122,16 +122,17 @@ async fn seed_card(pool: &SqlitePool, wave_id: &str, card_id: &str) {
         .unwrap();
 }
 
-async fn insert_worker_session(
-    pool: &SqlitePool,
-    id: &str,
-    wave_id: &str,
-    card_id: Option<&str>,
-    state: &str,
+struct WorkerSessionSeed<'a> {
+    id: &'a str,
+    wave_id: &'a str,
+    card_id: Option<&'a str>,
+    state: &'a str,
     created_at_ms: i64,
     updated_at_ms: i64,
     completed_at_ms: Option<i64>,
-) {
+}
+
+async fn insert_worker_session(pool: &SqlitePool, seed: WorkerSessionSeed<'_>) {
     sqlx::query(
         r#"INSERT INTO worker_sessions (
              id, wave_id, provider, mode, contract, state, liveness,
@@ -142,28 +143,29 @@ async fn insert_worker_session(
              ?4, ?5, ?6, ?7
            )"#,
     )
-    .bind(id)
-    .bind(wave_id)
-    .bind(state)
-    .bind(created_at_ms)
-    .bind(updated_at_ms)
-    .bind(completed_at_ms)
-    .bind(card_id)
+    .bind(seed.id)
+    .bind(seed.wave_id)
+    .bind(seed.state)
+    .bind(seed.created_at_ms)
+    .bind(seed.updated_at_ms)
+    .bind(seed.completed_at_ms)
+    .bind(seed.card_id)
     .execute(pool)
     .await
     .unwrap();
 }
 
-async fn insert_runtime(
-    pool: &SqlitePool,
-    id: &str,
-    card_id: &str,
-    kind: &str,
-    agent_provider: Option<&str>,
-    status: &str,
+struct RuntimeSeed<'a> {
+    id: &'a str,
+    card_id: &'a str,
+    kind: &'a str,
+    agent_provider: Option<&'a str>,
+    status: &'a str,
     created_at_ms: i64,
     updated_at_ms: i64,
-) {
+}
+
+async fn insert_runtime(pool: &SqlitePool, seed: RuntimeSeed<'_>) {
     sqlx::query(
         r#"INSERT INTO "runtimes" (
              id, card_id, kind, agent_provider, status, terminal_run_id,
@@ -176,13 +178,13 @@ async fn insert_runtime(
              '{"mode":"harness"}', ?6, ?7, NULL
            )"#,
     )
-    .bind(id)
-    .bind(card_id)
-    .bind(kind)
-    .bind(agent_provider)
-    .bind(status)
-    .bind(created_at_ms)
-    .bind(updated_at_ms)
+    .bind(seed.id)
+    .bind(seed.card_id)
+    .bind(seed.kind)
+    .bind(seed.agent_provider)
+    .bind(seed.status)
+    .bind(seed.created_at_ms)
+    .bind(seed.updated_at_ms)
     .execute(pool)
     .await
     .unwrap();
@@ -195,24 +197,28 @@ async fn migration_0055_backfills_runtimes_without_ws_mirror() {
     seed_card(&pool, "wave-a", "card-a").await;
     insert_runtime(
         &pool,
-        "runtime-only",
-        "card-a",
-        "shared-spec",
-        Some("codex"),
-        "idle",
-        100,
-        200,
+        RuntimeSeed {
+            id: "runtime-only",
+            card_id: "card-a",
+            kind: "shared-spec",
+            agent_provider: Some("codex"),
+            status: "idle",
+            created_at_ms: 100,
+            updated_at_ms: 200,
+        },
     )
     .await;
     insert_runtime(
         &pool,
-        "orphan-runtime",
-        "deleted-card",
-        "codex",
-        Some("codex"),
-        "running",
-        110,
-        210,
+        RuntimeSeed {
+            id: "orphan-runtime",
+            card_id: "deleted-card",
+            kind: "codex",
+            agent_provider: Some("codex"),
+            status: "running",
+            created_at_ms: 110,
+            updated_at_ms: 210,
+        },
     )
     .await;
 
@@ -234,9 +240,15 @@ async fn migration_0055_backfills_runtimes_without_ws_mirror() {
     assert_eq!(row.get::<String, _>("contract"), "planner");
     assert_eq!(row.get::<String, _>("state"), "idle");
     assert_eq!(row.get::<String, _>("thread_id"), "thread-0055");
-    assert_eq!(row.get::<String, _>("agent_session_id"), "agent-session-0055");
+    assert_eq!(
+        row.get::<String, _>("agent_session_id"),
+        "agent-session-0055"
+    );
     assert_eq!(row.get::<String, _>("active_turn_id"), "turn-0055");
-    assert_eq!(row.get::<String, _>("handle_state_json"), r#"{"mode":"harness"}"#);
+    assert_eq!(
+        row.get::<String, _>("handle_state_json"),
+        r#"{"mode":"harness"}"#
+    );
     assert_eq!(row.get::<String, _>("liveness"), "unknown");
     assert_eq!(row.get::<i64, _>("created_at_ms"), 100);
     assert_eq!(row.get::<i64, _>("updated_at_ms"), 200);
@@ -265,52 +277,82 @@ async fn migration_0055_dedup_resolves_double_active_before_index_create() {
     seed_card(&pool, "wave-a", "card-a").await;
     seed_card(&pool, "wave-b", "card-b").await;
 
-    insert_worker_session(&pool, "old-active", "wave-a", Some("card-a"), "running", 90, 100, None)
-        .await;
-    insert_worker_session(&pool, "new-active", "wave-a", Some("card-a"), "idle", 190, 200, None)
-        .await;
     insert_worker_session(
         &pool,
-        "terminal-old",
-        "wave-a",
-        Some("card-a"),
-        "failed",
-        290,
-        300,
-        Some(300),
+        WorkerSessionSeed {
+            id: "old-active",
+            wave_id: "wave-a",
+            card_id: Some("card-a"),
+            state: "running",
+            created_at_ms: 90,
+            updated_at_ms: 200,
+            completed_at_ms: None,
+        },
     )
     .await;
     insert_worker_session(
         &pool,
-        "other-active",
-        "wave-b",
-        Some("card-b"),
-        "turn_pending",
-        140,
-        150,
-        None,
+        WorkerSessionSeed {
+            id: "new-active",
+            wave_id: "wave-a",
+            card_id: Some("card-a"),
+            state: "idle",
+            created_at_ms: 190,
+            updated_at_ms: 200,
+            completed_at_ms: None,
+        },
     )
     .await;
     insert_worker_session(
         &pool,
-        "uncarded-active",
-        "wave-a",
-        None,
-        "running",
-        390,
-        400,
-        None,
+        WorkerSessionSeed {
+            id: "terminal-old",
+            wave_id: "wave-a",
+            card_id: Some("card-a"),
+            state: "failed",
+            created_at_ms: 290,
+            updated_at_ms: 300,
+            completed_at_ms: Some(300),
+        },
+    )
+    .await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "other-active",
+            wave_id: "wave-b",
+            card_id: Some("card-b"),
+            state: "turn_pending",
+            created_at_ms: 140,
+            updated_at_ms: 150,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "uncarded-active",
+            wave_id: "wave-a",
+            card_id: None,
+            state: "running",
+            created_at_ms: 390,
+            updated_at_ms: 400,
+            completed_at_ms: None,
+        },
     )
     .await;
     insert_runtime(
         &pool,
-        "old-active",
-        "card-a",
-        "shared-spec",
-        Some("codex"),
-        "running",
-        90,
-        100,
+        RuntimeSeed {
+            id: "old-active",
+            card_id: "card-a",
+            kind: "shared-spec",
+            agent_provider: Some("codex"),
+            status: "running",
+            created_at_ms: 90,
+            updated_at_ms: 200,
+        },
     )
     .await;
 
