@@ -1,6 +1,7 @@
 use crate::db::sqlite::worker_session_from_row;
 use crate::runtime_repo::{
-    AgentProvider, CardId, CardRuntime, Result, RunStatus, RuntimeKind, RuntimeRepoError,
+    AgentProvider, CardId, Result, RunStatus, RuntimeKind, RuntimeRepoError,
+    WorkerSessionProjection,
 };
 use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionState};
 use sqlx::sqlite::SqliteRow;
@@ -63,7 +64,7 @@ pub(crate) fn projectable_runtimes_for_cards_query<'a>(
 
 pub(crate) fn projectable_runtimes_for_cards_from_rows(
     rows: impl IntoIterator<Item = SqliteRow>,
-) -> Result<HashMap<CardId, CardRuntime>> {
+) -> Result<HashMap<CardId, WorkerSessionProjection>> {
     let mut out = HashMap::new();
     for row in rows {
         let runtime = card_runtime_from_ws_join_row(&row)?;
@@ -76,29 +77,26 @@ pub(crate) fn projectable_runtimes_for_cards_from_rows(
 pub(crate) fn card_runtime_from_session(
     ws: &WorkerSession,
     card_id: String,
-) -> Result<CardRuntime> {
+) -> Result<WorkerSessionProjection> {
     let kind = runtime_kind_from_session_identity(ws.provider, ws.contract)?;
-    Ok(CardRuntime {
+    Ok(WorkerSessionProjection {
         id: ws.id.as_str().to_string(),
         card_id,
         kind,
         agent_provider: agent_provider_from_session_provider(ws.provider),
         status: run_status_from_worker_session_state(ws.state),
         terminal_run_id: ws.terminal_run_id.clone(),
-        terminal_ref: None,
         thread_id: ws.thread_id.clone(),
         session_id: ws.agent_session_id.clone(),
         active_turn_id: ws.active_turn_id.clone(),
         handle_state_json: ws.handle_state_json.clone(),
-        lease_owner: None,
-        lease_until_ms: None,
         created_at_ms: ws.created_at_ms,
         updated_at_ms: ws.updated_at_ms,
         completed_at_ms: ws.completed_at_ms,
     })
 }
 
-pub(crate) fn card_runtime_from_ws_join_row(row: &SqliteRow) -> Result<CardRuntime> {
+pub(crate) fn card_runtime_from_ws_join_row(row: &SqliteRow) -> Result<WorkerSessionProjection> {
     let ws = worker_session_from_row(row).map_err(|err| RuntimeRepoError::Message {
         message: err.to_string(),
     })?;
@@ -203,21 +201,18 @@ mod tests {
         kind: RuntimeKind,
         agent_provider: Option<AgentProvider>,
         status: RunStatus,
-    ) -> CardRuntime {
-        CardRuntime {
+    ) -> WorkerSessionProjection {
+        WorkerSessionProjection {
             id: "ws-1".into(),
             card_id: "card-1".into(),
             kind,
             agent_provider,
             status,
             terminal_run_id: Some("terminal-run-1".into()),
-            terminal_ref: None,
             thread_id: Some("thread-1".into()),
             session_id: Some("agent-session-1".into()),
             active_turn_id: Some("turn-1".into()),
             handle_state_json: Some(json!({"mode": "harness"})),
-            lease_owner: None,
-            lease_until_ms: None,
             created_at_ms: 10,
             updated_at_ms: 20,
             completed_at_ms: Some(30),

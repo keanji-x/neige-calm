@@ -12,7 +12,7 @@ use calm_exec::flow::{WorkerFlowItemSink, WorkerFlowSource};
 use calm_truth::worker_flow_sink::WorkerFlowSink;
 use calm_types::error::CoreError;
 use calm_types::event::Event;
-use calm_types::runtime::{AgentProvider, CardRuntime, RunStatus, RuntimeKind};
+use calm_types::runtime::{AgentProvider, RunStatus, RuntimeKind, WorkerSessionProjection};
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -161,7 +161,10 @@ impl WorkerFlowDriver {
     }
 
     #[cfg(any(test, feature = "fixtures"))]
-    pub async fn attach_runtime_for_test(&self, runtime: CardRuntime) -> Result<(), CoreError> {
+    pub async fn attach_runtime_for_test(
+        &self,
+        runtime: WorkerSessionProjection,
+    ) -> Result<(), CoreError> {
         self.attach_runtime(runtime).await
     }
 
@@ -304,7 +307,7 @@ impl WorkerFlowDriver {
         }
     }
 
-    async fn attach_runtime(&self, runtime: CardRuntime) -> Result<(), CoreError> {
+    async fn attach_runtime(&self, runtime: WorkerSessionProjection) -> Result<(), CoreError> {
         let Some(source_kind) = source_kind_for_runtime(&runtime) else {
             return Ok(());
         };
@@ -456,7 +459,7 @@ enum FlowSourceKind {
     Claude,
 }
 
-fn source_kind_for_runtime(runtime: &CardRuntime) -> Option<FlowSourceKind> {
+fn source_kind_for_runtime(runtime: &WorkerSessionProjection) -> Option<FlowSourceKind> {
     match (&runtime.kind, runtime.agent_provider.as_ref()) {
         (RuntimeKind::CodexCard, Some(AgentProvider::Codex)) => Some(FlowSourceKind::Codex),
         (RuntimeKind::ClaudeCard, Some(AgentProvider::Claude)) => Some(FlowSourceKind::Claude),
@@ -464,7 +467,7 @@ fn source_kind_for_runtime(runtime: &CardRuntime) -> Option<FlowSourceKind> {
     }
 }
 
-fn is_supported_runtime(runtime: &CardRuntime) -> bool {
+fn is_supported_runtime(runtime: &WorkerSessionProjection) -> bool {
     source_kind_for_runtime(runtime).is_some()
 }
 
@@ -488,7 +491,7 @@ pub async fn start_on_boot(state: &AppState) -> Result<(), CoreError> {
     state.worker_flow.start_on_boot().await
 }
 
-fn session_from_runtime(runtime: &CardRuntime, card: &Card) -> WorkerSession {
+fn session_from_runtime(runtime: &WorkerSessionProjection, card: &Card) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(runtime.id.clone()),
         wave_id: card.wave_id.clone(),
@@ -518,7 +521,7 @@ fn session_from_runtime(runtime: &CardRuntime, card: &Card) -> WorkerSession {
     }
 }
 
-fn worker_provider_from_runtime(runtime: &CardRuntime) -> WorkerProviderKind {
+fn worker_provider_from_runtime(runtime: &WorkerSessionProjection) -> WorkerProviderKind {
     match runtime.agent_provider.as_ref() {
         Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
         Some(AgentProvider::Codex) | None => WorkerProviderKind::Codex,

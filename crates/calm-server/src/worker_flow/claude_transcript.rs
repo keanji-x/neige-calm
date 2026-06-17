@@ -8,7 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calm_exec::flow::{FlowRowCtx, WorkerFlowItemSink, WorkerFlowSource};
 use calm_types::error::CoreError;
-use calm_types::runtime::{CardRuntime, RunStatus};
+use calm_types::runtime::{RunStatus, WorkerSessionProjection};
 use calm_types::worker::{WorkerProviderKind, WorkerSession};
 use calm_types::worker_flow::RawRef;
 use serde_json::Value;
@@ -53,7 +53,7 @@ impl Default for ClaudeTranscriptFlowSourceOptions {
 
 pub struct ClaudeTranscriptFlowSource {
     repo: Arc<dyn Repo>,
-    runtime: CardRuntime,
+    runtime: WorkerSessionProjection,
     card_cwd: String,
     stop: CancellationToken,
     options: ClaudeTranscriptFlowSourceOptions,
@@ -62,7 +62,7 @@ pub struct ClaudeTranscriptFlowSource {
 impl ClaudeTranscriptFlowSource {
     pub fn new(
         repo: Arc<dyn Repo>,
-        runtime: CardRuntime,
+        runtime: WorkerSessionProjection,
         card_cwd: String,
         stop: CancellationToken,
     ) -> Self {
@@ -77,7 +77,7 @@ impl ClaudeTranscriptFlowSource {
 
     pub fn new_with_options(
         repo: Arc<dyn Repo>,
-        runtime: CardRuntime,
+        runtime: WorkerSessionProjection,
         card_cwd: String,
         stop: CancellationToken,
         options: ClaudeTranscriptFlowSourceOptions,
@@ -390,7 +390,7 @@ async fn wait_for_transcript_path(
     path: PathBuf,
     stop: &CancellationToken,
     options: &ClaudeTranscriptFlowSourceOptions,
-    runtime: &CardRuntime,
+    runtime: &WorkerSessionProjection,
     runtime_alive: &mut (dyn RuntimeAliveProbe + Send),
 ) -> Result<Option<PathBuf>, CoreError> {
     let warn_after = options.lazy_retry_attempts;
@@ -479,7 +479,7 @@ struct Position {
     turn: u32,
 }
 
-fn row_ctx(session: &WorkerSession, runtime: &CardRuntime) -> FlowRowCtx {
+fn row_ctx(session: &WorkerSession, runtime: &WorkerSessionProjection) -> FlowRowCtx {
     FlowRowCtx {
         session_id: session.id.clone(),
         wave_id: Some(session.wave_id.as_str().to_string()),
@@ -751,20 +751,17 @@ mod tests {
             lazy_retry_attempts: 3,
             cursor_persist_every: 1,
         };
-        let runtime = CardRuntime {
+        let runtime = WorkerSessionProjection {
             id: "rt-lazy-race".into(),
             card_id: "card-lazy-race".into(),
             kind: RuntimeKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status: RunStatus::Running,
             terminal_run_id: None,
-            terminal_ref: None,
             thread_id: None,
             session_id: Some("session-lazy-race".into()),
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             completed_at_ms: None,

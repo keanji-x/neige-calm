@@ -53,7 +53,7 @@ struct Boot {
 async fn runtime_by_id_tx_snapshot(
     repo: &SqlxRepo,
     runtime_id: &str,
-) -> Option<calm_server::runtime_repo::CardRuntime> {
+) -> Option<calm_server::runtime_repo::WorkerSessionProjection> {
     let id = runtime_id.to_string();
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = runtime_get_by_id_tx(&mut tx, &id).await.unwrap();

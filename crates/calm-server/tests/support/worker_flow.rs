@@ -10,7 +10,9 @@ use calm_server::db::sqlite::{
 use calm_server::event::EventBus;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{
+    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, WorkerSessionProjection,
+};
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::worker_flow::claude_transcript::{
     ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions,
@@ -28,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 pub struct SeededRuntime {
     pub card: Card,
-    pub runtime: CardRuntime,
+    pub runtime: WorkerSessionProjection,
 }
 
 pub async fn seed_card_and_runtime(
@@ -167,7 +169,7 @@ pub async fn seed_runtime_for_card_with_status(
     card: &Card,
     thread_id: Option<&str>,
     status: RunStatus,
-) -> CardRuntime {
+) -> WorkerSessionProjection {
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(
         &mut tx,
@@ -199,7 +201,7 @@ pub async fn seed_claude_runtime_for_card_with_status(
     card: &Card,
     session_id: &str,
     status: RunStatus,
-) -> CardRuntime {
+) -> WorkerSessionProjection {
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(
         &mut tx,
@@ -603,7 +605,7 @@ pub fn app_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
 
 pub fn spawn_source_with_path(
     repo: Arc<SqlxRepo>,
-    runtime: CardRuntime,
+    runtime: WorkerSessionProjection,
     seed: &SeededRuntime,
     path: &Path,
 ) -> (
@@ -634,7 +636,7 @@ pub fn spawn_source_with_path(
 
 pub fn spawn_source_with_discovery(
     repo: Arc<SqlxRepo>,
-    runtime: CardRuntime,
+    runtime: WorkerSessionProjection,
     seed: &SeededRuntime,
     codex_home: &Path,
 ) -> (
@@ -663,7 +665,7 @@ pub fn spawn_source_with_discovery(
 
 pub fn spawn_claude_source_with_path(
     repo: Arc<SqlxRepo>,
-    runtime: CardRuntime,
+    runtime: WorkerSessionProjection,
     seed: &SeededRuntime,
     path: &Path,
 ) -> (

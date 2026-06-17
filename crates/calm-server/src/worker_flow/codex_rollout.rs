@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calm_exec::flow::{FlowRowCtx, WorkerFlowItemSink, WorkerFlowSource};
 use calm_types::error::CoreError;
-use calm_types::runtime::{CardRuntime, RunStatus};
+use calm_types::runtime::{RunStatus, WorkerSessionProjection};
 use calm_types::worker::{WorkerProviderKind, WorkerSession};
 use calm_types::worker_flow::RawRef;
 use tokio_util::sync::CancellationToken;
@@ -49,7 +49,7 @@ impl Default for CodexRolloutFlowSourceOptions {
 
 pub struct CodexRolloutFlowSource {
     repo: Arc<dyn Repo>,
-    runtime: CardRuntime,
+    runtime: WorkerSessionProjection,
     codex_home: PathBuf,
     stop: CancellationToken,
     options: CodexRolloutFlowSourceOptions,
@@ -58,7 +58,7 @@ pub struct CodexRolloutFlowSource {
 impl CodexRolloutFlowSource {
     pub fn new(
         repo: Arc<dyn Repo>,
-        runtime: CardRuntime,
+        runtime: WorkerSessionProjection,
         codex_home: PathBuf,
         stop: CancellationToken,
     ) -> Self {
@@ -73,7 +73,7 @@ impl CodexRolloutFlowSource {
 
     pub fn new_with_options(
         repo: Arc<dyn Repo>,
-        runtime: CardRuntime,
+        runtime: WorkerSessionProjection,
         codex_home: PathBuf,
         stop: CancellationToken,
         options: CodexRolloutFlowSourceOptions,
@@ -399,7 +399,7 @@ fn reset_cursor(cursor: &mut CursorState, position: &mut Option<Position>) {
     *position = None;
 }
 
-fn row_ctx(session: &WorkerSession, runtime: &CardRuntime) -> FlowRowCtx {
+fn row_ctx(session: &WorkerSession, runtime: &WorkerSessionProjection) -> FlowRowCtx {
     FlowRowCtx {
         session_id: session.id.clone(),
         wave_id: Some(session.wave_id.as_str().to_string()),

@@ -7,7 +7,8 @@ use crate::error::Result;
 use crate::event::Event;
 use crate::model::{Card, CardRuntimeView};
 use crate::runtime_repo::{
-    AgentProvider, CardRuntime, Result as RuntimeResult, RunStatus, RuntimeKind, RuntimeRepo,
+    AgentProvider, Result as RuntimeResult, RunStatus, RuntimeKind, RuntimeRepo,
+    WorkerSessionProjection,
 };
 use serde_json::Value;
 
@@ -147,7 +148,7 @@ pub async fn project_runtime_into_event_payload<R: RuntimeRepo + ?Sized>(
     Ok(())
 }
 
-pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
+pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionProjection) {
     let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
     let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
     let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
@@ -197,7 +198,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &CardRuntime) {
     }
 }
 
-pub(crate) fn runtime_view_from_runtime(runtime: &CardRuntime) -> CardRuntimeView {
+pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> CardRuntimeView {
     CardRuntimeView {
         runtime_id: runtime.id.clone(),
         kind: runtime.kind.clone(),
@@ -211,7 +212,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &CardRuntime) -> CardRuntimeVie
     }
 }
 
-fn projected_thread_status(runtime: &CardRuntime) -> Option<&'static str> {
+fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static str> {
     if !matches!(
         runtime.kind,
         RuntimeKind::CodexCard | RuntimeKind::SharedSpec
@@ -236,7 +237,7 @@ fn projected_thread_status(runtime: &CardRuntime) -> Option<&'static str> {
 ///
 /// Returns true for any active codex card with a thread id; post-PR2a all codex
 /// traffic routes through the shared daemon, not only spec-card launches.
-pub fn card_is_shared_spec(card: &Card, runtime: Option<&CardRuntime>) -> bool {
+pub fn card_is_shared_spec(card: &Card, runtime: Option<&WorkerSessionProjection>) -> bool {
     if let Some(runtime) = runtime {
         return runtime_marks_shared(runtime);
     }
@@ -256,7 +257,7 @@ pub fn card_is_shared_spec(card: &Card, runtime: Option<&CardRuntime>) -> bool {
     legacy_shared
 }
 
-fn runtime_marks_shared(runtime: &CardRuntime) -> bool {
+fn runtime_marks_shared(runtime: &WorkerSessionProjection) -> bool {
     matches!(runtime.kind, RuntimeKind::SharedSpec)
         || (matches!(runtime.kind, RuntimeKind::CodexCard)
             && runtime.agent_provider == Some(AgentProvider::Codex)

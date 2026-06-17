@@ -10,7 +10,7 @@
 //!                 they are tokio-broadcast IO, not vocabulary)
 //! wave_lifecycle  the (from, to, actor) edge table — pure validator
 //! runtime         runtime projection vocabulary (RunStatus / RuntimeKind /
-//!                 CardRuntime…) — the repo trait stays in calm-server
+//!                 WorkerSessionProjection…) — the repo trait stays in calm-server
 //! observation     spec-harness Observation enum (pure data, persisted in
 //!                 harness snapshots and spoken by calm-exec's seams)
 //! harness         HarnessPhaseTag (the TS-exported phase discriminator)
