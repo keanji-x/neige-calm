@@ -30,16 +30,20 @@ async fn synthetic_fixture_replays_from_every_version() {
     for key in [
         "table:waves",
         "table:cards",
-        "table:runtimes",
+        "table:worker_sessions",
         "table:operations",
         "table:events",
         "table:card_mcp_tokens",
         "table:tasks",
         "trigger:cards_role_validate_insert",
-        "index:runtimes_one_active_per_card",
+        "index:ws_one_active_per_card",
     ] {
         assert!(fresh.contains_key(key), "fresh fingerprint missing {key}");
     }
+    assert!(
+        !fresh.contains_key("table:runtimes"),
+        "fresh head schema must not contain runtimes"
+    );
     let versions = harness::migration_versions();
     assert!(
         versions.len() >= 42,
@@ -93,31 +97,13 @@ async fn synthetic_fixture_replays_from_every_version() {
             "[{context}] 0037 must collapse role='plain' into 'worker'"
         );
 
-        // The 0035/0036 pair: a pre-#567 spec runtime (no mcp token) loses
-        // its stale thread binding; the tokened one keeps it. Both rows
-        // exist only when seeded at v28+ (and 0035/0036 only fire when the
-        // replay still has them ahead, i.e. staged before v35).
-        if (28..35).contains(&version) {
-            let stale_thread: Option<String> =
-                sqlx::query_scalar("SELECT thread_id FROM runtimes WHERE id = 'rt-spec-no-token'")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(
-                stale_thread, None,
-                "[{context}] 0035 must null the token-less spec runtime's thread_id"
-            );
-            let kept_thread: Option<String> =
-                sqlx::query_scalar("SELECT thread_id FROM runtimes WHERE id = 'rt-spec'")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(
-                kept_thread.as_deref(),
-                Some("thread-spec-1"),
-                "[{context}] 0035 must keep the tokened spec runtime's thread_id"
-            );
-        }
+        let runtime_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtimes'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(runtime_tables, 0, "[{context}] 0055 must drop runtimes");
 
         // Head stop sanity: at v=head the whole fixture (including rows
         // only expressible at head, e.g. the 'parked' operation) seeds
