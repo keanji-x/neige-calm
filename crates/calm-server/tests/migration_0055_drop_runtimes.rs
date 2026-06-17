@@ -48,6 +48,13 @@ async fn stage_pre_0055_schema(pool: &SqlitePool) {
           wave_id TEXT NOT NULL,
           session_id TEXT NULL
         );
+        CREATE TABLE card_mcp_tokens (
+          card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+          hashed_token TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_card_mcp_tokens_hashed
+          ON card_mcp_tokens(hashed_token);
         CREATE TABLE terminals (
           id TEXT PRIMARY KEY
         );
@@ -81,6 +88,8 @@ async fn stage_pre_0055_schema(pool: &SqlitePool) {
           last_thread_status TEXT NULL,
           card_id TEXT NULL
         );
+        CREATE UNIQUE INDEX ws_token_idx ON worker_sessions(mcp_token_hash)
+          WHERE mcp_token_hash IS NOT NULL;
         CREATE TABLE "runtimes" (
           id TEXT PRIMARY KEY,
           card_id TEXT NULL,
@@ -106,6 +115,17 @@ async fn stage_pre_0055_schema(pool: &SqlitePool) {
         "#,
     )
     .await;
+}
+
+async fn seed_card_mcp_token(pool: &SqlitePool, card_id: &str, hashed_token: &str) {
+    sqlx::query(
+        "INSERT INTO card_mcp_tokens (card_id, hashed_token, created_at) VALUES (?1, ?2, 1234)",
+    )
+    .bind(card_id)
+    .bind(hashed_token)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn seed_card(pool: &SqlitePool, wave_id: &str, card_id: &str) {
@@ -268,6 +288,145 @@ async fn migration_0055_backfills_runtimes_without_ws_mirror() {
             .await
             .unwrap();
     assert_eq!(orphan_count, 0);
+}
+
+#[tokio::test]
+async fn migration_0055_repoints_waves_root_session_for_bridged_planner() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-root", "card-root").await;
+    insert_runtime(
+        &pool,
+        RuntimeSeed {
+            id: "bridged-planner",
+            card_id: "card-root",
+            kind: "shared-spec",
+            agent_provider: Some("codex"),
+            status: "idle",
+            created_at_ms: 100,
+            updated_at_ms: 200,
+        },
+    )
+    .await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let root_session_id: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = 'wave-root'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(root_session_id.as_deref(), Some("bridged-planner"));
+}
+
+#[tokio::test]
+async fn migration_0055_mirrors_mcp_token_for_bridged_session() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-token", "card-token").await;
+    seed_card_mcp_token(&pool, "card-token", "hash-token").await;
+    insert_runtime(
+        &pool,
+        RuntimeSeed {
+            id: "bridged-token",
+            card_id: "card-token",
+            kind: "codex",
+            agent_provider: Some("codex"),
+            status: "running",
+            created_at_ms: 100,
+            updated_at_ms: 200,
+        },
+    )
+    .await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let mcp_token_hash: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = 'bridged-token'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(mcp_token_hash.as_deref(), Some("hash-token"));
+}
+
+#[tokio::test]
+async fn migration_0055_root_session_repoint_skips_already_set_waves() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-keep", "card-keep").await;
+    seed_card(&pool, "wave-keep", "card-new").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "valid-root",
+            wave_id: "wave-keep",
+            card_id: Some("card-keep"),
+            state: "idle",
+            created_at_ms: 100,
+            updated_at_ms: 100,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    sqlx::query("UPDATE waves SET root_session_id = 'valid-root' WHERE id = 'wave-keep'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    insert_runtime(
+        &pool,
+        RuntimeSeed {
+            id: "newer-bridged-planner",
+            card_id: "card-new",
+            kind: "shared-spec",
+            agent_provider: Some("codex"),
+            status: "running",
+            created_at_ms: 200,
+            updated_at_ms: 300,
+        },
+    )
+    .await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let root_session_id: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = 'wave-keep'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(root_session_id.as_deref(), Some("valid-root"));
+}
+
+#[tokio::test]
+async fn migration_0055_token_mirror_skips_duplicate_hashed_tokens() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-dupe", "card-dupe-a").await;
+    seed_card(&pool, "wave-dupe", "card-dupe-b").await;
+    seed_card_mcp_token(&pool, "card-dupe-a", "hash-dupe").await;
+    seed_card_mcp_token(&pool, "card-dupe-b", "hash-dupe").await;
+    insert_runtime(
+        &pool,
+        RuntimeSeed {
+            id: "bridged-dupe-token",
+            card_id: "card-dupe-a",
+            kind: "codex",
+            agent_provider: Some("codex"),
+            status: "idle",
+            created_at_ms: 100,
+            updated_at_ms: 200,
+        },
+    )
+    .await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let mcp_token_hash: Option<String> = sqlx::query_scalar(
+        "SELECT mcp_token_hash FROM worker_sessions WHERE id = 'bridged-dupe-token'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(mcp_token_hash, None);
 }
 
 #[tokio::test]
