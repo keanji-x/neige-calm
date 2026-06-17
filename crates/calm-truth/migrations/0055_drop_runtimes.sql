@@ -95,13 +95,15 @@ UPDATE worker_sessions
       )
  );
 
--- 3. Repoint cards that still have no current session link after the bridge.
+-- 3. Repoint cards.session_id when it's NULL or pointing at a non-active ws,
+--    provided a better target (non-superseded ws with matching card_id)
+--    exists. Idempotent: cards correctly pointed at an active ws or at a
+--    terminal (failed/exited) ws are untouched.
 UPDATE cards
    SET session_id = (
        SELECT ws.id
-        FROM runtimes r
-        JOIN worker_sessions ws ON ws.id = r.id
-        WHERE r.card_id = cards.id
+         FROM worker_sessions ws
+        WHERE ws.card_id = cards.id
           AND ws.state != 'superseded'
         ORDER BY CASE
                    WHEN ws.state IN ('starting','running','idle','turn_pending')
@@ -113,19 +115,22 @@ UPDATE cards
                  ws.id DESC
         LIMIT 1
    )
- WHERE cards.session_id IS NULL
+ WHERE (cards.session_id IS NULL
+        OR EXISTS (
+            SELECT 1 FROM worker_sessions ws
+             WHERE ws.id = cards.session_id
+               AND ws.state = 'superseded'
+        ))
    AND EXISTS (
-       SELECT 1
-         FROM runtimes r
-         JOIN worker_sessions ws ON ws.id = r.id
-        WHERE r.card_id = cards.id
+       SELECT 1 FROM worker_sessions ws
+        WHERE ws.card_id = cards.id
           AND ws.state != 'superseded'
    );
 
--- 3.5. Replay 0050's wave-root backfill: for any wave whose root_session_id
---      is NULL or points at a now-nonexistent session (the bridged-but-not-
---      mirrored case), set it to the newest active planner ws in that wave.
---      Idempotent: cleanly-mirrored waves keep their current root.
+-- 3.5. Repoint waves.root_session_id when it's NULL, points at a
+--      now-nonexistent session, or points at a superseded planner -- provided
+--      a better target (active planner in the same wave) exists.
+--      Idempotent: waves correctly pointed at an active planner are untouched.
 UPDATE waves
    SET root_session_id = (
        SELECT ws.id
@@ -139,7 +144,12 @@ UPDATE waves
         LIMIT 1
    )
  WHERE (waves.root_session_id IS NULL
-        OR waves.root_session_id NOT IN (SELECT id FROM worker_sessions))
+        OR waves.root_session_id NOT IN (SELECT id FROM worker_sessions)
+        OR EXISTS (
+            SELECT 1 FROM worker_sessions ws
+             WHERE ws.id = waves.root_session_id
+               AND ws.state = 'superseded'
+        ))
    AND EXISTS (
        SELECT 1 FROM worker_sessions ws
         WHERE ws.wave_id = waves.id
