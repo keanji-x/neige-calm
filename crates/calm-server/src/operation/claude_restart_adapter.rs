@@ -441,7 +441,11 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             return Ok(());
         }
         match step.op.as_str() {
-            "session_projection_set_status_failed_for_card" => {
+            // Back-compat: operations that entered `compensating` under a pre-PR10-d
+            // release persisted the legacy op string; accept it during recovery so
+            // in-flight compensation states still drain. New states write the new name.
+            "session_projection_set_status_failed_for_card"
+            | "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
                     .session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
