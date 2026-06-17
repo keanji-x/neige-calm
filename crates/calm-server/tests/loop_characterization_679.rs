@@ -59,7 +59,7 @@ use calm_server::operation::{
 };
 use calm_server::provider_registry::WorkerProviderRegistry;
 use calm_server::reaper::{Reaper, reaper_on_boot};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -67,7 +67,7 @@ use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_truth_test_harness::FakeProvider;
 use calm_types::worker::{
     ExitEvidence, ExitSource, Liveness, LivenessTag, SessionMode, WorkerContract,
-    WorkerProviderKind, WorkerSession, WorkerSessionId, WorkerSessionState,
+    WorkerProviderKind, WorkerSession, WorkerSessionId,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -168,7 +168,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             card_id: spec_card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,

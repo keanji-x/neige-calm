@@ -20,7 +20,7 @@ use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_comman
 use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind};
+use crate::runtime_repo::{AgentProvider, RuntimeKind, WorkerSessionState};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -340,7 +340,7 @@ impl ProviderAdapter for ClaudeAdapter {
             card_id: card.id.to_string(),
             kind: RuntimeKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
         };
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
@@ -465,7 +465,7 @@ impl ProviderAdapter for ClaudeAdapter {
                     let existing = ctx.repo.runtime_get_active_for_card(&card_id).await?;
                     let needs_status_write = existing
                         .as_ref()
-                        .map(|runtime| runtime.status != RunStatus::Running)
+                        .map(|runtime| runtime.status != WorkerSessionState::Running)
                         .unwrap_or(true);
                     if !needs_status_write {
                         return Ok(());
@@ -506,9 +506,9 @@ impl ProviderAdapter for ClaudeAdapter {
                                                 "claude card {card_id_for_tx} has no active runtime to mark running"
                                             ))
                                         })?;
-                                let old_status = runtime.status.clone();
+                                let old_status = runtime.status;
                                 let runtime_id = runtime.id.clone();
-                                session_set_status_tx(tx, &runtime.id, RunStatus::Running)
+                                session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running)
                                     .await?;
                                 Ok((
                                     (),
@@ -518,7 +518,7 @@ impl ProviderAdapter for ClaudeAdapter {
                                             runtime_id,
                                             card_id: card_id_for_tx,
                                             old_status,
-                                            new_status: RunStatus::Running,
+                                            new_status: WorkerSessionState::Running,
                                         },
                                     )],
                                 ))
@@ -604,7 +604,7 @@ impl ProviderAdapter for ClaudeAdapter {
             "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
-                    .runtime_complete_for_card(&card_id, RunStatus::Failed)
+                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await?;
                 Ok(())
             }

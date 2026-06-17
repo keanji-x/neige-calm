@@ -59,7 +59,7 @@ use calm_server::model::{
 use calm_server::model::{WavePatch, new_id, now_ms};
 use calm_server::replay::{self, Fixture};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::ws;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -121,7 +121,7 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: None,
             session_id: None,

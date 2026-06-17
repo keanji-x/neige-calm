@@ -950,7 +950,7 @@ export interface components {
             runtime_id: string;
             session_id?: string | null;
             source?: string | null;
-            status: components["schemas"]["RunStatus"];
+            status: components["schemas"]["WorkerSessionState"];
             terminal_id?: string | null;
             thread_id?: string | null;
             thread_status?: string | null;
@@ -1538,8 +1538,6 @@ export interface components {
             path: string;
         };
         /** @enum {string} */
-        RunStatus: "starting" | "running" | "idle" | "turn_pending" | "failed" | "exited" | "superseded";
-        /** @enum {string} */
         RuntimeKind: "terminal" | "codex" | "claude" | "shared-spec";
         SendSpecInputRequest: {
             text: string;
@@ -2049,6 +2047,12 @@ export interface components {
              */
             until?: number | null;
         };
+        /**
+         * @description Session state machine column (`worker_sessions.state`, issue #679 §1).
+         *     Single runtime/session state vocabulary (`worker_sessions.state`, issue #679 §1).
+         * @enum {string}
+         */
+        WorkerSessionState: "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";
     };
     responses: never;
     parameters: never;

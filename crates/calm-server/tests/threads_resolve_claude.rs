@@ -9,7 +9,7 @@ use calm_server::event::EventBus;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -94,7 +94,7 @@ async fn bind_claude_session(repo: &SqlxRepo, card_id: &str, session_id: &str) {
             card_id: card_id.to_string(),
             kind: RuntimeKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: None,
             session_id: Some(session_id.to_string()),

@@ -45,8 +45,8 @@ use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VE
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::*;
 use crate::runtime_repo::{
-    AgentProvider, CardId as RuntimeCardId, Result as RuntimeResult, RunStatus, RuntimeId,
-    RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution, Tx as RuntimeTx,
+    AgentProvider, CardId as RuntimeCardId, Result as RuntimeResult, RuntimeId, RuntimeInit,
+    RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution, Tx as RuntimeTx,
     WorkerSessionProjection,
 };
 use crate::runtime_row::{
@@ -1991,7 +1991,7 @@ pub async fn card_with_terminal_create_tx(
         card_id: card.id.to_string(),
         kind: RuntimeKind::Terminal,
         agent_provider: None,
-        status: RunStatus::Starting,
+        status: WorkerSessionState::Starting,
         terminal_run_id: Some(term.id.clone()),
         thread_id: None,
         session_id: None,
@@ -2225,7 +2225,7 @@ pub async fn card_with_codex_create_tx(
         card_id: card.id.to_string(),
         kind: RuntimeKind::CodexCard,
         agent_provider: Some(AgentProvider::Codex),
-        status: RunStatus::Starting,
+        status: WorkerSessionState::Starting,
         terminal_run_id: Some(term.id.clone()),
         thread_id: None,
         session_id: None,
@@ -2336,7 +2336,7 @@ pub async fn card_with_claude_create_tx(
         card_id: card.id.to_string(),
         kind: RuntimeKind::ClaudeCard,
         agent_provider: Some(AgentProvider::Claude),
-        status: RunStatus::Starting,
+        status: WorkerSessionState::Starting,
         terminal_run_id: Some(term.id.clone()),
         thread_id: None,
         session_id: Some(claude_session_id),
@@ -2498,46 +2498,41 @@ pub(crate) fn derive_session_identity(
     (provider, mode, contract)
 }
 
-fn worker_session_state_from_run_status(status: &RunStatus) -> WorkerSessionState {
-    match status {
-        RunStatus::Starting => WorkerSessionState::Starting,
-        RunStatus::Running => WorkerSessionState::Running,
-        RunStatus::Idle => WorkerSessionState::Idle,
-        RunStatus::TurnPending => WorkerSessionState::TurnPending,
-        RunStatus::Failed => WorkerSessionState::Failed,
-        RunStatus::Exited => WorkerSessionState::Exited,
-        RunStatus::Superseded => WorkerSessionState::Superseded,
-    }
-}
-
 fn runtime_message(message: impl Into<String>) -> RuntimeRepoError {
     RuntimeRepoError::Message {
         message: message.into(),
     }
 }
 
-fn runtime_status_transition_allowed(from: &RunStatus, to: &RunStatus) -> bool {
+fn runtime_status_transition_allowed(from: &WorkerSessionState, to: &WorkerSessionState) -> bool {
     match from {
-        RunStatus::Starting => matches!(
+        WorkerSessionState::Starting => matches!(
             to,
-            RunStatus::Running
-                | RunStatus::Idle
-                | RunStatus::TurnPending
-                | RunStatus::Failed
-                | RunStatus::Exited
+            WorkerSessionState::Running
+                | WorkerSessionState::Idle
+                | WorkerSessionState::TurnPending
+                | WorkerSessionState::Failed
+                | WorkerSessionState::Exited
         ),
-        RunStatus::Running => matches!(to, RunStatus::Idle | RunStatus::Failed | RunStatus::Exited),
-        RunStatus::Idle => matches!(
+        WorkerSessionState::Running => matches!(
             to,
-            RunStatus::Running | RunStatus::Failed | RunStatus::Exited
+            WorkerSessionState::Idle | WorkerSessionState::Failed | WorkerSessionState::Exited
         ),
-        RunStatus::TurnPending => {
+        WorkerSessionState::Idle => matches!(
+            to,
+            WorkerSessionState::Running | WorkerSessionState::Failed | WorkerSessionState::Exited
+        ),
+        WorkerSessionState::TurnPending => {
             matches!(
                 to,
-                RunStatus::Running | RunStatus::Failed | RunStatus::Exited
+                WorkerSessionState::Running
+                    | WorkerSessionState::Failed
+                    | WorkerSessionState::Exited
             )
         }
-        RunStatus::Failed | RunStatus::Exited | RunStatus::Superseded => false,
+        WorkerSessionState::Failed
+        | WorkerSessionState::Exited
+        | WorkerSessionState::Superseded => false,
     }
 }
 
@@ -2940,15 +2935,15 @@ async fn session_state_transition_at_tx(
 
 fn ensure_runtime_status_transition(
     id: &RuntimeId,
-    from: &RunStatus,
-    to: &RunStatus,
+    from: &WorkerSessionState,
+    to: &WorkerSessionState,
 ) -> RuntimeResult<()> {
     if runtime_status_transition_allowed(from, to) {
         Ok(())
     } else {
         Err(RuntimeRepoError::IllegalStatusTransition {
             id: id.clone(),
-            attempted: to.clone(),
+            attempted: *to,
         })
     }
 }
@@ -2983,7 +2978,7 @@ fn worker_session_from_runtime_init(init: &RuntimeInit, wave_id: WaveId) -> Work
         contract,
         parent_session_id: None,
         requester_session_id: None,
-        state: worker_session_state_from_run_status(&init.status),
+        state: init.status,
         mcp_token_hash: None,
         thread_id: init.thread_id.clone(),
         agent_session_id: init.session_id.clone(),
@@ -3199,7 +3194,7 @@ pub async fn session_prepare_deferred_spec_tx(
     tx: &mut RuntimeTx<'_>,
     init: &RuntimeInit,
 ) -> RuntimeResult<WorkerSession> {
-    if init.kind != RuntimeKind::SharedSpec || init.status != RunStatus::Starting {
+    if init.kind != RuntimeKind::SharedSpec || init.status != WorkerSessionState::Starting {
         return Err(runtime_message(
             "deferred spec session placeholders require a starting shared-spec runtime init",
         ));
@@ -3288,31 +3283,25 @@ pub async fn session_delete_tx(tx: &mut RuntimeTx<'_>, id: &RuntimeId) -> Runtim
 async fn session_set_status_mirror_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    status: RunStatus,
+    status: WorkerSessionState,
     now: i64,
 ) -> RuntimeResult<()> {
-    session_state_transition_at_tx(
-        tx,
-        &WorkerSessionId(id.clone()),
-        worker_session_state_from_run_status(&status),
-        now,
-        None,
-    )
-    .await
-    .map(|_| ())
-    .map_err(runtime_session_error)
+    session_state_transition_at_tx(tx, &WorkerSessionId(id.clone()), status, now, None)
+        .await
+        .map(|_| ())
+        .map_err(runtime_session_error)
 }
 
 async fn session_complete_mirror_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    terminal_status: RunStatus,
+    terminal_status: WorkerSessionState,
     now: i64,
 ) -> RuntimeResult<()> {
     session_state_transition_at_tx(
         tx,
         &WorkerSessionId(id.clone()),
-        worker_session_state_from_run_status(&terminal_status),
+        terminal_status,
         now,
         Some(now),
     )
@@ -3416,7 +3405,7 @@ async fn session_set_active_turn_mirror_tx(
 async fn session_set_harness_observation_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    status: RunStatus,
+    status: WorkerSessionState,
     thread_id: Option<&str>,
     active_turn_id: Option<&str>,
     now: i64,
@@ -3430,7 +3419,7 @@ async fn session_set_harness_observation_tx(
             WHERE id = ?5
               AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
-    .bind(worker_session_state_from_run_status(&status).as_db_str())
+    .bind(status.as_db_str())
     .bind(thread_id)
     .bind(active_turn_id)
     .bind(now)
@@ -3493,10 +3482,10 @@ async fn session_get_required_for_runtime_tx(
 async fn session_restore_from_superseded_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    status: RunStatus,
+    status: WorkerSessionState,
     now: i64,
 ) -> RuntimeResult<WorkerSession> {
-    let state_db = worker_session_state_from_run_status(&status).as_db_str();
+    let state_db = status.as_db_str();
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET state = ?1,
@@ -3536,7 +3525,7 @@ async fn session_restore_from_superseded_tx(
 async fn runtime_current_status_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-) -> RuntimeResult<RunStatus> {
+) -> RuntimeResult<WorkerSessionState> {
     let row = sqlx::query(
         r#"SELECT state FROM worker_sessions ws
            WHERE ws.id = ?1"#,
@@ -3712,9 +3701,9 @@ pub async fn runtime_get_active_for_card_tx(
 pub async fn session_set_status_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> RuntimeResult<()> {
-    if status == RunStatus::Superseded {
+    if status == WorkerSessionState::Superseded {
         return Err(RuntimeRepoError::IllegalStatusTransition {
             id: id.clone(),
             attempted: status,
@@ -3732,7 +3721,7 @@ pub async fn session_set_status_tx(
 pub async fn session_set_status_for_card_tx(
     tx: &mut RuntimeTx<'_>,
     card_id: &str,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> RuntimeResult<()> {
     let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
         return Ok(());
@@ -3792,7 +3781,7 @@ pub async fn session_set_active_turn_tx(
 pub async fn session_set_harness_observation_runtime_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    status: RunStatus,
+    status: WorkerSessionState,
     thread_id: Option<&str>,
     active_turn_id: Option<&str>,
 ) -> RuntimeResult<()> {
@@ -3828,7 +3817,7 @@ pub async fn session_mark_superseded_runtime_tx(
 pub async fn session_restore_from_superseded_runtime_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> RuntimeResult<()> {
     let now = now_ms();
     let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
@@ -3841,9 +3830,12 @@ pub async fn session_restore_from_superseded_runtime_tx(
 pub async fn session_complete_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-    terminal_status: RunStatus,
+    terminal_status: WorkerSessionState,
 ) -> RuntimeResult<()> {
-    if !matches!(terminal_status, RunStatus::Failed | RunStatus::Exited) {
+    if !matches!(
+        terminal_status,
+        WorkerSessionState::Failed | WorkerSessionState::Exited
+    ) {
         return Err(RuntimeRepoError::IllegalStatusTransition {
             id: id.clone(),
             attempted: terminal_status,
@@ -3861,7 +3853,7 @@ pub async fn session_complete_tx(
 pub async fn session_complete_for_card_tx(
     tx: &mut RuntimeTx<'_>,
     card_id: &str,
-    terminal_status: RunStatus,
+    terminal_status: WorkerSessionState,
 ) -> RuntimeResult<()> {
     let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
         return Ok(());
@@ -3890,7 +3882,7 @@ pub async fn runtime_get_active_for_terminal_tx(
 pub async fn session_complete_for_terminal_tx(
     tx: &mut RuntimeTx<'_>,
     terminal_id: &str,
-    terminal_status: RunStatus,
+    terminal_status: WorkerSessionState,
 ) -> RuntimeResult<()> {
     let Some(runtime) = runtime_get_active_for_terminal_tx(tx, terminal_id).await? else {
         return Ok(());
@@ -4836,7 +4828,7 @@ impl RuntimeRepo for SqlxRepo {
     async fn runtime_set_status_for_card(
         &self,
         card_id: &str,
-        status: RunStatus,
+        status: WorkerSessionState,
     ) -> RuntimeResult<()> {
         let mut tx = self.pool.begin().await?;
         session_set_status_for_card_tx(&mut tx, card_id, status).await?;
@@ -4847,7 +4839,7 @@ impl RuntimeRepo for SqlxRepo {
     async fn runtime_complete_for_card(
         &self,
         card_id: &str,
-        terminal_status: RunStatus,
+        terminal_status: WorkerSessionState,
     ) -> RuntimeResult<()> {
         let mut tx = self.pool.begin().await?;
         session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
@@ -4858,7 +4850,7 @@ impl RuntimeRepo for SqlxRepo {
     async fn runtime_complete_for_terminal(
         &self,
         terminal_id: &str,
-        terminal_status: RunStatus,
+        terminal_status: WorkerSessionState,
     ) -> RuntimeResult<()> {
         let mut tx = self.pool.begin().await?;
         session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
@@ -6476,7 +6468,7 @@ mod runtime_read_flip_tests {
         card_kind: &'static str,
         kind: RuntimeKind,
         agent_provider: Option<AgentProvider>,
-        status: RunStatus,
+        status: WorkerSessionState,
     }
 
     struct KeyedRuntimeSeed {
@@ -6496,28 +6488,28 @@ mod runtime_read_flip_tests {
                 card_kind: "terminal",
                 kind: RuntimeKind::Terminal,
                 agent_provider: None,
-                status: RunStatus::Starting,
+                status: WorkerSessionState::Starting,
             },
             RuntimeReadCase {
                 label: "codex-card",
                 card_kind: "codex",
                 kind: RuntimeKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
+                status: WorkerSessionState::Running,
             },
             RuntimeReadCase {
                 label: "claude-card",
                 card_kind: "claude",
                 kind: RuntimeKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
-                status: RunStatus::Idle,
+                status: WorkerSessionState::Idle,
             },
             RuntimeReadCase {
                 label: "shared-spec",
                 card_kind: "codex",
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::TurnPending,
+                status: WorkerSessionState::TurnPending,
             },
         ]
     }
@@ -6622,7 +6614,7 @@ mod runtime_read_flip_tests {
                 card_id,
                 kind: seed.kind,
                 agent_provider: seed.agent_provider,
-                status: RunStatus::Running,
+                status: WorkerSessionState::Running,
                 terminal_run_id: None,
                 thread_id: seed.thread_id.map(str::to_string),
                 session_id: seed.session_id.map(str::to_string),
@@ -6772,7 +6764,7 @@ mod runtime_read_flip_tests {
         card_id: &str,
         label: &str,
         slot: &str,
-        status: RunStatus,
+        status: WorkerSessionState,
         now_ms: i64,
     ) -> RuntimeInit {
         RuntimeInit {
@@ -6803,7 +6795,7 @@ mod runtime_read_flip_tests {
             card_id: card_id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
             terminal_run_id: None,
             thread_id: None,
             session_id: None,
@@ -6825,14 +6817,26 @@ mod runtime_read_flip_tests {
         let card_id = create_card_in_tx(repo, &mut tx, label, "codex").await;
         let older = session_start_runtime_tx(
             &mut tx,
-            projectable_runtime_init(&card_id, label, "older", RunStatus::Running, 10_000),
+            projectable_runtime_init(
+                &card_id,
+                label,
+                "older",
+                WorkerSessionState::Running,
+                10_000,
+            ),
         )
         .await
         .expect("start older runtime");
         let exited = session_supersede_and_start_tx(
             &mut tx,
             &older.id,
-            projectable_runtime_init(&card_id, label, "exited", RunStatus::Exited, 20_000),
+            projectable_runtime_init(
+                &card_id,
+                label,
+                "exited",
+                WorkerSessionState::Exited,
+                20_000,
+            ),
         )
         .await
         .expect("supersede older runtime with exited runtime");
@@ -6844,7 +6848,13 @@ mod runtime_read_flip_tests {
             Some(
                 session_start_runtime_tx(
                     &mut tx,
-                    projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 30_000),
+                    projectable_runtime_init(
+                        &card_id,
+                        label,
+                        "active",
+                        WorkerSessionState::Running,
+                        30_000,
+                    ),
                 )
                 .await
                 .expect("start active runtime"),
@@ -6962,7 +6972,7 @@ mod runtime_read_flip_tests {
             .expect("projectable runtime from worker_sessions");
         assert_ws_backed_projection(&expected, &actual);
         assert_ne!(actual.id, history.superseded.id);
-        assert_ne!(actual.status, RunStatus::Superseded);
+        assert_ne!(actual.status, WorkerSessionState::Superseded);
     }
 
     #[tokio::test]
@@ -6974,7 +6984,7 @@ mod runtime_read_flip_tests {
             &card_id,
             "card-id-start",
             "active",
-            RunStatus::Running,
+            WorkerSessionState::Running,
             10_000,
         );
         let runtime = session_start_runtime_tx(&mut tx, init.clone())
@@ -7024,7 +7034,13 @@ mod runtime_read_flip_tests {
         let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
         let active = session_start_runtime_tx(
             &mut tx,
-            projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 10_000),
+            projectable_runtime_init(
+                &card_id,
+                label,
+                "active",
+                WorkerSessionState::Running,
+                10_000,
+            ),
         )
         .await
         .expect("start active runtime");
@@ -7086,7 +7102,7 @@ mod runtime_read_flip_tests {
                 card_kind: "codex",
                 kind: RuntimeKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
+                status: WorkerSessionState::Running,
             },
             10_000,
         )
@@ -7193,14 +7209,26 @@ mod runtime_read_flip_tests {
         let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
         let older = session_start_runtime_tx(
             &mut tx,
-            projectable_runtime_init(&card_id, label, "older", RunStatus::Running, 10_000),
+            projectable_runtime_init(
+                &card_id,
+                label,
+                "older",
+                WorkerSessionState::Running,
+                10_000,
+            ),
         )
         .await
         .expect("start older runtime");
         let newer = session_supersede_and_start_tx(
             &mut tx,
             &older.id,
-            projectable_runtime_init(&card_id, label, "newer", RunStatus::Running, 20_000),
+            projectable_runtime_init(
+                &card_id,
+                label,
+                "newer",
+                WorkerSessionState::Running,
+                20_000,
+            ),
         )
         .await
         .expect("supersede older runtime");
@@ -7222,7 +7250,7 @@ mod runtime_read_flip_tests {
         tx.commit().await.expect("commit by-id read tx");
 
         let mut expected = older;
-        expected.status = RunStatus::Superseded;
+        expected.status = WorkerSessionState::Superseded;
         expected.updated_at_ms = 20_000;
         expected.completed_at_ms = Some(20_000);
         assert_ws_backed_projection(&expected, &actual);
@@ -7236,8 +7264,13 @@ mod runtime_read_flip_tests {
         let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
         let mut tx = repo.pool().begin().await.expect("begin deferred gap tx");
         let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
-        let mut active_init =
-            projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 10_000);
+        let mut active_init = projectable_runtime_init(
+            &card_id,
+            label,
+            "active",
+            WorkerSessionState::Running,
+            10_000,
+        );
         active_init.kind = RuntimeKind::SharedSpec;
         let active = session_start_runtime_tx(&mut tx, active_init)
             .await
@@ -7268,8 +7301,8 @@ mod runtime_read_flip_tests {
         tx.commit().await.expect("commit deferred gap tx");
 
         assert_eq!(actual.id, placeholder_id);
-        assert_eq!(actual.status, RunStatus::Starting);
-        assert_eq!(old.status, RunStatus::Superseded);
+        assert_eq!(actual.status, WorkerSessionState::Starting);
+        assert_eq!(old.status, WorkerSessionState::Superseded);
     }
 
     #[tokio::test]
@@ -7531,8 +7564,8 @@ mod runtime_read_flip_tests {
         let history = seed_projectable_history(&repo, "projectable-active", true).await;
         let active = history.active.as_ref().expect("active runtime");
 
-        assert_eq!(history.superseded.status, RunStatus::Superseded);
-        assert_eq!(history.exited.status, RunStatus::Exited);
+        assert_eq!(history.superseded.status, WorkerSessionState::Superseded);
+        assert_eq!(history.exited.status, WorkerSessionState::Exited);
         assert_projectable_card_matches_runtimes_reference(&repo, &history, &active.id).await;
     }
 
@@ -7541,7 +7574,7 @@ mod runtime_read_flip_tests {
         let repo = fresh_repo().await;
         let history = seed_projectable_history(&repo, "projectable-no-active", false).await;
 
-        assert_eq!(history.superseded.status, RunStatus::Superseded);
+        assert_eq!(history.superseded.status, WorkerSessionState::Superseded);
         assert!(history.active.is_none());
         assert_projectable_card_matches_runtimes_reference(&repo, &history, &history.exited.id)
             .await;
@@ -7577,8 +7610,13 @@ mod runtime_read_flip_tests {
         let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
         let mut tx = repo.pool().begin().await.expect("begin gap tx");
         let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
-        let mut active_init =
-            projectable_runtime_init(&card_id, label, "active", RunStatus::Running, 30_000);
+        let mut active_init = projectable_runtime_init(
+            &card_id,
+            label,
+            "active",
+            WorkerSessionState::Running,
+            30_000,
+        );
         active_init.kind = RuntimeKind::SharedSpec;
         let active = session_start_runtime_tx(&mut tx, active_init)
             .await
@@ -7617,7 +7655,7 @@ mod runtime_read_flip_tests {
                 .expect("worker-session projectable reference")
                 .expect("placeholder reference");
         assert_eq!(reference.id, placeholder_id);
-        assert_eq!(active.status, RunStatus::Running);
+        assert_eq!(active.status, WorkerSessionState::Running);
     }
 
     #[tokio::test]
@@ -7631,7 +7669,7 @@ mod runtime_read_flip_tests {
         let placeholder_id = format!("rt-read-flip-{label}-placeholder-{}", new_id());
 
         let mut tx = repo.pool().begin().await.expect("begin #744 seed tx");
-        session_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
+        session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
             .await
             .expect("complete initial codex runtime");
         let old_runtime = session_start_runtime_tx(
@@ -7641,7 +7679,7 @@ mod runtime_read_flip_tests {
                 card_id: card_id.clone(),
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
+                status: WorkerSessionState::Running,
                 terminal_run_id: None,
                 thread_id: Some(format!("thread-{label}-old")),
                 session_id: None,
@@ -7670,7 +7708,7 @@ mod runtime_read_flip_tests {
                 .fetch_one(repo.pool())
                 .await
                 .expect("read card session pointer");
-        assert_eq!(old_runtime.status, RunStatus::Running);
+        assert_eq!(old_runtime.status, WorkerSessionState::Running);
         assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
 
         let orphans = repo
@@ -7691,7 +7729,7 @@ mod runtime_read_flip_tests {
             seed_codex_terminal_card(&repo, label).await;
 
         let mut tx = repo.pool().begin().await.expect("begin no-active seed tx");
-        session_complete_tx(&mut tx, &initial_runtime_id, RunStatus::Exited)
+        session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
             .await
             .expect("complete initial codex runtime");
         tx.commit().await.expect("commit no-active seed tx");
@@ -7780,7 +7818,7 @@ mod runtime_read_flip_tests {
                 .values()
                 .all(|runtime| runtime.id != active_history.superseded.id
                     && runtime.id != no_active_history.superseded.id
-                    && runtime.status != RunStatus::Superseded)
+                    && runtime.status != WorkerSessionState::Superseded)
         );
     }
 
@@ -7797,7 +7835,7 @@ mod runtime_read_flip_tests {
                 card_id: card_id.clone(),
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Starting,
+                status: WorkerSessionState::Starting,
                 terminal_run_id: None,
                 thread_id: None,
                 session_id: None,
@@ -7837,7 +7875,7 @@ mod runtime_read_flip_tests {
             .await
             .expect("placeholder status read");
         tx.commit().await.expect("commit status tx");
-        assert_eq!(status, RunStatus::Starting);
+        assert_eq!(status, WorkerSessionState::Starting);
     }
 
     #[tokio::test]
@@ -7876,7 +7914,7 @@ mod runtime_read_flip_tests {
                 card_id,
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Starting,
+                status: WorkerSessionState::Starting,
                 terminal_run_id: None,
                 thread_id: None,
                 session_id: None,

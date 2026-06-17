@@ -9,7 +9,7 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, SpecHarness, SpecHarnessParams,
 };
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use serde_json::{Value, json};
 
@@ -59,7 +59,7 @@ async fn seed_harness(
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,

@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::runtime_repo::RunStatus;
+use crate::runtime_repo::WorkerSessionState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HarnessState {
@@ -35,14 +35,16 @@ pub enum IssuingKind {
     },
 }
 
-pub fn run_status_for(state: &HarnessState) -> RunStatus {
+pub fn run_status_for(state: &HarnessState) -> WorkerSessionState {
     match state {
-        HarnessState::PendingThreadStart => RunStatus::Starting,
+        HarnessState::PendingThreadStart => WorkerSessionState::Starting,
         HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. } => {
-            RunStatus::Idle
+            WorkerSessionState::Idle
         }
-        HarnessState::Issuing { .. } | HarnessState::TurnRunning { .. } => RunStatus::TurnPending,
-        HarnessState::Wedged { .. } => RunStatus::Failed,
+        HarnessState::Issuing { .. } | HarnessState::TurnRunning { .. } => {
+            WorkerSessionState::TurnPending
+        }
+        HarnessState::Wedged { .. } => WorkerSessionState::Failed,
     }
 }
 

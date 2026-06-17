@@ -108,7 +108,7 @@ export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
 export const agentProviderSchema = z.enum(['codex', 'claude']);
 export type AgentProvider = z.infer<typeof agentProviderSchema>;
 
-export const runStatusSchema = z.enum([
+export const workerSessionStateSchema = z.enum([
   'starting',
   'running',
   'idle',
@@ -117,12 +117,12 @@ export const runStatusSchema = z.enum([
   'exited',
   'superseded',
 ]);
-export type RunStatus = z.infer<typeof runStatusSchema>;
+export type WorkerSessionState = z.infer<typeof workerSessionStateSchema>;
 
 export const cardRuntimeViewSchema = z.object({
   runtime_id: z.string(),
   kind: runtimeKindSchema,
-  status: runStatusSchema,
+  status: workerSessionStateSchema,
   provider: agentProviderSchema.optional(),
   terminal_id: z.string().optional(),
   thread_id: z.string().optional(),
@@ -231,7 +231,7 @@ export const runtimeStartedSchema = z.object({
     card_id: z.string(),
     kind: runtimeKindSchema,
     agent_provider: agentProviderSchema.nullable(),
-    status: runStatusSchema,
+    status: workerSessionStateSchema,
   }),
 });
 
@@ -240,8 +240,8 @@ export const runtimeStatusChangedSchema = z.object({
   data: z.object({
     runtime_id: z.string(),
     card_id: z.string(),
-    old_status: runStatusSchema,
-    new_status: runStatusSchema,
+    old_status: workerSessionStateSchema,
+    new_status: workerSessionStateSchema,
   }),
 });
 

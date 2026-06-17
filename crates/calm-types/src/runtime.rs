@@ -1,7 +1,7 @@
 //! Runtime projection vocabulary — the data half of calm-server's
 //! `runtime_repo` module (#679 PR1).
 //!
-//! `RuntimeKind` / `AgentProvider` / `RunStatus` / `TerminalRunRef` /
+//! `RuntimeKind` / `AgentProvider` / `TerminalRunRef` /
 //! `WorkerSessionProjection` are TS-exported wire types, so they live here in the
 //! vocabulary crate. The `RuntimeRepo` trait, its error type and the sqlx
 //! `Tx` alias stay in calm-server (IO). The whole `runtimes` family is
@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 use utoipa::ToSchema;
+
+use crate::worker::WorkerSessionState;
 
 pub type RuntimeId = String;
 pub type TimestampMs = i64;
@@ -39,19 +41,6 @@ pub enum AgentProvider {
     Claude,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub enum RunStatus {
-    Starting,
-    Running,
-    Idle,
-    TurnPending,
-    Failed,
-    Exited,
-    Superseded,
-}
-
 /// Legacy joined-terminal projection vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
@@ -69,7 +58,7 @@ pub struct WorkerSessionProjection {
     pub card_id: String,
     pub kind: RuntimeKind,
     pub agent_provider: Option<AgentProvider>,
-    pub status: RunStatus,
+    pub status: WorkerSessionState,
     pub terminal_run_id: Option<String>,
     pub thread_id: Option<String>,
     pub session_id: Option<String>,

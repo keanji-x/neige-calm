@@ -10,9 +10,7 @@ use calm_server::db::sqlite::{
 use calm_server::event::EventBus;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{
-    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, WorkerSessionProjection,
-};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionProjection};
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::worker_flow::claude_transcript::{
     ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions,
@@ -38,14 +36,14 @@ pub async fn seed_card_and_runtime(
     card_id: &str,
     thread_id: Option<&str>,
 ) -> SeededRuntime {
-    seed_card_and_runtime_with_status(repo, card_id, thread_id, RunStatus::Running).await
+    seed_card_and_runtime_with_status(repo, card_id, thread_id, WorkerSessionState::Running).await
 }
 
 pub async fn seed_card_and_runtime_with_status(
     repo: &Arc<SqlxRepo>,
     card_id: &str,
     thread_id: Option<&str>,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> SeededRuntime {
     let card = seed_codex_card(repo, card_id).await;
     let runtime = seed_runtime_for_card_with_status(repo, &card, thread_id, status).await;
@@ -58,8 +56,14 @@ pub async fn seed_claude_card_and_runtime(
     session_id: &str,
     cwd: &str,
 ) -> SeededRuntime {
-    seed_claude_card_and_runtime_with_status(repo, card_id, session_id, cwd, RunStatus::Running)
-        .await
+    seed_claude_card_and_runtime_with_status(
+        repo,
+        card_id,
+        session_id,
+        cwd,
+        WorkerSessionState::Running,
+    )
+    .await
 }
 
 pub async fn seed_claude_card_and_runtime_with_status(
@@ -67,7 +71,7 @@ pub async fn seed_claude_card_and_runtime_with_status(
     card_id: &str,
     session_id: &str,
     cwd: &str,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> SeededRuntime {
     let card = seed_claude_card(repo, card_id, cwd).await;
     let runtime = seed_claude_runtime_for_card_with_status(repo, &card, session_id, status).await;
@@ -168,7 +172,7 @@ pub async fn seed_runtime_for_card_with_status(
     repo: &Arc<SqlxRepo>,
     card: &Card,
     thread_id: Option<&str>,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> WorkerSessionProjection {
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(
@@ -200,7 +204,7 @@ pub async fn seed_claude_runtime_for_card_with_status(
     repo: &Arc<SqlxRepo>,
     card: &Card,
     session_id: &str,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> WorkerSessionProjection {
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(
@@ -229,7 +233,6 @@ pub async fn seed_claude_runtime_for_card_with_status(
 }
 
 pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
-    let status = seed.runtime.status.clone();
     WorkerSession {
         id: WorkerSessionId::from(seed.runtime.id.clone()),
         wave_id: seed.card.wave_id.clone(),
@@ -241,15 +244,7 @@ pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
         contract: WorkerContract::Executor,
         parent_session_id: None,
         requester_session_id: None,
-        state: match status {
-            RunStatus::Starting => WorkerSessionState::Starting,
-            RunStatus::Running => WorkerSessionState::Running,
-            RunStatus::Idle => WorkerSessionState::Idle,
-            RunStatus::TurnPending => WorkerSessionState::TurnPending,
-            RunStatus::Failed => WorkerSessionState::Failed,
-            RunStatus::Exited => WorkerSessionState::Exited,
-            RunStatus::Superseded => WorkerSessionState::Superseded,
-        },
+        state: seed.runtime.status,
         mcp_token_hash: None,
         thread_id: seed.runtime.thread_id.clone(),
         agent_session_id: seed.runtime.session_id.clone(),

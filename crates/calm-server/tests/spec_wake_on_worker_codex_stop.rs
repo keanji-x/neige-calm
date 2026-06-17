@@ -19,7 +19,7 @@ use calm_server::ids::{CardId, WaveId};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -135,7 +135,7 @@ async fn boot() -> Boot {
             card_id: spec_card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,

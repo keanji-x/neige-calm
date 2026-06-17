@@ -20,7 +20,7 @@ use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::runtime_lookup::resolve_claude_session_for_card;
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use crate::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use crate::state::{CodexClient, WriteContext};
 use crate::wave_cove_cache::WaveCoveCache;
 use calm_truth::decision_gate::PermissiveGate;
@@ -150,12 +150,15 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         if let Some(active) = runtime_get_active_for_card_tx(tx, &card_id).await? {
             // Claude runtimes only reach Starting/Running here today;
             // Idle/TurnPending are not part of the Claude state machine.
-            if matches!(active.status, RunStatus::Starting | RunStatus::Running) {
+            if matches!(
+                active.status,
+                WorkerSessionState::Starting | WorkerSessionState::Running
+            ) {
                 return Err(CalmError::Conflict(
                     "kill or wait for child exit before restart".into(),
                 ));
             }
-            session_complete_tx(tx, &active.id, RunStatus::Exited).await?;
+            session_complete_tx(tx, &active.id, WorkerSessionState::Exited).await?;
         }
 
         let command_line = format!(
@@ -173,7 +176,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 card_id: card_id.clone(),
                 kind: RuntimeKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
-                status: RunStatus::Starting,
+                status: WorkerSessionState::Starting,
                 terminal_run_id: Some(term.id.clone()),
                 thread_id: None,
                 session_id: Some(claude_session_id.clone()),
@@ -198,7 +201,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             card_id: card_id.clone(),
             kind: RuntimeKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
         };
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
@@ -311,7 +314,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                     let existing = ctx.repo.runtime_get_active_for_card(&card_id).await?;
                     let needs_status_write = existing
                         .as_ref()
-                        .map(|runtime| runtime.status != RunStatus::Running)
+                        .map(|runtime| runtime.status != WorkerSessionState::Running)
                         .unwrap_or(true);
                     if !needs_status_write {
                         return Ok(());
@@ -351,9 +354,9 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                                                 "claude card {card_id_for_tx} has no active runtime to mark running"
                                             ))
                                         })?;
-                                let old_status = runtime.status.clone();
+                                let old_status = runtime.status;
                                 let runtime_id = runtime.id.clone();
-                                session_set_status_tx(tx, &runtime.id, RunStatus::Running)
+                                session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running)
                                     .await?;
                                 Ok((
                                     (),
@@ -363,7 +366,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                                             runtime_id,
                                             card_id: card_id_for_tx,
                                             old_status,
-                                            new_status: RunStatus::Running,
+                                            new_status: WorkerSessionState::Running,
                                         },
                                     )],
                                 ))
@@ -441,7 +444,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
-                    .runtime_complete_for_card(&card_id, RunStatus::Failed)
+                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await?;
                 Ok(())
             }

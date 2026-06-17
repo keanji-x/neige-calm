@@ -24,7 +24,7 @@ use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::runtime_repo::{
-    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, WorkerSessionProjection,
+    AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionProjection, WorkerSessionState,
 };
 use calm_server::wave_report::WaveReportPayload;
 use calm_server::wave_vcs;
@@ -61,7 +61,7 @@ async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
             card_id: spec_card_id.as_str().to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("spec-thread".into()),
             session_id: None,
@@ -495,7 +495,7 @@ async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> WorkerSessionProje
             card_id: card_id.as_str().to_string(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: Some("thread-runtime-json".into()),
             session_id: None,
@@ -1013,7 +1013,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let runtime = runtime.expect("runtime row is projected");
     assert_eq!(runtime.runtime_id, runtime_id);
     assert_eq!(runtime.kind, RuntimeKind::CodexCard);
-    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.provider, Some(AgentProvider::Codex));
     assert_eq!(runtime.thread_id.as_deref(), Some("thread-runtime-json"));
 }

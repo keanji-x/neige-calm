@@ -1,5 +1,5 @@
 import type {
-  RunStatus,
+  WorkerSessionState,
   CardRole,
   WaveFsRunStatus,
   WaveLifecycle,
@@ -42,7 +42,7 @@ export const runtimeStatusTones = {
   failed: 'danger',
   exited: 'success',
   superseded: 'neutral',
-} satisfies Record<RunStatus, ViewerChipTone>;
+} satisfies Record<WorkerSessionState, ViewerChipTone>;
 
 export const waveLifecycleTones = {
   draft: 'neutral',

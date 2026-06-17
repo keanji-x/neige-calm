@@ -1,5 +1,5 @@
 {
-  "description": "runtime.status_changed; RunStatus is rename_all=snake_case (TurnPending → \"turn_pending\").",
+  "description": "runtime.status_changed; WorkerSessionState is rename_all=snake_case (TurnPending → \"turn_pending\").",
   "wire": {
     "ev": "runtime.status_changed",
     "data": {

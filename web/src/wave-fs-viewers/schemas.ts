@@ -22,7 +22,7 @@ export const waveFsRunStatusSchema = z.enum([
 
 export const agentProviderSchema = z.enum(['codex', 'claude']);
 
-export const runStatusSchema = z.enum([
+export const workerSessionStateSchema = z.enum([
   'starting',
   'running',
   'idle',
@@ -109,7 +109,7 @@ export const waveFsHookEventSchema = z.object({
 export const cardRuntimeViewSchema = z.object({
   runtime_id: z.string(),
   kind: runtimeKindSchema,
-  status: runStatusSchema,
+  status: workerSessionStateSchema,
   provider: agentProviderSchema.optional(),
   terminal_id: z.string().optional(),
   thread_id: z.string().optional(),

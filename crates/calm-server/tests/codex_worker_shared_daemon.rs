@@ -22,7 +22,7 @@ use calm_server::operation::{
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::runtime_lookup::project_runtime_into_cards_payload;
-use calm_server::runtime_repo::{RunStatus, RuntimeKind};
+use calm_server::runtime_repo::{RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -475,7 +475,7 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
         let runtime_id = runtime_id.clone();
         async move {
             let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
-            (runtime.status != RunStatus::Running).then_some(())
+            (runtime.status != WorkerSessionState::Running).then_some(())
         }
     })
     .await;

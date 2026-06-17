@@ -260,7 +260,7 @@ async fn force_spec_phase_three_surfaces_agree() {
     assert_eq!(snapshot["phase"], json!("turn_running"));
     assert_eq!(
         runtime.status,
-        calm_server::runtime_repo::RunStatus::TurnPending,
+        calm_server::runtime_repo::WorkerSessionState::TurnPending,
         "run_status_for(TurnRunning) writes turn_pending to the runtime row"
     );
 }
@@ -370,7 +370,7 @@ async fn force_spec_phase_same_phase_twice_emits_one_event() {
 }
 
 /// (d) #684 review — `wedged` is rejected with 400. Persisting a forced
-/// Wedged writes `RunStatus::Failed`, which `runtime_get_active_for_card`
+/// Wedged writes `WorkerSessionState::Failed`, which `runtime_get_active_for_card`
 /// filters out: `GET /spec/run` would instantly answer dormant and the
 /// next force would mint a second runtime. The guard runs before any
 /// stand-up, so a rejected force leaves no runtime row behind.

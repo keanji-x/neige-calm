@@ -10,8 +10,9 @@ use std::fmt;
 // re-exported at the old paths. Source definitions live in calm-types;
 // do NOT re-declare them here.
 pub use calm_types::runtime::{
-    AgentProvider, RunStatus, RuntimeId, RuntimeKind, TimestampMs, WorkerSessionProjection,
+    AgentProvider, RuntimeId, RuntimeKind, TimestampMs, WorkerSessionProjection,
 };
+pub use calm_types::worker::WorkerSessionState;
 
 pub type CardId = String;
 pub type Tx<'a> = Transaction<'a, Sqlite>;
@@ -19,8 +20,13 @@ pub type Result<T> = std::result::Result<T, RuntimeRepoError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeRepoError {
-    Message { message: String },
-    IllegalStatusTransition { id: RuntimeId, attempted: RunStatus },
+    Message {
+        message: String,
+    },
+    IllegalStatusTransition {
+        id: RuntimeId,
+        attempted: WorkerSessionState,
+    },
 }
 
 impl fmt::Display for RuntimeRepoError {
@@ -54,7 +60,7 @@ pub struct RuntimeInit {
     pub card_id: CardId,
     pub kind: RuntimeKind,
     pub agent_provider: Option<AgentProvider>,
-    pub status: RunStatus,
+    pub status: WorkerSessionState,
     pub terminal_run_id: Option<String>,
     pub thread_id: Option<String>,
     pub session_id: Option<String>,
@@ -119,7 +125,11 @@ pub trait RuntimeRepo {
     /// Idempotent: if no active runtime exists for this card, returns
     /// `Ok(())` without writing. This handles fast-exit races and
     /// pre-#488-backfilled-but-already-completed cards.
-    async fn runtime_set_status_for_card(&self, card_id: &str, status: RunStatus) -> Result<()>;
+    async fn runtime_set_status_for_card(
+        &self,
+        card_id: &str,
+        status: WorkerSessionState,
+    ) -> Result<()>;
 
     /// Idempotent: if no active runtime exists for this card, returns
     /// `Ok(())` without writing. This handles fast-exit races and
@@ -127,13 +137,13 @@ pub trait RuntimeRepo {
     async fn runtime_complete_for_card(
         &self,
         card_id: &str,
-        terminal_status: RunStatus,
+        terminal_status: WorkerSessionState,
     ) -> Result<()>;
 
     async fn runtime_complete_for_terminal(
         &self,
         terminal_id: &str,
-        terminal_status: RunStatus,
+        terminal_status: WorkerSessionState,
     ) -> Result<()>;
 
     /// Returns shared-spec runtimes whose `handle_state_json` carries a harness

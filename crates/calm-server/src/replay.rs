@@ -446,11 +446,11 @@ pub async fn force_spec_phase(
     use crate::harness::{HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
     use crate::model::{CardRole, new_id, now_ms};
     use crate::per_card_lock::lock_card;
-    use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+    use crate::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
     use crate::state::RouteState;
 
     // Issue #682 review — `wedged` is not forceable: `persist_snapshot`
-    // would write `RunStatus::Failed` (via `run_status_for`), and the read
+    // would write `WorkerSessionState::Failed` (via `run_status_for`), and the read
     // path (`runtime_get_active_for_card`, used by `GET /spec/run` and by
     // this function) filters failed rows — a "successful" force would
     // instantly report `{runtime_id: null, phase: null}` and the next
@@ -520,7 +520,7 @@ pub async fn force_spec_phase(
                             // Harmless mismatch — the first
                             // `persist_snapshot` (end of this function)
                             // overwrites status from the live state anyway.
-                            status: RunStatus::Idle,
+                            status: WorkerSessionState::Idle,
                             terminal_run_id: None,
                             thread_id: Some(DEV_FORCED_THREAD_ID.into()),
                             session_id: None,

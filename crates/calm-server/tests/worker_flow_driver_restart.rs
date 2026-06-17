@@ -7,7 +7,7 @@ use calm_server::db::sqlite::{SqlxRepo, session_set_status_tx, session_start_run
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::now_ms;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
@@ -71,7 +71,7 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
 
     let replacement = {
         let mut tx = repo.pool().begin().await.unwrap();
-        session_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+        session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
             .await
             .unwrap();
         let replacement = session_start_runtime_tx(
@@ -81,7 +81,7 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
                 card_id: seed.runtime.card_id.clone(),
                 kind: RuntimeKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
-                status: RunStatus::Starting,
+                status: WorkerSessionState::Starting,
                 terminal_run_id: None,
                 thread_id: None,
                 session_id: Some("session-driver-claude-restart-b".to_string()),
@@ -107,7 +107,7 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
             card_id: replacement.card_id.clone(),
             kind: replacement.kind.clone(),
             agent_provider: replacement.agent_provider.clone(),
-            status: replacement.status.clone(),
+            status: replacement.status,
         },
     );
 
@@ -134,7 +134,7 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
             card_id: replacement.card_id.clone(),
             kind: replacement.kind.clone(),
             agent_provider: replacement.agent_provider.clone(),
-            status: replacement.status.clone(),
+            status: replacement.status,
         },
     );
     tokio::time::sleep(Duration::from_millis(60)).await;

@@ -31,7 +31,7 @@ use crate::routes::codex_cards::{
 };
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
+use crate::runtime_repo::{AgentProvider, RuntimeKind, ThreadAttribution, WorkerSessionState};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -329,7 +329,7 @@ impl ProviderAdapter for CodexAdapter {
             card_id: card.id.to_string(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
         };
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
@@ -646,7 +646,7 @@ impl ProviderAdapter for CodexAdapter {
             "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
-                    .runtime_complete_for_card(&card_id, RunStatus::Failed)
+                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await?;
                 Ok(())
             }
@@ -1295,7 +1295,7 @@ async fn persist_shared_worker_runtime_fields(
                         "worker runtime {runtime_id_for_tx} vanished before shared codex bind"
                     ))
                 })?;
-            let old_status = runtime.status.clone();
+            let old_status = runtime.status;
             session_bind_attribution_tx(
                 tx,
                 &runtime.id,
@@ -1308,8 +1308,8 @@ async fn persist_shared_worker_runtime_fields(
                 },
             )
             .await?;
-            if old_status != RunStatus::Running {
-                session_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+            if old_status != WorkerSessionState::Running {
+                session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running).await?;
             }
             Ok(updated)
         })
@@ -1443,10 +1443,10 @@ async fn persist_prompt_thread(
                     },
                 )
                 .await?;
-                let old_status = runtime.status.clone();
+                let old_status = runtime.status;
                 let runtime_id = runtime.id.clone();
-                if runtime.status != RunStatus::Running {
-                    session_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                if runtime.status != WorkerSessionState::Running {
+                    session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running).await?;
                 }
                 let card = project_codex_runtime_fields_for_response(
                     card_for_event,
@@ -1466,14 +1466,14 @@ async fn persist_prompt_thread(
                 )
                 .await?;
                 let mut events = vec![(scope.clone(), Event::CardUpdated(card.clone()))];
-                if old_status != RunStatus::Running {
+                if old_status != WorkerSessionState::Running {
                     events.push((
                         scope,
                         Event::RuntimeStatusChanged {
                             runtime_id,
                             card_id: card_id_for_tx,
                             old_status,
-                            new_status: RunStatus::Running,
+                            new_status: WorkerSessionState::Running,
                         },
                     ));
                 }
@@ -1547,10 +1547,10 @@ async fn persist_pending_thread_status(
                         ))
                     })?;
                 let terminal_id_for_projection = runtime.terminal_run_id.clone();
-                let old_status = runtime.status.clone();
+                let old_status = runtime.status;
                 let runtime_id = runtime.id.clone();
-                if old_status != RunStatus::TurnPending {
-                    session_set_status_tx(tx, &runtime.id, RunStatus::TurnPending).await?;
+                if old_status != WorkerSessionState::TurnPending {
+                    session_set_status_tx(tx, &runtime.id, WorkerSessionState::TurnPending).await?;
                 }
                 let card = project_codex_runtime_fields_for_response(
                     card_for_event,
@@ -1570,14 +1570,14 @@ async fn persist_pending_thread_status(
                 )
                 .await?;
                 let mut events = vec![(scope.clone(), Event::CardUpdated(card.clone()))];
-                if old_status != RunStatus::TurnPending {
+                if old_status != WorkerSessionState::TurnPending {
                     events.push((
                         scope,
                         Event::RuntimeStatusChanged {
                             runtime_id,
                             card_id: card_id_for_tx,
                             old_status,
-                            new_status: RunStatus::TurnPending,
+                            new_status: WorkerSessionState::TurnPending,
                         },
                     ));
                 }

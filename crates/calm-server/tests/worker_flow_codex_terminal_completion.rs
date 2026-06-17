@@ -6,7 +6,7 @@ use std::time::Duration;
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::runtime_repo::{RunStatus, RuntimeRepo};
+use calm_server::runtime_repo::{RuntimeRepo, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;
@@ -64,7 +64,7 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
             wf::assistant_message("a-terminal-final", "four"),
         ],
     );
-    repo.runtime_set_status_for_card(card_id, RunStatus::Exited)
+    repo.runtime_set_status_for_card(card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
 

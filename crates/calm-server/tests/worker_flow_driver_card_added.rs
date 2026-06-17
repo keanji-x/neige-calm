@@ -6,7 +6,7 @@ use std::time::Duration;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::runtime_repo::RunStatus;
+use calm_server::runtime_repo::WorkerSessionState;
 
 use support::worker_flow as wf;
 
@@ -49,17 +49,21 @@ async fn worker_flow_driver_card_added_race_attaches_on_later_status() {
 
     let path = wf::rollout_path(state.shared_codex_appserver.codex_home_path(), thread_id);
     wf::write_rollout(&path, &[wf::session_meta(thread_id)]);
-    let runtime =
-        wf::seed_runtime_for_card_with_status(&repo, &card, Some(thread_id), RunStatus::Running)
-            .await;
+    let runtime = wf::seed_runtime_for_card_with_status(
+        &repo,
+        &card,
+        Some(thread_id),
+        WorkerSessionState::Running,
+    )
+    .await;
 
     events.emit(
         ActorId::Kernel,
         Event::RuntimeStatusChanged {
             runtime_id: runtime.id.clone(),
             card_id: runtime.card_id.clone(),
-            old_status: RunStatus::Starting,
-            new_status: RunStatus::Running,
+            old_status: WorkerSessionState::Starting,
+            new_status: WorkerSessionState::Running,
         },
     );
 

@@ -392,14 +392,14 @@ pub enum Event {
         card_id: String,
         kind: crate::runtime::RuntimeKind,
         agent_provider: Option<crate::runtime::AgentProvider>,
-        status: crate::runtime::RunStatus,
+        status: crate::worker::WorkerSessionState,
     },
     #[serde(rename = "runtime.status_changed")]
     RuntimeStatusChanged {
         runtime_id: String,
         card_id: String,
-        old_status: crate::runtime::RunStatus,
-        new_status: crate::runtime::RunStatus,
+        old_status: crate::worker::WorkerSessionState,
+        new_status: crate::worker::WorkerSessionState,
     },
     #[serde(rename = "runtime.superseded")]
     RuntimeSuperseded {
@@ -1393,15 +1393,15 @@ mod scope_tests {
             card_id: "card-1".into(),
             kind: crate::runtime::RuntimeKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
-            status: crate::runtime::RunStatus::Starting,
+            status: crate::worker::WorkerSessionState::Starting,
         };
         assert_eq!(runtime_started.kind_tag(), "runtime.started");
 
         let runtime_status_changed = Event::RuntimeStatusChanged {
             runtime_id: "runtime-1".into(),
             card_id: "card-1".into(),
-            old_status: crate::runtime::RunStatus::Starting,
-            new_status: crate::runtime::RunStatus::Running,
+            old_status: crate::worker::WorkerSessionState::Starting,
+            new_status: crate::worker::WorkerSessionState::Running,
         };
         assert_eq!(runtime_status_changed.kind_tag(), "runtime.status_changed");
 
@@ -1469,7 +1469,7 @@ mod scope_tests {
             card_id: "card-1".into(),
             kind: crate::runtime::RuntimeKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
-            status: crate::runtime::RunStatus::Starting,
+            status: crate::worker::WorkerSessionState::Starting,
         };
 
         let json = serde_json::to_value(&ev).unwrap();
@@ -1493,7 +1493,7 @@ mod scope_tests {
                 assert_eq!(card_id, "card-1");
                 assert_eq!(kind, crate::runtime::RuntimeKind::CodexCard);
                 assert_eq!(agent_provider, Some(crate::runtime::AgentProvider::Codex));
-                assert_eq!(status, crate::runtime::RunStatus::Starting);
+                assert_eq!(status, crate::worker::WorkerSessionState::Starting);
             }
             other => panic!("expected RuntimeStarted after round-trip, got {other:?}"),
         }
@@ -1504,8 +1504,8 @@ mod scope_tests {
         let ev = Event::RuntimeStatusChanged {
             runtime_id: "runtime-1".into(),
             card_id: "card-1".into(),
-            old_status: crate::runtime::RunStatus::Starting,
-            new_status: crate::runtime::RunStatus::Running,
+            old_status: crate::worker::WorkerSessionState::Starting,
+            new_status: crate::worker::WorkerSessionState::Running,
         };
 
         let json = serde_json::to_value(&ev).unwrap();
@@ -1525,8 +1525,8 @@ mod scope_tests {
             } => {
                 assert_eq!(runtime_id, "runtime-1");
                 assert_eq!(card_id, "card-1");
-                assert_eq!(old_status, crate::runtime::RunStatus::Starting);
-                assert_eq!(new_status, crate::runtime::RunStatus::Running);
+                assert_eq!(old_status, crate::worker::WorkerSessionState::Starting);
+                assert_eq!(new_status, crate::worker::WorkerSessionState::Running);
             }
             other => panic!("expected RuntimeStatusChanged after round-trip, got {other:?}"),
         }
@@ -1924,7 +1924,7 @@ mod scope_tests {
             card_id: "card-1".into(),
             kind: crate::runtime::RuntimeKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
-            status: crate::runtime::RunStatus::Starting,
+            status: crate::worker::WorkerSessionState::Starting,
         };
         let t = topics(&ev);
         assert_eq!(t.len(), 2, "topics={t:?}");
@@ -1941,8 +1941,8 @@ mod scope_tests {
         let ev = Event::RuntimeStatusChanged {
             runtime_id: "rt-1".into(),
             card_id: "card-1".into(),
-            old_status: crate::runtime::RunStatus::Starting,
-            new_status: crate::runtime::RunStatus::Running,
+            old_status: crate::worker::WorkerSessionState::Starting,
+            new_status: crate::worker::WorkerSessionState::Running,
         };
         let t = topics(&ev);
         assert_eq!(t.len(), 2, "topics={t:?}");
@@ -2017,13 +2017,13 @@ mod scope_tests {
                 card_id: "card-runtime".into(),
                 kind: crate::runtime::RuntimeKind::CodexCard,
                 agent_provider: Some(crate::runtime::AgentProvider::Codex),
-                status: crate::runtime::RunStatus::Starting,
+                status: crate::worker::WorkerSessionState::Starting,
             },
             Event::RuntimeStatusChanged {
                 runtime_id: "runtime-status".into(),
                 card_id: "card-runtime".into(),
-                old_status: crate::runtime::RunStatus::Starting,
-                new_status: crate::runtime::RunStatus::Running,
+                old_status: crate::worker::WorkerSessionState::Starting,
+                new_status: crate::worker::WorkerSessionState::Running,
             },
             Event::RuntimeSuperseded {
                 old_runtime_id: "runtime-old".into(),

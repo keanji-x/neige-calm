@@ -15,7 +15,7 @@ use calm_server::harness::{
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardPatch, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::routes::theme::RequestTheme;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -90,7 +90,7 @@ async fn boot() -> Boot {
             card_id: spec_card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,
@@ -273,7 +273,11 @@ async fn refresh_transcripts(boot: &Boot) -> wave_vcs::CommitHash {
     commit
 }
 
-async fn start_worker_runtime_with_event(boot: &Boot, card: &Card, status: RunStatus) -> String {
+async fn start_worker_runtime_with_event(
+    boot: &Boot,
+    card: &Card,
+    status: WorkerSessionState,
+) -> String {
     let runtime_id = new_id();
     let returned_runtime_id = runtime_id.clone();
     let card_id = card.id.clone();
@@ -292,7 +296,7 @@ async fn start_worker_runtime_with_event(boot: &Boot, card: &Card, status: RunSt
             Box::new(move |tx| {
                 let runtime_id = runtime_id.clone();
                 let card_id = card_id.clone();
-                let status = status.clone();
+                let status = status;
                 Box::pin(async move {
                     let runtime = session_start_runtime_tx(
                         tx,
@@ -333,8 +337,8 @@ async fn set_worker_runtime_status_with_event(
     boot: &Boot,
     card: &Card,
     runtime_id: &str,
-    old_status: RunStatus,
-    new_status: RunStatus,
+    old_status: WorkerSessionState,
+    new_status: WorkerSessionState,
 ) {
     let runtime_id = runtime_id.to_string();
     let card_id = card.id.clone();
@@ -353,10 +357,10 @@ async fn set_worker_runtime_status_with_event(
             Box::new(move |tx| {
                 let runtime_id = runtime_id.clone();
                 let card_id = card_id.clone();
-                let old_status = old_status.clone();
-                let new_status = new_status.clone();
+                let old_status = old_status;
+                let new_status = new_status;
                 Box::pin(async move {
-                    session_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
+                    session_set_status_tx(tx, &runtime_id, new_status).await?;
                     Ok(Event::RuntimeStatusChanged {
                         runtime_id,
                         card_id: card_id.to_string(),
@@ -1249,7 +1253,8 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
     let boot = boot().await;
     complete_first_turn_and_stamp(&boot).await;
     let worker = add_worker_card_event(&boot, "runtime-status-current-schema").await;
-    let runtime_id = start_worker_runtime_with_event(&boot, &worker, RunStatus::Starting).await;
+    let runtime_id =
+        start_worker_runtime_with_event(&boot, &worker, WorkerSessionState::Starting).await;
     let before = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
         .await
         .unwrap()
@@ -1261,8 +1266,8 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
         &boot,
         &worker,
         &runtime_id,
-        RunStatus::Starting,
-        RunStatus::Running,
+        WorkerSessionState::Starting,
+        WorkerSessionState::Running,
     )
     .await;
 

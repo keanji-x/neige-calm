@@ -16,12 +16,12 @@ use calm_server::ids::CardId;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
 use calm_server::runtime_repo::{
-    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError,
-    ThreadAttribution,
+    AgentProvider, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution,
+    WorkerSessionState,
 };
 use calm_types::worker::{
     ExitInterpretation, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind,
-    WorkerSession, WorkerSessionId, WorkerSessionState, exit_commit_mapping,
+    WorkerSession, WorkerSessionId, exit_commit_mapping,
 };
 use serde_json::json;
 
@@ -72,7 +72,7 @@ fn runtime_init(
     card_id: String,
     kind: RuntimeKind,
     agent_provider: Option<AgentProvider>,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> RuntimeInit {
     RuntimeInit {
         id: new_id(),
@@ -328,7 +328,7 @@ async fn runtime_start_shared_spec_restarts_wave_root_on_respawn() {
             card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -350,7 +350,7 @@ async fn runtime_start_shared_spec_restarts_wave_root_on_respawn() {
             card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -379,7 +379,7 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
             failed_card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Failed,
+            WorkerSessionState::Failed,
         ),
     )
     .await
@@ -402,7 +402,7 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
             live_card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -425,7 +425,7 @@ async fn runtime_start_terminal_shared_spec_does_not_stamp_wave_root() {
             exited_card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Exited,
+            WorkerSessionState::Exited,
         ),
     )
     .await
@@ -457,7 +457,7 @@ async fn runtime_start_executor_respawn_leaves_wave_root_unchanged() {
             planner_card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -468,7 +468,7 @@ async fn runtime_start_executor_respawn_leaves_wave_root_unchanged() {
             executor_card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -483,7 +483,7 @@ async fn runtime_start_executor_respawn_leaves_wave_root_unchanged() {
             executor_card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -511,7 +511,7 @@ async fn runtime_start_links_card_to_worker_session() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -534,7 +534,7 @@ async fn phase1_reorder_cold_start_no_supersede() {
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Starting,
+        WorkerSessionState::Starting,
     );
     let placeholder_id = init.id.clone();
 
@@ -559,7 +559,7 @@ async fn phase1_reorder_cold_start_no_supersede() {
         .unwrap()
         .expect("placeholder should be active");
     assert_eq!(active.id, placeholder_id);
-    assert_eq!(active.status, RunStatus::Starting);
+    assert_eq!(active.status, WorkerSessionState::Starting);
 }
 
 #[tokio::test]
@@ -576,7 +576,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
             card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Idle,
+            WorkerSessionState::Idle,
         ),
     )
     .await
@@ -591,7 +591,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
             card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -602,7 +602,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
     session_fail_if_active_runtime_tx(&mut tx, &replacement.id)
         .await
         .unwrap();
-    session_restore_from_superseded_runtime_tx(&mut tx, &old.id, RunStatus::Idle)
+    session_restore_from_superseded_runtime_tx(&mut tx, &old.id, WorkerSessionState::Idle)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -628,7 +628,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
         .unwrap()
         .expect("restored old runtime should be active");
     assert_eq!(restored.id, old.id);
-    assert_eq!(restored.status, RunStatus::Idle);
+    assert_eq!(restored.status, WorkerSessionState::Idle);
     assert_eq!(
         repo.session_get_by_active_token_hash(replacement_hash)
             .await
@@ -664,7 +664,7 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
             active_card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Idle,
+            WorkerSessionState::Idle,
         ),
     )
     .await
@@ -673,7 +673,7 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
         active_card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Starting,
+        WorkerSessionState::Starting,
     );
     let placeholder_id = placeholder_init.id.clone();
     session_prepare_deferred_spec_tx(&mut tx, &placeholder_init)
@@ -710,7 +710,7 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
         fresh_card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Starting,
+        WorkerSessionState::Starting,
     );
     let fresh_placeholder_id = fresh_placeholder_init.id.clone();
     let mut tx = repo.pool().begin().await.unwrap();
@@ -762,7 +762,7 @@ async fn phase2_supersedes_placeholder_one_row() {
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Starting,
+        WorkerSessionState::Starting,
     );
     let placeholder_id = placeholder_init.id.clone();
     let mut tx = repo.pool().begin().await.unwrap();
@@ -775,7 +775,7 @@ async fn phase2_supersedes_placeholder_one_row() {
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Idle,
+        WorkerSessionState::Idle,
     );
     real_init.id = placeholder_id.clone();
     real_init.thread_id = Some("thread-phase2".into());
@@ -825,7 +825,7 @@ async fn runtime_entrances_dual_write_worker_session() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -843,7 +843,7 @@ async fn runtime_entrances_dual_write_worker_session() {
     )
     .await
     .unwrap();
-    session_set_status_tx(&mut tx, &runtime.id, RunStatus::Running)
+    session_set_status_tx(&mut tx, &runtime.id, WorkerSessionState::Running)
         .await
         .unwrap();
     session_set_active_turn_tx(&mut tx, &runtime.id, Some("turn-2"))
@@ -856,7 +856,7 @@ async fn runtime_entrances_dual_write_worker_session() {
     )
     .await
     .unwrap();
-    session_complete_tx(&mut tx, &runtime.id, RunStatus::Exited)
+    session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -886,7 +886,7 @@ async fn runtime_tolerant_entrances_dual_write_without_session_matrix() {
             card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Idle,
+            WorkerSessionState::Idle,
         ),
     )
     .await
@@ -894,7 +894,7 @@ async fn runtime_tolerant_entrances_dual_write_without_session_matrix() {
     session_set_harness_observation_runtime_tx(
         &mut tx,
         &runtime.id,
-        RunStatus::TurnPending,
+        WorkerSessionState::TurnPending,
         Some("thread-harness"),
         Some("turn-harness"),
     )
@@ -906,7 +906,7 @@ async fn runtime_tolerant_entrances_dual_write_without_session_matrix() {
     session_mark_superseded_runtime_tx(&mut tx, &runtime.id)
         .await
         .unwrap();
-    session_restore_from_superseded_runtime_tx(&mut tx, &runtime.id, RunStatus::Running)
+    session_restore_from_superseded_runtime_tx(&mut tx, &runtime.id, WorkerSessionState::Running)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -932,7 +932,7 @@ async fn session_supersede_and_start_tx_mirrors_old_superseded_and_new_starting_
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -944,7 +944,7 @@ async fn session_supersede_and_start_tx_mirrors_old_superseded_and_new_starting_
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -981,7 +981,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
             card_id.clone(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Idle,
+            WorkerSessionState::Idle,
         ),
     )
     .await
@@ -993,7 +993,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     session_set_harness_observation_runtime_tx(
         &mut tx,
         &old.id,
-        RunStatus::Running,
+        WorkerSessionState::Running,
         Some("stale-thread"),
         Some("stale-turn"),
     )
@@ -1004,7 +1004,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     let old_after = runtime_by_id_tx_snapshot(&repo, &old.id)
         .await
         .expect("old runtime");
-    assert_eq!(old_after.status, RunStatus::Superseded);
+    assert_eq!(old_after.status, WorkerSessionState::Superseded);
     assert_eq!(old_after.thread_id, None);
     assert_eq!(old_after.active_turn_id, None);
 
@@ -1041,7 +1041,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
             replacement_card_id.clone(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Idle,
+            WorkerSessionState::Idle,
         ),
     )
     .await
@@ -1053,7 +1053,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
             replacement_card_id.clone(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -1062,7 +1062,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     session_set_harness_observation_runtime_tx(
         &mut tx,
         &replaced_old.id,
-        RunStatus::Running,
+        WorkerSessionState::Running,
         Some("stale-replaced-thread"),
         Some("stale-replaced-turn"),
     )
@@ -1073,7 +1073,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
     let replaced_old_after = runtime_by_id_tx_snapshot(&repo, &replaced_old.id)
         .await
         .expect("replaced old runtime");
-    assert_eq!(replaced_old_after.status, RunStatus::Superseded);
+    assert_eq!(replaced_old_after.status, WorkerSessionState::Superseded);
     assert_eq!(replaced_old_after.thread_id, None);
     assert_eq!(replaced_old_after.active_turn_id, None);
 
@@ -1143,7 +1143,7 @@ async fn session_start_runtime_tx_terminal_persists_active_row() {
         .unwrap()
         .expect("active runtime");
     assert_eq!(active.kind, RuntimeKind::Terminal);
-    assert_eq!(active.status, RunStatus::Starting);
+    assert_eq!(active.status, WorkerSessionState::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
 }
 
@@ -1176,7 +1176,7 @@ async fn runtime_complete_for_terminal_exited_path() {
         .await
         .unwrap()
         .expect("active runtime");
-    repo.runtime_complete_for_terminal(&term.id, RunStatus::Exited)
+    repo.runtime_complete_for_terminal(&term.id, WorkerSessionState::Exited)
         .await
         .unwrap();
 
@@ -1186,7 +1186,7 @@ async fn runtime_complete_for_terminal_exited_path() {
         .unwrap()
         .expect("runtime");
     assert_eq!(completed.kind, RuntimeKind::Terminal);
-    assert_eq!(completed.status, RunStatus::Exited);
+    assert_eq!(completed.status, WorkerSessionState::Exited);
     assert_eq!(completed.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert!(completed.completed_at_ms.is_some());
     assert!(
@@ -1226,7 +1226,7 @@ async fn runtime_complete_for_terminal_failed_path() {
         .await
         .unwrap()
         .expect("active runtime");
-    repo.runtime_complete_for_terminal(&term.id, RunStatus::Failed)
+    repo.runtime_complete_for_terminal(&term.id, WorkerSessionState::Failed)
         .await
         .unwrap();
 
@@ -1235,7 +1235,7 @@ async fn runtime_complete_for_terminal_failed_path() {
         .await
         .unwrap()
         .expect("runtime");
-    assert_eq!(completed.status, RunStatus::Failed);
+    assert_eq!(completed.status, WorkerSessionState::Failed);
     assert_eq!(completed.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert!(completed.completed_at_ms.is_some());
 }
@@ -1243,7 +1243,7 @@ async fn runtime_complete_for_terminal_failed_path() {
 #[tokio::test]
 async fn runtime_complete_for_terminal_noop_when_no_active() {
     let repo = fresh_repo().await;
-    repo.runtime_complete_for_terminal("missing-terminal", RunStatus::Exited)
+    repo.runtime_complete_for_terminal("missing-terminal", WorkerSessionState::Exited)
         .await
         .unwrap();
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions")
@@ -1280,14 +1280,14 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
         .unwrap()
         .expect("active runtime")
         .id;
-    session_complete_tx(&mut tx, &runtime_id, RunStatus::Exited)
+    session_complete_tx(&mut tx, &runtime_id, WorkerSessionState::Exited)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     let before = runtime_row_snapshot(&repo, &runtime_id).await;
     let mut tx = repo.pool().begin().await.unwrap();
-    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Running)
+    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Running)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1330,14 +1330,14 @@ async fn runtime_complete_for_card_noop_when_no_active() {
         .unwrap()
         .expect("active runtime")
         .id;
-    session_complete_tx(&mut tx, &runtime_id, RunStatus::Exited)
+    session_complete_tx(&mut tx, &runtime_id, WorkerSessionState::Exited)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     let before = runtime_row_snapshot(&repo, &runtime_id).await;
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Failed)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1380,10 +1380,10 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
         .unwrap()
         .expect("active runtime")
         .id;
-    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Running)
+    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Running)
         .await
         .unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Failed)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
         .await
         .unwrap();
     let completed = runtime_get_by_id_tx(&mut tx, &runtime_id)
@@ -1395,7 +1395,7 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(completed.status, RunStatus::Failed);
+    assert_eq!(completed.status, WorkerSessionState::Failed);
     assert!(completed.completed_at_ms.is_some());
     assert!(active_after_complete.is_none());
     let row: (String, Option<i64>) =
@@ -1440,7 +1440,7 @@ async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
         .unwrap()
         .expect("active runtime");
     assert_eq!(active.kind, RuntimeKind::CodexCard);
-    assert_eq!(active.status, RunStatus::Starting);
+    assert_eq!(active.status, WorkerSessionState::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert!(active.thread_id.is_none());
 }
@@ -1493,7 +1493,7 @@ async fn worker_session_spawn_op_id_stamped_only_for_worker_mints() {
             card_id: spec_card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
             terminal_run_id: None,
             thread_id: None,
             session_id: None,
@@ -1572,7 +1572,7 @@ async fn session_commit_exit_absorbs_lost_session_race_without_clobber() {
     let repo = fresh_repo().await;
     let (session_id, _) = mint_terminal_session(&repo, Some("task-race")).await;
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_tx(&mut tx, &session_id.0, RunStatus::Exited)
+    session_complete_tx(&mut tx, &session_id.0, WorkerSessionState::Exited)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1606,7 +1606,7 @@ async fn session_commit_exit_tx_conflicts_from_terminal_state() {
     let repo = fresh_repo().await;
     let (session_id, _) = mint_terminal_session(&repo, Some("task-illegal")).await;
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_tx(&mut tx, &session_id.0, RunStatus::Exited)
+    session_complete_tx(&mut tx, &session_id.0, WorkerSessionState::Exited)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1687,7 +1687,7 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
@@ -1698,7 +1698,7 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
@@ -1721,7 +1721,7 @@ async fn session_supersede_and_start_tx_atomic() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -1730,7 +1730,7 @@ async fn session_supersede_and_start_tx_atomic() {
         card.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     let second = session_supersede_and_start_tx(&mut tx, &first.id, second_init)
         .await
@@ -1740,8 +1740,8 @@ async fn session_supersede_and_start_tx_atomic() {
     let old = runtime_by_id_tx_snapshot(&repo, &first.id)
         .await
         .expect("old runtime");
-    assert_eq!(old.status, RunStatus::Superseded);
-    assert_eq!(second.status, RunStatus::Running);
+    assert_eq!(old.status, WorkerSessionState::Superseded);
+    assert_eq!(second.status, WorkerSessionState::Running);
 
     let active_count: (i64,) = sqlx::query_as(
         r#"SELECT COUNT(*) FROM worker_sessions
@@ -1766,19 +1766,19 @@ async fn runtime_set_status_superseded_rejected() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
     .unwrap();
 
-    let err = session_set_status_tx(&mut tx, &runtime.id, RunStatus::Superseded)
+    let err = session_set_status_tx(&mut tx, &runtime.id, WorkerSessionState::Superseded)
         .await
         .unwrap_err();
     assert!(matches!(
         err,
         RuntimeRepoError::IllegalStatusTransition {
-            attempted: RunStatus::Superseded,
+            attempted: WorkerSessionState::Superseded,
             ..
         }
     ));
@@ -1795,19 +1795,19 @@ async fn runtime_set_status_same_running_rejected() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
     .unwrap();
 
-    let err = session_set_status_tx(&mut tx, &runtime.id, RunStatus::Running)
+    let err = session_set_status_tx(&mut tx, &runtime.id, WorkerSessionState::Running)
         .await
         .unwrap_err();
     assert!(matches!(
         err,
         RuntimeRepoError::IllegalStatusTransition {
-            attempted: RunStatus::Running,
+            attempted: WorkerSessionState::Running,
             ..
         }
     ));
@@ -1824,7 +1824,7 @@ async fn runtime_bind_attribution_transitions_pending_to_running() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::TurnPending,
+            WorkerSessionState::TurnPending,
         ),
     )
     .await
@@ -1842,7 +1842,7 @@ async fn runtime_bind_attribution_transitions_pending_to_running() {
     )
     .await
     .unwrap();
-    session_set_status_tx(&mut tx, &runtime.id, RunStatus::Running)
+    session_set_status_tx(&mut tx, &runtime.id, WorkerSessionState::Running)
         .await
         .unwrap();
     let persisted = runtime_get_by_id_tx(&mut tx, &runtime.id)
@@ -1851,7 +1851,7 @@ async fn runtime_bind_attribution_transitions_pending_to_running() {
         .expect("runtime");
     tx.commit().await.unwrap();
 
-    assert_eq!(persisted.status, RunStatus::Running);
+    assert_eq!(persisted.status, WorkerSessionState::Running);
     assert_eq!(persisted.thread_id.as_deref(), Some("thread-pending-bind"));
 }
 
@@ -1866,7 +1866,7 @@ async fn session_start_runtime_tx_codex_empty_is_turn_pending() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::TurnPending,
+            WorkerSessionState::TurnPending,
         ),
     )
     .await
@@ -1878,7 +1878,7 @@ async fn session_start_runtime_tx_codex_empty_is_turn_pending() {
         .await
         .unwrap()
         .expect("runtime");
-    assert_eq!(persisted.status, RunStatus::TurnPending);
+    assert_eq!(persisted.status, WorkerSessionState::TurnPending);
     assert!(persisted.thread_id.is_none());
 }
 
@@ -1893,12 +1893,12 @@ async fn runtime_pending_drop_completes_failed() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::TurnPending,
+            WorkerSessionState::TurnPending,
         ),
     )
     .await
     .unwrap();
-    session_complete_tx(&mut tx, &runtime.id, RunStatus::Failed)
+    session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Failed)
         .await
         .unwrap();
     let completed = runtime_get_by_id_tx(&mut tx, &runtime.id)
@@ -1907,7 +1907,7 @@ async fn runtime_pending_drop_completes_failed() {
         .expect("runtime");
     tx.commit().await.unwrap();
 
-    assert_eq!(completed.status, RunStatus::Failed);
+    assert_eq!(completed.status, WorkerSessionState::Failed);
     assert!(completed.completed_at_ms.is_some());
 }
 
@@ -1946,7 +1946,7 @@ async fn session_start_runtime_tx_claude_records_session_when_present() {
         .unwrap()
         .expect("active runtime");
     assert_eq!(active.kind, RuntimeKind::ClaudeCard);
-    assert_eq!(active.status, RunStatus::Starting);
+    assert_eq!(active.status, WorkerSessionState::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert_eq!(active.session_id.as_deref(), Some(session_id.as_str()));
 
@@ -1971,7 +1971,7 @@ async fn session_start_runtime_tx_claude_records_session_when_present() {
     let runtime = stored.runtime.as_ref().expect("projected card runtime");
     assert_eq!(runtime.runtime_id, active.id);
     assert_eq!(runtime.kind, RuntimeKind::ClaudeCard);
-    assert_eq!(runtime.status, RunStatus::Starting);
+    assert_eq!(runtime.status, WorkerSessionState::Starting);
     assert_eq!(runtime.provider, Some(AgentProvider::Claude));
     assert_eq!(runtime.terminal_id.as_deref(), Some(term.id.as_str()));
     assert_eq!(runtime.session_id.as_deref(), Some(session_id.as_str()));
@@ -2000,7 +2000,7 @@ async fn runtime_handle_state_json_roundtrip() {
         card.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     init.handle_state_json = Some(state.clone());
 
@@ -2029,7 +2029,7 @@ async fn session_set_handle_state_tx_writes_active_runtime() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
@@ -2064,7 +2064,7 @@ async fn session_set_handle_state_tx_noops_for_superseded_runtime() {
         card.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     init.handle_state_json = Some(original.clone());
 
@@ -2077,7 +2077,7 @@ async fn session_set_handle_state_tx_noops_for_superseded_runtime() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Starting,
+            WorkerSessionState::Starting,
         ),
     )
     .await
@@ -2090,7 +2090,7 @@ async fn session_set_handle_state_tx_noops_for_superseded_runtime() {
     let stale_runtime = runtime_by_id_tx_snapshot(&repo, &runtime.id)
         .await
         .expect("superseded runtime");
-    assert_eq!(stale_runtime.status, RunStatus::Superseded);
+    assert_eq!(stale_runtime.status, WorkerSessionState::Superseded);
     assert_eq!(stale_runtime.handle_state_json, Some(original.clone()));
 
     let stale_session = repo
@@ -2110,7 +2110,7 @@ async fn session_start_runtime_tx_shared_spec_thread_present_running() {
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     init.thread_id = Some("thread-1".into());
 
@@ -2119,7 +2119,7 @@ async fn session_start_runtime_tx_shared_spec_thread_present_running() {
     tx.commit().await.unwrap();
 
     assert_eq!(runtime.kind, RuntimeKind::SharedSpec);
-    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.thread_id.as_deref(), Some("thread-1"));
 }
 
@@ -2155,7 +2155,7 @@ async fn projection_overwrites_stale_legacy_keys_from_runtime() {
         card.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     init.terminal_run_id = Some("NEW".into());
     init.thread_id = Some("abc".into());
@@ -2174,7 +2174,7 @@ async fn projection_overwrites_stale_legacy_keys_from_runtime() {
         .unwrap();
     let runtime = projected.runtime.as_ref().expect("projected card runtime");
     assert_eq!(runtime.kind, RuntimeKind::CodexCard);
-    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.provider, Some(AgentProvider::Codex));
     assert_eq!(runtime.terminal_id.as_deref(), Some("NEW"));
     assert_eq!(runtime.thread_id.as_deref(), Some("abc"));
@@ -2199,13 +2199,13 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Failed,
+        WorkerSessionState::Failed,
     );
     let mut active = runtime_init(
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     active.thread_id = Some("active-thread".into());
 
@@ -2224,7 +2224,7 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
         .unwrap();
     let runtime = projected.runtime.as_ref().expect("projected card runtime");
     assert_eq!(runtime.kind, RuntimeKind::SharedSpec);
-    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.provider, Some(AgentProvider::Codex));
     assert!(runtime.terminal_id.is_none());
     assert_eq!(runtime.thread_id.as_deref(), Some("active-thread"));
@@ -2243,14 +2243,14 @@ async fn runtime_shared_spec_reset_supersedes_active_runtime() {
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     first_init.thread_id = Some("T1".into());
     let mut second_init = runtime_init(
         card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     second_init.thread_id = Some("T2".into());
 
@@ -2264,7 +2264,7 @@ async fn runtime_shared_spec_reset_supersedes_active_runtime() {
     let old = runtime_by_id_tx_snapshot(&repo, &first.id)
         .await
         .expect("old runtime");
-    assert_eq!(old.status, RunStatus::Superseded);
+    assert_eq!(old.status, WorkerSessionState::Superseded);
     assert_eq!(old.thread_id.as_deref(), Some("T1"));
 
     let active = repo
@@ -2274,7 +2274,7 @@ async fn runtime_shared_spec_reset_supersedes_active_runtime() {
         .expect("active runtime");
     assert_eq!(active.id, second.id);
     assert_eq!(active.kind, RuntimeKind::SharedSpec);
-    assert_eq!(active.status, RunStatus::Running);
+    assert_eq!(active.status, WorkerSessionState::Running);
     assert_eq!(active.thread_id.as_deref(), Some("T2"));
 
     let active_count: (i64,) = sqlx::query_as(
@@ -2300,14 +2300,14 @@ async fn session_start_runtime_tx_shared_spec_absent_turn_pending() {
             card.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::TurnPending,
+            WorkerSessionState::TurnPending,
         ),
     )
     .await
     .unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(runtime.status, RunStatus::TurnPending);
+    assert_eq!(runtime.status, WorkerSessionState::TurnPending);
     assert!(runtime.thread_id.is_none());
 }
 
@@ -2322,12 +2322,12 @@ async fn session_complete_tx_marks_completed_at() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
     .unwrap();
-    session_complete_tx(&mut tx, &runtime.id, RunStatus::Exited)
+    session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
         .await
         .unwrap();
     let completed = runtime_get_by_id_tx(&mut tx, &runtime.id)
@@ -2336,7 +2336,7 @@ async fn session_complete_tx_marks_completed_at() {
         .expect("runtime");
     tx.commit().await.unwrap();
 
-    assert_eq!(completed.status, RunStatus::Exited);
+    assert_eq!(completed.status, WorkerSessionState::Exited);
     assert!(completed.completed_at_ms.is_some());
     assert!(completed.completed_at_ms.unwrap() >= completed.created_at_ms);
 }
@@ -2352,7 +2352,7 @@ async fn runtime_get_active_for_card_returns_none_when_only_superseded() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
@@ -2364,7 +2364,7 @@ async fn runtime_get_active_for_card_returns_none_when_only_superseded() {
             card.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
@@ -2377,7 +2377,7 @@ async fn runtime_get_active_for_card_returns_none_when_only_superseded() {
             .id,
         second.id
     );
-    session_complete_tx(&mut tx, &second.id, RunStatus::Exited)
+    session_complete_tx(&mut tx, &second.id, WorkerSessionState::Exited)
         .await
         .unwrap();
     assert!(
@@ -2397,7 +2397,7 @@ async fn runtime_get_active_by_thread_finds_active() {
         card.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     init.thread_id = Some("thread-active".into());
     let mut tx = repo.pool().begin().await.unwrap();
@@ -2421,12 +2421,12 @@ async fn runtime_get_active_by_thread_skips_terminal_status() {
         card.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     init.thread_id = Some("thread-complete".into());
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(&mut tx, init).await.unwrap();
-    session_complete_tx(&mut tx, &runtime.id, RunStatus::Exited)
+    session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -2451,27 +2451,27 @@ async fn runtime_active_shared_thread_attribution_returns_shared_and_codex_with_
         shared.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     shared_init.thread_id = Some("thread-shared".into());
     let mut codex_init = runtime_init(
         codex.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     codex_init.thread_id = Some("thread-codex".into());
     let no_thread_init = runtime_init(
         no_thread.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     let mut claude_init = runtime_init(
         claude.id.to_string(),
         RuntimeKind::ClaudeCard,
         Some(AgentProvider::Claude),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     claude_init.thread_id = Some("thread-claude".into());
 
@@ -2516,7 +2516,7 @@ async fn runtimes_active_for_kind_filters() {
             active_shared.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
@@ -2527,7 +2527,7 @@ async fn runtimes_active_for_kind_filters() {
             active_codex.id.to_string(),
             RuntimeKind::CodexCard,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
@@ -2538,12 +2538,12 @@ async fn runtimes_active_for_kind_filters() {
             completed_shared.id.to_string(),
             RuntimeKind::SharedSpec,
             Some(AgentProvider::Codex),
-            RunStatus::Running,
+            WorkerSessionState::Running,
         ),
     )
     .await
     .unwrap();
-    session_complete_tx(&mut tx, &completed.id, RunStatus::Failed)
+    session_complete_tx(&mut tx, &completed.id, WorkerSessionState::Failed)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -2567,13 +2567,13 @@ async fn runtimes_active_for_kind_codex_kind_excludes_placeholder() {
         placeholder_card.id.to_string(),
         RuntimeKind::SharedSpec,
         Some(AgentProvider::Codex),
-        RunStatus::Starting,
+        WorkerSessionState::Starting,
     );
     let codex = runtime_init(
         codex_card.id.to_string(),
         RuntimeKind::CodexCard,
         Some(AgentProvider::Codex),
-        RunStatus::Running,
+        WorkerSessionState::Running,
     );
     let placeholder_id = placeholder.id.clone();
     let codex_id = codex.id.clone();

@@ -4,7 +4,7 @@ use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_lookup::{
     resolve_active_thread_for_card, resolve_card_for_thread, resolve_claude_session_for_card,
 };
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use serde_json::{Value, json};
 
 async fn fresh_repo() -> SqlxRepo {
@@ -56,7 +56,7 @@ fn runtime_init(
         card_id,
         kind,
         agent_provider,
-        status: RunStatus::Running,
+        status: WorkerSessionState::Running,
         terminal_run_id: None,
         thread_id: None,
         session_id: None,

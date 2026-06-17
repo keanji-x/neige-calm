@@ -37,7 +37,7 @@ use calm_server::model::{
     CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_sweeper;
 use serde_json::json;
@@ -126,7 +126,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
             card_id: card.id.to_string(),
             kind: RuntimeKind::Terminal,
             agent_provider: None,
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: Some(term.id.clone()),
             thread_id: None,
             session_id: None,
@@ -194,7 +194,7 @@ async fn seed_shared_spec_pair(
     )
     .await
     .unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
         .await
         .unwrap();
     session_start_runtime_tx(
@@ -204,7 +204,7 @@ async fn seed_shared_spec_pair(
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: Some(thread_id.into()),
             session_id: None,
@@ -265,7 +265,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
     )
     .await
     .unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
         .await
         .unwrap();
     let init = RuntimeInit {
@@ -273,7 +273,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         card_id: card.id.to_string(),
         kind: RuntimeKind::SharedSpec,
         agent_provider: Some(AgentProvider::Codex),
-        status: RunStatus::Running,
+        status: WorkerSessionState::Running,
         terminal_run_id: None,
         thread_id: Some("t1".into()),
         session_id: None,
@@ -311,7 +311,7 @@ async fn complete_terminal_runtime_for_card(state: &AppState, card_id: &str) {
     };
     state
         .repo
-        .runtime_complete_for_terminal(&term.id, RunStatus::Exited)
+        .runtime_complete_for_terminal(&term.id, WorkerSessionState::Exited)
         .await
         .unwrap();
 }
@@ -396,7 +396,7 @@ async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
 
     state
         .repo
-        .runtime_complete_for_card(&card_id, RunStatus::Exited)
+        .runtime_complete_for_card(&card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
     age_all_terminals_past_grace(&concrete).await;

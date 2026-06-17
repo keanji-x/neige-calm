@@ -25,7 +25,7 @@ use calm_server::operation::{
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use clap::Parser;
@@ -432,7 +432,7 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
             card_id: card.id.to_string(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: Some(thread_id.to_string()),
             session_id: None,
@@ -521,7 +521,7 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,
@@ -573,7 +573,7 @@ async fn seed_inactive_spec_runtime(boot: &Boot, card: &Card) -> String {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Exited,
+            status: WorkerSessionState::Exited,
             terminal_run_id: None,
             thread_id: Some(format!("thread-{runtime_id}")),
             session_id: None,
@@ -1096,8 +1096,14 @@ async fn seed_active_spec_runtime_row(
     thread_id: Option<String>,
     handle_state_json: Option<Value>,
 ) -> String {
-    seed_spec_runtime_row_with_status(boot, card, thread_id, handle_state_json, RunStatus::Idle)
-        .await
+    seed_spec_runtime_row_with_status(
+        boot,
+        card,
+        thread_id,
+        handle_state_json,
+        WorkerSessionState::Idle,
+    )
+    .await
 }
 
 /// Like [`seed_active_spec_runtime_row`] but with an explicit status — used
@@ -1108,7 +1114,7 @@ async fn seed_spec_runtime_row_with_status(
     card: &Card,
     thread_id: Option<String>,
     handle_state_json: Option<Value>,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> String {
     let runtime_id = new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
@@ -1250,7 +1256,7 @@ async fn send_spec_input_starting_runtime_503_no_recovery() {
         &card,
         Some(thread_id.clone()),
         Some(idle_snapshot_value(&thread_id)),
-        RunStatus::Starting,
+        WorkerSessionState::Starting,
     )
     .await;
 
@@ -1654,7 +1660,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-old".into()),
             session_id: None,
@@ -1693,7 +1699,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
             .await
             .unwrap()
             .status,
-        RunStatus::Superseded
+        WorkerSessionState::Superseded
     );
     let active = boot
         .repo
@@ -1744,7 +1750,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-corrupt".into()),
             session_id: None,
@@ -1780,7 +1786,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
             .await
             .unwrap()
             .status,
-        RunStatus::Superseded
+        WorkerSessionState::Superseded
     );
     let active = boot
         .repo
@@ -1851,7 +1857,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,
@@ -1975,7 +1981,7 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(old_thread_id.clone()),
             session_id: None,
@@ -2026,7 +2032,7 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
         .await
         .unwrap()
         .expect("old runtime row remains");
-    assert_eq!(old_after.status, RunStatus::Idle);
+    assert_eq!(old_after.status, WorkerSessionState::Idle);
     let active = boot
         .repo
         .runtime_get_active_for_card(&card.id.to_string())
@@ -2155,7 +2161,7 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-old".into()),
             session_id: None,

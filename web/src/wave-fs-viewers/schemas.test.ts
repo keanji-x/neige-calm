@@ -5,7 +5,7 @@ import type {
   CardRuntimeView,
   CardRole,
   RuntimeKind,
-  RunStatus,
+  WorkerSessionState,
   Wave,
   WaveFsCardMeta,
   WaveFsHookEvent,
@@ -21,8 +21,8 @@ import {
   agentProviderSchema,
   cardRuntimeSchema,
   cardRuntimeViewSchema,
-  runStatusSchema,
   runtimeKindSchema,
+  workerSessionStateSchema,
   waveFsCardMetaSchema,
   waveFsCardRoleSchema,
   waveFsCardsIndexSchema,
@@ -43,7 +43,8 @@ describe('wave fs zod to generated type conformance', () => {
   it('pins enum schemas to generated unions', () => {
     expectTypeOf<z.infer<typeof agentProviderSchema>>()
       .toEqualTypeOf<AgentProvider>();
-    expectTypeOf<z.infer<typeof runStatusSchema>>().toEqualTypeOf<RunStatus>();
+    expectTypeOf<z.infer<typeof workerSessionStateSchema>>()
+      .toEqualTypeOf<WorkerSessionState>();
     expectTypeOf<z.infer<typeof runtimeKindSchema>>()
       .toEqualTypeOf<RuntimeKind>();
     expectTypeOf<z.infer<typeof waveFsCardRoleSchema>>().toEqualTypeOf<CardRole>();
