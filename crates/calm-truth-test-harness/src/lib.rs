@@ -13,8 +13,9 @@ use async_trait::async_trait;
 use calm_exec::{SpawnCtx, WorkerProvider};
 use calm_truth::card_role_cache::CardRoleCache;
 use calm_truth::db::sqlite::{
-    SqlxRepo, append_decision_event_in_tx, begin_immediate_tx, runtime_set_harness_observation_tx,
-    runtime_start_tx, session_insert_tx, session_state_transition_tx,
+    SqlxRepo, append_decision_event_in_tx, begin_immediate_tx, session_insert_tx,
+    session_set_harness_observation_runtime_tx, session_start_runtime_tx,
+    session_state_transition_tx,
 };
 use calm_truth::db::{RepoEventWrite, RepoSyncDomainRaw, write_in_tx_typed};
 use calm_truth::decision_gate::{
@@ -364,7 +365,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
         let card_id = card.id.to_string();
         move |tx| {
             Box::pin(async move {
-                runtime_start_tx(
+                session_start_runtime_tx(
                     tx,
                     RuntimeInit {
                         id: runtime_id,
@@ -397,7 +398,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
         let runtime_id = runtime_id.clone();
         move |tx| {
             Box::pin(async move {
-                runtime_set_harness_observation_tx(
+                session_set_harness_observation_runtime_tx(
                     tx,
                     &runtime_id,
                     RunStatus::TurnPending,
