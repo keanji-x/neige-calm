@@ -20,7 +20,6 @@ default = []
 # self-loop below.
 fixtures = [
     "calm-proc-supervisor/test-support",
-    "calm-truth/worker-session-parity-drop",
 ]
 # Issue #236: opt-in end-to-end test that boots a real `codex` binary
 # (the agent's MCP-client side) and verifies the spec card's daemon

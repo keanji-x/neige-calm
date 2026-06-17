@@ -47,7 +47,6 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
-    calm_server::backfill_worker_sessions_from_runtimes_on_boot(&state).await?;
     calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
 
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
@@ -78,8 +77,6 @@ async fn main() -> anyhow::Result<()> {
     // Issue #644 PR-B — scheduler boot sweep. Must follow operation
     // recovery (design §8 boot order; asserted in `boot_order_tests`).
     calm_server::scheduler_sweep_on_boot(&state).await;
-
-    calm_server::assert_worker_sessions_parity_on_boot(&state).await?;
 
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as
