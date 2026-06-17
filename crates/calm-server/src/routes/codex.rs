@@ -30,6 +30,7 @@ use crate::actor::Actor;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
+use crate::role_gate::RoleViolation;
 use crate::runtime_lookup::resolve_card_for_thread;
 use crate::runtime_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
@@ -57,7 +58,7 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct IngestQuery {
-    pub card_id: String,
+    pub card_id: Option<CardId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -142,8 +143,23 @@ pub(crate) async fn ingest_hook(
     Query(q): Query<IngestQuery>,
     Json(payload): Json<Value>,
 ) -> Result<StatusCode> {
-    ingest_provider_hook(&s, q.card_id, payload, HookProvider::Codex).await?;
+    let card_id = resolve_ingest_card_id(q.card_id)?;
+    ingest_provider_hook(&s, card_id, payload, HookProvider::Codex).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) fn resolve_ingest_card_id(card_id: Option<CardId>) -> Result<String> {
+    let Some(card_id) = card_id else {
+        return Err(empty_ai_card_id());
+    };
+    if card_id.as_str().is_empty() {
+        return Err(empty_ai_card_id());
+    }
+    Ok(card_id.0)
+}
+
+fn empty_ai_card_id() -> CalmError {
+    CalmError::Forbidden(RoleViolation::EmptyAiCardId.to_string())
 }
 
 #[allow(deprecated)]
@@ -328,6 +344,25 @@ mod tests {
         assert_eq!(to_snake_case("Stop"), "stop");
         assert_eq!(to_snake_case("SessionStart"), "session_start");
         assert_eq!(to_snake_case("unknown"), "unknown");
+    }
+
+    #[test]
+    fn resolve_ingest_card_id_rejects_absent_and_empty() {
+        let expected = RoleViolation::EmptyAiCardId.to_string();
+        for card_id in [None, Some(CardId::from(""))] {
+            match resolve_ingest_card_id(card_id) {
+                Err(CalmError::Forbidden(message)) => assert_eq!(message, expected),
+                other => panic!("expected forbidden EmptyAiCardId, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_ingest_card_id_preserves_raw_inner_string() {
+        assert_eq!(
+            resolve_ingest_card_id(Some(CardId::from(" card-1 "))).unwrap(),
+            " card-1 "
+        );
     }
 
     #[test]

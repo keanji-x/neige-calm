@@ -129,6 +129,7 @@ async fn fallback_replay_posts_file_and_deletes_on_success() {
     let codex_dir = fallback.path().join("codex");
     std::fs::create_dir_all(&codex_dir).expect("fallback codex dir");
     let fallback_file = codex_dir.join("replay-key.json");
+    // Pre-PR10 fallback records carry card_id as a raw string; replay rebuilds ?card_id= for the new handler.
     std::fs::write(
         &fallback_file,
         serde_json::to_vec(&serde_json::json!({
