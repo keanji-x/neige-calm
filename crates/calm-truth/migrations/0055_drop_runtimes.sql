@@ -1,4 +1,11 @@
 -- IRREVERSIBLE — no rollback after this migration. PR9b retires runtimes.
+--
+-- Migration bridge (steps 1, 3, 3.5, 3.6): close every side effect that
+-- migration 0050 + the deleted backfill_worker_sessions_from_runtimes_on_boot
+-- used to establish for active runtimes, for the multi-version-upgrade case
+-- where a runtimes row never received a worker_sessions mirror before
+-- this PR drops the table. Each is idempotent: cleanly-mirrored DBs see
+-- zero row changes from these steps.
 
 -- 1. Multi-version upgrade bridge: copy runtime rows that never received a
 --    worker_sessions mirror before runtimes disappears.
@@ -113,6 +120,70 @@ UPDATE cards
          JOIN worker_sessions ws ON ws.id = r.id
         WHERE r.card_id = cards.id
           AND ws.state != 'superseded'
+   );
+
+-- 3.5. Replay 0050's wave-root backfill: for any wave whose root_session_id
+--      is NULL or points at a now-nonexistent session (the bridged-but-not-
+--      mirrored case), set it to the newest active planner ws in that wave.
+--      Idempotent: cleanly-mirrored waves keep their current root.
+UPDATE waves
+   SET root_session_id = (
+       SELECT ws.id
+         FROM worker_sessions ws
+        WHERE ws.wave_id = waves.id
+          AND ws.contract = 'planner'
+          AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
+        ORDER BY ws.updated_at_ms DESC,
+                 ws.created_at_ms DESC,
+                 ws.id DESC
+        LIMIT 1
+   )
+ WHERE (waves.root_session_id IS NULL
+        OR waves.root_session_id NOT IN (SELECT id FROM worker_sessions))
+   AND EXISTS (
+       SELECT 1 FROM worker_sessions ws
+        WHERE ws.wave_id = waves.id
+          AND ws.contract = 'planner'
+          AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
+   );
+
+-- 3.6. Replay 0050's MCP token mirror: for any active ws with NULL
+--      mcp_token_hash AND a matching unique card_mcp_tokens row, mirror
+--      the token hash. Drops the runtimes JOIN (ws.card_id is now
+--      populated post-PR9b-0). The uniqueness guards prevent ws_token_idx
+--      violation on malformed/duplicate historical token rows.
+UPDATE worker_sessions
+   SET mcp_token_hash = (
+       SELECT cmt.hashed_token
+         FROM card_mcp_tokens cmt
+        WHERE cmt.card_id = worker_sessions.card_id
+          AND 1 = (
+              SELECT COUNT(*)
+                FROM card_mcp_tokens dup
+               WHERE dup.hashed_token = cmt.hashed_token
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM worker_sessions other
+               WHERE other.id != worker_sessions.id
+                 AND other.mcp_token_hash = cmt.hashed_token
+          )
+        LIMIT 1
+   )
+ WHERE worker_sessions.mcp_token_hash IS NULL
+   AND worker_sessions.state IN ('starting', 'running', 'idle', 'turn_pending')
+   AND worker_sessions.card_id IS NOT NULL
+   AND EXISTS (
+       SELECT 1 FROM card_mcp_tokens cmt
+        WHERE cmt.card_id = worker_sessions.card_id
+          AND 1 = (
+              SELECT COUNT(*) FROM card_mcp_tokens dup
+               WHERE dup.hashed_token = cmt.hashed_token
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM worker_sessions other
+               WHERE other.id != worker_sessions.id
+                 AND other.mcp_token_hash = cmt.hashed_token
+          )
    );
 
 -- 4. Structural double-spawn protection on the ws side.
