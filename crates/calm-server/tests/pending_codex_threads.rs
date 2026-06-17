@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_get_by_id_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, runtime_get_by_id_tx, session_start_runtime_tx, session_supersede_and_start_tx,
+};
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::CodexAdapter;
@@ -141,7 +143,7 @@ async fn start_runtime_for_card_with_thread(
 ) -> String {
     let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    repo.runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -176,7 +178,7 @@ async fn supersede_runtime_for_card(
     let runtime_id = new_id();
     let old_runtime_id = old_runtime_id.to_string();
     let mut tx = repo.pool().begin().await.unwrap();
-    repo.runtime_supersede_tx(
+    session_supersede_and_start_tx(
         &mut tx,
         &old_runtime_id,
         RuntimeInit {
@@ -700,7 +702,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
 
     let r2 = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    repo.runtime_supersede_tx(
+    session_supersede_and_start_tx(
         &mut tx,
         &r1,
         RuntimeInit {
@@ -784,7 +786,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
     assert_eq!(registry.pending_count().await, 2);
 
     let mut tx = repo.pool().begin().await.unwrap();
-    repo.runtime_supersede_tx(
+    session_supersede_and_start_tx(
         &mut tx,
         &r1,
         RuntimeInit {

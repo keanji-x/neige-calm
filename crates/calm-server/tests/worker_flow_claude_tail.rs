@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::RepoRead;
-use calm_server::db::sqlite::{SqlxRepo, runtime_set_status_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_set_status_tx};
 use calm_server::runtime_repo::RunStatus;
 use calm_server::worker_flow::claude_transcript::CLAUDE_TRANSCRIPT_SOURCE_KIND;
 
@@ -110,7 +110,7 @@ async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_withou
 
     let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
     tokio::time::sleep(Duration::from_millis(80)).await;
-    runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+    session_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
         .await
         .unwrap();
     wf::append_transcript(
@@ -175,7 +175,7 @@ async fn claude_tail_drains_unterminated_final_record_when_runtime_exits() {
     ))
     .unwrap();
     let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
-    runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+    session_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
         .await
         .unwrap();
     append_raw(&path, &final_record);
@@ -220,7 +220,7 @@ async fn claude_tail_terminal_drain_leaves_invalid_unterminated_tail_unrecorded(
     assert_cursor(&repo, card_id, 2, initial_len).await;
 
     let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
-    runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+    session_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
         .await
         .unwrap();
     append_raw(&path, "{not-json");

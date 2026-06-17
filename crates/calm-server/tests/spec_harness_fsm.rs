@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, Observation,
@@ -85,7 +85,7 @@ async fn harness_with(
         snapshot.last_turn_id = Some("turn-prior".into());
     }
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -136,7 +136,7 @@ async fn harness_from_snapshot(
         .clone()
         .unwrap_or_else(|| "thread-offline".to_string());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -763,7 +763,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use calm_exec::flow::WorkerFlowSource;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, cove_create_tx, runtime_start_tx, wave_create_tx,
+    SqlxRepo, card_create_with_id_tx, cove_create_tx, session_start_runtime_tx, wave_create_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, RequestTheme};
@@ -169,7 +169,7 @@ pub async fn seed_runtime_for_card_with_status(
     status: RunStatus,
 ) -> CardRuntime {
     let mut tx = repo.pool().begin().await.unwrap();
-    let runtime = runtime_start_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: format!("rt-{}", card.id),
@@ -201,7 +201,7 @@ pub async fn seed_claude_runtime_for_card_with_status(
     status: RunStatus,
 ) -> CardRuntime {
     let mut tx = repo.pool().begin().await.unwrap();
-    let runtime = runtime_start_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: format!("rt-{}", card.id),

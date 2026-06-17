@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
@@ -208,7 +208,7 @@ fn theme() -> Value {
 
 async fn runtime_status_for_card(repo: &SqlxRepo, card_id: &str) -> String {
     sqlx::query_scalar(
-        "SELECT status FROM runtimes WHERE card_id = ?1 ORDER BY updated_at_ms DESC LIMIT 1",
+        "SELECT state FROM worker_sessions WHERE card_id = ?1 ORDER BY updated_at_ms DESC LIMIT 1",
     )
     .bind(card_id)
     .fetch_one(repo.pool())
@@ -627,7 +627,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     let card_id = card.id.to_string();
     let runtime_id = calm_server::model::new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

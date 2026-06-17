@@ -3,7 +3,7 @@
 //!
 //! `runtime_status_transition_allowed` (db/sqlite.rs) is the arbitration
 //! kernel that every runtime-status writer funnels through today
-//! (`runtime_set_status_tx`, `runtime_complete_tx`, and their for-card /
+//! (`session_set_status_tx`, `session_complete_tx`, and their for-card /
 //! for-terminal wrappers). The #679 design makes it the future single exit
 //! authority, so PR0 pins the CURRENT full decision table as a golden
 //! *before* any refactor touches it.
@@ -37,9 +37,9 @@
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, runtime_complete_for_card_tx,
-    runtime_complete_for_terminal_tx, runtime_complete_tx, runtime_get_active_for_card_tx,
-    runtime_set_status_for_card_tx, runtime_set_status_tx, runtime_start_tx,
+    SqlxRepo, card_with_codex_create_tx, runtime_get_active_for_card_tx,
+    session_complete_for_card_tx, session_complete_for_terminal_tx, session_complete_tx,
+    session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
 };
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::runtime_repo::{RunStatus, RuntimeInit, RuntimeKind, RuntimeRepoError};
@@ -108,7 +108,7 @@ fn terminal_runtime_init(card_id: String, status: RunStatus) -> RuntimeInit {
 }
 
 async fn raw_status(repo: &SqlxRepo, runtime_id: &str) -> String {
-    sqlx::query_scalar("SELECT status FROM runtimes WHERE id = ?1")
+    sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
         .bind(runtime_id)
         .fetch_one(repo.pool())
         .await
@@ -144,7 +144,7 @@ async fn probe(
         .expect("create probe card");
 
     let mut tx = repo.pool().begin().await.expect("begin probe tx");
-    let runtime = runtime_start_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         terminal_runtime_init(card.id.to_string(), from.1.clone()),
     )
@@ -154,8 +154,8 @@ async fn probe(
     assert_eq!(runtime.status, from.1, "insert round-trip for {}", from.0);
 
     let res = match path {
-        WriterPath::SetStatus => runtime_set_status_tx(&mut tx, &runtime.id, to.1.clone()).await,
-        WriterPath::Complete => runtime_complete_tx(&mut tx, &runtime.id, to.1.clone()).await,
+        WriterPath::SetStatus => session_set_status_tx(&mut tx, &runtime.id, to.1.clone()).await,
+        WriterPath::Complete => session_complete_tx(&mut tx, &runtime.id, to.1.clone()).await,
     };
     tx.commit().await.expect("commit probe tx");
 
@@ -246,7 +246,7 @@ async fn runtime_status_matrix_matches_golden() {
         for to in ALL_STATUSES.iter() {
             let expected_allow = matrix[from.0][to.0].as_str() == Some("allow");
 
-            // `runtime_set_status_tx` consults the kernel for every target
+            // `session_set_status_tx` consults the kernel for every target
             // (its categorical Superseded refusal coincides with the
             // matrix's all-deny superseded column).
             let observed = probe(&repo, &wave, from, to, WriterPath::SetStatus).await;
@@ -259,7 +259,7 @@ async fn runtime_status_matrix_matches_golden() {
                 if expected_allow { "allow" } else { "deny" },
             );
 
-            // `runtime_complete_tx` is the other real writer into the
+            // `session_complete_tx` is the other real writer into the
             // kernel; it only accepts terminal targets, so cross-check the
             // failed/exited columns through it as well — both paths must
             // arbitrate identically.
@@ -319,7 +319,7 @@ async fn running_codex_fixture() -> (
     .await
     .expect("mint codex card");
     // Mid-execution shape: starting -> running.
-    runtime_set_status_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Running)
+    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Running)
         .await
         .expect("advance to running");
     let runtime_id = runtime_get_active_for_card_tx(&mut tx, card.id.as_ref())
@@ -334,8 +334,8 @@ async fn running_codex_fixture() -> (
 
 async fn row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64, Option<i64>) {
     sqlx::query_as(
-        r#"SELECT status, updated_at_ms, completed_at_ms
-           FROM runtimes
+        r#"SELECT state, updated_at_ms, completed_at_ms
+           FROM worker_sessions
            WHERE id = ?1"#,
     )
     .bind(runtime_id)
@@ -350,7 +350,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
 
     // Writer 1 (e.g. attach_reader EOF) — its own tx, commits first, wins.
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
         .await
         .expect("first terminal writer succeeds");
     tx.commit().await.unwrap();
@@ -361,7 +361,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     // Writer 2 (e.g. terminal sweeper, via the terminal row) — separate tx,
     // sees no active runtime, no-ops with Ok. No error, no mutation.
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_complete_for_terminal_tx(&mut tx, &term.id, RunStatus::Failed)
+    session_complete_for_terminal_tx(&mut tx, &term.id, RunStatus::Failed)
         .await
         .expect("second terminal writer must no-op, not error");
     tx.commit().await.unwrap();
@@ -374,7 +374,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     // Writer 3 (e.g. boot scan, by card) — same absorption through the
     // for-card wrapper.
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Failed)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Failed)
         .await
         .expect("third writer (for-card) must no-op, not error");
     tx.commit().await.unwrap();
@@ -383,7 +383,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     // Contrast pin: the direct by-id path does NOT absorb — a second
     // terminal write against a known runtime id surfaces the conflict.
     let mut tx = repo.pool().begin().await.unwrap();
-    let err = runtime_complete_tx(&mut tx, &runtime_id, RunStatus::Failed)
+    let err = session_complete_tx(&mut tx, &runtime_id, RunStatus::Failed)
         .await
         .expect_err("by-id second terminal write surfaces the conflict");
     drop(tx); // roll back
@@ -407,7 +407,7 @@ async fn terminal_absorption_failed_first_then_exited_noops() {
     let (repo, card, term, runtime_id) = running_codex_fixture().await;
 
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_complete_for_terminal_tx(&mut tx, &term.id, RunStatus::Failed)
+    session_complete_for_terminal_tx(&mut tx, &term.id, RunStatus::Failed)
         .await
         .expect("first terminal writer succeeds");
     tx.commit().await.unwrap();
@@ -416,7 +416,7 @@ async fn terminal_absorption_failed_first_then_exited_noops() {
     assert!(won.2.is_some(), "first writer stamps completed_at_ms");
 
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
         .await
         .expect("second terminal writer must no-op, not error");
     tx.commit().await.unwrap();

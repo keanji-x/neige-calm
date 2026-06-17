@@ -5,7 +5,7 @@ use std::{path::Path, process::Stdio};
 use calm_server::codex_appserver::InputItem;
 use calm_server::config::Config;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_mcp_token_set_tx, runtime_start_tx, session_mcp_token_set_tx,
+    SqlxRepo, card_mcp_token_set_tx, session_mcp_token_set_tx, session_start_runtime_tx,
 };
 use calm_server::db::{
     Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
@@ -368,7 +368,7 @@ async fn seed_runtime_thread_with_kind(
 ) -> String {
     let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

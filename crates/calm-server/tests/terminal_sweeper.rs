@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, runtime_complete_for_card_tx, runtime_start_tx,
+    SqlxRepo, card_with_codex_create_tx, session_complete_for_card_tx, session_start_runtime_tx,
 };
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{
@@ -119,7 +119,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
         .await
         .unwrap();
     let mut tx = concrete.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),
@@ -194,10 +194,10 @@ async fn seed_shared_spec_pair(
     )
     .await
     .unwrap();
-    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
         .await
         .unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: new_id(),
@@ -265,34 +265,27 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
     )
     .await
     .unwrap();
-    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
         .await
         .unwrap();
-    let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO runtimes (
-               id, card_id, kind, agent_provider, status, terminal_run_id,
-               thread_id, session_id, active_turn_id, handle_state_json,
-               lease_owner, lease_until_ms, created_at_ms, updated_at_ms,
-               completed_at_ms
-           )
-           VALUES (?1, ?2, 'shared-spec', 'codex', 'running', NULL,
-                   't1', NULL, NULL, NULL, NULL, NULL, ?3, ?3, NULL)"#,
-    )
-    .bind(new_id())
-    .bind(card.id.as_str())
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+    let init = RuntimeInit {
+        id: new_id(),
+        card_id: card.id.to_string(),
+        kind: RuntimeKind::SharedSpec,
+        agent_provider: Some(AgentProvider::Codex),
+        status: RunStatus::Running,
+        terminal_run_id: None,
+        thread_id: Some("t1".into()),
+        session_id: None,
+        active_turn_id: None,
+        handle_state_json: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        spawn_op_id: None,
+        now_ms: now_ms(),
+    };
+    session_start_runtime_tx(&mut tx, init).await.unwrap();
     tx.commit().await.unwrap();
-    // Production parity: the boot backfill mirrors every migrated `runtimes`
-    // row into `worker_sessions` (with card_id) — so terminals_orphaned's
-    // flipped `ws.card_id` scan (PR9b-i) sees the active session.
-    concrete
-        .backfill_worker_sessions_from_runtimes()
-        .await
-        .unwrap();
     (card.id.to_string(), term.id)
 }
 

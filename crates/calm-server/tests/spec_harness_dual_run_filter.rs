@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
@@ -57,7 +57,7 @@ async fn harness_drops_foreign_thread_notifications() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_b.clone());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -170,7 +170,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -327,7 +327,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

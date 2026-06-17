@@ -390,11 +390,13 @@ async fn post_codex_card_with_prompt_succeeds_via_mint_and_await() {
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
     assert_eq!(card["payload"]["codex_thread_id"], "fake-thread-0001");
     let card_id = card["id"].as_str().unwrap();
-    let row = sqlx::query("SELECT id, status, thread_id FROM runtimes WHERE card_id = ?1")
-        .bind(card_id)
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap();
+    let row = sqlx::query(
+        "SELECT id, state AS status, thread_id FROM worker_sessions WHERE card_id = ?1",
+    )
+    .bind(card_id)
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
     let runtime_id: String = row.try_get("id").unwrap();
     let status: String = row.try_get("status").unwrap();
     let thread_id: String = row.try_get("thread_id").unwrap();
@@ -669,7 +671,7 @@ async fn post_codex_card_prompt_spawn_failure_interrupts_turn_and_keeps_card() {
         cards[0].payload.get("codex_thread_id").is_none(),
         "prompted compensation must clear the payload thread id"
     );
-    let row = sqlx::query("SELECT status FROM runtimes WHERE card_id = ?1")
+    let row = sqlx::query("SELECT state AS status FROM worker_sessions WHERE card_id = ?1")
         .bind(cards[0].id.as_str())
         .fetch_one(boot.repo.pool())
         .await

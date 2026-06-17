@@ -5,7 +5,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::{InputItem, Notification};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, runtime_set_status_tx, runtime_start_tx,
+    SqlxRepo, card_create_with_id_tx, session_set_status_tx, session_start_runtime_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::harness::{
@@ -83,7 +83,7 @@ async fn boot() -> Boot {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -294,7 +294,7 @@ async fn start_worker_runtime_with_event(boot: &Boot, card: &Card, status: RunSt
                 let card_id = card_id.clone();
                 let status = status.clone();
                 Box::pin(async move {
-                    let runtime = runtime_start_tx(
+                    let runtime = session_start_runtime_tx(
                         tx,
                         RuntimeInit {
                             id: runtime_id,
@@ -356,7 +356,7 @@ async fn set_worker_runtime_status_with_event(
                 let old_status = old_status.clone();
                 let new_status = new_status.clone();
                 Box::pin(async move {
-                    runtime_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
+                    session_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
                     Ok(Event::RuntimeStatusChanged {
                         runtime_id,
                         card_id: card_id.to_string(),
@@ -564,9 +564,9 @@ async fn corrupt_card_payload(boot: &Boot, card_id: &CardId) {
 async fn runtime_snapshot(boot: &Boot) -> HarnessSnapshot {
     let state_text: Option<String> = sqlx::query_scalar(
         r#"SELECT handle_state_json
-             FROM runtimes
+             FROM worker_sessions
              WHERE card_id = ?1
-               AND status IN ('starting', 'running', 'idle', 'turn_pending')
+               AND state IN ('starting', 'running', 'idle', 'turn_pending')
              ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
              LIMIT 1"#,
     )
@@ -582,24 +582,10 @@ async fn runtime_snapshot(boot: &Boot) -> HarnessSnapshot {
 async fn persist_runtime_snapshot(boot: &Boot, snapshot: &HarnessSnapshot) {
     let state_text = serde_json::to_string(snapshot).expect("snapshot json");
     sqlx::query(
-        r#"UPDATE runtimes
-              SET handle_state_json = ?1
-            WHERE card_id = ?2
-              AND status IN ('starting', 'running', 'idle', 'turn_pending')"#,
-    )
-    .bind(&state_text)
-    .bind(boot.spec_card_id.as_str())
-    .execute(boot.repo.pool())
-    .await
-    .expect("persist runtime snapshot");
-    sqlx::query(
         r#"UPDATE worker_sessions
               SET handle_state_json = ?1
-            WHERE id IN (
-                SELECT id FROM runtimes
-                 WHERE card_id = ?2
-                   AND status IN ('starting', 'running', 'idle', 'turn_pending')
-            )"#,
+            WHERE card_id = ?2
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(&state_text)
     .bind(boot.spec_card_id.as_str())

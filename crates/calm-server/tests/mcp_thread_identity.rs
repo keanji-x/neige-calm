@@ -12,8 +12,8 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
-    runtime_bind_attribution_tx, runtime_fail_if_active_tx, runtime_get_active_for_card_tx,
-    runtime_mark_superseded_tx, runtime_start_tx, session_mcp_token_set_tx,
+    runtime_get_active_for_card_tx, session_bind_attribution_tx, session_fail_if_active_runtime_tx,
+    session_mark_superseded_runtime_tx, session_mcp_token_set_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::auth;
@@ -193,7 +193,7 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
         .await
         .unwrap()
     {
-        runtime_bind_attribution_tx(
+        session_bind_attribution_tx(
             &mut tx,
             &runtime.id,
             ThreadAttribution {
@@ -207,7 +207,7 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
         .await
         .unwrap();
     } else {
-        runtime_start_tx(
+        session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: calm_server::model::new_id(),
@@ -437,7 +437,7 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
     )
     .await
     .unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -734,7 +734,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
         .await
         .unwrap()
         .expect("active bound runtime");
-    runtime_mark_superseded_tx(&mut tx, &runtime.id)
+    session_mark_superseded_runtime_tx(&mut tx, &runtime.id)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -781,7 +781,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
         .await
         .unwrap()
         .expect("active bound runtime");
-    runtime_fail_if_active_tx(&mut tx, &runtime.id)
+    session_fail_if_active_runtime_tx(&mut tx, &runtime.id)
         .await
         .unwrap();
     tx.commit().await.unwrap();

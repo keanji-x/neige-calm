@@ -7,7 +7,8 @@
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, overlay_delete_by_entity_tx, runtime_start_tx, session_prepare_deferred_spec_tx,
+    SqlxRepo, overlay_delete_by_entity_tx, session_prepare_deferred_spec_tx,
+    session_start_runtime_tx,
 };
 use calm_server::error::CalmError;
 use calm_server::model::*;
@@ -80,7 +81,7 @@ fn runtime_init(
 
 async fn start_root_runtime(repo: &SqlxRepo, card: &Card) -> String {
     let mut tx = repo.pool().begin().await.expect("begin runtime tx");
-    let runtime = runtime_start_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         runtime_init(
             card.id.to_string(),
@@ -1848,7 +1849,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     let mapped_term = make_terminal(&repo, mapped.id.as_str()).await;
     let term = make_terminal(&repo, pending.id.as_str()).await;
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: calm_server::model::new_id(),
@@ -1869,7 +1870,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     )
     .await
     .unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: calm_server::model::new_id(),
@@ -1915,12 +1916,12 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     tx.commit().await.unwrap();
 
     let phantom_mirror: Option<String> =
-        sqlx::query_scalar("SELECT id FROM runtimes WHERE id = ?1")
+        sqlx::query_scalar("SELECT id FROM worker_sessions WHERE id = ?1")
             .bind(&phantom_session_id)
             .fetch_optional(repo.pool())
             .await
             .unwrap();
-    assert_eq!(phantom_mirror, None);
+    assert_eq!(phantom_mirror.as_deref(), Some(phantom_session_id.as_str()));
 
     assert_eq!(
         repo.shared_spec_cards_for_initial_prompt_takeover()

@@ -7,7 +7,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, runtime_get_by_id_tx,
-    runtime_start_tx, session_mcp_token_set_tx,
+    session_mcp_token_set_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -392,7 +392,7 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
     let thread_id = "thread-crash-replay".to_string();
     let turn_id = "turn-crash-replay".to_string();
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -566,7 +566,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
         .await
         .unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -689,7 +689,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     let old_thread_id = "thread-existing-spec-runtime".to_string();
     let old_snapshot = HarnessSnapshot::initial(0, vec![]);
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: old_runtime_id.clone(),
@@ -779,9 +779,9 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
 
     let active_count: (i64,) = sqlx::query_as(
         r#"SELECT COUNT(*)
-             FROM runtimes
+             FROM worker_sessions
             WHERE card_id = ?1
-              AND status NOT IN ('failed', 'exited', 'superseded')"#,
+              AND state NOT IN ('failed', 'exited', 'superseded')"#,
     )
     .bind(&card_id)
     .fetch_one(repo.pool())
@@ -1167,15 +1167,10 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         .expect("operation output data")
         .remove("codex_thread_id");
 
-    sqlx::query("UPDATE runtimes SET thread_id = NULL WHERE card_id = ?1")
-        .bind(&card_id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
     sqlx::query(
         r#"UPDATE worker_sessions
               SET thread_id = NULL
-            WHERE id IN (SELECT id FROM runtimes WHERE card_id = ?1)"#,
+            WHERE card_id = ?1"#,
     )
     .bind(&card_id)
     .execute(repo.pool())

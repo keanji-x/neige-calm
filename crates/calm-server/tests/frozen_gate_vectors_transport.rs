@@ -15,9 +15,9 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, runtime_bind_attribution_tx,
-    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx, session_insert_tx,
-    session_mark_wave_root_tx,
+    SqlxRepo, card_with_codex_create_tx, runtime_get_active_for_card_tx,
+    session_bind_attribution_tx, session_insert_tx, session_mark_wave_root_tx,
+    session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
@@ -156,7 +156,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
         .unwrap()
     {
         let runtime_id = runtime.id.clone();
-        runtime_bind_attribution_tx(
+        session_bind_attribution_tx(
             &mut tx,
             &runtime_id,
             ThreadAttribution {
@@ -171,7 +171,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
         .unwrap();
         runtime_id
     } else {
-        let runtime = runtime_start_tx(
+        let runtime = session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: calm_server::model::new_id(),
@@ -204,7 +204,7 @@ async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &s
         .await
         .unwrap()
         .expect("active runtime before supersede");
-    let runtime = runtime_supersede_tx(
+    let runtime = session_supersede_and_start_tx(
         &mut tx,
         &existing.id,
         RuntimeInit {

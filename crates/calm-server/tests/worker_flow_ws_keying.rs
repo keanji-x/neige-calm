@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::sqlite::{SqlxRepo, card_delete_tx, worker_flow_item_insert_tx};
-use calm_server::event::EventBus;
 
 use support::worker_flow as wf;
 
@@ -18,16 +17,6 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
     let agent_session_id = seed.runtime.session_id.clone().unwrap();
     assert_ne!(runtime_id, agent_session_id);
     assert_ne!(runtime_id, thread_id);
-
-    sqlx::query("DELETE FROM worker_sessions WHERE id = ?1")
-        .bind(&runtime_id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    let state = wf::app_state(repo.clone(), EventBus::new());
-    calm_server::backfill_worker_sessions_from_runtimes_on_boot(&state)
-        .await
-        .unwrap();
 
     let codex_home = tempfile::tempdir().unwrap();
     let path = wf::rollout_path(codex_home.path(), thread_id);
@@ -110,10 +99,6 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
         assert_eq!(worker_session_id.as_deref(), None);
         assert_eq!(row_runtime_id, runtime_id);
     }
-
-    calm_server::backfill_worker_sessions_from_runtimes_on_boot(&state)
-        .await
-        .unwrap();
 }
 
 #[tokio::test]

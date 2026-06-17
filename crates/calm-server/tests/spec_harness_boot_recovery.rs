@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_start_tx, session_prepare_deferred_spec_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, session_prepare_deferred_spec_tx, session_start_runtime_tx,
+};
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
@@ -81,7 +83,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     snapshot.last_thread_id = Some("thread-recovered".into());
     snapshot.last_turn_id = Some("turn-recovered".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -166,7 +168,7 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-unavailable".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -246,7 +248,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-deferred".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -391,7 +393,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-recovered".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -488,7 +490,7 @@ async fn boot_recovery_skips_terminal_waves() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-terminal".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),
@@ -591,12 +593,12 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    let mirror: Option<String> = sqlx::query_scalar("SELECT id FROM runtimes WHERE id = ?1")
+    let mirror: Option<String> = sqlx::query_scalar("SELECT id FROM worker_sessions WHERE id = ?1")
         .bind(&placeholder_id)
         .fetch_optional(repo.pool())
         .await
         .unwrap();
-    assert_eq!(mirror, None);
+    assert_eq!(mirror.as_deref(), Some(placeholder_id.as_str()));
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
@@ -779,7 +781,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-recovered".into());
     let mut tx = repo.pool().begin().await.unwrap();
-    runtime_start_tx(
+    session_start_runtime_tx(
         &mut tx,
         RuntimeInit {
             id: runtime_id.clone(),

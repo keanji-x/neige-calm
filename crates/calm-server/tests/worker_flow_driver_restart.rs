@@ -3,7 +3,7 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::sqlite::{SqlxRepo, runtime_set_status_tx, runtime_start_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_set_status_tx, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::now_ms;
@@ -71,10 +71,10 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
 
     let replacement = {
         let mut tx = repo.pool().begin().await.unwrap();
-        runtime_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
+        session_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Exited)
             .await
             .unwrap();
-        let replacement = runtime_start_tx(
+        let replacement = session_start_runtime_tx(
             &mut tx,
             RuntimeInit {
                 id: "rt-card-driver-claude-restart-b".to_string(),
