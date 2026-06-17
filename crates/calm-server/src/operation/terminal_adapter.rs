@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_update_tx, card_with_terminal_create_tx,
-    runtime_get_active_for_card_tx, runtime_set_status_tx,
+    runtime_get_active_for_card_tx, session_set_status_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -393,7 +393,7 @@ impl ProviderAdapter for TerminalAdapter {
                                         })?;
                                 let old_status = runtime.status.clone();
                                 let runtime_id = runtime.id.clone();
-                                runtime_set_status_tx(tx, &runtime.id, RunStatus::Running)
+                                session_set_status_tx(tx, &runtime.id, RunStatus::Running)
                                     .await?;
                                 Ok((
                                     (),

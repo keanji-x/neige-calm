@@ -7,9 +7,10 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_update_tx, harness_items_delete_by_card_tx, runtime_bind_attribution_tx,
-    runtime_fail_if_active_tx, runtime_get_active_for_card_tx, runtime_restore_from_superseded_tx,
-    runtime_start_tx, runtime_supersede_tx, session_prepare_deferred_spec_tx,
+    card_update_tx, harness_items_delete_by_card_tx, runtime_get_active_for_card_tx,
+    session_bind_attribution_tx, session_delete_tx, session_fail_if_active_runtime_tx,
+    session_prepare_deferred_spec_tx, session_restore_from_superseded_runtime_tx,
+    session_set_handle_state_tx, session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -288,9 +289,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_str()).await? {
                 old_runtime_id = Some(existing.id.clone());
                 old_runtime_status = Some(existing.status.clone());
-                runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
             } else {
-                runtime_start_tx(tx, runtime_init).await?;
+                session_start_runtime_tx(tx, runtime_init).await?;
             }
         }
 
@@ -336,6 +337,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_id = output_string(output, "runtime_id")?;
         let runtime_deferred = output_bool(output, "runtime_deferred")?;
         let cwd = output_string(output, "cwd")?;
+        if let Some(old_runtime_id) = output_optional_string(output, "old_runtime_id")?
+            && old_runtime_id != runtime_id
+            && let Some(old_handle) = self.harness_registry.remove(&old_runtime_id)
+        {
+            old_handle.shutdown().await?;
+        }
         if let Some(existing) = output_existing_thread_id(output)? {
             return Ok(AppServerInteractOutcome::MintedAndAwaited {
                 thread_id: existing,
@@ -474,24 +481,26 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         {
                             let existing_id = existing.id.clone();
                             let existing_status = existing.status.clone();
-                            old_runtime_id = Some(existing_id.clone());
-                            old_runtime_status = Some(existing_status.clone());
-                            set_output_data(
-                                &mut checkpoint_output,
-                                "old_runtime_id",
-                                json!(existing_id),
-                            )?;
-                            set_output_data(
-                                &mut checkpoint_output,
-                                "old_runtime_status",
-                                serde_json::to_value(&existing_status)?,
-                            )?;
-                            runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                            if existing_id != runtime_id {
+                                old_runtime_id = Some(existing_id.clone());
+                                old_runtime_status = Some(existing_status.clone());
+                                set_output_data(
+                                    &mut checkpoint_output,
+                                    "old_runtime_id",
+                                    json!(existing_id),
+                                )?;
+                                set_output_data(
+                                    &mut checkpoint_output,
+                                    "old_runtime_status",
+                                    serde_json::to_value(&existing_status)?,
+                                )?;
+                            }
+                            session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
                         } else {
-                            runtime_start_tx(tx, runtime_init).await?;
+                            session_start_runtime_tx(tx, runtime_init).await?;
                         }
                     } else {
-                        runtime_bind_attribution_tx(
+                        session_bind_attribution_tx(
                             tx,
                             &runtime_id,
                             ThreadAttribution {
@@ -503,7 +512,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             },
                         )
                         .await?;
-                        crate::db::sqlite::runtime_set_handle_state_tx(
+                        session_set_handle_state_tx(
                             tx,
                             &runtime_id,
                             Some(serde_json::to_value(&snapshot)?),
@@ -588,7 +597,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let runtime_id = output_string(output, "runtime_id")?;
-        let old_runtime_id = output_optional_string(output, "old_runtime_id")?;
         let card_id = output_string(output, "card_id")?;
         let wave_id = output_string(output, "wave_id")?;
         let thread_id = output_optional_string(output, "codex_thread_id")?;
@@ -612,11 +620,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         self.harness_registry
             .insert(runtime_id.clone(), handle.clone());
         handle.persist_snapshot().await?;
-        if let Some(old_runtime_id) = old_runtime_id.filter(|old| old != &runtime_id)
-            && let Some(old_handle) = self.harness_registry.remove(&old_runtime_id)
-        {
-            old_handle.shutdown().await?;
-        }
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness { runtime_id }))
     }
 
@@ -724,7 +727,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 let runtime_id = step_arg_string(step, "runtime_id")?;
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
-                        runtime_fail_if_active_tx(tx, &runtime_id)
+                        session_fail_if_active_runtime_tx(tx, &runtime_id)
                             .await
                             .map_err(CalmError::from)
                     })
@@ -740,10 +743,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 let runtime_id = step_arg_string(step, "runtime_id")?;
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
-                        sqlx::query("DELETE FROM runtimes WHERE id = ?1")
-                            .bind(runtime_id)
-                            .execute(&mut **tx)
-                            .await?;
+                        session_delete_tx(tx, &runtime_id)
+                            .await
+                            .map_err(CalmError::from)?;
                         Ok(())
                     })
                 })
@@ -874,7 +876,7 @@ async fn restore_old_runtime_after_spawn_failure(
     active_run_status_to_db(&status)?;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            runtime_restore_from_superseded_tx(tx, &old_runtime_id, status)
+            session_restore_from_superseded_runtime_tx(tx, &old_runtime_id, status)
                 .await
                 .map_err(CalmError::from)
         })

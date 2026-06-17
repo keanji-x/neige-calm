@@ -263,8 +263,8 @@ impl SpecHarness {
     /// `POST /dev/force-spec-phase`. Forces the harness FSM into the state
     /// matching `tag` (synthesized with `"dev-forced"` sentinel ids) and
     /// runs the regular [`persist_snapshot`] path — the single write point
-    /// that updates the persisted snapshot (`runtime_set_handle_state_tx`),
-    /// the runtime row status, and emits `HarnessPhaseChanged` when the
+    /// that updates the persisted snapshot (`session_set_handle_state_tx`),
+    /// the worker-session status, and emits `HarnessPhaseChanged` when the
     /// phase actually changed. All three read surfaces (`GET /spec/run`,
     /// the WS event stream, the DB snapshot) stay consistent by
     /// construction. Forcing the same phase twice emits no duplicate event
@@ -1651,9 +1651,9 @@ async fn persist_snapshot_inner(
 
     write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            crate::db::sqlite::runtime_set_handle_state_tx(tx, &runtime_id, Some(snapshot_value))
+            crate::db::sqlite::session_set_handle_state_tx(tx, &runtime_id, Some(snapshot_value))
                 .await?;
-            crate::db::sqlite::runtime_set_harness_observation_tx(
+            crate::db::sqlite::session_set_harness_observation_runtime_tx(
                 tx,
                 &runtime_id,
                 status,

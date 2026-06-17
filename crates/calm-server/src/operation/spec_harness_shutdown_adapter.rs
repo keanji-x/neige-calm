@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::db::Repo;
-use crate::db::sqlite::{runtime_get_by_id_tx, runtime_mark_superseded_tx};
+use crate::db::sqlite::{runtime_get_by_id_tx, session_mark_superseded_runtime_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
 use crate::runtime_repo::RuntimeId;
@@ -75,7 +75,7 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
         let runtime = runtime_get_by_id_tx(tx, &payload.runtime_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.runtime_id)))?;
-        runtime_mark_superseded_tx(tx, &payload.runtime_id).await?;
+        session_mark_superseded_runtime_tx(tx, &payload.runtime_id).await?;
         let mut output = TxOutput::new(
             "runtime",
             Some(runtime.id.clone()),

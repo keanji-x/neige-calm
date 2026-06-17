@@ -168,7 +168,7 @@ async fn persist_recovered_snapshot(
     let runtime_id = snapshot_runtime_id(repo.as_ref(), card_id).await?;
     write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            crate::db::sqlite::runtime_set_handle_state_tx(tx, &runtime_id, Some(runtime_state))
+            crate::db::sqlite::session_set_handle_state_tx(tx, &runtime_id, Some(runtime_state))
                 .await?;
             Ok(())
         })

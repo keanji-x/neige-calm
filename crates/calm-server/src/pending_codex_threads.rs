@@ -24,8 +24,8 @@ use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    runtime_bind_attribution_tx, runtime_clear_terminal_run_id_tx, runtime_complete_tx,
-    runtime_get_by_id_tx, runtime_set_status_tx,
+    runtime_get_by_id_tx, session_bind_attribution_tx, session_clear_terminal_run_id_tx,
+    session_complete_tx, session_set_status_tx,
 };
 use crate::db::{Repo, RepoEventWrite, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -401,7 +401,7 @@ impl PendingThreadStartRegistry {
                     );
                     let old_status = runtime.status.clone();
                     let runtime_id = runtime.id.clone();
-                    runtime_bind_attribution_tx(
+                    session_bind_attribution_tx(
                         tx,
                         &runtime.id,
                         ThreadAttribution {
@@ -414,11 +414,11 @@ impl PendingThreadStartRegistry {
                     )
                     .await?;
                     if old_status != RunStatus::Running {
-                        runtime_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                        session_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
                     }
                     // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
                     if runtime.kind == RuntimeKind::SharedSpec {
-                        runtime_clear_terminal_run_id_tx(tx, &runtime.id).await?;
+                        session_clear_terminal_run_id_tx(tx, &runtime.id).await?;
                     }
                     let card = card_for_event;
                     let mut events = vec![(scope.clone(), Event::CardUpdated(card.clone()))];
@@ -529,7 +529,7 @@ pub(crate) async fn card_payload_clear_pending_status(
                 if let Some(runtime) = runtime_get_by_id_tx(tx, &runtime_id_for_tx).await?
                     && runtime_status_is_active(&runtime.status)
                 {
-                    runtime_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
+                    session_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
                 }
                 let card = card_for_event;
                 Ok((card.clone(), Event::CardUpdated(card)))
