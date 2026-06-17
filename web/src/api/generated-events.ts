@@ -99,12 +99,6 @@ export type CardId = string;
  */
 export type CardRole = "worker" | "spec" | "reportcard";
 
-export type CardRuntime = { id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, terminal_run_id: string | null, 
-/**
- * Lazy-joined view; not a schema column.
- */
-terminal_ref: TerminalRunRef | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, lease_owner: string | null, lease_until_ms: number | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, };
-
 /**
  * Live runtime projection joined from the `runtimes` table when a card is
  * fetched or serialized.
@@ -342,8 +336,7 @@ export type RunStatus = "starting" | "running" | "idle" | "turn_pending" | "fail
 export type RuntimeKind = "terminal" | "codex" | "claude" | "shared-spec";
 
 /**
- * Returned by `runtime_get_active_for_card` when caller requests joined view;
- * schema only stores `terminal_run_id`.
+ * Legacy joined-terminal projection vocabulary.
  */
 export type TerminalRunRef = { terminal_id: string, program: string, cwd: string | null, pid: number | null, };
 
@@ -540,3 +533,5 @@ cwd: string,
  * is the first defensible point.
  */
 terminal_at: number | null, created_at: number, updated_at: number, };
+
+export type WorkerSessionProjection = { id: string, card_id: string, kind: RuntimeKind, agent_provider: AgentProvider | null, status: RunStatus, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, };

@@ -30,7 +30,7 @@ use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_pa
 use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
-use crate::runtime_repo::{CardRuntime, RunStatus};
+use crate::runtime_repo::{RunStatus, WorkerSessionProjection};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
@@ -936,7 +936,7 @@ async fn ensure_live_spec_harness(
     cs: &CodexShellState,
     card_id: &CardId,
 ) -> Result<(
-    CardRuntime,
+    WorkerSessionProjection,
     crate::harness::SpecHarness,
     Option<PerCardLockGuard>,
 )> {
@@ -1095,7 +1095,7 @@ async fn reset_spec_harness_card(
     s: RouteState,
     actor: Actor,
     card: Card,
-    runtime: Option<CardRuntime>,
+    runtime: Option<WorkerSessionProjection>,
 ) -> Result<ResetSpecCardResponse> {
     let wave = s
         .repo

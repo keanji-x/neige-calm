@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::event::{Event, EventBus};
 use crate::ids::{CardId, WaveId};
 use crate::model::CardRole;
-use crate::runtime_repo::CardRuntime;
+use crate::runtime_repo::WorkerSessionProjection;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -34,7 +34,7 @@ pub async fn spawn_recovered_harness(
     wave_cove_cache: WaveCoveCache,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
-    runtime: CardRuntime,
+    runtime: WorkerSessionProjection,
 ) -> Result<Option<SpecHarness>> {
     let Some(card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(None);

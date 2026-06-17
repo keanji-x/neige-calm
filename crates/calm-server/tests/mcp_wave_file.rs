@@ -23,7 +23,9 @@ use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
-use calm_server::runtime_repo::{AgentProvider, CardRuntime, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{
+    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, WorkerSessionProjection,
+};
 use calm_server::wave_report::WaveReportPayload;
 use calm_server::wave_vcs;
 use serde_json::{Value, json};
@@ -483,7 +485,7 @@ async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
     card.id
 }
 
-async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> CardRuntime {
+async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> WorkerSessionProjection {
     let runtime_id = calm_server::model::new_id();
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(

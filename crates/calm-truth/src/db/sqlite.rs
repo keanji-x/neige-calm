@@ -45,9 +45,9 @@ use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VE
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::*;
 use crate::runtime_repo::{
-    AgentProvider, CardId as RuntimeCardId, CardRuntime, Result as RuntimeResult, RunStatus,
-    RuntimeId, RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution,
-    Tx as RuntimeTx,
+    AgentProvider, CardId as RuntimeCardId, Result as RuntimeResult, RunStatus, RuntimeId,
+    RuntimeInit, RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution, Tx as RuntimeTx,
+    WorkerSessionProjection,
 };
 use crate::runtime_row::{
     WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT, card_runtime_from_ws_join_row,
@@ -3257,7 +3257,7 @@ pub async fn session_supersede_active_tx(
 pub async fn session_start_runtime_tx(
     tx: &mut RuntimeTx<'_>,
     init: RuntimeInit,
-) -> RuntimeResult<CardRuntime> {
+) -> RuntimeResult<WorkerSessionProjection> {
     session_start_mirror_tx(tx, &init).await?;
     runtime_get_by_id_tx(tx, &init.id)
         .await?
@@ -3268,7 +3268,7 @@ pub async fn session_supersede_and_start_tx(
     tx: &mut RuntimeTx<'_>,
     old_id: &RuntimeId,
     new_init: RuntimeInit,
-) -> RuntimeResult<CardRuntime> {
+) -> RuntimeResult<WorkerSessionProjection> {
     session_supersede_active_tx(tx, old_id, new_init.now_ms).await?;
     session_start_runtime_tx(tx, new_init).await
 }
@@ -3553,7 +3553,7 @@ async fn runtime_current_status_tx(
 async fn runtime_get_by_id_from_pool(
     pool: &SqlitePool,
     id: &RuntimeId,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.id = ?1"#
@@ -3565,7 +3565,7 @@ async fn runtime_get_by_id_from_pool(
 async fn runtime_get_active_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE c.id = ?1
@@ -3580,7 +3580,7 @@ async fn runtime_get_active_for_card_from_pool(
 async fn runtime_get_projectable_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE c.id = ?1
@@ -3594,7 +3594,7 @@ async fn runtime_get_projectable_for_card_from_pool(
 async fn runtime_get_projectable_for_cards_from_pool(
     pool: &SqlitePool,
     card_ids: &[RuntimeCardId],
-) -> RuntimeResult<HashMap<RuntimeCardId, CardRuntime>> {
+) -> RuntimeResult<HashMap<RuntimeCardId, WorkerSessionProjection>> {
     if card_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -3608,7 +3608,7 @@ async fn runtime_get_active_by_thread_from_pool(
     pool: &SqlitePool,
     provider: AgentProvider,
     thread_id: &str,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.provider = ?1 AND ws.thread_id = ?2
@@ -3628,7 +3628,7 @@ async fn runtime_get_active_by_session_from_pool(
     pool: &SqlitePool,
     provider: AgentProvider,
     session_id: &str,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.provider = ?1 AND ws.agent_session_id = ?2
@@ -3662,7 +3662,7 @@ async fn runtime_active_shared_thread_attribution_from_pool(
 async fn runtimes_active_for_kind_from_pool(
     pool: &SqlitePool,
     kind: RuntimeKind,
-) -> RuntimeResult<Vec<CardRuntime>> {
+) -> RuntimeResult<Vec<WorkerSessionProjection>> {
     let (provider, _mode, contract) = derive_session_identity(&kind);
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
@@ -3682,7 +3682,7 @@ async fn runtimes_active_for_kind_from_pool(
 pub async fn runtime_get_by_id_tx(
     tx: &mut RuntimeTx<'_>,
     id: &RuntimeId,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_CARD_KEYED_RUNTIME_SELECT}
            WHERE ws.id = ?1"#
@@ -3694,7 +3694,7 @@ pub async fn runtime_get_by_id_tx(
 pub async fn runtime_get_active_for_card_tx(
     tx: &mut RuntimeTx<'_>,
     card_id: &str,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_CARD_KEYED_RUNTIME_SELECT}
            WHERE ws.card_id = ?1
@@ -3872,7 +3872,7 @@ pub async fn session_complete_for_card_tx(
 pub async fn runtime_get_active_for_terminal_tx(
     tx: &mut RuntimeTx<'_>,
     terminal_id: &str,
-) -> RuntimeResult<Option<CardRuntime>> {
+) -> RuntimeResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.terminal_run_id = ?1
@@ -4780,7 +4780,7 @@ impl RuntimeRepo for SqlxRepo {
         &self,
         provider: AgentProvider,
         thread_id: &str,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_thread_from_pool(&self.pool, provider, thread_id).await
     }
 
@@ -4788,28 +4788,28 @@ impl RuntimeRepo for SqlxRepo {
         &self,
         provider: AgentProvider,
         session_id: &str,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_session_from_pool(&self.pool, provider, session_id).await
     }
 
     async fn runtime_get_active_for_card(
         &self,
         card_id: &crate::runtime_repo::CardId,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_active_for_card_from_pool(&self.pool, card_id).await
     }
 
     async fn runtime_get_projectable_for_card(
         &self,
         card_id: &crate::runtime_repo::CardId,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_projectable_for_card_from_pool(&self.pool, card_id).await
     }
 
     async fn runtime_get_projectable_for_cards(
         &self,
         card_ids: &[crate::runtime_repo::CardId],
-    ) -> RuntimeResult<HashMap<crate::runtime_repo::CardId, CardRuntime>> {
+    ) -> RuntimeResult<HashMap<crate::runtime_repo::CardId, WorkerSessionProjection>> {
         runtime_get_projectable_for_cards_from_pool(&self.pool, card_ids).await
     }
 
@@ -4819,11 +4819,17 @@ impl RuntimeRepo for SqlxRepo {
         runtime_active_shared_thread_attribution_from_pool(&self.pool).await
     }
 
-    async fn runtimes_active_for_kind(&self, kind: RuntimeKind) -> RuntimeResult<Vec<CardRuntime>> {
+    async fn runtimes_active_for_kind(
+        &self,
+        kind: RuntimeKind,
+    ) -> RuntimeResult<Vec<WorkerSessionProjection>> {
         runtimes_active_for_kind_from_pool(&self.pool, kind).await
     }
 
-    async fn runtime_get_by_id(&self, id: &RuntimeId) -> RuntimeResult<Option<CardRuntime>> {
+    async fn runtime_get_by_id(
+        &self,
+        id: &RuntimeId,
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_by_id_from_pool(&self.pool, id).await
     }
 
@@ -4860,7 +4866,9 @@ impl RuntimeRepo for SqlxRepo {
         Ok(())
     }
 
-    async fn runtimes_recover_harnesses_on_boot(&self) -> RuntimeResult<Vec<CardRuntime>> {
+    async fn runtimes_recover_harnesses_on_boot(
+        &self,
+    ) -> RuntimeResult<Vec<WorkerSessionProjection>> {
         let (provider, _mode, contract) = derive_session_identity(&RuntimeKind::SharedSpec);
         let sql = format!(
             r#"{WS_BACKED_CARD_RUNTIME_SELECT}
@@ -6569,7 +6577,11 @@ mod runtime_read_flip_tests {
         card.id.to_string()
     }
 
-    async fn seed_runtime(repo: &SqlxRepo, case: RuntimeReadCase, now_ms: i64) -> CardRuntime {
+    async fn seed_runtime(
+        repo: &SqlxRepo,
+        case: RuntimeReadCase,
+        now_ms: i64,
+    ) -> WorkerSessionProjection {
         let mut tx = repo.pool().begin().await.expect("begin seed tx");
         let card_id = create_card_in_tx(repo, &mut tx, case.label, case.card_kind).await;
         let runtime = session_start_runtime_tx(
@@ -6597,7 +6609,10 @@ mod runtime_read_flip_tests {
         runtime
     }
 
-    async fn seed_runtime_with_keys(repo: &SqlxRepo, seed: KeyedRuntimeSeed) -> CardRuntime {
+    async fn seed_runtime_with_keys(
+        repo: &SqlxRepo,
+        seed: KeyedRuntimeSeed,
+    ) -> WorkerSessionProjection {
         let mut tx = repo.pool().begin().await.expect("begin keyed seed tx");
         let card_id = create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind).await;
         let runtime = session_start_runtime_tx(
@@ -6625,7 +6640,10 @@ mod runtime_read_flip_tests {
         runtime
     }
 
-    async fn seed_terminal_runtime(repo: &SqlxRepo, label: &'static str) -> (CardRuntime, String) {
+    async fn seed_terminal_runtime(
+        repo: &SqlxRepo,
+        label: &'static str,
+    ) -> (WorkerSessionProjection, String) {
         let mut tx = repo.pool().begin().await.expect("begin terminal seed tx");
         let cove = cove_create_tx(
             &mut tx,
@@ -6745,9 +6763,9 @@ mod runtime_read_flip_tests {
 
     struct ProjectableHistory {
         card_id: String,
-        superseded: CardRuntime,
-        exited: CardRuntime,
-        active: Option<CardRuntime>,
+        superseded: WorkerSessionProjection,
+        exited: WorkerSessionProjection,
+        active: Option<WorkerSessionProjection>,
     }
 
     fn projectable_runtime_init(
@@ -6864,7 +6882,7 @@ mod runtime_read_flip_tests {
     async fn runtime_get_projectable_for_card_from_runtimes_reference(
         pool: &SqlitePool,
         card_id: &str,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_projectable_for_card_from_pool(pool, card_id).await
     }
 
@@ -6872,7 +6890,7 @@ mod runtime_read_flip_tests {
         pool: &SqlitePool,
         provider: AgentProvider,
         thread_id: &str,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_thread_from_pool(pool, provider, thread_id).await
     }
 
@@ -6880,7 +6898,7 @@ mod runtime_read_flip_tests {
         pool: &SqlitePool,
         provider: AgentProvider,
         session_id: &str,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_session_from_pool(pool, provider, session_id).await
     }
 
@@ -6893,23 +6911,23 @@ mod runtime_read_flip_tests {
     async fn runtime_get_active_for_terminal_from_runtimes_reference_tx(
         tx: &mut RuntimeTx<'_>,
         terminal_id: &str,
-    ) -> RuntimeResult<Option<CardRuntime>> {
+    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
         runtime_get_active_for_terminal_tx(tx, terminal_id).await
     }
 
-    fn assert_ws_backed_projection(expected: &CardRuntime, actual: &CardRuntime) {
+    fn assert_ws_backed_projection(
+        expected: &WorkerSessionProjection,
+        actual: &WorkerSessionProjection,
+    ) {
         assert_eq!(actual, expected);
-        assert!(actual.terminal_ref.is_none());
-        assert!(actual.lease_owner.is_none());
-        assert!(actual.lease_until_ms.is_none());
         if matches!(&expected.kind, RuntimeKind::Terminal) {
             assert!(actual.agent_provider.is_none());
         }
     }
 
     fn assert_optional_ws_backed_projection(
-        expected: Option<CardRuntime>,
-        actual: Option<CardRuntime>,
+        expected: Option<WorkerSessionProjection>,
+        actual: Option<WorkerSessionProjection>,
     ) {
         match (expected, actual) {
             (Some(expected), Some(actual)) => assert_ws_backed_projection(&expected, &actual),

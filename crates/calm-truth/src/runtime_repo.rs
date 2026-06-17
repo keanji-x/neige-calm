@@ -10,7 +10,7 @@ use std::fmt;
 // re-exported at the old paths. Source definitions live in calm-types;
 // do NOT re-declare them here.
 pub use calm_types::runtime::{
-    AgentProvider, CardRuntime, RunStatus, RuntimeId, RuntimeKind, TerminalRunRef, TimestampMs,
+    AgentProvider, RunStatus, RuntimeId, RuntimeKind, TimestampMs, WorkerSessionProjection,
 };
 
 pub type CardId = String;
@@ -75,15 +75,18 @@ pub trait RuntimeRepo {
         &self,
         provider: AgentProvider,
         thread_id: &str,
-    ) -> Result<Option<CardRuntime>>;
+    ) -> Result<Option<WorkerSessionProjection>>;
 
     async fn runtime_get_active_by_session(
         &self,
         provider: AgentProvider,
         session_id: &str,
-    ) -> Result<Option<CardRuntime>>;
+    ) -> Result<Option<WorkerSessionProjection>>;
 
-    async fn runtime_get_active_for_card(&self, card_id: &CardId) -> Result<Option<CardRuntime>>;
+    async fn runtime_get_active_for_card(
+        &self,
+        card_id: &CardId,
+    ) -> Result<Option<WorkerSessionProjection>>;
 
     /// Runtime row used by read-time payload projection. This preserves the
     /// active-runtime lookup as the primary source, but also allows a latest
@@ -91,12 +94,12 @@ pub trait RuntimeRepo {
     async fn runtime_get_projectable_for_card(
         &self,
         card_id: &CardId,
-    ) -> Result<Option<CardRuntime>>;
+    ) -> Result<Option<WorkerSessionProjection>>;
 
     async fn runtime_get_projectable_for_cards(
         &self,
         card_ids: &[CardId],
-    ) -> Result<HashMap<CardId, CardRuntime>>;
+    ) -> Result<HashMap<CardId, WorkerSessionProjection>>;
 
     /// Active = starting/running/idle/turn_pending, matching the
     /// active-per-card partial unique constraint. Returns codex-owned
@@ -106,9 +109,12 @@ pub trait RuntimeRepo {
     /// Active = starting/running/idle/turn_pending, matching the
     /// active-per-card partial unique constraint. Batch scan for boot
     /// takeover flows that need all live runtimes of a specific kind.
-    async fn runtimes_active_for_kind(&self, kind: RuntimeKind) -> Result<Vec<CardRuntime>>;
+    async fn runtimes_active_for_kind(
+        &self,
+        kind: RuntimeKind,
+    ) -> Result<Vec<WorkerSessionProjection>>;
 
-    async fn runtime_get_by_id(&self, id: &RuntimeId) -> Result<Option<CardRuntime>>;
+    async fn runtime_get_by_id(&self, id: &RuntimeId) -> Result<Option<WorkerSessionProjection>>;
 
     /// Idempotent: if no active runtime exists for this card, returns
     /// `Ok(())` without writing. This handles fast-exit races and
@@ -133,7 +139,7 @@ pub trait RuntimeRepo {
     /// Returns shared-spec runtimes whose `handle_state_json` carries a harness
     /// snapshot (`$.mode == 'harness'`) so the spec harness boot path can
     /// rebuild their in-memory task + replay pending observations.
-    async fn runtimes_recover_harnesses_on_boot(&self) -> Result<Vec<CardRuntime>>;
+    async fn runtimes_recover_harnesses_on_boot(&self) -> Result<Vec<WorkerSessionProjection>>;
 }
 
 impl From<sqlx::Error> for RuntimeRepoError {
