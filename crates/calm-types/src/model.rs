@@ -24,7 +24,8 @@ use ts_rs::TS;
 use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::runtime::{AgentProvider, RunStatus, RuntimeKind};
+use crate::runtime::{AgentProvider, RuntimeKind};
+use crate::worker::WorkerSessionState;
 
 // ---------------- CardRole ----------------
 
@@ -435,7 +436,7 @@ pub struct Wave {
 pub struct CardRuntimeView {
     pub runtime_id: String,
     pub kind: RuntimeKind,
-    pub status: RunStatus,
+    pub status: WorkerSessionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub provider: Option<AgentProvider>,

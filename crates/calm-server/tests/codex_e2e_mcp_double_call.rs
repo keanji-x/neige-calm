@@ -71,7 +71,7 @@ use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::routes::theme::RequestTheme;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
@@ -171,7 +171,7 @@ async fn seed_shared_spec_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &st
             card_id: card_id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: Some(thread_id.to_string()),
             session_id: None,

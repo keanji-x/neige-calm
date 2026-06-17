@@ -16,7 +16,7 @@ use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -150,7 +150,7 @@ async fn start_runtime_for_card_with_thread(
             card_id: card_id.to_string(),
             kind: runtime_kind,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
+            status: WorkerSessionState::TurnPending,
             terminal_run_id: Some(terminal_id.to_string()),
             thread_id: thread_id.map(str::to_owned),
             session_id: None,
@@ -186,7 +186,7 @@ async fn supersede_runtime_for_card(
             card_id: card_id.to_string(),
             kind: runtime_kind,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
+            status: WorkerSessionState::TurnPending,
             terminal_run_id: Some(terminal_id.to_string()),
             thread_id: None,
             session_id: None,
@@ -364,7 +364,7 @@ async fn bind_persists_to_runtime_and_projects_payload() {
         .unwrap()
         .expect("runtime row");
     assert_eq!(runtime.thread_id.as_deref(), Some("T-bind"));
-    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.status, WorkerSessionState::Running);
     let projected = projected_card(&repo, &card_id).await;
     assert_eq!(projected.payload["codex_thread_id"], "T-bind");
     assert_eq!(projected.payload["codex_thread_status"], "started");
@@ -402,7 +402,7 @@ async fn bind_entry_clears_terminal_run_id() {
         .await
         .unwrap()
         .expect("runtime row");
-    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.status, WorkerSessionState::Running);
     assert!(runtime.terminal_run_id.is_none());
     assert_eq!(runtime.thread_id.as_deref(), Some("T-bind-clear"));
 }
@@ -430,7 +430,7 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
         .await
         .unwrap()
         .expect("runtime row");
-    assert_eq!(runtime.status, RunStatus::Running);
+    assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(
         runtime.terminal_run_id.as_deref(),
         Some("term-codex-card"),
@@ -449,7 +449,7 @@ async fn on_thread_started_drops_entry_when_registered_runtime_inactive() {
         .register(entry(&repo, &card_id, &wave_id, "term-missing").await)
         .await
         .unwrap();
-    repo.runtime_complete_for_card(&card_id, RunStatus::Failed)
+    repo.runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
         .await
         .unwrap();
 
@@ -475,7 +475,7 @@ async fn on_thread_started_drops_registered_runtime_even_if_runtime_reappears() 
         .register(entry(&repo, &card_id, &wave_id, "term-retry").await)
         .await
         .unwrap();
-    repo.runtime_complete_for_card(&card_id, RunStatus::Failed)
+    repo.runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
         .await
         .unwrap();
 
@@ -602,13 +602,13 @@ async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
     let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
         .await
         .expect("old runtime");
-    assert_eq!(old_runtime.status, RunStatus::Superseded);
+    assert_eq!(old_runtime.status, WorkerSessionState::Superseded);
     let replacement_runtime = repo
         .runtime_get_by_id(&r2)
         .await
         .unwrap()
         .expect("replacement runtime");
-    assert_eq!(replacement_runtime.status, RunStatus::TurnPending);
+    assert_eq!(replacement_runtime.status, WorkerSessionState::TurnPending);
     assert_eq!(replacement_runtime.thread_id, None);
 
     let bound = registry.on_thread_started("T-r2-own").await.unwrap();
@@ -618,7 +618,7 @@ async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
         .await
         .unwrap()
         .expect("replacement runtime");
-    assert_eq!(replacement_runtime.status, RunStatus::Running);
+    assert_eq!(replacement_runtime.status, WorkerSessionState::Running);
     assert_eq!(replacement_runtime.thread_id.as_deref(), Some("T-r2-own"));
 }
 
@@ -710,7 +710,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
             card_id: card_id.clone(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
+            status: WorkerSessionState::TurnPending,
             terminal_run_id: Some("term-r1".to_string()),
             thread_id: None,
             session_id: None,
@@ -739,7 +739,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
         .await
         .unwrap()
         .expect("new runtime");
-    assert_eq!(new_runtime.status, RunStatus::TurnPending);
+    assert_eq!(new_runtime.status, WorkerSessionState::TurnPending);
     assert_eq!(new_runtime.thread_id, None);
     let active_runtime = repo
         .runtime_get_active_for_card(&card_id)
@@ -747,7 +747,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
         .unwrap()
         .expect("active respawned runtime");
     assert_eq!(active_runtime.id, r2);
-    assert_eq!(active_runtime.status, RunStatus::TurnPending);
+    assert_eq!(active_runtime.status, WorkerSessionState::TurnPending);
     let new_session = repo
         .session_get(&WorkerSessionId::from(r2.clone()))
         .await
@@ -794,7 +794,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
             card_id: card_id.clone(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
+            status: WorkerSessionState::TurnPending,
             terminal_run_id: Some("term-r1".to_string()),
             thread_id: None,
             session_id: None,
@@ -817,7 +817,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
     let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
         .await
         .expect("old runtime");
-    assert_eq!(old_runtime.status, RunStatus::Superseded);
+    assert_eq!(old_runtime.status, WorkerSessionState::Superseded);
     assert_eq!(old_runtime.thread_id, None);
     let active_runtime = repo
         .runtime_get_active_for_card(&card_id)
@@ -825,7 +825,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
         .unwrap()
         .expect("active respawned runtime");
     assert_eq!(active_runtime.id, r2);
-    assert_eq!(active_runtime.status, RunStatus::TurnPending);
+    assert_eq!(active_runtime.status, WorkerSessionState::TurnPending);
     assert_eq!(active_runtime.thread_id, None);
     let r2_session = repo
         .session_get(&WorkerSessionId::from(r2.clone()))
@@ -844,7 +844,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
         .await
         .unwrap()
         .expect("replacement runtime");
-    assert_eq!(replacement_runtime.status, RunStatus::Running);
+    assert_eq!(replacement_runtime.status, WorkerSessionState::Running);
     assert_eq!(replacement_runtime.thread_id.as_deref(), Some("T-r2-own"));
     let replacement_session = repo
         .session_get(&WorkerSessionId::from(r2.clone()))
@@ -926,7 +926,7 @@ async fn unknown_thread_started_when_no_pending() {
 async fn already_mapped_thread_does_not_consume_pending() {
     let (repo, registry, server, wave_id) = boot_pending_server().await;
     let mapped = seed_card(&repo, &wave_id, "term-mapped").await;
-    repo.runtime_complete_for_card(&mapped, RunStatus::Failed)
+    repo.runtime_complete_for_card(&mapped, WorkerSessionState::Failed)
         .await
         .unwrap();
     start_runtime_for_card_with_thread(

@@ -7,8 +7,8 @@ use crate::error::Result;
 use crate::event::Event;
 use crate::model::{Card, CardRuntimeView};
 use crate::runtime_repo::{
-    AgentProvider, Result as RuntimeResult, RunStatus, RuntimeKind, RuntimeRepo,
-    WorkerSessionProjection,
+    AgentProvider, Result as RuntimeResult, RuntimeKind, RuntimeRepo, WorkerSessionProjection,
+    WorkerSessionState,
 };
 use serde_json::Value;
 
@@ -158,7 +158,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
     card.runtime = Some(CardRuntimeView {
         runtime_id: runtime.id.clone(),
         kind: runtime.kind.clone(),
-        status: runtime.status.clone(),
+        status: runtime.status,
         provider: runtime.agent_provider.clone(),
         terminal_id: terminal_id.clone(),
         thread_id: thread_id.clone(),
@@ -202,7 +202,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
     CardRuntimeView {
         runtime_id: runtime.id.clone(),
         kind: runtime.kind.clone(),
-        status: runtime.status.clone(),
+        status: runtime.status,
         provider: runtime.agent_provider.clone(),
         terminal_id: non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned),
         thread_id: non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned),
@@ -221,13 +221,15 @@ fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static
     }
 
     match runtime.status {
-        RunStatus::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
+        WorkerSessionState::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
             Some("pending_thread_start")
         }
-        RunStatus::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
+        WorkerSessionState::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
             Some("failed_to_spawn")
         }
-        RunStatus::Running if non_empty(runtime.thread_id.as_deref()).is_some() => Some("started"),
+        WorkerSessionState::Running if non_empty(runtime.thread_id.as_deref()).is_some() => {
+            Some("started")
+        }
         _ => None,
     }
 }

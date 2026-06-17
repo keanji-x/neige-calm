@@ -275,7 +275,7 @@ impl SpecHarness {
     ///   to `Idle` after `config.resumed_reconcile_budget` (default 5s),
     ///   emitting one more `HarnessPhaseChanged`;
     /// - `wedged` is rejected (`BadRequest`): persisting it writes
-    ///   `RunStatus::Failed` via `run_status_for`, and
+    ///   `WorkerSessionState::Failed` via `run_status_for`, and
     ///   `runtime_get_active_for_card` filters failed rows, so `GET
     ///   /spec/run` would instantly report dormant and the next force would
     ///   mint a second runtime. The dev endpoint
@@ -317,7 +317,7 @@ impl SpecHarness {
             },
             HarnessPhaseTag::Resumed => HarnessState::Resumed { resumed_at: now },
             // See doc-comment: a forced Wedged would persist as
-            // `RunStatus::Failed`, which the active-runtime read path
+            // `WorkerSessionState::Failed`, which the active-runtime read path
             // filters out. `replay::force_spec_phase` rejects the tag with
             // the client-facing message; this arm is defense in depth for
             // any future direct caller.

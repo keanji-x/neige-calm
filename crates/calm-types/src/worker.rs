@@ -5,15 +5,16 @@
 //! Until then these types anchor the calm-exec trait signatures and the
 //! conformance suites written against them.
 //!
-//! None of these types are TS-exported: PR1's acceptance gate pins
-//! `web/src/api/generated-events.ts` byte-identical to main, so the new
-//! vocabulary stays off the wire until a later PR deliberately surfaces it.
+//! `WorkerSessionState` is TS-exported as the single runtime/session state
+//! vocabulary; the rest of this module stays off the wire.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
+use utoipa::ToSchema;
 
 use crate::ids::{CardId, CoveId, WaveId};
-use crate::runtime::{RunStatus, TimestampMs};
+use crate::runtime::TimestampMs;
 
 // ---------------------------------------------------------------------------
 // WorkerSessionId
@@ -285,7 +286,7 @@ impl ExitInterpretation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitCommitMapping {
     pub session_state: WorkerSessionState,
-    pub runtime_status: RunStatus,
+    pub runtime_status: WorkerSessionState,
     pub exit_interpretation: &'static str,
 }
 
@@ -293,12 +294,12 @@ pub fn exit_commit_mapping(interpretation: &ExitInterpretation) -> Option<ExitCo
     match interpretation {
         ExitInterpretation::Completed => Some(ExitCommitMapping {
             session_state: WorkerSessionState::Exited,
-            runtime_status: RunStatus::Exited,
+            runtime_status: WorkerSessionState::Exited,
             exit_interpretation: interpretation.as_db_str(),
         }),
         ExitInterpretation::Failed { .. } => Some(ExitCommitMapping {
             session_state: WorkerSessionState::Failed,
-            runtime_status: RunStatus::Failed,
+            runtime_status: WorkerSessionState::Failed,
             exit_interpretation: interpretation.as_db_str(),
         }),
         ExitInterpretation::PreserveCard | ExitInterpretation::ResumeEligible => None,
@@ -352,11 +353,10 @@ impl TryFrom<String> for WorkerProviderKind {
 }
 
 /// Session state machine column (`worker_sessions.state`, issue #679 §1).
-/// Same vocabulary as [`crate::runtime::RunStatus`] — the dual-write window
-/// (PR3–PR9a) maps between them 1:1 — but typed separately so the runtime
-/// family can be deleted in PR9b without touching session code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Single runtime/session state vocabulary (`worker_sessions.state`, issue #679 §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum WorkerSessionState {
     Starting,
     Running,
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn session_state_terminal_set_matches_runtime_matrix() {
-        // Mirrors the RunStatus terminal set pinned by PR0's
+        // Mirrors the WorkerSessionState terminal set pinned by PR0's
         // runtime_status_matrix golden: exited / failed / superseded
         // absorb, everything else is active.
         let terminal = [

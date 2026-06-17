@@ -32,7 +32,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
 use crate::model::CardRole;
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeKind, ThreadAttribution};
+use crate::runtime_repo::{AgentProvider, RuntimeKind, ThreadAttribution, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -399,7 +399,7 @@ impl PendingThreadStartRegistry {
                         card_id_for_tx.as_str(),
                         "pending runtime/card mismatch during pending thread bind"
                     );
-                    let old_status = runtime.status.clone();
+                    let old_status = runtime.status;
                     let runtime_id = runtime.id.clone();
                     session_bind_attribution_tx(
                         tx,
@@ -413,8 +413,8 @@ impl PendingThreadStartRegistry {
                         },
                     )
                     .await?;
-                    if old_status != RunStatus::Running {
-                        session_set_status_tx(tx, &runtime.id, RunStatus::Running).await?;
+                    if old_status != WorkerSessionState::Running {
+                        session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running).await?;
                     }
                     // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
                     if runtime.kind == RuntimeKind::SharedSpec {
@@ -422,14 +422,14 @@ impl PendingThreadStartRegistry {
                     }
                     let card = card_for_event;
                     let mut events = vec![(scope.clone(), Event::CardUpdated(card.clone()))];
-                    if old_status != RunStatus::Running {
+                    if old_status != WorkerSessionState::Running {
                         events.push((
                             scope,
                             Event::RuntimeStatusChanged {
                                 runtime_id,
                                 card_id: card_id_for_tx,
                                 old_status,
-                                new_status: RunStatus::Running,
+                                new_status: WorkerSessionState::Running,
                             },
                         ));
                     }
@@ -493,10 +493,13 @@ fn pending_runtime_orphan_reason(err: &CalmError) -> Option<&'static str> {
     }
 }
 
-fn runtime_status_is_active(status: &RunStatus) -> bool {
+fn runtime_status_is_active(status: &WorkerSessionState) -> bool {
     matches!(
         status,
-        RunStatus::Starting | RunStatus::Running | RunStatus::Idle | RunStatus::TurnPending
+        WorkerSessionState::Starting
+            | WorkerSessionState::Running
+            | WorkerSessionState::Idle
+            | WorkerSessionState::TurnPending
     )
 }
 
@@ -529,7 +532,7 @@ pub(crate) async fn card_payload_clear_pending_status(
                 if let Some(runtime) = runtime_get_by_id_tx(tx, &runtime_id_for_tx).await?
                     && runtime_status_is_active(&runtime.status)
                 {
-                    session_complete_tx(tx, &runtime.id, RunStatus::Failed).await?;
+                    session_complete_tx(tx, &runtime.id, WorkerSessionState::Failed).await?;
                 }
                 let card = card_for_event;
                 Ok((card.clone(), Event::CardUpdated(card)))

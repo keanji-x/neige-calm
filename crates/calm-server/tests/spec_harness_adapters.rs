@@ -22,7 +22,7 @@ use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperatio
 use calm_server::operation::{OperationKey, OperationOutcome, PhaseTag, TxOutput};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -320,7 +320,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         .await
         .unwrap()
         .expect("runtime row");
-    assert_eq!(runtime.status, RunStatus::Idle);
+    assert_eq!(runtime.status, WorkerSessionState::Idle);
     assert!(runtime.thread_id.is_some());
     assert!(state.harness.get(&runtime.id).is_some());
 
@@ -378,7 +378,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         OperationOutcome::Succeeded { .. }
     ));
     let stored = repo.runtime_get_by_id(&runtime.id).await.unwrap().unwrap();
-    assert_eq!(stored.status, RunStatus::Superseded);
+    assert_eq!(stored.status, WorkerSessionState::Superseded);
     assert!(state.harness.get(&runtime.id).is_none());
 }
 
@@ -399,7 +399,7 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
             card_id,
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Superseded,
+            status: WorkerSessionState::Superseded,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,
@@ -573,7 +573,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
             card_id: card_id.clone(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(old_thread_id.clone()),
             session_id: None,
@@ -660,7 +660,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         .unwrap()
         .expect("old runtime remains active");
     assert_eq!(active.id, old_runtime_id);
-    assert_eq!(active.status, RunStatus::Idle);
+    assert_eq!(active.status, WorkerSessionState::Idle);
     assert_eq!(active.thread_id.as_deref(), Some(old_thread_id.as_str()));
 
     let session = repo
@@ -696,7 +696,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
             card_id: card_id.clone(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(old_thread_id.clone()),
             session_id: None,
@@ -797,7 +797,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
             card_id: card_id.clone(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(old_thread_id.clone()),
             session_id: None,
@@ -862,7 +862,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
         .expect("new active runtime");
     assert_ne!(active.id, old_runtime_id);
     assert_eq!(active.kind, RuntimeKind::SharedSpec);
-    assert_eq!(active.status, RunStatus::Idle);
+    assert_eq!(active.status, WorkerSessionState::Idle);
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -871,7 +871,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
         .unwrap()
         .expect("old runtime");
     tx.commit().await.unwrap();
-    assert_eq!(old.status, RunStatus::Superseded);
+    assert_eq!(old.status, WorkerSessionState::Superseded);
     assert_eq!(old.thread_id.as_deref(), Some(old_thread_id.as_str()));
     assert!(
         state.harness.get(&old_runtime_id).is_none(),
@@ -1115,7 +1115,7 @@ async fn reusable_thread_without_token_fails_op() {
         .expect("active runtime before reusable-thread recovery");
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
     let active_runtime_id = active.id.clone();
-    let active_status = active.status.clone();
+    let active_status = active.status;
     let active_thread_id = active.thread_id.clone();
 
     let (tx_output_json,): (String,) =

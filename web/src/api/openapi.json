@@ -3523,7 +3523,7 @@
             ]
           },
           "status": {
-            "$ref": "#/components/schemas/RunStatus"
+            "$ref": "#/components/schemas/WorkerSessionState"
           },
           "terminal_id": {
             "type": [
@@ -4656,18 +4656,6 @@
           }
         }
       },
-      "RunStatus": {
-        "type": "string",
-        "enum": [
-          "starting",
-          "running",
-          "idle",
-          "turn_pending",
-          "failed",
-          "exited",
-          "superseded"
-        ]
-      },
       "RuntimeKind": {
         "type": "string",
         "enum": [
@@ -5606,6 +5594,19 @@
             "description": "Upper bound (inclusive) in unix milliseconds. Wave is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter."
           }
         }
+      },
+      "WorkerSessionState": {
+        "type": "string",
+        "description": "Session state machine column (`worker_sessions.state`, issue #679 §1).\nSingle runtime/session state vocabulary (`worker_sessions.state`, issue #679 §1).",
+        "enum": [
+          "starting",
+          "running",
+          "idle",
+          "turn_pending",
+          "exited",
+          "failed",
+          "superseded"
+        ]
       }
     }
   },

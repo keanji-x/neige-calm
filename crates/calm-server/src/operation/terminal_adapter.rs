@@ -19,7 +19,7 @@ use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_fail
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::{RunStatus, RuntimeKind};
+use crate::runtime_repo::{RuntimeKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -255,7 +255,7 @@ impl ProviderAdapter for TerminalAdapter {
             card_id: card.id.to_string(),
             kind: RuntimeKind::Terminal,
             agent_provider: None,
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
         };
         if let Err(violation) = crate::role_gate::enforce_role(
             &payload.actor,
@@ -350,7 +350,7 @@ impl ProviderAdapter for TerminalAdapter {
                     let existing = ctx.repo.runtime_get_active_for_card(&card_id).await?;
                     let needs_status_write = existing
                         .as_ref()
-                        .map(|runtime| runtime.status != RunStatus::Running)
+                        .map(|runtime| runtime.status != WorkerSessionState::Running)
                         .unwrap_or(true);
                     if !needs_status_write {
                         return Ok(());
@@ -391,9 +391,9 @@ impl ProviderAdapter for TerminalAdapter {
                                                 "terminal card {card_id_for_tx} has no active runtime to mark running"
                                             ))
                                         })?;
-                                let old_status = runtime.status.clone();
+                                let old_status = runtime.status;
                                 let runtime_id = runtime.id.clone();
-                                session_set_status_tx(tx, &runtime.id, RunStatus::Running)
+                                session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running)
                                     .await?;
                                 Ok((
                                     (),
@@ -403,7 +403,7 @@ impl ProviderAdapter for TerminalAdapter {
                                             runtime_id,
                                             card_id: card_id_for_tx,
                                             old_status,
-                                            new_status: RunStatus::Running,
+                                            new_status: WorkerSessionState::Running,
                                         },
                                     )],
                                 ))
@@ -428,7 +428,7 @@ impl ProviderAdapter for TerminalAdapter {
             Err(e) => {
                 if let Err(mark_err) = ctx
                     .repo
-                    .runtime_complete_for_card(&card_id, RunStatus::Failed)
+                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await
                 {
                     tracing::warn!(
@@ -714,7 +714,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             Ok(handle) => {
                 if let Err(e) = ctx
                     .repo
-                    .runtime_set_status_for_card(card_id.as_ref(), RunStatus::Running)
+                    .runtime_set_status_for_card(card_id.as_ref(), WorkerSessionState::Running)
                     .await
                 {
                     tracing::warn!(

@@ -33,7 +33,7 @@ use calm_server::operation::{
     SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -147,7 +147,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
                         card_id,
                         kind: RuntimeKind::SharedSpec,
                         agent_provider: Some(AgentProvider::Codex),
-                        status: RunStatus::TurnPending,
+                        status: WorkerSessionState::TurnPending,
                         terminal_run_id: None,
                         thread_id: None,
                         session_id: None,

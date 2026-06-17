@@ -15,7 +15,7 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::TxOutput;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
@@ -106,7 +106,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-recovered".into()),
             session_id: None,
@@ -191,7 +191,7 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-unavailable".into()),
             session_id: None,
@@ -271,7 +271,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-deferred".into()),
             session_id: None,
@@ -416,7 +416,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-recovered".into()),
             session_id: None,
@@ -513,7 +513,7 @@ async fn boot_recovery_skips_terminal_waves() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-terminal".into()),
             session_id: None,
@@ -593,7 +593,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
             terminal_run_id: None,
             thread_id: None,
             session_id: None,
@@ -702,7 +702,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             "report_card_id": null,
             "snapshot": serde_json::to_value(&placeholder_snapshot).unwrap(),
             "old_runtime_id": old_runtime_id.clone(),
-            "old_runtime_status": RunStatus::Idle,
+            "old_runtime_status": WorkerSessionState::Idle,
         });
         let op_id = new_id();
 
@@ -714,7 +714,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 card_id: card.id.to_string(),
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Idle,
+                status: WorkerSessionState::Idle,
                 terminal_run_id: None,
                 thread_id: Some("thread-old-before-crash".into()),
                 session_id: None,
@@ -735,7 +735,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 card_id: card.id.to_string(),
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Starting,
+                status: WorkerSessionState::Starting,
                 terminal_run_id: None,
                 thread_id: None,
                 session_id: None,
@@ -803,7 +803,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         .unwrap()
         .expect("phase-2 recovery should leave a new active session");
     assert_eq!(active.id, placeholder_id);
-    assert_eq!(active.status, RunStatus::Idle);
+    assert_eq!(active.status, WorkerSessionState::Idle);
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
     assert_ne!(active.id, old_runtime_id);
 
@@ -1018,7 +1018,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some("thread-recovered".into()),
             session_id: None,

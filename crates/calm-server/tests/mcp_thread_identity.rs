@@ -25,7 +25,7 @@ use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::runtime_repo::{
-    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution,
+    AgentProvider, RuntimeInit, RuntimeKind, ThreadAttribution, WorkerSessionState,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -214,7 +214,7 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
                 card_id: card_id.to_string(),
                 kind: RuntimeKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
+                status: WorkerSessionState::Running,
                 terminal_run_id: None,
                 thread_id: Some(thread_id.to_string()),
                 session_id: None,
@@ -444,7 +444,7 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
             card_id: card_id.to_string(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: None,
             session_id: None,

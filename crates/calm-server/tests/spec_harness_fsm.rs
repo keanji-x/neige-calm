@@ -10,7 +10,7 @@ use calm_server::harness::{
     SpecHarness, SpecHarnessParams,
 };
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use serde_json::json;
 
@@ -92,7 +92,7 @@ async fn harness_with(
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,
@@ -143,7 +143,7 @@ async fn harness_from_snapshot(
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,
@@ -770,7 +770,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Idle,
+            status: WorkerSessionState::Idle,
             terminal_run_id: None,
             thread_id: Some(thread_id.clone()),
             session_id: None,

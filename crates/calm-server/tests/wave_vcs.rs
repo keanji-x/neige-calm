@@ -15,7 +15,7 @@ use calm_server::model::{
     new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_fs_view::WaveFsView;
@@ -333,7 +333,7 @@ async fn start_codex_runtime_with_event(
                         card_id: card_id.to_string(),
                         kind: RuntimeKind::CodexCard,
                         agent_provider: Some(AgentProvider::Codex),
-                        status: RunStatus::Running,
+                        status: WorkerSessionState::Running,
                         terminal_run_id: Some(terminal.id),
                         thread_id: Some("thread-1".into()),
                         session_id: None,
@@ -370,8 +370,8 @@ async fn set_runtime_status_with_event(
     cove_id: &CoveId,
     card_id: &CardId,
     runtime_id: &str,
-    old_status: RunStatus,
-    new_status: RunStatus,
+    old_status: WorkerSessionState,
+    new_status: WorkerSessionState,
 ) {
     let runtime_id = runtime_id.to_string();
     let card_id_for_event = card_id.clone();
@@ -389,10 +389,10 @@ async fn set_runtime_status_with_event(
         Box::new(move |tx| {
             let runtime_id = runtime_id.clone();
             let card_id = card_id_for_event.clone();
-            let old_status = old_status.clone();
-            let new_status = new_status.clone();
+            let old_status = old_status;
+            let new_status = new_status;
             Box::pin(async move {
-                session_set_status_tx(tx, &runtime_id, new_status.clone()).await?;
+                session_set_status_tx(tx, &runtime_id, new_status).await?;
                 Ok(Event::RuntimeStatusChanged {
                     runtime_id,
                     card_id: card_id.to_string(),
@@ -3026,7 +3026,7 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
             card_id: worker.id.to_string(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: Some("stale-thread".into()),
             session_id: None,
@@ -3122,7 +3122,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
                 card_id: spec.id.to_string(),
                 kind: RuntimeKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
+                status: WorkerSessionState::Running,
                 terminal_run_id: Some(terminal_id.clone()),
                 thread_id: Some("spec-thread".into()),
                 session_id: None,
@@ -3238,8 +3238,8 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         &cove.id,
         &worker.id,
         &runtime_id,
-        RunStatus::Running,
-        RunStatus::Idle,
+        WorkerSessionState::Running,
+        WorkerSessionState::Idle,
     )
     .await;
     let after_heal = wave_vcs::head(repo.pool(), &wave.id)
@@ -3296,8 +3296,8 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         &cove.id,
         &worker.id,
         &runtime_id,
-        RunStatus::Idle,
-        RunStatus::Running,
+        WorkerSessionState::Idle,
+        WorkerSessionState::Running,
     )
     .await;
     let after_second_runtime_event = wave_vcs::head(repo.pool(), &wave.id)
@@ -3381,8 +3381,8 @@ async fn runtime_status_flip_does_not_change_run_json_bytes() {
         &cove.id,
         &worker.id,
         &runtime_id,
-        RunStatus::Running,
-        RunStatus::Failed,
+        WorkerSessionState::Running,
+        WorkerSessionState::Failed,
     )
     .await;
 

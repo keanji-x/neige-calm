@@ -25,7 +25,9 @@ use calm_truth::error::{Result as TruthResult, TruthError};
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::{ActorId, CardId};
 use calm_truth::model::{NewCard, NewCove, NewWave, RequestTheme, new_id, now_ms};
-use calm_truth::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind, RuntimeRepo};
+use calm_truth::runtime_repo::{
+    AgentProvider, RuntimeInit, RuntimeKind, RuntimeRepo, WorkerSessionState,
+};
 use calm_truth::session_repo::SessionRepo;
 use calm_truth::state::WriteContext;
 use calm_truth::test_helpers;
@@ -33,7 +35,7 @@ use calm_truth::wave_cove_cache::WaveCoveCache;
 use calm_types::ids::WaveId;
 use calm_types::worker::{
     ExitEvidence, ExitInterpretation, ExitSource, Liveness, LivenessTag, SessionMode,
-    WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId, WorkerSessionState,
+    WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
 };
 
 async fn seeded_repo() -> (SqlxRepo, WaveId) {
@@ -372,7 +374,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
                         card_id,
                         kind: RuntimeKind::SharedSpec,
                         agent_provider: Some(AgentProvider::Codex),
-                        status: RunStatus::Idle,
+                        status: WorkerSessionState::Idle,
                         terminal_run_id: None,
                         thread_id: None,
                         session_id: None,
@@ -401,7 +403,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
                 session_set_harness_observation_runtime_tx(
                     tx,
                     &runtime_id,
-                    RunStatus::TurnPending,
+                    WorkerSessionState::TurnPending,
                     Some("t-1"),
                     Some("turn-1"),
                 )
@@ -418,7 +420,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
         .await
         .expect("runtime get")
         .expect("runtime row");
-    assert_eq!(runtime.status, RunStatus::TurnPending);
+    assert_eq!(runtime.status, WorkerSessionState::TurnPending);
     let after = repo.events_since(0, None).await.expect("events").len();
     assert_eq!(after, before, "observation write must emit no event");
 }

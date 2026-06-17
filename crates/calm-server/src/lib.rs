@@ -37,7 +37,7 @@ pub mod liveness_feeder;
 pub mod provider_registry;
 pub mod reaper;
 pub mod worker_flow;
-use crate::runtime_repo::RunStatus;
+use crate::runtime_repo::WorkerSessionState;
 pub use reaper::reaper_on_boot;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -84,7 +84,7 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                 // Synthetic -1 means the process outcome is unknown at boot, so treat it as Exited.
                 if let Err(e) = state
                     .repo
-                    .runtime_complete_for_terminal(&term.id, RunStatus::Exited)
+                    .runtime_complete_for_terminal(&term.id, WorkerSessionState::Exited)
                     .await
                 {
                     tracing::warn!(

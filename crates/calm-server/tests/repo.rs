@@ -13,7 +13,7 @@ use calm_server::db::sqlite::{
 use calm_server::error::CalmError;
 use calm_server::model::*;
 use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use serde_json::json;
 
 async fn fresh_repo() -> SqlxRepo {
@@ -66,7 +66,7 @@ fn runtime_init(
         card_id,
         kind,
         agent_provider,
-        status: RunStatus::Running,
+        status: WorkerSessionState::Running,
         terminal_run_id: None,
         thread_id: None,
         session_id: None,
@@ -1856,7 +1856,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             card_id: mapped.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: Some(mapped_term.id.to_string()),
             thread_id: Some("T-shared-mapped".to_string()),
             session_id: None,
@@ -1877,7 +1877,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             card_id: pending.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
+            status: WorkerSessionState::TurnPending,
             terminal_run_id: Some(term.id.to_string()),
             thread_id: None,
             session_id: None,
@@ -1899,7 +1899,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             card_id: phantom.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
             terminal_run_id: None,
             thread_id: None,
             session_id: None,

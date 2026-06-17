@@ -1,7 +1,6 @@
 use crate::db::sqlite::worker_session_from_row;
 use crate::runtime_repo::{
-    AgentProvider, CardId, Result, RunStatus, RuntimeKind, RuntimeRepoError,
-    WorkerSessionProjection,
+    AgentProvider, CardId, Result, RuntimeKind, RuntimeRepoError, WorkerSessionProjection,
 };
 use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionState};
 use sqlx::sqlite::SqliteRow;
@@ -84,7 +83,7 @@ pub(crate) fn card_runtime_from_session(
         card_id,
         kind,
         agent_provider: agent_provider_from_session_provider(ws.provider),
-        status: run_status_from_worker_session_state(ws.state),
+        status: ws.state,
         terminal_run_id: ws.terminal_run_id.clone(),
         thread_id: ws.thread_id.clone(),
         session_id: ws.agent_session_id.clone(),
@@ -129,27 +128,15 @@ fn agent_provider_from_session_provider(provider: WorkerProviderKind) -> Option<
     }
 }
 
-fn run_status_from_worker_session_state(state: WorkerSessionState) -> RunStatus {
-    match state {
-        WorkerSessionState::Starting => RunStatus::Starting,
-        WorkerSessionState::Running => RunStatus::Running,
-        WorkerSessionState::Idle => RunStatus::Idle,
-        WorkerSessionState::TurnPending => RunStatus::TurnPending,
-        WorkerSessionState::Failed => RunStatus::Failed,
-        WorkerSessionState::Exited => RunStatus::Exited,
-        WorkerSessionState::Superseded => RunStatus::Superseded,
-    }
-}
-
-pub(crate) fn run_status_from_db(value: &str) -> Result<RunStatus> {
+pub(crate) fn run_status_from_db(value: &str) -> Result<WorkerSessionState> {
     match value {
-        "starting" => Ok(RunStatus::Starting),
-        "running" => Ok(RunStatus::Running),
-        "idle" => Ok(RunStatus::Idle),
-        "turn_pending" => Ok(RunStatus::TurnPending),
-        "failed" => Ok(RunStatus::Failed),
-        "exited" => Ok(RunStatus::Exited),
-        "superseded" => Ok(RunStatus::Superseded),
+        "starting" => Ok(WorkerSessionState::Starting),
+        "running" => Ok(WorkerSessionState::Running),
+        "idle" => Ok(WorkerSessionState::Idle),
+        "turn_pending" => Ok(WorkerSessionState::TurnPending),
+        "failed" => Ok(WorkerSessionState::Failed),
+        "exited" => Ok(WorkerSessionState::Exited),
+        "superseded" => Ok(WorkerSessionState::Superseded),
         other => Err(RuntimeRepoError::Message {
             message: format!("unknown runtime status {other:?}"),
         }),
@@ -200,7 +187,7 @@ mod tests {
     fn expected_runtime(
         kind: RuntimeKind,
         agent_provider: Option<AgentProvider>,
-        status: RunStatus,
+        status: WorkerSessionState,
     ) -> WorkerSessionProjection {
         WorkerSessionProjection {
             id: "ws-1".into(),
@@ -229,7 +216,7 @@ mod tests {
 
         assert_eq!(
             card_runtime_from_session(&ws, "card-1".into()).unwrap(),
-            expected_runtime(RuntimeKind::Terminal, None, RunStatus::Starting)
+            expected_runtime(RuntimeKind::Terminal, None, WorkerSessionState::Starting)
         );
     }
 
@@ -246,7 +233,7 @@ mod tests {
             expected_runtime(
                 RuntimeKind::CodexCard,
                 Some(AgentProvider::Codex),
-                RunStatus::Running
+                WorkerSessionState::Running
             )
         );
     }
@@ -264,7 +251,7 @@ mod tests {
             expected_runtime(
                 RuntimeKind::SharedSpec,
                 Some(AgentProvider::Codex),
-                RunStatus::Idle
+                WorkerSessionState::Idle
             )
         );
     }
@@ -282,7 +269,7 @@ mod tests {
             expected_runtime(
                 RuntimeKind::ClaudeCard,
                 Some(AgentProvider::Claude),
-                RunStatus::TurnPending
+                WorkerSessionState::TurnPending
             )
         );
     }
@@ -305,27 +292,6 @@ mod tests {
                     RuntimeRepoError::Message { ref message } if message == &expected
                 ),
                 "unexpected error: {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn worker_session_state_round_trips_to_run_status() {
-        // The reverse helper is private to db::sqlite, so this module cannot assert a true round-trip.
-        let pairs = [
-            (WorkerSessionState::Starting, RunStatus::Starting),
-            (WorkerSessionState::Running, RunStatus::Running),
-            (WorkerSessionState::Idle, RunStatus::Idle),
-            (WorkerSessionState::TurnPending, RunStatus::TurnPending),
-            (WorkerSessionState::Failed, RunStatus::Failed),
-            (WorkerSessionState::Exited, RunStatus::Exited),
-            (WorkerSessionState::Superseded, RunStatus::Superseded),
-        ];
-
-        for (session_state, run_status) in pairs {
-            assert_eq!(
-                run_status_from_worker_session_state(session_state),
-                run_status
             );
         }
     }

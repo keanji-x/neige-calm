@@ -15,7 +15,7 @@ use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistr
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::runtime_lookup::project_runtime_into_cards_payload;
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use clap::Parser;
@@ -634,7 +634,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
             card_id: card_id.clone(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::TurnPending,
+            status: WorkerSessionState::TurnPending,
             terminal_run_id: Some(terminal.id.to_string()),
             thread_id: None,
             session_id: None,

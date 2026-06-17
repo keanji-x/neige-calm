@@ -29,7 +29,9 @@ use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // path can share it. Same semantics: guards self-clean their entry on drop.
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::routes::cards::card_scope;
-use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution};
+use crate::runtime_repo::{
+    AgentProvider, RuntimeInit, RuntimeKind, ThreadAttribution, WorkerSessionState,
+};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -268,7 +270,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             card_id: card.id.to_string(),
             kind: RuntimeKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
             terminal_run_id: None,
             thread_id: None,
             session_id: None,
@@ -282,13 +284,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         if defer_runtime_start {
             if let Some(existing) = existing_active_runtime.as_ref() {
                 old_runtime_id = Some(existing.id.clone());
-                old_runtime_status = Some(existing.status.clone());
+                old_runtime_status = Some(existing.status);
             }
             session_prepare_deferred_spec_tx(tx, &runtime_init).await?;
         } else {
             if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_str()).await? {
                 old_runtime_id = Some(existing.id.clone());
-                old_runtime_status = Some(existing.status.clone());
+                old_runtime_status = Some(existing.status);
                 session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
             } else {
                 session_start_runtime_tx(tx, runtime_init).await?;
@@ -317,7 +319,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             set_output_data(
                 &mut output,
                 "old_runtime_status",
-                serde_json::to_value(&old_runtime_status)?,
+                serde_json::to_value(old_runtime_status)?,
             )?;
         }
         Ok(output)
@@ -471,7 +473,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             card_id: card_id.clone(),
                             kind: RuntimeKind::SharedSpec,
                             agent_provider: Some(AgentProvider::Codex),
-                            status: RunStatus::Starting,
+                            status: WorkerSessionState::Starting,
                             terminal_run_id: None,
                             thread_id: Some(thread_for_tx.clone()),
                             session_id: None,
@@ -485,10 +487,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id).await?
                         {
                             let existing_id = existing.id.clone();
-                            let existing_status = existing.status.clone();
+                            let existing_status = existing.status;
                             if existing_id != runtime_id {
                                 old_runtime_id = Some(existing_id.clone());
-                                old_runtime_status = Some(existing_status.clone());
+                                old_runtime_status = Some(existing_status);
                                 set_output_data(
                                     &mut checkpoint_output,
                                     "old_runtime_id",
@@ -497,7 +499,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                                 set_output_data(
                                     &mut checkpoint_output,
                                     "old_runtime_status",
-                                    serde_json::to_value(&existing_status)?,
+                                    serde_json::to_value(existing_status)?,
                                 )?;
                             }
                             session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
@@ -569,7 +571,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             set_output_data(
                 output,
                 "old_runtime_status",
-                serde_json::to_value(&old_runtime_status)?,
+                serde_json::to_value(old_runtime_status)?,
             )?;
         }
         if reset_harness_items {
@@ -876,7 +878,7 @@ async fn clear_card_runtime_fields(ctx: &SpawnCtx, card_id: &str) -> Result<()> 
 async fn restore_old_runtime_after_spawn_failure(
     repo: &dyn crate::db::RouteRepo,
     old_runtime_id: String,
-    status: RunStatus,
+    status: WorkerSessionState,
 ) -> Result<()> {
     active_run_status_to_db(&status)?;
     write_in_tx_typed(repo, move |tx| {
@@ -889,19 +891,17 @@ async fn restore_old_runtime_after_spawn_failure(
     .await
 }
 
-fn active_run_status_to_db(status: &RunStatus) -> Result<&'static str> {
-    match status {
-        RunStatus::Starting => Ok("starting"),
-        RunStatus::Running => Ok("running"),
-        RunStatus::Idle => Ok("idle"),
-        RunStatus::TurnPending => Ok("turn_pending"),
-        RunStatus::Failed | RunStatus::Exited | RunStatus::Superseded => Err(CalmError::Internal(
-            format!("cannot restore old spec harness runtime to terminal status {status:?}"),
-        )),
+fn active_run_status_to_db(status: &WorkerSessionState) -> Result<&'static str> {
+    if status.is_terminal() {
+        Err(CalmError::Internal(format!(
+            "cannot restore old spec harness runtime to terminal status {status:?}"
+        )))
+    } else {
+        Ok(status.as_db_str())
     }
 }
 
-fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<RunStatus> {
+fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessionState> {
     let value = step.args.get(key).cloned().ok_or_else(|| {
         CalmError::Internal(format!(
             "spec harness compensation step {} missing {key}",

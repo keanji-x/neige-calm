@@ -12,7 +12,7 @@ use calm_exec::flow::{WorkerFlowItemSink, WorkerFlowSource};
 use calm_truth::worker_flow_sink::WorkerFlowSink;
 use calm_types::error::CoreError;
 use calm_types::event::Event;
-use calm_types::runtime::{AgentProvider, RunStatus, RuntimeKind, WorkerSessionProjection};
+use calm_types::runtime::{AgentProvider, RuntimeKind, WorkerSessionProjection};
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -229,14 +229,20 @@ impl WorkerFlowDriver {
             }
             Event::RuntimeStatusChanged {
                 card_id,
-                new_status: RunStatus::Exited | RunStatus::Failed | RunStatus::Superseded,
+                new_status:
+                    WorkerSessionState::Exited
+                    | WorkerSessionState::Failed
+                    | WorkerSessionState::Superseded,
                 ..
             } => {
                 self.cancel_card(&card_id).await;
             }
             Event::RuntimeStatusChanged {
                 runtime_id,
-                new_status: RunStatus::Running | RunStatus::Idle | RunStatus::TurnPending,
+                new_status:
+                    WorkerSessionState::Running
+                    | WorkerSessionState::Idle
+                    | WorkerSessionState::TurnPending,
                 ..
             } => match self.repo.runtime_get_by_id(&runtime_id).await {
                 Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
@@ -500,7 +506,7 @@ fn session_from_runtime(runtime: &WorkerSessionProjection, card: &Card) -> Worke
         contract: WorkerContract::Executor,
         parent_session_id: None,
         requester_session_id: None,
-        state: worker_state_from_runtime(runtime.status.clone()),
+        state: runtime.status,
         mcp_token_hash: None,
         thread_id: runtime.thread_id.clone(),
         agent_session_id: runtime.session_id.clone(),
@@ -508,7 +514,7 @@ fn session_from_runtime(runtime: &WorkerSessionProjection, card: &Card) -> Worke
         terminal_run_id: runtime.terminal_run_id.clone(),
         card_id: Some(card.id.clone()),
         handle_state_json: runtime.handle_state_json.clone(),
-        liveness: liveness_from_runtime(runtime.status.clone()),
+        liveness: liveness_from_runtime(runtime.status),
         liveness_probed_at_ms: None,
         exit_code: None,
         exit_interpretation: None,
@@ -528,22 +534,14 @@ fn worker_provider_from_runtime(runtime: &WorkerSessionProjection) -> WorkerProv
     }
 }
 
-fn worker_state_from_runtime(status: RunStatus) -> WorkerSessionState {
+fn liveness_from_runtime(status: WorkerSessionState) -> LivenessTag {
     match status {
-        RunStatus::Starting => WorkerSessionState::Starting,
-        RunStatus::Running => WorkerSessionState::Running,
-        RunStatus::Idle => WorkerSessionState::Idle,
-        RunStatus::TurnPending => WorkerSessionState::TurnPending,
-        RunStatus::Failed => WorkerSessionState::Failed,
-        RunStatus::Exited => WorkerSessionState::Exited,
-        RunStatus::Superseded => WorkerSessionState::Superseded,
-    }
-}
-
-fn liveness_from_runtime(status: RunStatus) -> LivenessTag {
-    match status {
-        RunStatus::Starting | RunStatus::Running | RunStatus::TurnPending => LivenessTag::Alive,
-        RunStatus::Idle => LivenessTag::Idle,
-        RunStatus::Failed | RunStatus::Exited | RunStatus::Superseded => LivenessTag::Exited,
+        WorkerSessionState::Starting
+        | WorkerSessionState::Running
+        | WorkerSessionState::TurnPending => LivenessTag::Alive,
+        WorkerSessionState::Idle => LivenessTag::Idle,
+        WorkerSessionState::Failed
+        | WorkerSessionState::Exited
+        | WorkerSessionState::Superseded => LivenessTag::Exited,
     }
 }

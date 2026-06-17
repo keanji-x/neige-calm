@@ -30,7 +30,7 @@ use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_pa
 use crate::runtime_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
-use crate::runtime_repo::{RunStatus, WorkerSessionProjection};
+use crate::runtime_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
@@ -975,7 +975,7 @@ async fn ensure_live_spec_harness(
     // compensated to `failed`/deleted, after which this 409s as dormant).
     // Recovery below is only for statuses that imply a previously-live
     // harness (running / idle / turn_pending).
-    if runtime.status == RunStatus::Starting {
+    if runtime.status == WorkerSessionState::Starting {
         return Err(CalmError::ServiceUnavailable(
             "spec harness is starting; retry shortly".into(),
         ));

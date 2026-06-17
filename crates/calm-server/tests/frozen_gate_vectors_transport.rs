@@ -27,13 +27,13 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::role_gate::enforce_role;
 use calm_server::runtime_repo::{
-    AgentProvider, RunStatus, RuntimeInit, RuntimeKind, ThreadAttribution,
+    AgentProvider, RuntimeInit, RuntimeKind, ThreadAttribution, WorkerSessionState,
 };
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_truth::decision_gate::PrincipalDecisionGate;
 use calm_types::worker::{
     LivenessTag, Principal, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
-    WorkerSessionId, WorkerSessionState,
+    WorkerSessionId,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -178,7 +178,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
                 card_id: card_id.to_string(),
                 kind: RuntimeKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
-                status: RunStatus::Running,
+                status: WorkerSessionState::Running,
                 terminal_run_id: None,
                 thread_id: Some(thread_id.to_string()),
                 session_id: None,
@@ -212,7 +212,7 @@ async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &s
             card_id: card_id.to_string(),
             kind: RuntimeKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             terminal_run_id: None,
             thread_id: Some(thread_id.to_string()),
             session_id: None,

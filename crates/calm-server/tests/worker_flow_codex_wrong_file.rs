@@ -7,7 +7,7 @@ use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::runtime_repo::RunStatus;
+use calm_server::runtime_repo::WorkerSessionState;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;
@@ -58,8 +58,8 @@ async fn codex_rollout_session_meta_mismatch_exits_without_ingesting_wrong_file(
         Event::RuntimeStatusChanged {
             runtime_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
-            old_status: RunStatus::Idle,
-            new_status: RunStatus::Running,
+            old_status: WorkerSessionState::Idle,
+            new_status: WorkerSessionState::Running,
         },
     );
     tokio::time::sleep(Duration::from_millis(100)).await;

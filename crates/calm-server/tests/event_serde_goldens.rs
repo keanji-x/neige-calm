@@ -30,7 +30,7 @@ use calm_server::event::{ArtifactRef, EditAuthor, Event, WaveUpdatedPayload};
 use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, RuntimeKind};
+use calm_server::runtime_repo::{AgentProvider, RuntimeKind, WorkerSessionState};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -239,7 +239,7 @@ golden_test!(
         runtime: Some(CardRuntimeView {
             runtime_id: "rt-01".into(),
             kind: RuntimeKind::CodexCard,
-            status: RunStatus::Running,
+            status: WorkerSessionState::Running,
             provider: Some(AgentProvider::Codex),
             terminal_id: Some("term-01".into()),
             thread_id: Some("thread-01".into()),
@@ -268,7 +268,7 @@ golden_test!(
         runtime: Some(CardRuntimeView {
             runtime_id: "rt-02".into(),
             kind: RuntimeKind::Terminal,
-            status: RunStatus::Exited,
+            status: WorkerSessionState::Exited,
             provider: None,
             terminal_id: None,
             thread_id: None,
@@ -297,7 +297,7 @@ golden_test!(
         card_id: "card-01".into(),
         kind: RuntimeKind::ClaudeCard,
         agent_provider: Some(AgentProvider::Claude),
-        status: RunStatus::Starting,
+        status: WorkerSessionState::Starting,
     }
 );
 
@@ -309,7 +309,7 @@ golden_test!(
         card_id: "card-01".into(),
         kind: RuntimeKind::Terminal,
         agent_provider: None,
-        status: RunStatus::Starting,
+        status: WorkerSessionState::Starting,
     }
 );
 
@@ -319,8 +319,8 @@ golden_test!(
     Event::RuntimeStatusChanged {
         runtime_id: "rt-01".into(),
         card_id: "card-01".into(),
-        old_status: RunStatus::TurnPending,
-        new_status: RunStatus::Running,
+        old_status: WorkerSessionState::TurnPending,
+        new_status: WorkerSessionState::Running,
     }
 );
 

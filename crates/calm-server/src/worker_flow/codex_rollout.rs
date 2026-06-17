@@ -7,8 +7,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calm_exec::flow::{FlowRowCtx, WorkerFlowItemSink, WorkerFlowSource};
 use calm_types::error::CoreError;
-use calm_types::runtime::{RunStatus, WorkerSessionProjection};
-use calm_types::worker::{WorkerProviderKind, WorkerSession};
+use calm_types::runtime::WorkerSessionProjection;
+use calm_types::worker::{WorkerProviderKind, WorkerSession, WorkerSessionState};
 use calm_types::worker_flow::RawRef;
 use tokio_util::sync::CancellationToken;
 
@@ -340,7 +340,9 @@ impl CodexRolloutFlowSource {
         match self.repo.runtime_get_by_id(&self.runtime.id).await {
             Ok(Some(runtime)) => !matches!(
                 runtime.status,
-                RunStatus::Exited | RunStatus::Failed | RunStatus::Superseded
+                WorkerSessionState::Exited
+                    | WorkerSessionState::Failed
+                    | WorkerSessionState::Superseded
             ),
             Ok(None) => true,
             Err(err) => {

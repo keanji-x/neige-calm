@@ -42,23 +42,23 @@ use calm_server::db::sqlite::{
     session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
 };
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
-use calm_server::runtime_repo::{RunStatus, RuntimeInit, RuntimeKind, RuntimeRepoError};
+use calm_server::runtime_repo::{RuntimeInit, RuntimeKind, RuntimeRepoError, WorkerSessionState};
 use serde_json::{Value, json};
 
 const GOLDEN: &str = include_str!("goldens/runtime_status_matrix.json");
 
-/// All `RunStatus` variants paired with their pinned db string (the
+/// All `WorkerSessionState` variants paired with their pinned db string (the
 /// `runtimes.status` CHECK vocabulary from migration 0028). Order matters:
 /// it must match the golden's `statuses` array, so adding a variant without
 /// updating the golden fails loudly.
-const ALL_STATUSES: [(&str, RunStatus); 7] = [
-    ("starting", RunStatus::Starting),
-    ("running", RunStatus::Running),
-    ("idle", RunStatus::Idle),
-    ("turn_pending", RunStatus::TurnPending),
-    ("failed", RunStatus::Failed),
-    ("exited", RunStatus::Exited),
-    ("superseded", RunStatus::Superseded),
+const ALL_STATUSES: [(&str, WorkerSessionState); 7] = [
+    ("starting", WorkerSessionState::Starting),
+    ("running", WorkerSessionState::Running),
+    ("idle", WorkerSessionState::Idle),
+    ("turn_pending", WorkerSessionState::TurnPending),
+    ("failed", WorkerSessionState::Failed),
+    ("exited", WorkerSessionState::Exited),
+    ("superseded", WorkerSessionState::Superseded),
 ];
 
 async fn fresh_repo() -> SqlxRepo {
@@ -88,7 +88,7 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
     .expect("create wave")
 }
 
-fn terminal_runtime_init(card_id: String, status: RunStatus) -> RuntimeInit {
+fn terminal_runtime_init(card_id: String, status: WorkerSessionState) -> RuntimeInit {
     RuntimeInit {
         id: new_id(),
         card_id,
@@ -129,8 +129,8 @@ enum WriterPath {
 async fn probe(
     repo: &SqlxRepo,
     wave: &calm_server::model::Wave,
-    from: &(&str, RunStatus),
-    to: &(&str, RunStatus),
+    from: &(&str, WorkerSessionState),
+    to: &(&str, WorkerSessionState),
     path: WriterPath,
 ) -> bool {
     let card = repo
@@ -144,18 +144,16 @@ async fn probe(
         .expect("create probe card");
 
     let mut tx = repo.pool().begin().await.expect("begin probe tx");
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        terminal_runtime_init(card.id.to_string(), from.1.clone()),
-    )
-    .await
-    .expect("insert probe runtime");
+    let runtime =
+        session_start_runtime_tx(&mut tx, terminal_runtime_init(card.id.to_string(), from.1))
+            .await
+            .expect("insert probe runtime");
     // Insert round-trip pins the from-side db string mapping.
     assert_eq!(runtime.status, from.1, "insert round-trip for {}", from.0);
 
     let res = match path {
-        WriterPath::SetStatus => session_set_status_tx(&mut tx, &runtime.id, to.1.clone()).await,
-        WriterPath::Complete => session_complete_tx(&mut tx, &runtime.id, to.1.clone()).await,
+        WriterPath::SetStatus => session_set_status_tx(&mut tx, &runtime.id, to.1).await,
+        WriterPath::Complete => session_complete_tx(&mut tx, &runtime.id, to.1).await,
     };
     tx.commit().await.expect("commit probe tx");
 
@@ -198,7 +196,7 @@ async fn probe(
 async fn runtime_status_matrix_matches_golden() {
     let golden: Value = serde_json::from_str(GOLDEN).expect("parse golden json");
 
-    // The golden's status vocabulary must be exactly the RunStatus enum,
+    // The golden's status vocabulary must be exactly the WorkerSessionState enum,
     // in pinned order — a new variant cannot slip in unaudited.
     let golden_statuses: Vec<&str> = golden["statuses"]
         .as_array()
@@ -209,7 +207,7 @@ async fn runtime_status_matrix_matches_golden() {
     let expected_statuses: Vec<&str> = ALL_STATUSES.iter().map(|(name, _)| *name).collect();
     assert_eq!(
         golden_statuses, expected_statuses,
-        "golden status vocabulary must match RunStatus exactly"
+        "golden status vocabulary must match WorkerSessionState exactly"
     );
 
     // Structural exhaustiveness: 7 from-rows × 7 to-cells, values only
@@ -263,7 +261,10 @@ async fn runtime_status_matrix_matches_golden() {
             // kernel; it only accepts terminal targets, so cross-check the
             // failed/exited columns through it as well — both paths must
             // arbitrate identically.
-            if matches!(to.1, RunStatus::Failed | RunStatus::Exited) {
+            if matches!(
+                to.1,
+                WorkerSessionState::Failed | WorkerSessionState::Exited
+            ) {
                 let observed_complete = probe(&repo, &wave, from, to, WriterPath::Complete).await;
                 assert_eq!(
                     observed_complete, expected_allow,
@@ -319,7 +320,7 @@ async fn running_codex_fixture() -> (
     .await
     .expect("mint codex card");
     // Mid-execution shape: starting -> running.
-    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Running)
+    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Running)
         .await
         .expect("advance to running");
     let runtime_id = runtime_get_active_for_card_tx(&mut tx, card.id.as_ref())
@@ -350,7 +351,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
 
     // Writer 1 (e.g. attach_reader EOF) — its own tx, commits first, wins.
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
         .await
         .expect("first terminal writer succeeds");
     tx.commit().await.unwrap();
@@ -361,7 +362,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     // Writer 2 (e.g. terminal sweeper, via the terminal row) — separate tx,
     // sees no active runtime, no-ops with Ok. No error, no mutation.
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_terminal_tx(&mut tx, &term.id, RunStatus::Failed)
+    session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
         .await
         .expect("second terminal writer must no-op, not error");
     tx.commit().await.unwrap();
@@ -374,7 +375,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     // Writer 3 (e.g. boot scan, by card) — same absorption through the
     // for-card wrapper.
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Failed)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
         .await
         .expect("third writer (for-card) must no-op, not error");
     tx.commit().await.unwrap();
@@ -383,7 +384,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     // Contrast pin: the direct by-id path does NOT absorb — a second
     // terminal write against a known runtime id surfaces the conflict.
     let mut tx = repo.pool().begin().await.unwrap();
-    let err = session_complete_tx(&mut tx, &runtime_id, RunStatus::Failed)
+    let err = session_complete_tx(&mut tx, &runtime_id, WorkerSessionState::Failed)
         .await
         .expect_err("by-id second terminal write surfaces the conflict");
     drop(tx); // roll back
@@ -391,7 +392,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
         matches!(
             err,
             RuntimeRepoError::IllegalStatusTransition {
-                attempted: RunStatus::Failed,
+                attempted: WorkerSessionState::Failed,
                 ..
             }
         ),
@@ -407,7 +408,7 @@ async fn terminal_absorption_failed_first_then_exited_noops() {
     let (repo, card, term, runtime_id) = running_codex_fixture().await;
 
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_terminal_tx(&mut tx, &term.id, RunStatus::Failed)
+    session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
         .await
         .expect("first terminal writer succeeds");
     tx.commit().await.unwrap();
@@ -416,7 +417,7 @@ async fn terminal_absorption_failed_first_then_exited_noops() {
     assert!(won.2.is_some(), "first writer stamps completed_at_ms");
 
     let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Exited)
+    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
         .await
         .expect("second terminal writer must no-op, not error");
     tx.commit().await.unwrap();

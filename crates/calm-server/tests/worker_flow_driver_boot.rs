@@ -11,7 +11,7 @@ use calm_server::db::sqlite::{
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::{CardPatch, NewTerminal, RequestTheme};
-use calm_server::runtime_repo::{AgentProvider, RunStatus, ThreadAttribution};
+use calm_server::runtime_repo::{AgentProvider, ThreadAttribution, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
@@ -84,7 +84,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
         &repo,
         "card-status-attach",
         None,
-        RunStatus::Starting,
+        WorkerSessionState::Starting,
     )
     .await;
 
@@ -97,7 +97,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
             card_id: seed.runtime.card_id.clone(),
             kind: seed.runtime.kind.clone(),
             agent_provider: seed.runtime.agent_provider.clone(),
-            status: RunStatus::Starting,
+            status: WorkerSessionState::Starting,
         },
     );
     tokio::time::sleep(Duration::from_millis(60)).await;
@@ -126,7 +126,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
     )
     .await
     .unwrap();
-    session_set_status_tx(&mut tx, &seed.runtime.id, RunStatus::Running)
+    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Running)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -136,8 +136,8 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
         Event::RuntimeStatusChanged {
             runtime_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
-            old_status: RunStatus::Starting,
-            new_status: RunStatus::Running,
+            old_status: WorkerSessionState::Starting,
+            new_status: WorkerSessionState::Running,
         },
     );
     wf::wait_until(Duration::from_secs(1), || {
@@ -151,8 +151,8 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
         Event::RuntimeStatusChanged {
             runtime_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
-            old_status: RunStatus::Running,
-            new_status: RunStatus::TurnPending,
+            old_status: WorkerSessionState::Running,
+            new_status: WorkerSessionState::TurnPending,
         },
     );
     tokio::time::sleep(Duration::from_millis(60)).await;
@@ -196,9 +196,13 @@ async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    let runtime =
-        wf::seed_claude_runtime_for_card_with_status(&repo, &card, session_id, RunStatus::Running)
-            .await;
+    let runtime = wf::seed_claude_runtime_for_card_with_status(
+        &repo,
+        &card,
+        session_id,
+        WorkerSessionState::Running,
+    )
+    .await;
     let transcript_root = tempfile::tempdir().unwrap();
     let expected_path = transcript_path(
         transcript_root.path(),
