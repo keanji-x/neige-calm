@@ -337,6 +337,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_id = output_string(output, "runtime_id")?;
         let runtime_deferred = output_bool(output, "runtime_deferred")?;
         let cwd = output_string(output, "cwd")?;
+        // OLD PTY shutdown at Phase-2 entry, immediately after the Phase-1
+        // tx commit. Per RATIFY-8 section 5 / 1.4, force_new_thread is a
+        // hard reset: the DB-side supersede lives in calm-truth, and the
+        // handle kill stays here as the first app-server-side action after
+        // commit.
         if let Some(old_runtime_id) = output_optional_string(output, "old_runtime_id")?
             && old_runtime_id != runtime_id
             && let Some(old_handle) = self.harness_registry.remove(&old_runtime_id)

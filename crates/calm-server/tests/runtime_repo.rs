@@ -653,7 +653,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
 }
 
 #[tokio::test]
-async fn phase1_reorder_hot_start_supersedes_old_before_placeholder() {
+async fn phase1_reorder_hot_start_supersedes_old_one_row() {
     let repo = fresh_repo().await;
     let active_card = make_card(&repo, "codex").await;
 
@@ -739,6 +739,18 @@ async fn phase1_reorder_hot_start_supersedes_old_before_placeholder() {
             .unwrap()
             .is_some(),
         "fresh deferred placeholder session should still exist"
+    );
+
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1 AND state IN ('starting','running','idle','turn_pending')",
+    )
+    .bind(active_card.id.as_str())
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        active_count, 1,
+        "exactly one active ws per card after Phase-1 reorder"
     );
 }
 
