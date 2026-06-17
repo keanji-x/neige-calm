@@ -13,9 +13,9 @@ pub mod event_bus;
 pub mod mcp_auth;
 pub mod model;
 pub mod role_gate;
-pub mod runtime_lookup;
-pub mod runtime_repo;
-pub mod runtime_row;
+pub mod session_projection_lookup;
+pub mod session_projection_repo;
+pub mod session_projection_row;
 pub mod session_repo;
 pub mod state;
 #[cfg(any(test, feature = "test-helpers"))]

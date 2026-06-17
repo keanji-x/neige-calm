@@ -24,7 +24,7 @@ use ts_rs::TS;
 use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::runtime::{AgentProvider, RuntimeKind};
+use crate::runtime::{AgentProvider, WorkerSessionKind};
 use crate::worker::WorkerSessionState;
 
 // ---------------- CardRole ----------------
@@ -435,7 +435,7 @@ pub struct Wave {
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct CardRuntimeView {
     pub runtime_id: String,
-    pub kind: RuntimeKind,
+    pub kind: WorkerSessionKind,
     pub status: WorkerSessionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

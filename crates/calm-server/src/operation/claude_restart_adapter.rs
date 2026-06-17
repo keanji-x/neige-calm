@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, runtime_get_active_for_card_tx, session_complete_tx,
+    append_decision_event_in_tx, session_complete_tx, session_projection_active_for_card_tx,
     session_set_status_tx, session_start_runtime_tx, terminal_get_by_card_tx,
 };
 use crate::db::write_with_events_typed;
@@ -19,8 +19,10 @@ use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
 use crate::routes::codex_cards::shell_single_quote;
-use crate::runtime_lookup::resolve_claude_session_for_card;
-use crate::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use crate::session_projection_lookup::resolve_claude_session_for_card;
+use crate::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use crate::state::{CodexClient, WriteContext};
 use crate::wave_cove_cache::WaveCoveCache;
 use calm_truth::decision_gate::PermissiveGate;
@@ -147,7 +149,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .await?
             .ok_or_else(|| CalmError::Forbidden("Claude card has no terminal".into()))?;
 
-        if let Some(active) = runtime_get_active_for_card_tx(tx, &card_id).await? {
+        if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
             // Claude runtimes only reach Starting/Running here today;
             // Idle/TurnPending are not part of the Claude state machine.
             if matches!(
@@ -171,10 +173,10 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         session_start_runtime_tx(
             tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: runtime_id.clone(),
                 card_id: card_id.clone(),
-                kind: RuntimeKind::ClaudeCard,
+                kind: WorkerSessionKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
                 status: WorkerSessionState::Starting,
                 terminal_run_id: Some(term.id.clone()),
@@ -182,8 +184,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 session_id: Some(claude_session_id.clone()),
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: crate::model::now_ms(),
             },
@@ -199,7 +199,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let runtime_event = Event::RuntimeStarted {
             runtime_id: runtime_id.clone(),
             card_id: card_id.clone(),
-            kind: RuntimeKind::ClaudeCard,
+            kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Starting,
         };
@@ -311,7 +311,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         match handle {
             Ok(handle) => {
                 let status_result: Result<()> = async {
-                    let existing = ctx.repo.runtime_get_active_for_card(&card_id).await?;
+                    let existing = ctx.repo.session_projection_active_for_card(&card_id).await?;
                     let needs_status_write = existing
                         .as_ref()
                         .map(|runtime| runtime.status != WorkerSessionState::Running)
@@ -347,7 +347,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                         move |tx| {
                             Box::pin(async move {
                                 let runtime =
-                                    runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                                    session_projection_active_for_card_tx(tx, &card_id_for_tx)
                                         .await?
                                         .ok_or_else(|| {
                                             CalmError::Internal(format!(
@@ -409,7 +409,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             reason: reason.to_string(),
             steps: vec![
                 CompensationStep {
-                    op: "runtime_set_status_failed_for_card".into(),
+                    op: "session_projection_set_status_failed_for_card".into(),
                     args: json!({ "card_id": card_id }),
                     completed: false,
                     attempts: 0,
@@ -441,10 +441,10 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             return Ok(());
         }
         match step.op.as_str() {
-            "runtime_set_status_failed_for_card" => {
+            "session_projection_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
-                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
+                    .session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await?;
                 Ok(())
             }

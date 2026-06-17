@@ -12,8 +12,9 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
-    runtime_get_active_for_card_tx, session_bind_attribution_tx, session_fail_if_active_runtime_tx,
-    session_mark_superseded_runtime_tx, session_mcp_token_set_tx, session_start_runtime_tx,
+    session_bind_attribution_tx, session_fail_if_active_runtime_tx,
+    session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
+    session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::auth;
@@ -24,8 +25,8 @@ use calm_server::mcp_server::registry::{
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
-use calm_server::runtime_repo::{
-    AgentProvider, RuntimeInit, RuntimeKind, ThreadAttribution, WorkerSessionState,
+use calm_server::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -189,7 +190,7 @@ fn test_descriptor(name: &str) -> ToolDescriptor {
 
 async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRole) {
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    if let Some(runtime) = runtime_get_active_for_card_tx(&mut tx, card_id)
+    if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
     {
@@ -209,10 +210,10 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
     } else {
         session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: calm_server::model::new_id(),
                 card_id: card_id.to_string(),
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
                 terminal_run_id: None,
@@ -220,8 +221,6 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: now_ms(),
             },
@@ -439,10 +438,10 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
     .unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card_id.to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -450,8 +449,6 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -730,7 +727,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
     assert_eq!(identity.card_id, boot.spec_card_id);
 
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    let runtime = runtime_get_active_for_card_tx(&mut tx, &boot.spec_card_id)
+    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.spec_card_id)
         .await
         .unwrap()
         .expect("active bound runtime");
@@ -777,7 +774,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
     assert_eq!(identity.card_id, boot.spec_card_id);
 
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    let runtime = runtime_get_active_for_card_tx(&mut tx, &boot.spec_card_id)
+    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.spec_card_id)
         .await
         .unwrap()
         .expect("active bound runtime");

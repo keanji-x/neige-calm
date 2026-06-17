@@ -6,7 +6,7 @@ use std::time::Duration;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::runtime_repo::WorkerSessionState;
+use calm_server::session_projection_repo::WorkerSessionState;
 
 use support::worker_flow as wf;
 

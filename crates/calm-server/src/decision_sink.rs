@@ -14,7 +14,7 @@ use crate::model::{Card, Wave, WaveLifecycle};
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
-use crate::runtime_repo::RuntimeId;
+use crate::session_projection_repo::RuntimeId;
 use crate::state::WriteContext;
 use crate::wave_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,

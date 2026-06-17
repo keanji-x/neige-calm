@@ -17,7 +17,7 @@ use crate::harness::observation::Observation;
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::runtime_repo::RuntimeId;
+use crate::session_projection_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
@@ -276,7 +276,7 @@ impl SpecHarness {
     ///   emitting one more `HarnessPhaseChanged`;
     /// - `wedged` is rejected (`BadRequest`): persisting it writes
     ///   `WorkerSessionState::Failed` via `run_status_for`, and
-    ///   `runtime_get_active_for_card` filters failed rows, so `GET
+    ///   `session_projection_active_for_card` filters failed rows, so `GET
     ///   /spec/run` would instantly report dormant and the next force would
     ///   mint a second runtime. The dev endpoint
     ///   (`replay::force_spec_phase`) 400s before ever reaching here;

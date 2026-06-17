@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_update_tx, card_with_terminal_create_tx,
-    runtime_get_active_for_card_tx, session_set_status_tx,
+    session_projection_active_for_card_tx, session_set_status_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -19,7 +19,7 @@ use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_fail
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::{RuntimeKind, WorkerSessionState};
+use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -253,7 +253,7 @@ impl ProviderAdapter for TerminalAdapter {
         let runtime_event = Event::RuntimeStarted {
             runtime_id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::Terminal,
+            kind: WorkerSessionKind::Terminal,
             agent_provider: None,
             status: WorkerSessionState::Starting,
         };
@@ -347,7 +347,7 @@ impl ProviderAdapter for TerminalAdapter {
         {
             Ok(handle) => {
                 let status_result: Result<()> = async {
-                    let existing = ctx.repo.runtime_get_active_for_card(&card_id).await?;
+                    let existing = ctx.repo.session_projection_active_for_card(&card_id).await?;
                     let needs_status_write = existing
                         .as_ref()
                         .map(|runtime| runtime.status != WorkerSessionState::Running)
@@ -384,7 +384,7 @@ impl ProviderAdapter for TerminalAdapter {
                         move |tx| {
                             Box::pin(async move {
                                 let runtime =
-                                    runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                                    session_projection_active_for_card_tx(tx, &card_id_for_tx)
                                         .await?
                                         .ok_or_else(|| {
                                             CalmError::Internal(format!(
@@ -428,7 +428,7 @@ impl ProviderAdapter for TerminalAdapter {
             Err(e) => {
                 if let Err(mark_err) = ctx
                     .repo
-                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
+                    .session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await
                 {
                     tracing::warn!(
@@ -714,7 +714,10 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             Ok(handle) => {
                 if let Err(e) = ctx
                     .repo
-                    .runtime_set_status_for_card(card_id.as_ref(), WorkerSessionState::Running)
+                    .session_projection_set_status_for_card(
+                        card_id.as_ref(),
+                        WorkerSessionState::Running,
+                    )
                     .await
                 {
                     tracing::warn!(

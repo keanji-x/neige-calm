@@ -37,12 +37,14 @@
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, runtime_get_active_for_card_tx,
-    session_complete_for_card_tx, session_complete_for_terminal_tx, session_complete_tx,
+    SqlxRepo, card_with_codex_create_tx, session_complete_for_card_tx,
+    session_complete_for_terminal_tx, session_complete_tx, session_projection_active_for_card_tx,
     session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
 };
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
-use calm_server::runtime_repo::{RuntimeInit, RuntimeKind, RuntimeRepoError, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepoError, WorkerSessionState,
+};
 use serde_json::{Value, json};
 
 const GOLDEN: &str = include_str!("goldens/runtime_status_matrix.json");
@@ -88,11 +90,11 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
     .expect("create wave")
 }
 
-fn terminal_runtime_init(card_id: String, status: WorkerSessionState) -> RuntimeInit {
-    RuntimeInit {
+fn terminal_runtime_init(card_id: String, status: WorkerSessionState) -> WorkerSessionInit {
+    WorkerSessionInit {
         id: new_id(),
         card_id,
-        kind: RuntimeKind::Terminal,
+        kind: WorkerSessionKind::Terminal,
         agent_provider: None,
         status,
         terminal_run_id: None,
@@ -100,8 +102,6 @@ fn terminal_runtime_init(card_id: String, status: WorkerSessionState) -> Runtime
         session_id: None,
         active_turn_id: None,
         handle_state_json: None,
-        lease_owner: None,
-        lease_until_ms: None,
         spawn_op_id: None,
         now_ms: now_ms(),
     }
@@ -170,7 +170,7 @@ async fn probe(
             );
             true
         }
-        Err(RuntimeRepoError::IllegalStatusTransition { id, attempted }) => {
+        Err(WorkerSessionProjectionRepoError::IllegalStatusTransition { id, attempted }) => {
             assert_eq!(id, runtime.id, "deny names the probed runtime");
             assert_eq!(attempted, to.1, "deny names the attempted status");
             // Denied: the row must be untouched.
@@ -294,7 +294,7 @@ async fn running_codex_fixture() -> (
     SqlxRepo,
     calm_server::model::Card,
     calm_server::model::Terminal,
-    calm_server::runtime_repo::RuntimeId,
+    calm_server::session_projection_repo::RuntimeId,
 ) {
     let repo = fresh_repo().await;
     let wave = make_wave(&repo).await;
@@ -323,7 +323,7 @@ async fn running_codex_fixture() -> (
     session_set_status_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Running)
         .await
         .expect("advance to running");
-    let runtime_id = runtime_get_active_for_card_tx(&mut tx, card.id.as_ref())
+    let runtime_id = session_projection_active_for_card_tx(&mut tx, card.id.as_ref())
         .await
         .expect("lookup active runtime")
         .expect("active runtime present")
@@ -391,7 +391,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     assert!(
         matches!(
             err,
-            RuntimeRepoError::IllegalStatusTransition {
+            WorkerSessionProjectionRepoError::IllegalStatusTransition {
                 attempted: WorkerSessionState::Failed,
                 ..
             }

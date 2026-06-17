@@ -7,9 +7,9 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_update_tx, harness_items_delete_by_card_tx, runtime_get_active_for_card_tx,
-    session_bind_attribution_tx, session_delete_tx, session_fail_if_active_runtime_tx,
-    session_prepare_deferred_spec_tx, session_restore_from_superseded_runtime_tx,
+    card_update_tx, harness_items_delete_by_card_tx, session_bind_attribution_tx,
+    session_delete_tx, session_fail_if_active_runtime_tx, session_prepare_deferred_spec_tx,
+    session_projection_active_for_card_tx, session_restore_from_superseded_runtime_tx,
     session_set_handle_state_tx, session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
@@ -29,8 +29,8 @@ use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // path can share it. Same semantics: guards self-clean their entry on drop.
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::routes::cards::card_scope;
-use crate::runtime_repo::{
-    AgentProvider, RuntimeInit, RuntimeKind, ThreadAttribution, WorkerSessionState,
+use crate::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::state::WriteContext;
@@ -235,7 +235,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
 
         let existing_active_runtime = if defer_runtime_start {
-            runtime_get_active_for_card_tx(tx, card.id.as_str()).await?
+            session_projection_active_for_card_tx(tx, card.id.as_str()).await?
         } else {
             None
         };
@@ -265,10 +265,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_id = new_id();
         let mut old_runtime_id = None;
         let mut old_runtime_status = None;
-        let runtime_init = RuntimeInit {
+        let runtime_init = WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -276,8 +276,6 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot)?),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         };
@@ -288,7 +286,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             session_prepare_deferred_spec_tx(tx, &runtime_init).await?;
         } else {
-            if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_str()).await? {
+            if let Some(existing) =
+                session_projection_active_for_card_tx(tx, card.id.as_str()).await?
+            {
                 old_runtime_id = Some(existing.id.clone());
                 old_runtime_status = Some(existing.status);
                 session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
@@ -362,7 +362,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         // any earlier thread.
         let reusable_thread_id = if force_new_thread {
             None
-        } else if let Some(runtime) = self.repo.runtime_get_active_for_card(&card_id).await?
+        } else if let Some(runtime) = self
+            .repo
+            .session_projection_active_for_card(&card_id)
+            .await?
             && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
         {
             Some(thread_id)
@@ -468,10 +471,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
                     }
                     if runtime_deferred {
-                        let runtime_init = RuntimeInit {
+                        let runtime_init = WorkerSessionInit {
                             id: runtime_id.clone(),
                             card_id: card_id.clone(),
-                            kind: RuntimeKind::SharedSpec,
+                            kind: WorkerSessionKind::SharedSpec,
                             agent_provider: Some(AgentProvider::Codex),
                             status: WorkerSessionState::Starting,
                             terminal_run_id: None,
@@ -479,12 +482,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             session_id: None,
                             active_turn_id: None,
                             handle_state_json: Some(serde_json::to_value(&snapshot)?),
-                            lease_owner: None,
-                            lease_until_ms: None,
                             spawn_op_id: None,
                             now_ms: now_ms(),
                         };
-                        if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id).await?
+                        if let Some(existing) =
+                            session_projection_active_for_card_tx(tx, &card_id).await?
                         {
                             let existing_id = existing.id.clone();
                             let existing_status = existing.status;

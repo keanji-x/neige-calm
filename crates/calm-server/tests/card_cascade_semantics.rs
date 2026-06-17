@@ -44,7 +44,7 @@ use calm_server::event::EventBus;
 use calm_server::model::{Card, CardRole, NewCove, NewWave, Terminal, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::WorkerSessionState;
+use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use serde_json::json;
 use tempfile::TempDir;
@@ -197,7 +197,7 @@ async fn assert_identity_present(repo: &SqlxRepo, card_id: &str) -> String {
     assert_eq!(token_rows(repo, card_id).await, 1, "token row minted");
     assert_eq!(runtime_rows(repo, card_id).await, 1, "runtime row minted");
     let active = repo
-        .runtime_get_active_for_card(&card_id.to_string())
+        .session_projection_active_for_card(&card_id.to_string())
         .await
         .unwrap()
         .expect("runtime is ACTIVE at delete time — the cascade kills a live identity");

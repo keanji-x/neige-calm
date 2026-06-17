@@ -41,7 +41,7 @@ use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
 };
 use crate::model::CardRole;
-use crate::runtime_repo::AgentProvider;
+use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
@@ -623,7 +623,7 @@ async fn resolve_thread_identity(
         thread_id.ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
     let runtime = ctx
         .repo
-        .runtime_get_active_by_thread(AgentProvider::Codex, thread_id)
+        .session_projection_active_by_thread(AgentProvider::Codex, thread_id)
         .await
         .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
         .ok_or_else(|| {

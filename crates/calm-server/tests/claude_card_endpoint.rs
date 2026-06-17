@@ -22,7 +22,9 @@ use calm_server::operation::{
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::RendererConfig;
@@ -562,7 +564,7 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
     let session_id = created["payload"]["claude_session_id"].as_str().unwrap();
     boot.repo
-        .runtime_complete_for_card(card_id, WorkerSessionState::Exited)
+        .session_projection_complete_for_card(card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
 
@@ -640,7 +642,7 @@ async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
         .get(terminal_id)
         .expect("initial renderer entry seeded by spawn hook");
     boot.repo
-        .runtime_complete_for_card(card_id, WorkerSessionState::Exited)
+        .session_projection_complete_for_card(card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
 
@@ -675,7 +677,7 @@ async fn post_claude_restart_spawn_failure_restores_terminal_exit_and_marks_runt
     let card_id = created["id"].as_str().unwrap();
     let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
     boot.repo
-        .runtime_complete_for_card(card_id, WorkerSessionState::Exited)
+        .session_projection_complete_for_card(card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
     boot.repo
@@ -785,10 +787,10 @@ async fn post_claude_restart_returns_403_without_resumable_session() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     calm_server::db::sqlite::session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::ClaudeCard,
+            kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Exited,
             terminal_run_id: Some(term.id),
@@ -796,8 +798,6 @@ async fn post_claude_restart_returns_403_without_resumable_session() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },

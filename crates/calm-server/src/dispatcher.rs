@@ -40,8 +40,8 @@ use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxO
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::reaper::{DEFAULT_REAPER_RECONCILE_SECS, Reaper, reaper_disabled_from_env};
-use crate::runtime_repo::RuntimeKind;
 use crate::scheduler::{DEFAULT_RECONCILE_SECS, Scheduler, TerminalTaskHook};
+use crate::session_projection_repo::WorkerSessionKind;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -1080,7 +1080,7 @@ impl Inner {
     ) -> Option<String> {
         let runtime = match self
             .repo
-            .runtime_get_active_for_card(&spec_card_id.to_string())
+            .session_projection_active_for_card(&spec_card_id.to_string())
             .await
         {
             Ok(runtime) => runtime?,
@@ -1093,7 +1093,7 @@ impl Inner {
                 return None;
             }
         };
-        if runtime.kind != RuntimeKind::SharedSpec {
+        if runtime.kind != WorkerSessionKind::SharedSpec {
             return None;
         }
         let handle_state = runtime.handle_state_json.as_ref()?;

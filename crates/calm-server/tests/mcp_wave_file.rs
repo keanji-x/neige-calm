@@ -23,8 +23,9 @@ use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
-use calm_server::runtime_repo::{
-    AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionProjection, WorkerSessionState,
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
+    WorkerSessionState,
 };
 use calm_server::wave_report::WaveReportPayload;
 use calm_server::wave_vcs;
@@ -56,10 +57,10 @@ async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: SPEC_SESSION_ID.to_string(),
             card_id: spec_card_id.as_str().to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -67,8 +68,6 @@ async fn seed_spec_root_runtime(repo: &SqlxRepo, spec_card_id: &CardId) {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -490,10 +489,10 @@ async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> WorkerSessionProje
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card_id.as_str().to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -501,8 +500,6 @@ async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> WorkerSessionProje
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -982,7 +979,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
         serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
     assert!(runtime.is_none(), "cards without runtime rows return null");
 
-    let runtime_row = seed_codex_runtime(&boot, &card_id).await;
+    let session_projection_row = seed_codex_runtime(&boot, &card_id).await;
     let listing = call_tool(
         &boot,
         TOOL_WAVE_LS,
@@ -994,12 +991,12 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let entries = listing.as_array().expect("ls returns array");
     let listed_updated_at = entry_updated_at(entries, "runtime.json");
     assert!(
-        listed_updated_at >= runtime_row.updated_at_ms,
+        listed_updated_at >= session_projection_row.updated_at_ms,
         "runtime.json listing timestamp {listed_updated_at} should reflect runtime row {}",
-        runtime_row.updated_at_ms
+        session_projection_row.updated_at_ms
     );
 
-    let runtime_id = runtime_row.id.clone();
+    let runtime_id = session_projection_row.id.clone();
     let out = call_tool(
         &boot,
         TOOL_WAVE_CAT,
@@ -1012,7 +1009,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
         serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
     let runtime = runtime.expect("runtime row is projected");
     assert_eq!(runtime.runtime_id, runtime_id);
-    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
     assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.provider, Some(AgentProvider::Codex));
     assert_eq!(runtime.thread_id.as_deref(), Some("thread-runtime-json"));

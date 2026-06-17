@@ -44,12 +44,12 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::*;
-use crate::runtime_repo::{
-    AgentProvider, CardId as RuntimeCardId, Result as RuntimeResult, RuntimeId, RuntimeInit,
-    RuntimeKind, RuntimeRepo, RuntimeRepoError, ThreadAttribution, Tx as RuntimeTx,
-    WorkerSessionProjection,
+use crate::session_projection_repo::{
+    AgentProvider, CardId as RuntimeCardId, Result as WorkerSessionProjectionResult, RuntimeId,
+    ThreadAttribution, Tx as WorkerSessionProjectionTx, WorkerSessionInit, WorkerSessionKind,
+    WorkerSessionProjection, WorkerSessionProjectionRepo, WorkerSessionProjectionRepoError,
 };
-use crate::runtime_row::{
+use crate::session_projection_row::{
     WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT, card_runtime_from_ws_join_row,
     projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
     run_status_from_db,
@@ -1986,10 +1986,10 @@ pub async fn card_with_terminal_create_tx(
     )
     .await?;
 
-    let runtime_init = RuntimeInit {
+    let runtime_init = WorkerSessionInit {
         id: runtime_id.to_string(),
         card_id: card.id.to_string(),
-        kind: RuntimeKind::Terminal,
+        kind: WorkerSessionKind::Terminal,
         agent_provider: None,
         status: WorkerSessionState::Starting,
         terminal_run_id: Some(term.id.clone()),
@@ -1997,12 +1997,10 @@ pub async fn card_with_terminal_create_tx(
         session_id: None,
         active_turn_id: None,
         handle_state_json: None,
-        lease_owner: None,
-        lease_until_ms: None,
         spawn_op_id: spawn_op_id.map(str::to_string),
         now_ms: now_ms(),
     };
-    if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
+    if let Some(existing) = session_projection_active_for_card_tx(tx, card.id.as_ref()).await? {
         session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
     } else {
         session_start_runtime_tx(tx, runtime_init).await?;
@@ -2220,10 +2218,10 @@ pub async fn card_with_codex_create_tx(
         None
     };
 
-    let runtime_init = RuntimeInit {
+    let runtime_init = WorkerSessionInit {
         id: runtime_id.to_string(),
         card_id: card.id.to_string(),
-        kind: RuntimeKind::CodexCard,
+        kind: WorkerSessionKind::CodexCard,
         agent_provider: Some(AgentProvider::Codex),
         status: WorkerSessionState::Starting,
         terminal_run_id: Some(term.id.clone()),
@@ -2231,8 +2229,6 @@ pub async fn card_with_codex_create_tx(
         session_id: None,
         active_turn_id: None,
         handle_state_json: None,
-        lease_owner: None,
-        lease_until_ms: None,
         spawn_op_id: spawn_op_id.map(str::to_string),
         now_ms: now_ms(),
     };
@@ -2331,10 +2327,10 @@ pub async fn card_with_claude_create_tx(
     )
     .await?;
 
-    let runtime_init = RuntimeInit {
+    let runtime_init = WorkerSessionInit {
         id: runtime_id.to_string(),
         card_id: card.id.to_string(),
-        kind: RuntimeKind::ClaudeCard,
+        kind: WorkerSessionKind::ClaudeCard,
         agent_provider: Some(AgentProvider::Claude),
         status: WorkerSessionState::Starting,
         terminal_run_id: Some(term.id.clone()),
@@ -2342,12 +2338,10 @@ pub async fn card_with_claude_create_tx(
         session_id: Some(claude_session_id),
         active_turn_id: None,
         handle_state_json: None,
-        lease_owner: None,
-        lease_until_ms: None,
         spawn_op_id: None,
         now_ms: now_ms(),
     };
-    if let Some(existing) = runtime_get_active_for_card_tx(tx, card.id.as_ref()).await? {
+    if let Some(existing) = session_projection_active_for_card_tx(tx, card.id.as_ref()).await? {
         session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
     } else {
         session_start_runtime_tx(tx, runtime_init).await?;
@@ -2480,26 +2474,26 @@ fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
 // PR3b-i (#679): derives the provisional NOT NULL worker-session identity
 // from the runtime row's own kind. PR6 overwrites these in place at mint.
 pub(crate) fn derive_session_identity(
-    kind: &RuntimeKind,
+    kind: &WorkerSessionKind,
 ) -> (WorkerProviderKind, SessionMode, WorkerContract) {
     let provider = match kind {
-        RuntimeKind::Terminal => WorkerProviderKind::Terminal,
-        RuntimeKind::CodexCard | RuntimeKind::SharedSpec => WorkerProviderKind::Codex,
-        RuntimeKind::ClaudeCard => WorkerProviderKind::Claude,
+        WorkerSessionKind::Terminal => WorkerProviderKind::Terminal,
+        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedSpec => WorkerProviderKind::Codex,
+        WorkerSessionKind::ClaudeCard => WorkerProviderKind::Claude,
     };
     let mode = match provider {
         WorkerProviderKind::Codex => SessionMode::Resumable,
         WorkerProviderKind::Claude | WorkerProviderKind::Terminal => SessionMode::Ephemeral,
     };
     let contract = match kind {
-        RuntimeKind::SharedSpec => WorkerContract::Planner,
+        WorkerSessionKind::SharedSpec => WorkerContract::Planner,
         _ => WorkerContract::Executor,
     };
     (provider, mode, contract)
 }
 
-fn runtime_message(message: impl Into<String>) -> RuntimeRepoError {
-    RuntimeRepoError::Message {
+fn runtime_message(message: impl Into<String>) -> WorkerSessionProjectionRepoError {
+    WorkerSessionProjectionRepoError::Message {
         message: message.into(),
     }
 }
@@ -2937,25 +2931,25 @@ fn ensure_runtime_status_transition(
     id: &RuntimeId,
     from: &WorkerSessionState,
     to: &WorkerSessionState,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     if runtime_status_transition_allowed(from, to) {
         Ok(())
     } else {
-        Err(RuntimeRepoError::IllegalStatusTransition {
+        Err(WorkerSessionProjectionRepoError::IllegalStatusTransition {
             id: id.clone(),
             attempted: *to,
         })
     }
 }
 
-fn runtime_session_error(err: CalmError) -> RuntimeRepoError {
+fn runtime_session_error(err: CalmError) -> WorkerSessionProjectionRepoError {
     runtime_message(err.to_string())
 }
 
 async fn worker_session_wave_id_for_card_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
-) -> RuntimeResult<WaveId> {
+) -> WorkerSessionProjectionResult<WaveId> {
     let row = sqlx::query("SELECT wave_id FROM cards WHERE id = ?1")
         .bind(card_id)
         .fetch_optional(&mut **tx)
@@ -2968,7 +2962,7 @@ async fn worker_session_wave_id_for_card_tx(
     Ok(WaveId(row.try_get("wave_id")?))
 }
 
-fn worker_session_from_runtime_init(init: &RuntimeInit, wave_id: WaveId) -> WorkerSession {
+fn worker_session_from_runtime_init(init: &WorkerSessionInit, wave_id: WaveId) -> WorkerSession {
     let (provider, mode, contract) = derive_session_identity(&init.kind);
     WorkerSession {
         id: WorkerSessionId(init.id.clone()),
@@ -3000,10 +2994,10 @@ fn worker_session_from_runtime_init(init: &RuntimeInit, wave_id: WaveId) -> Work
 }
 
 async fn session_refresh_deferred_planner_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     existing: WorkerSession,
     desired: WorkerSession,
-) -> RuntimeResult<WorkerSession> {
+) -> WorkerSessionProjectionResult<WorkerSession> {
     let refreshable_state = existing.state == WorkerSessionState::Starting
         || existing.state == WorkerSessionState::Superseded;
     let refreshable_completed =
@@ -3086,9 +3080,9 @@ async fn session_refresh_deferred_planner_tx(
 }
 
 async fn session_insert_or_refresh_start_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     session: WorkerSession,
-) -> RuntimeResult<WorkerSession> {
+) -> WorkerSessionProjectionResult<WorkerSession> {
     if let Some(existing) = session_get_tx(tx, &session.id)
         .await
         .map_err(runtime_session_error)?
@@ -3102,10 +3096,10 @@ async fn session_insert_or_refresh_start_mirror_tx(
 }
 
 async fn card_session_link_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     session_id: &WorkerSessionId,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let res = sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
         .bind(session_id.as_str())
         .bind(card_id)
@@ -3121,10 +3115,10 @@ async fn card_session_link_tx(
 }
 
 async fn session_mirror_card_mcp_token_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     session: &WorkerSession,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     if !session.state.is_active_authority() || session.mcp_token_hash.is_some() {
         return Ok(());
     }
@@ -3161,10 +3155,10 @@ async fn session_mirror_card_mcp_token_tx(
 }
 
 async fn session_repoint_current_links_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     session: &WorkerSession,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     // Runtime/session identity invariant: whenever a runtime/session becomes
     // current for a card, cards.session_id must follow it. Active sessions
     // also inherit the card MCP token when doing so cannot violate ws_token_idx.
@@ -3180,9 +3174,9 @@ async fn session_repoint_current_links_tx(
 }
 
 async fn session_start_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
-    init: &RuntimeInit,
-) -> RuntimeResult<WorkerSession> {
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    init: &WorkerSessionInit,
+) -> WorkerSessionProjectionResult<WorkerSession> {
     let wave_id = worker_session_wave_id_for_card_tx(tx, &init.card_id).await?;
     let session = worker_session_from_runtime_init(init, wave_id);
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
@@ -3191,10 +3185,10 @@ async fn session_start_mirror_tx(
 }
 
 pub async fn session_prepare_deferred_spec_tx(
-    tx: &mut RuntimeTx<'_>,
-    init: &RuntimeInit,
-) -> RuntimeResult<WorkerSession> {
-    if init.kind != RuntimeKind::SharedSpec || init.status != WorkerSessionState::Starting {
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    init: &WorkerSessionInit,
+) -> WorkerSessionProjectionResult<WorkerSession> {
+    if init.kind != WorkerSessionKind::SharedSpec || init.status != WorkerSessionState::Starting {
         return Err(runtime_message(
             "deferred spec session placeholders require a starting shared-spec runtime init",
         ));
@@ -3225,10 +3219,10 @@ pub async fn session_prepare_deferred_spec_tx(
 }
 
 pub async fn session_supersede_active_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET state = 'superseded',
@@ -3250,25 +3244,28 @@ pub async fn session_supersede_active_tx(
 }
 
 pub async fn session_start_runtime_tx(
-    tx: &mut RuntimeTx<'_>,
-    init: RuntimeInit,
-) -> RuntimeResult<WorkerSessionProjection> {
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    init: WorkerSessionInit,
+) -> WorkerSessionProjectionResult<WorkerSessionProjection> {
     session_start_mirror_tx(tx, &init).await?;
-    runtime_get_by_id_tx(tx, &init.id)
+    session_projection_by_id_tx(tx, &init.id)
         .await?
         .ok_or_else(|| runtime_message(format!("worker session {} missing after insert", init.id)))
 }
 
 pub async fn session_supersede_and_start_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     old_id: &RuntimeId,
-    new_init: RuntimeInit,
-) -> RuntimeResult<WorkerSessionProjection> {
+    new_init: WorkerSessionInit,
+) -> WorkerSessionProjectionResult<WorkerSessionProjection> {
     session_supersede_active_tx(tx, old_id, new_init.now_ms).await?;
     session_start_runtime_tx(tx, new_init).await
 }
 
-pub async fn session_delete_tx(tx: &mut RuntimeTx<'_>, id: &RuntimeId) -> RuntimeResult<()> {
+pub async fn session_delete_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &RuntimeId,
+) -> WorkerSessionProjectionResult<()> {
     sqlx::query("UPDATE waves SET root_session_id = NULL WHERE root_session_id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -3281,11 +3278,11 @@ pub async fn session_delete_tx(tx: &mut RuntimeTx<'_>, id: &RuntimeId) -> Runtim
 }
 
 async fn session_set_status_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     status: WorkerSessionState,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     session_state_transition_at_tx(tx, &WorkerSessionId(id.clone()), status, now, None)
         .await
         .map(|_| ())
@@ -3293,11 +3290,11 @@ async fn session_set_status_mirror_tx(
 }
 
 async fn session_complete_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     terminal_status: WorkerSessionState,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     session_state_transition_at_tx(
         tx,
         &WorkerSessionId(id.clone()),
@@ -3311,11 +3308,11 @@ async fn session_complete_mirror_tx(
 }
 
 async fn session_bind_attribution_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     attr: &ThreadAttribution,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET thread_id = ?1,
@@ -3338,10 +3335,10 @@ async fn session_bind_attribution_mirror_tx(
 }
 
 async fn session_clear_terminal_run_id_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET terminal_run_id = NULL,
@@ -3359,11 +3356,11 @@ async fn session_clear_terminal_run_id_mirror_tx(
 }
 
 async fn session_set_handle_state_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     state_text: &Option<String>,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     sqlx::query(
         r#"UPDATE worker_sessions
               SET handle_state_json = ?1,
@@ -3380,11 +3377,11 @@ async fn session_set_handle_state_mirror_tx(
 }
 
 async fn session_set_active_turn_mirror_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     turn_id: Option<&str>,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET active_turn_id = ?1,
@@ -3403,13 +3400,13 @@ async fn session_set_active_turn_mirror_tx(
 }
 
 async fn session_set_harness_observation_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     status: WorkerSessionState,
     thread_id: Option<&str>,
     active_turn_id: Option<&str>,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     sqlx::query(
         r#"UPDATE worker_sessions
               SET state = ?1,
@@ -3430,10 +3427,10 @@ async fn session_set_harness_observation_tx(
 }
 
 async fn session_fail_if_active_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     sqlx::query(
         r#"UPDATE worker_sessions
               SET state = 'failed',
@@ -3450,10 +3447,10 @@ async fn session_fail_if_active_tx(
 }
 
 async fn session_mark_superseded_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     now: i64,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     sqlx::query(
         r#"UPDATE worker_sessions
               SET state = 'superseded',
@@ -3469,10 +3466,10 @@ async fn session_mark_superseded_tx(
 }
 
 async fn session_get_required_for_runtime_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     context: &str,
-) -> RuntimeResult<WorkerSession> {
+) -> WorkerSessionProjectionResult<WorkerSession> {
     session_get_tx(tx, &WorkerSessionId(id.clone()))
         .await
         .map_err(runtime_session_error)?
@@ -3480,11 +3477,11 @@ async fn session_get_required_for_runtime_tx(
 }
 
 async fn session_restore_from_superseded_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     status: WorkerSessionState,
     now: i64,
-) -> RuntimeResult<WorkerSession> {
+) -> WorkerSessionProjectionResult<WorkerSession> {
     let state_db = status.as_db_str();
     let res = sqlx::query(
         r#"UPDATE worker_sessions
@@ -3523,9 +3520,9 @@ async fn session_restore_from_superseded_tx(
 }
 
 async fn runtime_current_status_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
-) -> RuntimeResult<WorkerSessionState> {
+) -> WorkerSessionProjectionResult<WorkerSessionState> {
     let row = sqlx::query(
         r#"SELECT state FROM worker_sessions ws
            WHERE ws.id = ?1"#,
@@ -3542,7 +3539,7 @@ async fn runtime_current_status_tx(
 async fn runtime_get_by_id_from_pool(
     pool: &SqlitePool,
     id: &RuntimeId,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.id = ?1"#
@@ -3554,7 +3551,7 @@ async fn runtime_get_by_id_from_pool(
 async fn runtime_get_active_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE c.id = ?1
@@ -3569,7 +3566,7 @@ async fn runtime_get_active_for_card_from_pool(
 async fn runtime_get_projectable_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE c.id = ?1
@@ -3583,7 +3580,7 @@ async fn runtime_get_projectable_for_card_from_pool(
 async fn runtime_get_projectable_for_cards_from_pool(
     pool: &SqlitePool,
     card_ids: &[RuntimeCardId],
-) -> RuntimeResult<HashMap<RuntimeCardId, WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<HashMap<RuntimeCardId, WorkerSessionProjection>> {
     if card_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -3597,7 +3594,7 @@ async fn runtime_get_active_by_thread_from_pool(
     pool: &SqlitePool,
     provider: AgentProvider,
     thread_id: &str,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.provider = ?1 AND ws.thread_id = ?2
@@ -3617,7 +3614,7 @@ async fn runtime_get_active_by_session_from_pool(
     pool: &SqlitePool,
     provider: AgentProvider,
     session_id: &str,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.provider = ?1 AND ws.agent_session_id = ?2
@@ -3635,7 +3632,7 @@ async fn runtime_get_active_by_session_from_pool(
 
 async fn runtime_active_shared_thread_attribution_from_pool(
     pool: &SqlitePool,
-) -> RuntimeResult<Vec<(String, String)>> {
+) -> WorkerSessionProjectionResult<Vec<(String, String)>> {
     sqlx::query_as::<_, (String, String)>(
         r#"SELECT ws.thread_id, c.id AS card_id
            FROM worker_sessions ws JOIN cards c ON c.session_id = ws.id
@@ -3650,8 +3647,8 @@ async fn runtime_active_shared_thread_attribution_from_pool(
 
 async fn runtimes_active_for_kind_from_pool(
     pool: &SqlitePool,
-    kind: RuntimeKind,
-) -> RuntimeResult<Vec<WorkerSessionProjection>> {
+    kind: WorkerSessionKind,
+) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
     let (provider, _mode, contract) = derive_session_identity(&kind);
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
@@ -3668,10 +3665,10 @@ async fn runtimes_active_for_kind_from_pool(
     rows.iter().map(card_runtime_from_ws_join_row).collect()
 }
 
-pub async fn runtime_get_by_id_tx(
-    tx: &mut RuntimeTx<'_>,
+pub async fn session_projection_by_id_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_CARD_KEYED_RUNTIME_SELECT}
            WHERE ws.id = ?1"#
@@ -3680,10 +3677,10 @@ pub async fn runtime_get_by_id_tx(
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
-pub async fn runtime_get_active_for_card_tx(
-    tx: &mut RuntimeTx<'_>,
+pub async fn session_projection_active_for_card_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_CARD_KEYED_RUNTIME_SELECT}
            WHERE ws.card_id = ?1
@@ -3699,12 +3696,12 @@ pub async fn runtime_get_active_for_card_tx(
 }
 
 pub async fn session_set_status_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     status: WorkerSessionState,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     if status == WorkerSessionState::Superseded {
-        return Err(RuntimeRepoError::IllegalStatusTransition {
+        return Err(WorkerSessionProjectionRepoError::IllegalStatusTransition {
             id: id.clone(),
             attempted: status,
         });
@@ -3719,21 +3716,21 @@ pub async fn session_set_status_tx(
 }
 
 pub async fn session_set_status_for_card_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     status: WorkerSessionState,
-) -> RuntimeResult<()> {
-    let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
+) -> WorkerSessionProjectionResult<()> {
+    let Some(runtime) = session_projection_active_for_card_tx(tx, card_id).await? else {
         return Ok(());
     };
     session_set_status_tx(tx, &runtime.id, status).await
 }
 
 pub async fn session_bind_attribution_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     attr: ThreadAttribution,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     if &attr.runtime_id != id {
         return Err(runtime_message(format!(
             "runtime attribution id mismatch: arg={id}, attr={}",
@@ -3747,19 +3744,19 @@ pub async fn session_bind_attribution_tx(
 }
 
 pub async fn session_clear_terminal_run_id_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_clear_terminal_run_id_mirror_tx(tx, id, now).await?;
     Ok(())
 }
 
 pub async fn session_set_handle_state_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     state: Option<serde_json::Value>,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
     let now = now_ms();
     session_set_handle_state_mirror_tx(tx, id, &state_text, now).await?;
@@ -3767,10 +3764,10 @@ pub async fn session_set_handle_state_tx(
 }
 
 pub async fn session_set_active_turn_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     turn_id: Option<&str>,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_set_active_turn_mirror_tx(tx, id, turn_id, now).await?;
     Ok(())
@@ -3779,12 +3776,12 @@ pub async fn session_set_active_turn_tx(
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
 pub async fn session_set_harness_observation_runtime_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     status: WorkerSessionState,
     thread_id: Option<&str>,
     active_turn_id: Option<&str>,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_set_harness_observation_tx(tx, id, status, thread_id, active_turn_id, now).await?;
     Ok(())
@@ -3793,9 +3790,9 @@ pub async fn session_set_harness_observation_runtime_tx(
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
 pub async fn session_fail_if_active_runtime_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_fail_if_active_tx(tx, id, now).await?;
     Ok(())
@@ -3804,9 +3801,9 @@ pub async fn session_fail_if_active_runtime_tx(
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
 pub async fn session_mark_superseded_runtime_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_mark_superseded_tx(tx, id, now).await?;
     Ok(())
@@ -3815,28 +3812,28 @@ pub async fn session_mark_superseded_runtime_tx(
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
 pub async fn session_restore_from_superseded_runtime_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     status: WorkerSessionState,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     let session = session_restore_from_superseded_tx(tx, id, status, now).await?;
-    let runtime = runtime_get_by_id_tx(tx, id)
+    let runtime = session_projection_by_id_tx(tx, id)
         .await?
         .ok_or_else(|| runtime_message(format!("worker session {id} missing after restore")))?;
     session_repoint_current_links_tx(tx, &runtime.card_id, &session).await
 }
 
 pub async fn session_complete_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     id: &RuntimeId,
     terminal_status: WorkerSessionState,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     if !matches!(
         terminal_status,
         WorkerSessionState::Failed | WorkerSessionState::Exited
     ) {
-        return Err(RuntimeRepoError::IllegalStatusTransition {
+        return Err(WorkerSessionProjectionRepoError::IllegalStatusTransition {
             id: id.clone(),
             attempted: terminal_status,
         });
@@ -3851,20 +3848,20 @@ pub async fn session_complete_tx(
 }
 
 pub async fn session_complete_for_card_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     terminal_status: WorkerSessionState,
-) -> RuntimeResult<()> {
-    let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
+) -> WorkerSessionProjectionResult<()> {
+    let Some(runtime) = session_projection_active_for_card_tx(tx, card_id).await? else {
         return Ok(());
     };
     session_complete_tx(tx, &runtime.id, terminal_status).await
 }
 
-pub async fn runtime_get_active_for_terminal_tx(
-    tx: &mut RuntimeTx<'_>,
+pub async fn session_projection_active_for_terminal_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
     terminal_id: &str,
-) -> RuntimeResult<Option<WorkerSessionProjection>> {
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.terminal_run_id = ?1
@@ -3880,11 +3877,11 @@ pub async fn runtime_get_active_for_terminal_tx(
 }
 
 pub async fn session_complete_for_terminal_tx(
-    tx: &mut RuntimeTx<'_>,
+    tx: &mut WorkerSessionProjectionTx<'_>,
     terminal_id: &str,
     terminal_status: WorkerSessionState,
-) -> RuntimeResult<()> {
-    let Some(runtime) = runtime_get_active_for_terminal_tx(tx, terminal_id).await? else {
+) -> WorkerSessionProjectionResult<()> {
+    let Some(runtime) = session_projection_active_for_terminal_tx(tx, terminal_id).await? else {
         return Ok(());
     };
     session_complete_tx(tx, &runtime.id, terminal_status).await
@@ -4541,7 +4538,7 @@ impl RepoRead for SqlxRepo {
     async fn shared_spec_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>> {
-        let (provider, _mode, contract) = derive_session_identity(&RuntimeKind::SharedSpec);
+        let (provider, _mode, contract) = derive_session_identity(&WorkerSessionKind::SharedSpec);
         // Join `terminals` and require a LIVE row so a card whose TUI was
         // already reaped (reconcile_supervisor_on_boot marked it exited,
         // or a SIGKILL set signal_killed=1) is NOT re-registered into the
@@ -4767,101 +4764,103 @@ impl RepoRead for SqlxRepo {
 }
 
 #[async_trait]
-impl RuntimeRepo for SqlxRepo {
-    async fn runtime_get_active_by_thread(
+impl WorkerSessionProjectionRepo for SqlxRepo {
+    async fn session_projection_active_by_thread(
         &self,
         provider: AgentProvider,
         thread_id: &str,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_thread_from_pool(&self.pool, provider, thread_id).await
     }
 
-    async fn runtime_get_active_by_session(
+    async fn session_projection_active_by_session(
         &self,
         provider: AgentProvider,
         session_id: &str,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_session_from_pool(&self.pool, provider, session_id).await
     }
 
-    async fn runtime_get_active_for_card(
+    async fn session_projection_active_for_card(
         &self,
-        card_id: &crate::runtime_repo::CardId,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+        card_id: &crate::session_projection_repo::CardId,
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_active_for_card_from_pool(&self.pool, card_id).await
     }
 
-    async fn runtime_get_projectable_for_card(
+    async fn session_projection_projectable_for_card(
         &self,
-        card_id: &crate::runtime_repo::CardId,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+        card_id: &crate::session_projection_repo::CardId,
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_projectable_for_card_from_pool(&self.pool, card_id).await
     }
 
-    async fn runtime_get_projectable_for_cards(
+    async fn session_projection_projectable_for_cards(
         &self,
-        card_ids: &[crate::runtime_repo::CardId],
-    ) -> RuntimeResult<HashMap<crate::runtime_repo::CardId, WorkerSessionProjection>> {
+        card_ids: &[crate::session_projection_repo::CardId],
+    ) -> WorkerSessionProjectionResult<
+        HashMap<crate::session_projection_repo::CardId, WorkerSessionProjection>,
+    > {
         runtime_get_projectable_for_cards_from_pool(&self.pool, card_ids).await
     }
 
-    async fn runtime_active_shared_thread_attribution(
+    async fn session_projection_active_shared_thread_attribution(
         &self,
-    ) -> RuntimeResult<Vec<(String, String)>> {
+    ) -> WorkerSessionProjectionResult<Vec<(String, String)>> {
         runtime_active_shared_thread_attribution_from_pool(&self.pool).await
     }
 
-    async fn runtimes_active_for_kind(
+    async fn session_projection_active_for_kind(
         &self,
-        kind: RuntimeKind,
-    ) -> RuntimeResult<Vec<WorkerSessionProjection>> {
+        kind: WorkerSessionKind,
+    ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
         runtimes_active_for_kind_from_pool(&self.pool, kind).await
     }
 
-    async fn runtime_get_by_id(
+    async fn session_projection_by_id(
         &self,
         id: &RuntimeId,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_by_id_from_pool(&self.pool, id).await
     }
 
-    async fn runtime_set_status_for_card(
+    async fn session_projection_set_status_for_card(
         &self,
         card_id: &str,
         status: WorkerSessionState,
-    ) -> RuntimeResult<()> {
+    ) -> WorkerSessionProjectionResult<()> {
         let mut tx = self.pool.begin().await?;
         session_set_status_for_card_tx(&mut tx, card_id, status).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    async fn runtime_complete_for_card(
+    async fn session_projection_complete_for_card(
         &self,
         card_id: &str,
         terminal_status: WorkerSessionState,
-    ) -> RuntimeResult<()> {
+    ) -> WorkerSessionProjectionResult<()> {
         let mut tx = self.pool.begin().await?;
         session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    async fn runtime_complete_for_terminal(
+    async fn session_projection_complete_for_terminal(
         &self,
         terminal_id: &str,
         terminal_status: WorkerSessionState,
-    ) -> RuntimeResult<()> {
+    ) -> WorkerSessionProjectionResult<()> {
         let mut tx = self.pool.begin().await?;
         session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    async fn runtimes_recover_harnesses_on_boot(
+    async fn session_projection_recover_harnesses_on_boot(
         &self,
-    ) -> RuntimeResult<Vec<WorkerSessionProjection>> {
-        let (provider, _mode, contract) = derive_session_identity(&RuntimeKind::SharedSpec);
+    ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
+        let (provider, _mode, contract) = derive_session_identity(&WorkerSessionKind::SharedSpec);
         let sql = format!(
             r#"{WS_BACKED_CARD_RUNTIME_SELECT}
                JOIN waves w ON w.id = c.wave_id
@@ -4883,7 +4882,7 @@ impl RuntimeRepo for SqlxRepo {
             .await?;
         rows.iter()
             .map(card_runtime_from_ws_join_row)
-            .collect::<RuntimeResult<Vec<_>>>()
+            .collect::<WorkerSessionProjectionResult<Vec<_>>>()
     }
 }
 
@@ -6388,7 +6387,7 @@ impl RepoEventWrite for SqlxRepo {
 #[cfg(test)]
 mod tests {
     use super::{derive_session_identity, is_sqlite_busy_code};
-    use crate::runtime_repo::RuntimeKind;
+    use crate::session_projection_repo::WorkerSessionKind;
     use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
 
     #[test]
@@ -6405,7 +6404,7 @@ mod tests {
     fn derive_session_identity_frozen_table_satisfies_0045_checks() {
         let cases = [
             (
-                RuntimeKind::Terminal,
+                WorkerSessionKind::Terminal,
                 (
                     WorkerProviderKind::Terminal,
                     SessionMode::Ephemeral,
@@ -6413,7 +6412,7 @@ mod tests {
                 ),
             ),
             (
-                RuntimeKind::CodexCard,
+                WorkerSessionKind::CodexCard,
                 (
                     WorkerProviderKind::Codex,
                     SessionMode::Resumable,
@@ -6421,7 +6420,7 @@ mod tests {
                 ),
             ),
             (
-                RuntimeKind::ClaudeCard,
+                WorkerSessionKind::ClaudeCard,
                 (
                     WorkerProviderKind::Claude,
                     SessionMode::Ephemeral,
@@ -6429,7 +6428,7 @@ mod tests {
                 ),
             ),
             (
-                RuntimeKind::SharedSpec,
+                WorkerSessionKind::SharedSpec,
                 (
                     WorkerProviderKind::Codex,
                     SessionMode::Resumable,
@@ -6458,7 +6457,7 @@ mod tests {
 mod runtime_read_flip_tests {
     use super::*;
     use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme, new_id};
-    use crate::runtime_repo::RuntimeRepoError;
+    use crate::session_projection_repo::WorkerSessionProjectionRepoError;
     use serde_json::json;
     use sqlx::SqlitePool;
 
@@ -6466,7 +6465,7 @@ mod runtime_read_flip_tests {
     struct RuntimeReadCase {
         label: &'static str,
         card_kind: &'static str,
-        kind: RuntimeKind,
+        kind: WorkerSessionKind,
         agent_provider: Option<AgentProvider>,
         status: WorkerSessionState,
     }
@@ -6474,7 +6473,7 @@ mod runtime_read_flip_tests {
     struct KeyedRuntimeSeed {
         label: &'static str,
         card_kind: &'static str,
-        kind: RuntimeKind,
+        kind: WorkerSessionKind,
         agent_provider: Option<AgentProvider>,
         thread_id: Option<&'static str>,
         session_id: Option<&'static str>,
@@ -6486,28 +6485,28 @@ mod runtime_read_flip_tests {
             RuntimeReadCase {
                 label: "terminal",
                 card_kind: "terminal",
-                kind: RuntimeKind::Terminal,
+                kind: WorkerSessionKind::Terminal,
                 agent_provider: None,
                 status: WorkerSessionState::Starting,
             },
             RuntimeReadCase {
                 label: "codex-card",
                 card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
             },
             RuntimeReadCase {
                 label: "claude-card",
                 card_kind: "claude",
-                kind: RuntimeKind::ClaudeCard,
+                kind: WorkerSessionKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
                 status: WorkerSessionState::Idle,
             },
             RuntimeReadCase {
                 label: "shared-spec",
                 card_kind: "codex",
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::TurnPending,
             },
@@ -6522,7 +6521,7 @@ mod runtime_read_flip_tests {
 
     async fn create_card_in_tx(
         repo: &SqlxRepo,
-        tx: &mut RuntimeTx<'_>,
+        tx: &mut WorkerSessionProjectionTx<'_>,
         label: &str,
         card_kind: &str,
     ) -> String {
@@ -6578,7 +6577,7 @@ mod runtime_read_flip_tests {
         let card_id = create_card_in_tx(repo, &mut tx, case.label, case.card_kind).await;
         let runtime = session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: format!("rt-read-flip-{}", case.label),
                 card_id,
                 kind: case.kind,
@@ -6589,8 +6588,6 @@ mod runtime_read_flip_tests {
                 session_id: Some(format!("agent-session-{}", case.label)),
                 active_turn_id: Some(format!("turn-{}", case.label)),
                 handle_state_json: Some(json!({"case": case.label})),
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms,
             },
@@ -6609,7 +6606,7 @@ mod runtime_read_flip_tests {
         let card_id = create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind).await;
         let runtime = session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: format!("rt-read-flip-{}", seed.label),
                 card_id,
                 kind: seed.kind,
@@ -6620,8 +6617,6 @@ mod runtime_read_flip_tests {
                 session_id: seed.session_id.map(str::to_string),
                 active_turn_id: Some(format!("turn-{}", seed.label)),
                 handle_state_json: Some(json!({"case": seed.label})),
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: seed.now_ms,
             },
@@ -6679,7 +6674,7 @@ mod runtime_read_flip_tests {
         )
         .await
         .expect("create terminal card");
-        let runtime = runtime_get_by_id_tx(&mut tx, &runtime_id)
+        let runtime = session_projection_by_id_tx(&mut tx, &runtime_id)
             .await
             .expect("read seeded terminal runtime")
             .expect("seeded terminal runtime exists");
@@ -6766,11 +6761,11 @@ mod runtime_read_flip_tests {
         slot: &str,
         status: WorkerSessionState,
         now_ms: i64,
-    ) -> RuntimeInit {
-        RuntimeInit {
+    ) -> WorkerSessionInit {
+        WorkerSessionInit {
             id: format!("rt-projectable-{label}-{slot}"),
             card_id: card_id.to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status,
             terminal_run_id: None,
@@ -6778,8 +6773,6 @@ mod runtime_read_flip_tests {
             session_id: Some(format!("agent-session-{label}-{slot}")),
             active_turn_id: Some(format!("turn-{label}-{slot}")),
             handle_state_json: Some(json!({"label": label, "slot": slot})),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms,
         }
@@ -6789,11 +6782,11 @@ mod runtime_read_flip_tests {
         card_id: &str,
         placeholder_id: &str,
         now_ms: i64,
-    ) -> RuntimeInit {
-        RuntimeInit {
+    ) -> WorkerSessionInit {
+        WorkerSessionInit {
             id: placeholder_id.to_string(),
             card_id: card_id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -6801,8 +6794,6 @@ mod runtime_read_flip_tests {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms,
         }
@@ -6840,7 +6831,7 @@ mod runtime_read_flip_tests {
         )
         .await
         .expect("supersede older runtime with exited runtime");
-        let superseded = runtime_get_by_id_tx(&mut tx, &older.id)
+        let superseded = session_projection_by_id_tx(&mut tx, &older.id)
             .await
             .expect("read superseded runtime")
             .expect("superseded runtime row");
@@ -6892,7 +6883,7 @@ mod runtime_read_flip_tests {
     async fn runtime_get_projectable_for_card_from_runtimes_reference(
         pool: &SqlitePool,
         card_id: &str,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_projectable_for_card_from_pool(pool, card_id).await
     }
 
@@ -6900,7 +6891,7 @@ mod runtime_read_flip_tests {
         pool: &SqlitePool,
         provider: AgentProvider,
         thread_id: &str,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_thread_from_pool(pool, provider, thread_id).await
     }
 
@@ -6908,21 +6899,21 @@ mod runtime_read_flip_tests {
         pool: &SqlitePool,
         provider: AgentProvider,
         session_id: &str,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_active_by_session_from_pool(pool, provider, session_id).await
     }
 
     async fn runtime_active_shared_thread_attribution_from_runtimes_reference(
         pool: &SqlitePool,
-    ) -> RuntimeResult<Vec<(String, String)>> {
+    ) -> WorkerSessionProjectionResult<Vec<(String, String)>> {
         runtime_active_shared_thread_attribution_from_pool(pool).await
     }
 
     async fn runtime_get_active_for_terminal_from_runtimes_reference_tx(
-        tx: &mut RuntimeTx<'_>,
+        tx: &mut WorkerSessionProjectionTx<'_>,
         terminal_id: &str,
-    ) -> RuntimeResult<Option<WorkerSessionProjection>> {
-        runtime_get_active_for_terminal_tx(tx, terminal_id).await
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
+        session_projection_active_for_terminal_tx(tx, terminal_id).await
     }
 
     fn assert_ws_backed_projection(
@@ -6930,7 +6921,7 @@ mod runtime_read_flip_tests {
         actual: &WorkerSessionProjection,
     ) {
         assert_eq!(actual, expected);
-        if matches!(&expected.kind, RuntimeKind::Terminal) {
+        if matches!(&expected.kind, WorkerSessionKind::Terminal) {
             assert!(actual.agent_provider.is_none());
         }
     }
@@ -7100,7 +7091,7 @@ mod runtime_read_flip_tests {
             RuntimeReadCase {
                 label: "card-id-assert-active-null",
                 card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
             },
@@ -7151,7 +7142,7 @@ mod runtime_read_flip_tests {
         for (index, case) in runtime_read_cases().into_iter().enumerate() {
             let runtime = seed_runtime(&repo, case, 2_000 + index as i64).await;
             let mut tx = repo.pool().begin().await.expect("begin reference tx");
-            let expected = runtime_get_by_id_tx(&mut tx, &runtime.id)
+            let expected = session_projection_by_id_tx(&mut tx, &runtime.id)
                 .await
                 .expect("reference by-id read")
                 .expect("runtime row");
@@ -7171,7 +7162,7 @@ mod runtime_read_flip_tests {
         for (index, case) in runtime_read_cases().into_iter().enumerate() {
             let runtime = seed_runtime(&repo, case, 3_000 + index as i64).await;
             let mut tx = repo.pool().begin().await.expect("begin reference tx");
-            let expected = runtime_get_active_for_card_tx(&mut tx, &runtime.card_id)
+            let expected = session_projection_active_for_card_tx(&mut tx, &runtime.card_id)
                 .await
                 .expect("reference active-for-card read")
                 .expect("active runtime");
@@ -7191,7 +7182,7 @@ mod runtime_read_flip_tests {
         for (index, case) in runtime_read_cases().into_iter().enumerate() {
             let runtime = seed_runtime(&repo, case, 3_500 + index as i64).await;
             let mut tx = repo.pool().begin().await.expect("begin active read tx");
-            let actual = runtime_get_active_for_card_tx(&mut tx, &runtime.card_id)
+            let actual = session_projection_active_for_card_tx(&mut tx, &runtime.card_id)
                 .await
                 .expect("worker-session active-for-card tx read")
                 .expect("active runtime from worker_sessions");
@@ -7243,7 +7234,7 @@ mod runtime_read_flip_tests {
         assert_eq!(card_session_id.as_deref(), Some(newer.id.as_str()));
 
         let mut tx = repo.pool().begin().await.expect("begin by-id read tx");
-        let actual = runtime_get_by_id_tx(&mut tx, &older.id)
+        let actual = session_projection_by_id_tx(&mut tx, &older.id)
             .await
             .expect("worker-session by-id tx read")
             .expect("superseded runtime remains readable by id");
@@ -7271,7 +7262,7 @@ mod runtime_read_flip_tests {
             WorkerSessionState::Running,
             10_000,
         );
-        active_init.kind = RuntimeKind::SharedSpec;
+        active_init.kind = WorkerSessionKind::SharedSpec;
         let active = session_start_runtime_tx(&mut tx, active_init)
             .await
             .expect("start old active runtime");
@@ -7290,11 +7281,11 @@ mod runtime_read_flip_tests {
                 .expect("read card session pointer");
         assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
 
-        let actual = runtime_get_active_for_card_tx(&mut tx, &card_id)
+        let actual = session_projection_active_for_card_tx(&mut tx, &card_id)
             .await
             .expect("worker-session active-for-card tx read")
             .expect("placeholder active runtime is visible");
-        let old = runtime_get_by_id_tx(&mut tx, &active.id)
+        let old = session_projection_by_id_tx(&mut tx, &active.id)
             .await
             .expect("old runtime read")
             .expect("old runtime still present");
@@ -7335,7 +7326,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "thread-codex",
                 card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 thread_id: Some("cohort-b-thread"),
                 session_id: Some("codex-agent-session"),
@@ -7348,7 +7339,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "thread-claude",
                 card_kind: "claude",
-                kind: RuntimeKind::ClaudeCard,
+                kind: WorkerSessionKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
                 thread_id: Some("claude-real-thread"),
                 session_id: Some("cohort-b-thread"),
@@ -7404,7 +7395,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "session-claude",
                 card_kind: "claude",
-                kind: RuntimeKind::ClaudeCard,
+                kind: WorkerSessionKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
                 thread_id: Some("claude-thread-not-session"),
                 session_id: Some("cohort-b-claude-session"),
@@ -7417,7 +7408,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "session-codex",
                 card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 thread_id: Some("cohort-b-codex-thread"),
                 session_id: Some("codex-agent-session"),
@@ -7472,7 +7463,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "attribution-shared",
                 card_kind: "codex",
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 thread_id: Some("thread-shared"),
                 session_id: Some("session-shared"),
@@ -7485,7 +7476,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "attribution-codex",
                 card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 thread_id: Some("thread-codex"),
                 session_id: Some("session-codex"),
@@ -7498,7 +7489,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "attribution-no-thread",
                 card_kind: "codex",
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 thread_id: None,
                 session_id: Some("session-no-thread"),
@@ -7511,7 +7502,7 @@ mod runtime_read_flip_tests {
             KeyedRuntimeSeed {
                 label: "attribution-claude",
                 card_kind: "claude",
-                kind: RuntimeKind::ClaudeCard,
+                kind: WorkerSessionKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
                 thread_id: Some("thread-claude"),
                 session_id: Some("session-claude"),
@@ -7551,7 +7542,7 @@ mod runtime_read_flip_tests {
             expected.as_ref().map(|runtime| runtime.id.as_str()),
             Some(runtime.id.as_str())
         );
-        let actual = runtime_get_active_for_terminal_tx(&mut tx, &terminal_id)
+        let actual = session_projection_active_for_terminal_tx(&mut tx, &terminal_id)
             .await
             .expect("worker-session terminal read");
         tx.commit().await.expect("commit terminal read tx");
@@ -7617,7 +7608,7 @@ mod runtime_read_flip_tests {
             WorkerSessionState::Running,
             30_000,
         );
-        active_init.kind = RuntimeKind::SharedSpec;
+        active_init.kind = WorkerSessionKind::SharedSpec;
         let active = session_start_runtime_tx(&mut tx, active_init)
             .await
             .expect("start active shared-spec runtime");
@@ -7674,10 +7665,10 @@ mod runtime_read_flip_tests {
             .expect("complete initial codex runtime");
         let old_runtime = session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: old_runtime_id,
                 card_id: card_id.clone(),
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
                 terminal_run_id: None,
@@ -7685,8 +7676,6 @@ mod runtime_read_flip_tests {
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: 10_000,
             },
@@ -7830,10 +7819,10 @@ mod runtime_read_flip_tests {
         let card_id = create_card_in_tx(&repo, &mut tx, "placeholder", "codex").await;
         session_prepare_deferred_spec_tx(
             &mut tx,
-            &RuntimeInit {
+            &WorkerSessionInit {
                 id: placeholder_id.clone(),
                 card_id: card_id.clone(),
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Starting,
                 terminal_run_id: None,
@@ -7841,8 +7830,6 @@ mod runtime_read_flip_tests {
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: 5_000,
             },
@@ -7864,7 +7851,7 @@ mod runtime_read_flip_tests {
         assert_eq!(active_for_card.id, placeholder_id);
 
         let active_for_kind =
-            runtimes_active_for_kind_from_pool(repo.pool(), RuntimeKind::SharedSpec)
+            runtimes_active_for_kind_from_pool(repo.pool(), WorkerSessionKind::SharedSpec)
                 .await
                 .expect("active-for-kind read");
         assert_eq!(active_for_kind.len(), 1);
@@ -7893,7 +7880,7 @@ mod runtime_read_flip_tests {
         tx.commit().await.expect("commit placeholder tx");
 
         match err {
-            RuntimeRepoError::Message { message } => assert_eq!(
+            WorkerSessionProjectionRepoError::Message { message } => assert_eq!(
                 message,
                 "deferred spec session placeholders must not have a thread, terminal run, or session"
             ),
@@ -7909,10 +7896,10 @@ mod runtime_read_flip_tests {
         let card_id = create_card_in_tx(&repo, &mut tx, "cohort-b-placeholder", "codex").await;
         session_prepare_deferred_spec_tx(
             &mut tx,
-            &RuntimeInit {
+            &WorkerSessionInit {
                 id: placeholder_id.clone(),
                 card_id,
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Starting,
                 terminal_run_id: None,
@@ -7920,8 +7907,6 @@ mod runtime_read_flip_tests {
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: 5_000,
             },
@@ -7970,7 +7955,7 @@ mod runtime_read_flip_tests {
             .await
             .expect("begin terminal placeholder tx");
         let by_terminal =
-            runtime_get_active_for_terminal_tx(&mut tx, "missing-placeholder-terminal")
+            session_projection_active_for_terminal_tx(&mut tx, "missing-placeholder-terminal")
                 .await
                 .expect("terminal read");
         tx.commit().await.expect("commit terminal placeholder tx");

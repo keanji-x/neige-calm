@@ -24,15 +24,17 @@ use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    runtime_get_by_id_tx, session_bind_attribution_tx, session_clear_terminal_run_id_tx,
-    session_complete_tx, session_set_status_tx,
+    session_bind_attribution_tx, session_clear_terminal_run_id_tx, session_complete_tx,
+    session_projection_by_id_tx, session_set_status_tx,
 };
 use crate::db::{Repo, RepoEventWrite, write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
 use crate::model::CardRole;
-use crate::runtime_repo::{AgentProvider, RuntimeKind, ThreadAttribution, WorkerSessionState};
+use crate::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionKind, WorkerSessionState,
+};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -380,7 +382,7 @@ impl PendingThreadStartRegistry {
             &write,
             move |tx| {
                 Box::pin(async move {
-                    let runtime = runtime_get_by_id_tx(tx, &runtime_id_for_tx)
+                    let runtime = session_projection_by_id_tx(tx, &runtime_id_for_tx)
                         .await?
                         .ok_or_else(|| {
                             pending_runtime_orphan_error(
@@ -417,7 +419,7 @@ impl PendingThreadStartRegistry {
                         session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running).await?;
                     }
                     // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
-                    if runtime.kind == RuntimeKind::SharedSpec {
+                    if runtime.kind == WorkerSessionKind::SharedSpec {
                         session_clear_terminal_run_id_tx(tx, &runtime.id).await?;
                     }
                     let card = card_for_event;
@@ -529,7 +531,7 @@ pub(crate) async fn card_payload_clear_pending_status(
         &write,
         move |tx| {
             Box::pin(async move {
-                if let Some(runtime) = runtime_get_by_id_tx(tx, &runtime_id_for_tx).await?
+                if let Some(runtime) = session_projection_by_id_tx(tx, &runtime_id_for_tx).await?
                     && runtime_status_is_active(&runtime.status)
                 {
                     session_complete_tx(tx, &runtime.id, WorkerSessionState::Failed).await?;

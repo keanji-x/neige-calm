@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 
 use super::{SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo};
 use crate::db::RouteRepo;
-use crate::runtime_repo::WorkerSessionState;
+use crate::session_projection_repo::WorkerSessionState;
 use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
 use std::sync::Arc;
 
@@ -85,7 +85,7 @@ pub fn spawn_supervisor_attach_reader(
                             WorkerSessionState::Exited
                         };
                         if let Err(e) = repo
-                            .runtime_complete_for_terminal(&terminal_id, terminal_status)
+                            .session_projection_complete_for_terminal(&terminal_id, terminal_status)
                             .await
                         {
                             tracing::warn!(

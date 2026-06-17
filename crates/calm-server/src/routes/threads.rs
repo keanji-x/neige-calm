@@ -2,8 +2,8 @@
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::CardRole;
-use crate::runtime_lookup::resolve_card_for_thread as resolve_card_for_thread_runtime;
-use crate::runtime_repo::AgentProvider;
+use crate::session_projection_lookup::resolve_card_for_thread as resolve_card_for_thread_runtime;
+use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,

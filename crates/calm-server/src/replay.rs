@@ -446,12 +446,14 @@ pub async fn force_spec_phase(
     use crate::harness::{HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
     use crate::model::{CardRole, new_id, now_ms};
     use crate::per_card_lock::lock_card;
-    use crate::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+    use crate::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
     use crate::state::RouteState;
 
     // Issue #682 review — `wedged` is not forceable: `persist_snapshot`
     // would write `WorkerSessionState::Failed` (via `run_status_for`), and the read
-    // path (`runtime_get_active_for_card`, used by `GET /spec/run` and by
+    // path (`session_projection_active_for_card`, used by `GET /spec/run` and by
     // this function) filters failed rows — a "successful" force would
     // instantly report `{runtime_id: null, phase: null}` and the next
     // force would mint a second runtime. Body validation runs first,
@@ -493,7 +495,10 @@ pub async fn force_spec_phase(
 
     // Ensure an active runtime row exists (Step-0: replay boot leaves none).
     let card_id_string = card.id.to_string();
-    let runtime = match repo.runtime_get_active_for_card(&card_id_string).await? {
+    let runtime = match repo
+        .session_projection_active_for_card(&card_id_string)
+        .await?
+    {
         Some(runtime) => runtime,
         None => {
             let runtime_id = new_id();
@@ -506,10 +511,10 @@ pub async fn force_spec_phase(
                 Box::pin(async move {
                     crate::db::sqlite::session_start_runtime_tx(
                         tx,
-                        RuntimeInit {
+                        WorkerSessionInit {
                             id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
-                            kind: RuntimeKind::SharedSpec,
+                            kind: WorkerSessionKind::SharedSpec,
                             agent_provider: Some(AgentProvider::Codex),
                             // Deliberately `Idle`, not the `Starting` that
                             // `run_status_for(PendingThreadStart)` would
@@ -526,8 +531,6 @@ pub async fn force_spec_phase(
                             session_id: None,
                             active_turn_id: None,
                             handle_state_json: Some(snapshot_value),
-                            lease_owner: None,
-                            lease_until_ms: None,
                             spawn_op_id: None,
                             now_ms: now_ms(),
                         },
@@ -537,7 +540,7 @@ pub async fn force_spec_phase(
                 })
             })
             .await?;
-            repo.runtime_get_active_for_card(&card_id_string)
+            repo.session_projection_active_for_card(&card_id_string)
                 .await?
                 .ok_or_else(|| {
                     CalmError::Internal(format!(
@@ -573,7 +576,7 @@ pub async fn force_spec_phase(
                 })
             })
             .await?;
-            repo.runtime_get_active_for_card(&card_id_string)
+            repo.session_projection_active_for_card(&card_id_string)
                 .await?
                 .ok_or_else(|| {
                     CalmError::Internal(format!(

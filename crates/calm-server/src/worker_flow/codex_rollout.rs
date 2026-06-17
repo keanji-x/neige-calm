@@ -323,7 +323,7 @@ impl CodexRolloutFlowSource {
             }
 
             persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
-            // TODO(#704 followup): runtime_complete_for_terminal bypasses event bus; canonicalize via Event emission.
+            // TODO(#704 followup): session_projection_complete_for_terminal bypasses event bus; canonicalize via Event emission.
             if !self.runtime_is_alive().await {
                 tracing::info!(
                     card_id = %self.runtime.card_id,
@@ -337,7 +337,7 @@ impl CodexRolloutFlowSource {
     }
 
     async fn runtime_is_alive(&self) -> bool {
-        match self.repo.runtime_get_by_id(&self.runtime.id).await {
+        match self.repo.session_projection_by_id(&self.runtime.id).await {
             Ok(Some(runtime)) => !matches!(
                 runtime.status,
                 WorkerSessionState::Exited

@@ -27,10 +27,10 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
-use crate::runtime_lookup::{
+use crate::session_projection_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
-use crate::runtime_repo::{WorkerSessionProjection, WorkerSessionState};
+use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
@@ -71,11 +71,14 @@ pub(crate) async fn interrupt_shared_card_active_turn(
     cs: &CodexShellState,
     card: &Card,
 ) {
-    let active_runtime = match repo.runtime_get_active_for_card(&card.id.to_string()).await {
+    let active_runtime = match repo
+        .session_projection_active_for_card(&card.id.to_string())
+        .await
+    {
         Ok(runtime) => runtime,
         Err(e) => {
             tracing::warn!(
-                target: "runtime_lookup::fallback",
+                target: "session_projection_lookup::fallback",
                 card_id = %card.id,
                 error = %e,
                 "runtime shared-card discriminator query failed; falling back to card payload"
@@ -797,7 +800,7 @@ pub(crate) async fn interrupt_spec_card(
     };
     let runtime = s
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await?
         .ok_or_else(dormant)?;
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
@@ -878,7 +881,7 @@ pub(crate) async fn get_spec_run(
     };
     let Some(runtime) = s
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await?
     else {
         return Ok(Json(dormant));
@@ -947,7 +950,7 @@ async fn ensure_live_spec_harness(
     };
     let runtime = s
         .repo
-        .runtime_get_active_for_card(&card_id.to_string())
+        .session_projection_active_for_card(&card_id.to_string())
         .await?
         .ok_or_else(dormant)?;
     if let Some(harness) = s.harness.get(&runtime.id) {
@@ -960,7 +963,7 @@ async fn ensure_live_spec_harness(
     // recovered the harness.
     let runtime = s
         .repo
-        .runtime_get_active_for_card(&card_id.to_string())
+        .session_projection_active_for_card(&card_id.to_string())
         .await?
         .ok_or_else(dormant)?;
     if let Some(harness) = s.harness.get(&runtime.id) {
@@ -1086,7 +1089,7 @@ async fn reset_spec_card_shared(
     let _recovery_guard = lock_card(&s.spec_recovery_locks, card.id.as_str()).await;
     let active_runtime = s
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await?;
     reset_spec_harness_card(s, actor, card, active_runtime).await
 }
@@ -1127,7 +1130,7 @@ async fn reset_spec_harness_card(
 
     let active = s
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await?
         .ok_or_else(|| CalmError::Internal(format!("runtime for card {} missing", card.id)))?;
     let new_thread_id = active.thread_id.clone().ok_or_else(|| {

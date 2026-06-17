@@ -11,7 +11,7 @@ use crate::error::CalmError;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{Card, CardRole, CardRuntimeView, Wave};
-use crate::runtime_lookup::runtime_view_from_runtime;
+use crate::session_projection_lookup::runtime_view_from_runtime;
 use crate::state::WriteContext;
 use crate::wave_fs_dto::{
     WaveFsCardMeta, WaveFsHookEvent, WaveFsRunDetail, WaveFsRunEventRef, WaveFsRunEvents,
@@ -117,7 +117,7 @@ impl<'a> WaveFsView<'a> {
                 let hook_events_updated_at = hook_events_updated_at(&card, &hook_events);
                 let runtime = self
                     .repo
-                    .runtime_get_projectable_for_card(&card.id.to_string())
+                    .session_projection_projectable_for_card(&card.id.to_string())
                     .await
                     .map_err(|e| {
                         WaveFsError::Internal(format!("wave_file: runtime lookup: {e}"))
@@ -314,7 +314,7 @@ impl<'a> WaveFsView<'a> {
 
     async fn runtime_for_card(&self, card: &Card) -> Result<Option<CardRuntimeView>, WaveFsError> {
         self.repo
-            .runtime_get_projectable_for_card(&card.id.to_string())
+            .session_projection_projectable_for_card(&card.id.to_string())
             .await
             .map(|runtime| runtime.map(|runtime| runtime_view_from_runtime(&runtime)))
             .map_err(|e| WaveFsError::Internal(format!("wave_file: runtime projection: {e}")))

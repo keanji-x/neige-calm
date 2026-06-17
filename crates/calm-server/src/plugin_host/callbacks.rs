@@ -29,7 +29,7 @@ use crate::db::{RepoRead, RouteRepo, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
-use crate::runtime_lookup::project_runtime_into_card_payload;
+use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};

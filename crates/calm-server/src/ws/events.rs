@@ -85,7 +85,7 @@ use crate::event;
 use crate::event::EventScope;
 use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
 use crate::ids::ActorId;
-use crate::runtime_lookup::project_runtime_into_event_payload;
+use crate::session_projection_lookup::project_runtime_into_event_payload;
 use crate::state::AppState;
 use crate::validation::should_skip_event_for_overlay_version;
 use axum::{

@@ -355,7 +355,7 @@ impl ClaudeTranscriptFlowSource {
     }
 
     async fn runtime_is_alive(&self) -> bool {
-        match self.repo.runtime_get_by_id(&self.runtime.id).await {
+        match self.repo.session_projection_by_id(&self.runtime.id).await {
             Ok(Some(runtime)) => !matches!(
                 runtime.status,
                 WorkerSessionState::Exited
@@ -724,7 +724,7 @@ pub fn slug_for_projects(cwd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::runtime::{AgentProvider, RuntimeKind};
+    use calm_types::runtime::{AgentProvider, WorkerSessionKind};
 
     struct CreateTranscriptOnTerminal {
         path: PathBuf,
@@ -756,7 +756,7 @@ mod tests {
         let runtime = WorkerSessionProjection {
             id: "rt-lazy-race".into(),
             card_id: "card-lazy-race".into(),
-            kind: RuntimeKind::ClaudeCard,
+            kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Running,
             terminal_run_id: None,

@@ -945,7 +945,7 @@ export interface components {
          *     projection; this typed view is the forward-compatible reader path.
          */
         CardRuntimeView: {
-            kind: components["schemas"]["RuntimeKind"];
+            kind: components["schemas"]["WorkerSessionKind"];
             provider?: null | components["schemas"]["AgentProvider"];
             runtime_id: string;
             session_id?: string | null;
@@ -1537,8 +1537,6 @@ export interface components {
              */
             path: string;
         };
-        /** @enum {string} */
-        RuntimeKind: "terminal" | "codex" | "claude" | "shared-spec";
         SendSpecInputRequest: {
             text: string;
         };
@@ -2047,6 +2045,8 @@ export interface components {
              */
             until?: number | null;
         };
+        /** @enum {string} */
+        WorkerSessionKind: "terminal" | "codex" | "claude" | "shared-spec";
         /**
          * @description Session state machine column (`worker_sessions.state`, issue #679 §1).
          *     Single runtime/session state vocabulary (`worker_sessions.state`, issue #679 §1).

@@ -175,7 +175,7 @@ async fn reset_spec_card_clears_persisted_harness_items() {
 
     let active = boot
         .repo
-        .runtime_get_active_for_card(&boot.spec_card.id.to_string())
+        .session_projection_active_for_card(&boot.spec_card.id.to_string())
         .await
         .unwrap()
         .expect("new active runtime");

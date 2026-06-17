@@ -70,7 +70,7 @@
 //!     they are server-private state that no other peer needs to
 //!     replicate. Routes see them — they are part of the normal REST
 //!     surface for plugin install, settings PUT, etc.
-//!   * [`RuntimeRepo`] — runtime table ownership for provider/card runtime
+//!   * [`WorkerSessionProjectionRepo`] — runtime table ownership for provider/card runtime
 //!     bookkeeping. It stays on the full internal repo surface, outside
 //!     route-facing sync-domain writes.
 //!
@@ -93,7 +93,7 @@ use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::*;
-use crate::runtime_repo::RuntimeRepo;
+use crate::session_projection_repo::WorkerSessionProjectionRepo;
 use crate::session_repo::SessionRepo;
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -950,7 +950,7 @@ pub mod prelude {
     pub use super::{
         Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
     };
-    pub use crate::runtime_repo::RuntimeRepo;
+    pub use crate::session_projection_repo::WorkerSessionProjectionRepo;
     pub use crate::session_repo::SessionRepo;
 }
 
@@ -962,8 +962,11 @@ pub mod prelude {
 /// Implemented blanket for any type that combines the route-facing
 /// supertraits, so `SqlxRepo` (and any future repo impl) picks it up
 /// automatically.
-pub trait RouteRepo: RepoEventWrite + RepoOutOfDomain + RuntimeRepo {}
-impl<T> RouteRepo for T where T: RepoEventWrite + RepoOutOfDomain + RuntimeRepo + ?Sized {}
+pub trait RouteRepo: RepoEventWrite + RepoOutOfDomain + WorkerSessionProjectionRepo {}
+impl<T> RouteRepo for T where
+    T: RepoEventWrite + RepoOutOfDomain + WorkerSessionProjectionRepo + ?Sized
+{
+}
 
 /// Full repo capability. Declared as a supertrait of [`RouteRepo`] +
 /// [`RepoSyncDomainRaw`] so `Arc<dyn Repo>` upcasts to `Arc<dyn RouteRepo>`
@@ -974,7 +977,7 @@ impl<T> RouteRepo for T where T: RepoEventWrite + RepoOutOfDomain + RuntimeRepo 
 /// helpers, the replay lib, terminal_sweeper, and tests. Production route
 /// handlers see the narrower [`RouteRepo`] trait object instead — see
 /// `AppState::repo`.
-pub trait Repo: RouteRepo + RepoSyncDomainRaw + RuntimeRepo + SessionRepo {
+pub trait Repo: RouteRepo + RepoSyncDomainRaw + WorkerSessionProjectionRepo + SessionRepo {
     /// Internal sqlite escape hatch for infrastructure that owns tables
     /// outside the route-facing sync-domain traits. Kept off `RouteRepo` so
     /// ordinary handlers cannot bypass the existing write gates.

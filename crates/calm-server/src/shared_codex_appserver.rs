@@ -29,7 +29,7 @@ use crate::codex_appserver::{
     redact_thread_start_config,
 };
 use crate::config::Config;
-use crate::db::sqlite::runtime_get_active_for_card_tx;
+use crate::db::sqlite::session_projection_active_for_card_tx;
 use crate::db::{Repo, SharedCodexDaemonUpdate, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::mcp_server::transport;
@@ -40,10 +40,10 @@ use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
 use crate::routes::settings::load_settings;
-use crate::runtime_lookup::{
+use crate::session_projection_lookup::{
     merge_active_shared_thread_attribution, resolve_active_thread_for_card, resolve_card_for_thread,
 };
-use crate::runtime_repo::AgentProvider;
+use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_home::SharedCodexHome;
 
 pub type TurnId = String;
@@ -1304,7 +1304,8 @@ impl SharedCodexAppServer {
                 let card_id = card_id.clone();
                 move |tx| {
                     Box::pin(async move {
-                        let Some(runtime) = runtime_get_active_for_card_tx(tx, &card_id).await?
+                        let Some(runtime) =
+                            session_projection_active_for_card_tx(tx, &card_id).await?
                         else {
                             return Ok(None);
                         };

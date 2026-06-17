@@ -36,7 +36,9 @@ use calm_server::ids::WaveId;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use http_body_util::BodyExt;
@@ -191,10 +193,10 @@ async fn seed_active_spec_runtime_row(boot: &Boot, card: &Card) -> (String, Stri
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -202,8 +204,6 @@ async fn seed_active_spec_runtime_row(boot: &Boot, card: &Card) -> (String, Stri
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },

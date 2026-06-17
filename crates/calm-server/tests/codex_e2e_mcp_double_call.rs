@@ -71,7 +71,9 @@ use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::routes::theme::RequestTheme;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
@@ -166,10 +168,10 @@ async fn seed_shared_spec_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &st
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card_id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -177,8 +179,6 @@ async fn seed_shared_spec_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &st
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },

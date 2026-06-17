@@ -25,8 +25,9 @@ use calm_truth::error::{Result as TruthResult, TruthError};
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::{ActorId, CardId};
 use calm_truth::model::{NewCard, NewCove, NewWave, RequestTheme, new_id, now_ms};
-use calm_truth::runtime_repo::{
-    AgentProvider, RuntimeInit, RuntimeKind, RuntimeRepo, WorkerSessionState,
+use calm_truth::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepo,
+    WorkerSessionState,
 };
 use calm_truth::session_repo::SessionRepo;
 use calm_truth::state::WriteContext;
@@ -369,10 +370,10 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
             Box::pin(async move {
                 session_start_runtime_tx(
                     tx,
-                    RuntimeInit {
+                    WorkerSessionInit {
                         id: runtime_id,
                         card_id,
-                        kind: RuntimeKind::SharedSpec,
+                        kind: WorkerSessionKind::SharedSpec,
                         agent_provider: Some(AgentProvider::Codex),
                         status: WorkerSessionState::Idle,
                         terminal_run_id: None,
@@ -380,8 +381,6 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
                         session_id: None,
                         active_turn_id: None,
                         handle_state_json: None,
-                        lease_owner: None,
-                        lease_until_ms: None,
                         spawn_op_id: None,
                         now_ms: now_ms(),
                     },
@@ -416,7 +415,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
     .expect("observation write skips status matrix");
 
     let runtime = repo
-        .runtime_get_by_id(&runtime_id)
+        .session_projection_by_id(&runtime_id)
         .await
         .expect("runtime get")
         .expect("runtime row");

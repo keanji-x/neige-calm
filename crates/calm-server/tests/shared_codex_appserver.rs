@@ -14,7 +14,9 @@ use calm_server::mcp_server::auth;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::{
     BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams,
     bounded_exponential_backoff, drop_spawned_child_guard_for_test,
@@ -357,20 +359,20 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    seed_runtime_thread_with_kind(repo, card_id, thread_id, RuntimeKind::CodexCard).await
+    seed_runtime_thread_with_kind(repo, card_id, thread_id, WorkerSessionKind::CodexCard).await
 }
 
 async fn seed_runtime_thread_with_kind(
     repo: &SqlxRepo,
     card_id: &str,
     thread_id: &str,
-    kind: RuntimeKind,
+    kind: WorkerSessionKind,
 ) -> String {
     let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card_id.to_string(),
             kind,
@@ -381,8 +383,6 @@ async fn seed_runtime_thread_with_kind(
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -734,7 +734,8 @@ async fn hot_takeover_plain_resumes_without_rotating_cached_thread_token() {
     let repo = repo().await;
     let card_id = seed_card(&repo, 1).await;
     let runtime_id =
-        seed_runtime_thread_with_kind(&repo, &card_id, "thread-hot", RuntimeKind::SharedSpec).await;
+        seed_runtime_thread_with_kind(&repo, &card_id, "thread-hot", WorkerSessionKind::SharedSpec)
+            .await;
     let old_hash = auth::hash_token("old-hot-token");
     let mut tx = repo.pool().begin().await.unwrap();
     card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
@@ -787,9 +788,13 @@ async fn restart_resumes_rollout_backed_threads() {
 
     let repo = repo().await;
     let card_id = seed_card(&repo, 1).await;
-    let runtime_id =
-        seed_runtime_thread_with_kind(&repo, &card_id, "thread-resume", RuntimeKind::SharedSpec)
-            .await;
+    let runtime_id = seed_runtime_thread_with_kind(
+        &repo,
+        &card_id,
+        "thread-resume",
+        WorkerSessionKind::SharedSpec,
+    )
+    .await;
     let old_hash = auth::hash_token("old-resume-token");
     let mut tx = repo.pool().begin().await.unwrap();
     card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
@@ -882,9 +887,13 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
 
     let repo = repo().await;
     let card_id = seed_card(&repo, 1).await;
-    let runtime_id =
-        seed_runtime_thread_with_kind(&repo, &card_id, "thread-active", RuntimeKind::SharedSpec)
-            .await;
+    let runtime_id = seed_runtime_thread_with_kind(
+        &repo,
+        &card_id,
+        "thread-active",
+        WorkerSessionKind::SharedSpec,
+    )
+    .await;
     let old_hash = auth::hash_token("old-active-token");
     let mut tx = repo.pool().begin().await.unwrap();
     card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)

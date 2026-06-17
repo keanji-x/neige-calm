@@ -112,7 +112,7 @@ impl From<WaveRow> for Wave {
 /// Row mirror of [`Card`].
 ///
 /// `Card.runtime` is `#[sqlx(skip)]` in spirit: it is a lazy projection
-/// joined after the fetch (`runtime_get_projectable_for_card`), never a
+/// joined after the fetch (`session_projection_projectable_for_card`), never a
 /// `cards` column — the conversion seeds it `None` exactly like the old
 /// derive did.
 #[derive(Debug, sqlx::FromRow)]

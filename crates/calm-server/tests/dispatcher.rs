@@ -33,7 +33,9 @@ use calm_server::operation::{
     SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -142,10 +144,10 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
             Box::pin(async move {
                 let runtime = session_start_runtime_tx(
                     tx,
-                    RuntimeInit {
+                    WorkerSessionInit {
                         id: new_id(),
                         card_id,
-                        kind: RuntimeKind::SharedSpec,
+                        kind: WorkerSessionKind::SharedSpec,
                         agent_provider: Some(AgentProvider::Codex),
                         status: WorkerSessionState::TurnPending,
                         terminal_run_id: None,
@@ -153,8 +155,6 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
                         session_id: None,
                         active_turn_id: None,
                         handle_state_json: None,
-                        lease_owner: None,
-                        lease_until_ms: None,
                         spawn_op_id: None,
                         now_ms: now_ms(),
                     },
@@ -206,7 +206,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
         .expect("spec card still exists");
     assert!(updated.payload.get("codex_thread_id").is_none());
     let runtime = repo
-        .runtime_get_active_for_card(&spec_card.id.to_string())
+        .session_projection_active_for_card(&spec_card.id.to_string())
         .await
         .unwrap()
         .expect("active runtime");

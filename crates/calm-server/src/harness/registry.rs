@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::harness::SpecHarness;
-use crate::runtime_repo::RuntimeId;
+use crate::session_projection_repo::RuntimeId;
 
 #[derive(Clone, Default)]
 pub struct HarnessRegistry(Arc<DashMap<RuntimeId, SpecHarness>>);

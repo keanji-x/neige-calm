@@ -20,7 +20,7 @@ use calm_server::operation::{
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_lookup::project_runtime_into_card_payload;
+use calm_server::session_projection_lookup::project_runtime_into_card_payload;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::RendererConfig;
