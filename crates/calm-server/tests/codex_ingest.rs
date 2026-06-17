@@ -177,6 +177,32 @@ async fn codex_hook_accepts_missing_session_id_fallback() {
     post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
 }
 
+#[tokio::test]
+async fn codex_hook_rejects_absent_card_id_with_forbidden() {
+    let (app, repo, events, _card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let resp = post_hook_uri(
+        &app,
+        "/internal/codex/hook",
+        json!({"hook_event_name": "Stop"}),
+        Some("ai:codex"),
+    )
+    .await;
+
+    // PR10-a: absent card_id unified to 403/EmptyAiCardId (was 400 axum missing-field); latent — no producer omits card_id.
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(event_count, 0);
+}
+
 async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card = create_codex_card(repo.as_ref()).await;
@@ -278,15 +304,24 @@ async fn post_and_assert(
 
 async fn post_hook(app: &axum::Router, card_id: &str, payload: Value) -> axum::response::Response {
     let uri = format!("/internal/codex/hook?card_id={card_id}");
+    post_hook_uri(app, &uri, payload, None).await
+}
+
+async fn post_hook_uri(
+    app: &axum::Router,
+    uri: &str,
+    payload: Value,
+    actor: Option<&str>,
+) -> axum::response::Response {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(actor) = actor {
+        builder = builder.header("X-Calm-Actor", actor);
+    }
     app.clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .unwrap(),
-        )
+        .oneshot(builder.body(Body::from(payload.to_string())).unwrap())
         .await
         .unwrap()
 }

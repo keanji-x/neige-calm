@@ -8,7 +8,9 @@
 
 use crate::actor::Actor;
 use crate::error::Result;
-use crate::routes::codex::{HookProvider, IngestQuery, ingest_provider_hook};
+use crate::routes::codex::{
+    HookProvider, IngestQuery, ingest_provider_hook, resolve_ingest_card_id,
+};
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
@@ -27,6 +29,7 @@ pub(crate) async fn ingest_hook(
     Query(q): Query<IngestQuery>,
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>> {
-    ingest_provider_hook(&s, q.card_id, payload, HookProvider::Claude).await?;
+    let card_id = resolve_ingest_card_id(q.card_id)?;
+    ingest_provider_hook(&s, card_id, payload, HookProvider::Claude).await?;
     Ok(Json(json!({ "continue": true })))
 }
