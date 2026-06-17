@@ -314,7 +314,7 @@ pub fn exit_commit_mapping(interpretation: &ExitInterpretation) -> Option<ExitCo
 /// (`worker_sessions.provider TEXT CHECK (provider IN
 /// ('codex','claude','terminal'))`, issue #679 §1).
 ///
-/// Distinct from [`crate::runtime::RuntimeKind`] (which is a *card-runtime*
+/// Distinct from [`crate::runtime::WorkerSessionKind`] (which is a *card-runtime*
 /// projection vocabulary with the legacy `shared-spec` arm) and from
 /// [`crate::runtime::AgentProvider`] (which has no terminal arm): in the
 /// session model the planner is just another worker, so its provider is

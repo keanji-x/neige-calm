@@ -7,7 +7,9 @@ use calm_server::db::sqlite::{SqlxRepo, session_set_status_tx, session_start_run
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::now_ms;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
@@ -76,10 +78,10 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
             .unwrap();
         let replacement = session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: "rt-card-driver-claude-restart-b".to_string(),
                 card_id: seed.runtime.card_id.clone(),
-                kind: RuntimeKind::ClaudeCard,
+                kind: WorkerSessionKind::ClaudeCard,
                 agent_provider: Some(AgentProvider::Claude),
                 status: WorkerSessionState::Starting,
                 terminal_run_id: None,
@@ -87,8 +89,6 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
                 session_id: Some("session-driver-claude-restart-b".to_string()),
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: now_ms(),
             },

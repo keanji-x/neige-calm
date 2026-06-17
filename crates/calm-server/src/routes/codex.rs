@@ -31,8 +31,8 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::role_gate::RoleViolation;
-use crate::runtime_lookup::resolve_card_for_thread;
-use crate::runtime_repo::AgentProvider;
+use crate::session_projection_lookup::resolve_card_for_thread;
+use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,

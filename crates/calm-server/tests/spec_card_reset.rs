@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, runtime_get_by_id_tx, session_start_runtime_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_projection_by_id_tx, session_start_runtime_tx};
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -25,7 +25,9 @@ use calm_server::operation::{
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use clap::Parser;
@@ -53,10 +55,10 @@ struct Boot {
 async fn runtime_by_id_tx_snapshot(
     repo: &SqlxRepo,
     runtime_id: &str,
-) -> Option<calm_server::runtime_repo::WorkerSessionProjection> {
+) -> Option<calm_server::session_projection_repo::WorkerSessionProjection> {
     let id = runtime_id.to_string();
     let mut tx = repo.pool().begin().await.unwrap();
-    let runtime = runtime_get_by_id_tx(&mut tx, &id).await.unwrap();
+    let runtime = session_projection_by_id_tx(&mut tx, &id).await.unwrap();
     tx.commit().await.unwrap();
     runtime
 }
@@ -427,10 +429,10 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -438,8 +440,6 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -516,10 +516,10 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -527,8 +527,6 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -568,10 +566,10 @@ async fn seed_inactive_spec_runtime(boot: &Boot, card: &Card) -> String {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Exited,
             terminal_run_id: None,
@@ -579,8 +577,6 @@ async fn seed_inactive_spec_runtime(boot: &Boot, card: &Card) -> String {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -1120,10 +1116,10 @@ async fn seed_spec_runtime_row_with_status(
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status,
             terminal_run_id: None,
@@ -1131,8 +1127,6 @@ async fn seed_spec_runtime_row_with_status(
             session_id: None,
             active_turn_id: None,
             handle_state_json,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -1548,7 +1542,7 @@ async fn wave_delete_shuts_down_active_spec_harness() {
         .expect("spec harness card");
     let runtime = boot
         .repo
-        .runtime_get_active_for_card(&spec_card.id.to_string())
+        .session_projection_active_for_card(&spec_card.id.to_string())
         .await
         .unwrap()
         .expect("active spec harness runtime");
@@ -1561,7 +1555,7 @@ async fn wave_delete_shuts_down_active_spec_harness() {
     assert_eq!(boot.state.harness.len_active(), 0);
     assert!(
         boot.repo
-            .runtime_get_by_id(&runtime.id)
+            .session_projection_by_id(&runtime.id)
             .await
             .unwrap()
             .is_none(),
@@ -1655,10 +1649,10 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -1666,8 +1660,6 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -1703,7 +1695,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
     );
     let active = boot
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("new active runtime");
@@ -1745,10 +1737,10 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -1762,8 +1754,6 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
                 "schema_version": 999,
                 "phase": "idle"
             })),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -1790,7 +1780,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
     );
     let active = boot
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("new active runtime");
@@ -1852,10 +1842,10 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -1863,8 +1853,6 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -1909,7 +1897,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
 
     let old_runtime = boot
         .repo
-        .runtime_get_by_id(&old_runtime_id)
+        .session_projection_by_id(&old_runtime_id)
         .await
         .unwrap()
         .unwrap();
@@ -1926,7 +1914,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
     assert_eq!(status, StatusCode::OK, "body={body}");
     let active = boot
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("new active runtime");
@@ -1976,10 +1964,10 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -1987,8 +1975,6 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -2028,14 +2014,14 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
     let old_after = boot
         .repo
-        .runtime_get_by_id(&old_runtime_id)
+        .session_projection_by_id(&old_runtime_id)
         .await
         .unwrap()
         .expect("old runtime row remains");
     assert_eq!(old_after.status, WorkerSessionState::Idle);
     let active = boot
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("old runtime remains active");
@@ -2089,7 +2075,7 @@ async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
     );
     assert!(
         boot.repo
-            .runtime_get_active_for_card(&card.id.to_string())
+            .session_projection_active_for_card(&card.id.to_string())
             .await
             .unwrap()
             .is_none()
@@ -2115,7 +2101,7 @@ async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
     );
     let active = boot
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("new active runtime");
@@ -2156,10 +2142,10 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -2167,8 +2153,6 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -2178,7 +2162,7 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
     tx.commit().await.unwrap();
     let before = boot
         .repo
-        .runtime_get_by_id(&old_runtime_id)
+        .session_projection_by_id(&old_runtime_id)
         .await
         .unwrap()
         .unwrap();
@@ -2192,14 +2176,14 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
     let after = boot
         .repo
-        .runtime_get_by_id(&old_runtime_id)
+        .session_projection_by_id(&old_runtime_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(after, before);
     let active = boot
         .repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("old runtime remains active");

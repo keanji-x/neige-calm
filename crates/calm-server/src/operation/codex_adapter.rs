@@ -10,8 +10,8 @@ use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_update_tx, card_with_codex_create_tx,
-    runtime_get_active_for_card_tx, runtime_get_by_id_tx, session_bind_attribution_tx,
-    session_set_status_tx,
+    session_bind_attribution_tx, session_projection_active_for_card_tx,
+    session_projection_by_id_tx, session_set_status_tx,
 };
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
@@ -31,7 +31,9 @@ use crate::routes::codex_cards::{
 };
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::{AgentProvider, RuntimeKind, ThreadAttribution, WorkerSessionState};
+use crate::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionKind, WorkerSessionState,
+};
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -327,7 +329,7 @@ impl ProviderAdapter for CodexAdapter {
         let runtime_event = Event::RuntimeStarted {
             runtime_id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
         };
@@ -410,7 +412,10 @@ impl ProviderAdapter for CodexAdapter {
             {
                 Some(thread_id) => thread_id,
                 None => {
-                    if let Some(runtime) = self.repo.runtime_get_active_for_card(&card_id).await?
+                    if let Some(runtime) = self
+                        .repo
+                        .session_projection_active_for_card(&card_id)
+                        .await?
                         && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
                     {
                         thread_id
@@ -572,7 +577,7 @@ impl ProviderAdapter for CodexAdapter {
                 }),
             ));
             steps.push(step(
-                "runtime_set_status_failed_for_card",
+                "session_projection_set_status_failed_for_card",
                 json!({ "card_id": card_id }),
             ));
         } else {
@@ -624,7 +629,7 @@ impl ProviderAdapter for CodexAdapter {
                         Some(thread_id.to_string())
                     } else {
                         ctx.repo
-                            .runtime_get_active_for_card(&card_id)
+                            .session_projection_active_for_card(&card_id)
                             .await?
                             .and_then(|runtime| non_empty_string(runtime.thread_id.as_deref()))
                     };
@@ -643,10 +648,14 @@ impl ProviderAdapter for CodexAdapter {
                 }
                 Ok(())
             }
-            "runtime_set_status_failed_for_card" => {
+            // Back-compat: operations that entered `compensating` under a pre-PR10-d
+            // release persisted the legacy op string; accept it during recovery so
+            // in-flight compensation states still drain. New states write the new name.
+            "session_projection_set_status_failed_for_card"
+            | "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
-                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
+                    .session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await?;
                 Ok(())
             }
@@ -946,7 +955,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let runtime_id = output_string(output, "runtime_id")?;
         let runtime_turn = ctx
             .repo
-            .runtime_get_by_id(&runtime_id)
+            .session_projection_by_id(&runtime_id)
             .await?
             .and_then(|runtime| {
                 non_empty_string(runtime.thread_id.as_deref()).map(|thread_id| {
@@ -1031,7 +1040,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     let runtime = ctx
         .spawn_ctx
         .repo
-        .runtime_get_by_id(&runtime_id)
+        .session_projection_by_id(&runtime_id)
         .await?
         .ok_or_else(|| CalmError::Internal(format!("worker runtime {runtime_id} vanished")))?;
     let persisted_turn_id = non_empty_string(runtime.active_turn_id.as_deref());
@@ -1288,7 +1297,7 @@ async fn persist_shared_worker_runtime_fields(
                 },
             )
             .await?;
-            let runtime = runtime_get_by_id_tx(tx, &runtime_id_for_tx)
+            let runtime = session_projection_by_id_tx(tx, &runtime_id_for_tx)
                 .await?
                 .ok_or_else(|| {
                     CalmError::Internal(format!(
@@ -1423,7 +1432,7 @@ async fn persist_prompt_thread(
         &write,
         move |tx| {
             Box::pin(async move {
-                let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                let runtime = session_projection_active_for_card_tx(tx, &card_id_for_tx)
                     .await?
                     .ok_or_else(|| {
                         CalmError::Internal(format!(
@@ -1539,7 +1548,7 @@ async fn persist_pending_thread_status(
         &write,
         move |tx| {
             Box::pin(async move {
-                let runtime = runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                let runtime = session_projection_active_for_card_tx(tx, &card_id_for_tx)
                     .await?
                     .ok_or_else(|| {
                         CalmError::Internal(format!(

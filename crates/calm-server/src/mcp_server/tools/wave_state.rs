@@ -122,9 +122,12 @@ async fn wave_state(
         .cards_by_wave(wave.id.as_str())
         .await
         .map_err(|e| RpcError::internal(format!("wave_state: cards_by_wave: {e}")))?;
-    crate::runtime_lookup::project_runtime_into_cards_payload(ctx.repo.as_ref(), &mut cards)
-        .await
-        .map_err(|e| RpcError::internal(format!("wave_state: runtime projection: {e}")))?;
+    crate::session_projection_lookup::project_runtime_into_cards_payload(
+        ctx.repo.as_ref(),
+        &mut cards,
+    )
+    .await
+    .map_err(|e| RpcError::internal(format!("wave_state: runtime projection: {e}")))?;
 
     // We re-query the role cache rather than fetching `cards.role` on
     // the card row — the cache is the canonical source the role gate

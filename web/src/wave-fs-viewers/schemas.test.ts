@@ -4,7 +4,7 @@ import type {
   AgentProvider,
   CardRuntimeView,
   CardRole,
-  RuntimeKind,
+  WorkerSessionKind,
   WorkerSessionState,
   Wave,
   WaveFsCardMeta,
@@ -46,7 +46,7 @@ describe('wave fs zod to generated type conformance', () => {
     expectTypeOf<z.infer<typeof workerSessionStateSchema>>()
       .toEqualTypeOf<WorkerSessionState>();
     expectTypeOf<z.infer<typeof runtimeKindSchema>>()
-      .toEqualTypeOf<RuntimeKind>();
+      .toEqualTypeOf<WorkerSessionKind>();
     expectTypeOf<z.infer<typeof waveFsCardRoleSchema>>().toEqualTypeOf<CardRole>();
     expectTypeOf<z.infer<typeof waveFsRunStatusSchema>>()
       .toEqualTypeOf<WaveFsRunStatus>();

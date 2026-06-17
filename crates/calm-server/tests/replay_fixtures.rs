@@ -59,7 +59,9 @@ use calm_server::model::{
 use calm_server::model::{WavePatch, new_id, now_ms};
 use calm_server::replay::{self, Fixture};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::ws;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -116,10 +118,10 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
     let mut tx = repo.pool().begin().await.expect("begin runtime tx");
     let runtime = session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -127,8 +129,6 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },

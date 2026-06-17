@@ -48,7 +48,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
-use crate::runtime_lookup::project_runtime_into_cards_payload;
+use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
@@ -852,7 +852,7 @@ pub(crate) async fn delete_wave(
         interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, card).await;
         if let Some(runtime) = s
             .repo
-            .runtime_get_active_for_card(&card.id.to_string())
+            .session_projection_active_for_card(&card.id.to_string())
             .await?
         {
             active_runtime_ids.push(runtime.id);

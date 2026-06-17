@@ -37,7 +37,9 @@ use calm_server::model::{
     CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_sweeper;
 use serde_json::json;
@@ -121,10 +123,10 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
     let mut tx = concrete.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::Terminal,
+            kind: WorkerSessionKind::Terminal,
             agent_provider: None,
             status: WorkerSessionState::Running,
             terminal_run_id: Some(term.id.clone()),
@@ -132,8 +134,6 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -199,10 +199,10 @@ async fn seed_shared_spec_pair(
         .unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -210,8 +210,6 @@ async fn seed_shared_spec_pair(
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -268,10 +266,10 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
     session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
         .await
         .unwrap();
-    let init = RuntimeInit {
+    let init = WorkerSessionInit {
         id: new_id(),
         card_id: card.id.to_string(),
-        kind: RuntimeKind::SharedSpec,
+        kind: WorkerSessionKind::SharedSpec,
         agent_provider: Some(AgentProvider::Codex),
         status: WorkerSessionState::Running,
         terminal_run_id: None,
@@ -279,8 +277,6 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         session_id: None,
         active_turn_id: None,
         handle_state_json: None,
-        lease_owner: None,
-        lease_until_ms: None,
         spawn_op_id: None,
         now_ms: now_ms(),
     };
@@ -311,7 +307,7 @@ async fn complete_terminal_runtime_for_card(state: &AppState, card_id: &str) {
     };
     state
         .repo
-        .runtime_complete_for_terminal(&term.id, WorkerSessionState::Exited)
+        .session_projection_complete_for_terminal(&term.id, WorkerSessionState::Exited)
         .await
         .unwrap();
 }
@@ -396,7 +392,7 @@ async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
 
     state
         .repo
-        .runtime_complete_for_card(&card_id, WorkerSessionState::Exited)
+        .session_projection_complete_for_card(&card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
     age_all_terminals_past_grace(&concrete).await;

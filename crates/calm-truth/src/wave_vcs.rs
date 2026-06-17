@@ -20,8 +20,8 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardRole, Wave, now_ms};
-use crate::runtime_lookup;
-use crate::runtime_row::{
+use crate::session_projection_lookup;
+use crate::session_projection_row::{
     projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
 };
 use crate::wave_fs_dto::WaveFsRunStatus;
@@ -2896,7 +2896,7 @@ async fn project_runtime_into_cards_tx(
     let runtimes = projectable_runtimes_for_cards_from_rows(rows)?;
     for card in cards {
         if let Some(runtime) = runtimes.get(card.card.id.as_str()) {
-            runtime_lookup::project_runtime_fields(&mut card.card, runtime);
+            session_projection_lookup::project_runtime_fields(&mut card.card, runtime);
         }
     }
     Ok(())

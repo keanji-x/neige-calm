@@ -1,10 +1,12 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
-use calm_server::runtime_lookup::{
+use calm_server::session_projection_lookup::{
     resolve_active_thread_for_card, resolve_card_for_thread, resolve_claude_session_for_card,
 };
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use serde_json::{Value, json};
 
 async fn fresh_repo() -> SqlxRepo {
@@ -48,10 +50,10 @@ async fn make_card(repo: &SqlxRepo, kind: &str, payload: Value) -> Card {
 
 fn runtime_init(
     card_id: String,
-    kind: RuntimeKind,
+    kind: WorkerSessionKind,
     agent_provider: Option<AgentProvider>,
-) -> RuntimeInit {
-    RuntimeInit {
+) -> WorkerSessionInit {
+    WorkerSessionInit {
         id: new_id(),
         card_id,
         kind,
@@ -62,8 +64,6 @@ fn runtime_init(
         session_id: None,
         active_turn_id: None,
         handle_state_json: None,
-        lease_owner: None,
-        lease_until_ms: None,
         spawn_op_id: None,
         now_ms: now_ms(),
     }
@@ -75,7 +75,7 @@ async fn resolve_active_thread_for_card_prefers_runtime() {
     let card = make_card(&repo, "codex", json!({})).await;
     let mut init = runtime_init(
         card.id.to_string(),
-        RuntimeKind::CodexCard,
+        WorkerSessionKind::CodexCard,
         Some(AgentProvider::Codex),
     );
     init.thread_id = Some("thread-runtime".into());
@@ -106,7 +106,7 @@ async fn resolve_card_for_thread_prefers_runtime() {
     let card = make_card(&repo, "codex", json!({})).await;
     let mut init = runtime_init(
         card.id.to_string(),
-        RuntimeKind::CodexCard,
+        WorkerSessionKind::CodexCard,
         Some(AgentProvider::Codex),
     );
     init.thread_id = Some("thread-runtime".into());
@@ -141,7 +141,7 @@ async fn resolve_claude_session_for_card_prefers_runtime() {
     .await;
     let mut init = runtime_init(
         card.id.to_string(),
-        RuntimeKind::ClaudeCard,
+        WorkerSessionKind::ClaudeCard,
         Some(AgentProvider::Claude),
     );
     init.session_id = Some("runtime-session".into());

@@ -22,7 +22,7 @@ use crate::operation::terminal_adapter::{
     TerminalCreateOperationPayload, TerminalCreateRequestPayload, normalize_terminal_create_request,
 };
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::runtime_lookup::project_runtime_into_card_payload;
+use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,

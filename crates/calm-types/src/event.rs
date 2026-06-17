@@ -390,7 +390,7 @@ pub enum Event {
     RuntimeStarted {
         runtime_id: String,
         card_id: String,
-        kind: crate::runtime::RuntimeKind,
+        kind: crate::runtime::WorkerSessionKind,
         agent_provider: Option<crate::runtime::AgentProvider>,
         status: crate::worker::WorkerSessionState,
     },
@@ -1391,7 +1391,7 @@ mod scope_tests {
         let runtime_started = Event::RuntimeStarted {
             runtime_id: "runtime-1".into(),
             card_id: "card-1".into(),
-            kind: crate::runtime::RuntimeKind::CodexCard,
+            kind: crate::runtime::WorkerSessionKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
             status: crate::worker::WorkerSessionState::Starting,
         };
@@ -1467,7 +1467,7 @@ mod scope_tests {
         let ev = Event::RuntimeStarted {
             runtime_id: "runtime-1".into(),
             card_id: "card-1".into(),
-            kind: crate::runtime::RuntimeKind::CodexCard,
+            kind: crate::runtime::WorkerSessionKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
             status: crate::worker::WorkerSessionState::Starting,
         };
@@ -1491,7 +1491,7 @@ mod scope_tests {
             } => {
                 assert_eq!(runtime_id, "runtime-1");
                 assert_eq!(card_id, "card-1");
-                assert_eq!(kind, crate::runtime::RuntimeKind::CodexCard);
+                assert_eq!(kind, crate::runtime::WorkerSessionKind::CodexCard);
                 assert_eq!(agent_provider, Some(crate::runtime::AgentProvider::Codex));
                 assert_eq!(status, crate::worker::WorkerSessionState::Starting);
             }
@@ -1922,7 +1922,7 @@ mod scope_tests {
         let ev = Event::RuntimeStarted {
             runtime_id: "rt-1".into(),
             card_id: "card-1".into(),
-            kind: crate::runtime::RuntimeKind::CodexCard,
+            kind: crate::runtime::WorkerSessionKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
             status: crate::worker::WorkerSessionState::Starting,
         };
@@ -2015,7 +2015,7 @@ mod scope_tests {
             Event::RuntimeStarted {
                 runtime_id: "runtime-started".into(),
                 card_id: "card-runtime".into(),
-                kind: crate::runtime::RuntimeKind::CodexCard,
+                kind: crate::runtime::WorkerSessionKind::CodexCard,
                 agent_provider: Some(crate::runtime::AgentProvider::Codex),
                 status: crate::worker::WorkerSessionState::Starting,
             },

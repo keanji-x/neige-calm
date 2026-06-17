@@ -7,7 +7,7 @@ use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::runtime_repo::WorkerSessionState;
+use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;

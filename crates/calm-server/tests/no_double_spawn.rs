@@ -35,8 +35,8 @@ use calm_server::operation::{
 };
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::{RuntimeKind, RuntimeRepo};
+use calm_server::session_projection_lookup::project_runtime_into_card_payload;
+use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionProjectionRepo};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use futures::future::BoxFuture;
@@ -946,11 +946,11 @@ async fn codex_empty_concurrent_creates_bind_fifo_to_spawn_order() {
 async fn assert_active_codex_runtime_thread(boot: &Boot, card_id: &str, expected_thread_id: &str) {
     let runtime = boot
         .repo
-        .runtime_get_active_for_card(&card_id.to_string())
+        .session_projection_active_for_card(&card_id.to_string())
         .await
         .unwrap()
         .expect("active runtime row");
-    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
     assert_eq!(runtime.thread_id.as_deref(), Some(expected_thread_id));
 }
 
@@ -2775,7 +2775,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
-    assert_minted_runtime(&boot.repo, output, RuntimeKind::Terminal).await;
+    assert_minted_runtime(&boot.repo, output, WorkerSessionKind::Terminal).await;
 
     let boot = boot_codex_with_counted_spawn().await;
     let payload = without_runtime_id(codex_payload(&boot.wave_id, None));
@@ -2793,7 +2793,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
-    assert_minted_runtime(&boot.repo, output, RuntimeKind::CodexCard).await;
+    assert_minted_runtime(&boot.repo, output, WorkerSessionKind::CodexCard).await;
 
     let boot = boot_claude_with_counted_spawn().await;
     let payload = without_runtime_id(claude_payload(&boot, &boot.wave_id, None));
@@ -2808,7 +2808,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
-    assert_minted_runtime(&boot.repo, output, RuntimeKind::ClaudeCard).await;
+    assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;
 }
 
 fn terminal_payload(wave_id: &str) -> Value {
@@ -3017,7 +3017,7 @@ async fn mark_operation_succeeded(repo: &SqlxRepo, op_id: &str) {
     .unwrap();
 }
 
-async fn assert_minted_runtime(repo: &SqlxRepo, output: TxOutput, kind: RuntimeKind) {
+async fn assert_minted_runtime(repo: &SqlxRepo, output: TxOutput, kind: WorkerSessionKind) {
     let runtime_id = output
         .target_id
         .as_deref()
@@ -3031,7 +3031,7 @@ async fn assert_minted_runtime(repo: &SqlxRepo, output: TxOutput, kind: RuntimeK
     );
 
     let runtime = repo
-        .runtime_get_by_id(&runtime_id)
+        .session_projection_by_id(&runtime_id)
         .await
         .unwrap()
         .expect("minted runtime row");

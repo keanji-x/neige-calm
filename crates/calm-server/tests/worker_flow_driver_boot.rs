@@ -11,7 +11,7 @@ use calm_server::db::sqlite::{
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::{CardPatch, NewTerminal, RequestTheme};
-use calm_server::runtime_repo::{AgentProvider, ThreadAttribution, WorkerSessionState};
+use calm_server::session_projection_repo::{AgentProvider, ThreadAttribution, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;

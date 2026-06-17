@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::event::{Event, EventBus};
 use crate::ids::{CardId, WaveId};
 use crate::model::CardRole;
-use crate::runtime_repo::WorkerSessionProjection;
+use crate::session_projection_repo::WorkerSessionProjection;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -178,7 +178,7 @@ async fn persist_recovered_snapshot(
 
 async fn snapshot_runtime_id(repo: &dyn Repo, card_id: &str) -> Result<String> {
     let runtime = repo
-        .runtime_get_active_for_card(&card_id.to_string())
+        .session_projection_active_for_card(&card_id.to_string())
         .await?
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("runtime for card {card_id}")))?;
     Ok(runtime.id)
@@ -192,7 +192,7 @@ pub async fn recover_harnesses_on_boot(
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
 ) -> Result<usize> {
-    let runtimes = repo.runtimes_recover_harnesses_on_boot().await?;
+    let runtimes = repo.session_projection_recover_harnesses_on_boot().await?;
     let mut recovered = 0usize;
     for runtime in runtimes {
         if spawn_recovered_harness(

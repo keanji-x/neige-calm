@@ -12,7 +12,7 @@ use calm_exec::flow::{WorkerFlowItemSink, WorkerFlowSource};
 use calm_truth::worker_flow_sink::WorkerFlowSink;
 use calm_types::error::CoreError;
 use calm_types::event::Event;
-use calm_types::runtime::{AgentProvider, RuntimeKind, WorkerSessionProjection};
+use calm_types::runtime::{AgentProvider, WorkerSessionKind, WorkerSessionProjection};
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -119,15 +119,17 @@ impl WorkerFlowDriver {
     pub async fn start_on_boot(self: &Arc<Self>) -> Result<(), CoreError> {
         let mut runtimes = self
             .repo
-            .runtimes_active_for_kind(RuntimeKind::CodexCard)
+            .session_projection_active_for_kind(WorkerSessionKind::CodexCard)
             .await
-            .map_err(|e| CoreError::Internal(format!("runtimes_active_for_kind codex: {e}")))?;
+            .map_err(|e| {
+                CoreError::Internal(format!("session_projection_active_for_kind codex: {e}"))
+            })?;
         runtimes.extend(
             self.repo
-                .runtimes_active_for_kind(RuntimeKind::ClaudeCard)
+                .session_projection_active_for_kind(WorkerSessionKind::ClaudeCard)
                 .await
                 .map_err(|e| {
-                    CoreError::Internal(format!("runtimes_active_for_kind claude: {e}"))
+                    CoreError::Internal(format!("session_projection_active_for_kind claude: {e}"))
                 })?,
         );
         for runtime in runtimes {
@@ -206,7 +208,7 @@ impl WorkerFlowDriver {
                 agent_provider,
                 ..
             } if is_supported_runtime_pair(&kind, agent_provider.as_ref()) => {
-                match self.repo.runtime_get_by_id(&runtime_id).await {
+                match self.repo.session_projection_by_id(&runtime_id).await {
                     Ok(Some(runtime)) => {
                         if let Err(err) = self.attach_runtime(runtime).await {
                             tracing::warn!(
@@ -244,7 +246,7 @@ impl WorkerFlowDriver {
                     | WorkerSessionState::Idle
                     | WorkerSessionState::TurnPending,
                 ..
-            } => match self.repo.runtime_get_by_id(&runtime_id).await {
+            } => match self.repo.session_projection_by_id(&runtime_id).await {
                 Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
                     if let Err(err) = self.attach_runtime(runtime).await {
                         tracing::warn!(
@@ -263,7 +265,7 @@ impl WorkerFlowDriver {
             },
             Event::CardAdded(card) if card.kind == "codex" || card.kind == "claude" => {
                 let card_id = card.id.to_string();
-                match self.repo.runtime_get_active_for_card(&card_id).await {
+                match self.repo.session_projection_active_for_card(&card_id).await {
                     Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
                         if let Err(err) = self.attach_runtime(runtime).await {
                             tracing::warn!(
@@ -291,7 +293,7 @@ impl WorkerFlowDriver {
                 ..
             } => {
                 self.cancel_card(&card_id).await;
-                match self.repo.runtime_get_by_id(&new_runtime_id).await {
+                match self.repo.session_projection_by_id(&new_runtime_id).await {
                     Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
                         if let Err(err) = self.attach_runtime(runtime).await {
                             tracing::warn!(
@@ -467,8 +469,10 @@ enum FlowSourceKind {
 
 fn source_kind_for_runtime(runtime: &WorkerSessionProjection) -> Option<FlowSourceKind> {
     match (&runtime.kind, runtime.agent_provider.as_ref()) {
-        (RuntimeKind::CodexCard, Some(AgentProvider::Codex)) => Some(FlowSourceKind::Codex),
-        (RuntimeKind::ClaudeCard, Some(AgentProvider::Claude)) => Some(FlowSourceKind::Claude),
+        (WorkerSessionKind::CodexCard, Some(AgentProvider::Codex)) => Some(FlowSourceKind::Codex),
+        (WorkerSessionKind::ClaudeCard, Some(AgentProvider::Claude)) => {
+            Some(FlowSourceKind::Claude)
+        }
         _ => None,
     }
 }
@@ -477,11 +481,11 @@ fn is_supported_runtime(runtime: &WorkerSessionProjection) -> bool {
     source_kind_for_runtime(runtime).is_some()
 }
 
-fn is_supported_runtime_pair(kind: &RuntimeKind, provider: Option<&AgentProvider>) -> bool {
+fn is_supported_runtime_pair(kind: &WorkerSessionKind, provider: Option<&AgentProvider>) -> bool {
     matches!(
         (kind, provider),
-        (RuntimeKind::CodexCard, Some(AgentProvider::Codex))
-            | (RuntimeKind::ClaudeCard, Some(AgentProvider::Claude))
+        (WorkerSessionKind::CodexCard, Some(AgentProvider::Codex))
+            | (WorkerSessionKind::ClaudeCard, Some(AgentProvider::Claude))
     )
 }
 

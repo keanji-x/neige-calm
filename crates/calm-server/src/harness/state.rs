@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::runtime_repo::WorkerSessionState;
+use crate::session_projection_repo::WorkerSessionState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HarnessState {

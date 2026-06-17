@@ -10,7 +10,9 @@ use calm_server::db::sqlite::{
 use calm_server::event::EventBus;
 use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionProjection};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
+};
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::worker_flow::claude_transcript::{
     ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions,
@@ -177,10 +179,10 @@ pub async fn seed_runtime_for_card_with_status(
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: format!("rt-{}", card.id),
             card_id: card.id.as_str().to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status,
             terminal_run_id: None,
@@ -188,8 +190,6 @@ pub async fn seed_runtime_for_card_with_status(
             session_id: thread_id.map(|id| format!("sess-{id}")),
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
@@ -209,10 +209,10 @@ pub async fn seed_claude_runtime_for_card_with_status(
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime = session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: format!("rt-{}", card.id),
             card_id: card.id.as_str().to_string(),
-            kind: RuntimeKind::ClaudeCard,
+            kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status,
             terminal_run_id: None,
@@ -220,8 +220,6 @@ pub async fn seed_claude_runtime_for_card_with_status(
             session_id: Some(session_id.to_string()),
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },

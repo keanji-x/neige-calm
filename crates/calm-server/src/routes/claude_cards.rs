@@ -20,7 +20,7 @@ use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
-use crate::runtime_lookup::project_runtime_into_card_payload;
+use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
     Json, Router,

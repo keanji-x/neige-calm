@@ -14,8 +14,10 @@ use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_lookup::project_runtime_into_cards_payload;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_lookup::project_runtime_into_cards_payload;
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use clap::Parser;
@@ -274,11 +276,11 @@ async fn create_prompt_card_writes_runtime_and_projects_thread_id() {
     // exits quickly → attach_reader marks runtime Exited before this read.
     let runtime = boot
         .repo
-        .runtime_get_projectable_for_card(&card_id.to_string())
+        .session_projection_projectable_for_card(&card_id.to_string())
         .await
         .unwrap()
         .expect("runtime row");
-    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
     assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
 }
 
@@ -629,10 +631,10 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card_id.clone(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::TurnPending,
             terminal_run_id: Some(terminal.id.to_string()),
@@ -640,8 +642,6 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
@@ -667,7 +667,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     );
     let runtime = boot
         .repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime");

@@ -2805,6 +2805,216 @@ fn sqlite_version_at_least(version: &str, want_major: u64, want_minor: u64) -> b
 mod tests {
     use super::*;
 
+    struct LegacyCompensationHarness {
+        repo: Arc<crate::db::sqlite::SqlxRepo>,
+        route_repo: Arc<dyn crate::db::RouteRepo>,
+        spawn_ctx: SpawnCtx,
+        output: TxOutput,
+        op: Operation,
+        card_id: String,
+        runtime_id: String,
+        events: EventBus,
+    }
+
+    async fn legacy_compensation_harness(
+        card_kind: &str,
+        session_kind: crate::session_projection_repo::WorkerSessionKind,
+        agent_provider: Option<crate::session_projection_repo::AgentProvider>,
+    ) -> LegacyCompensationHarness {
+        let repo = Arc::new(
+            crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let cove = crate::db::RepoSyncDomainRaw::cove_create(
+            repo.as_ref(),
+            crate::model::NewCove {
+                name: "legacy compensation".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = crate::db::RepoSyncDomainRaw::wave_create(
+            repo.as_ref(),
+            crate::model::NewWave {
+                cove_id: cove.id,
+                title: "legacy compensation".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            },
+        )
+        .await
+        .unwrap();
+        let card = crate::db::RepoSyncDomainRaw::card_create(
+            repo.as_ref(),
+            crate::model::NewCard {
+                wave_id: wave.id,
+                kind: card_kind.into(),
+                sort: None,
+                payload: json!({ "schemaVersion": 1 }),
+            },
+        )
+        .await
+        .unwrap();
+        let runtime_id = new_id();
+        let mut tx = repo.pool().begin().await.unwrap();
+        crate::db::sqlite::session_start_runtime_tx(
+            &mut tx,
+            crate::session_projection_repo::WorkerSessionInit {
+                id: runtime_id.clone(),
+                card_id: card.id.to_string(),
+                kind: session_kind,
+                agent_provider,
+                status: crate::session_projection_repo::WorkerSessionState::Running,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
+        let events = EventBus::new();
+        let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        let spawn_ctx = SpawnCtx::new(
+            route_repo.clone(),
+            operation_repo,
+            Arc::new(DaemonClient::new_stub()),
+            terminal_renderer,
+            events.clone(),
+            OperationCompletionBus::new(),
+        );
+        let card_id = card.id.to_string();
+
+        LegacyCompensationHarness {
+            repo,
+            route_repo,
+            spawn_ctx,
+            output: TxOutput::new("card", Some(card_id.clone()), json!({})),
+            op: Operation {
+                id: new_id(),
+                operation_key: new_id(),
+                kind: format!("{card_kind}-test"),
+                idempotency_key: Some(new_id()),
+                payload_hash: new_id(),
+                target_type: "card".into(),
+                target_id: Some(card_id.clone()),
+                target: json!({ "type": "card", "id": card_id }),
+                payload: json!({}),
+                tx_output: None,
+                phase: Phase::Compensating,
+                phase_detail: None,
+                attempt: 0,
+                last_error: None,
+                compensation_state: None,
+                lease_owner: None,
+                lease_until_ms: None,
+                spawn_artifacts: None,
+                parked_at_ms: None,
+                parked_deadline_ms: None,
+            },
+            card_id,
+            runtime_id,
+            events,
+        }
+    }
+
+    async fn assert_legacy_failed_status_compensation(
+        adapter: &dyn ProviderAdapter,
+        harness: LegacyCompensationHarness,
+    ) {
+        let step = CompensationStep {
+            op: "runtime_set_status_failed_for_card".into(),
+            args: json!({ "card_id": harness.card_id }),
+            completed: false,
+            attempts: 0,
+            last_error: None,
+        };
+
+        adapter
+            .compensate_step(&step, &harness.output, &harness.op, &harness.spawn_ctx)
+            .await
+            .unwrap();
+
+        let runtime =
+            crate::session_projection_repo::WorkerSessionProjectionRepo::session_projection_by_id(
+                harness.repo.as_ref(),
+                &harness.runtime_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime.status,
+            crate::session_projection_repo::WorkerSessionState::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
+        let harness = legacy_compensation_harness(
+            "codex",
+            crate::session_projection_repo::WorkerSessionKind::CodexCard,
+            Some(crate::session_projection_repo::AgentProvider::Codex),
+        )
+        .await;
+        let repo: Arc<dyn crate::db::Repo> = harness.repo.clone();
+        let adapter = crate::operation::codex_adapter::CodexAdapter::new(
+            harness.route_repo.clone(),
+            Arc::new(crate::state::CodexClient::new_stub()),
+            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+            Arc::new(
+                crate::pending_codex_threads::PendingThreadStartRegistry::new(
+                    repo,
+                    harness.events.clone(),
+                ),
+            ),
+            Arc::new(Mutex::new(())),
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        );
+        assert_legacy_failed_status_compensation(&adapter, harness).await;
+
+        let harness = legacy_compensation_harness(
+            "claude",
+            crate::session_projection_repo::WorkerSessionKind::ClaudeCard,
+            Some(crate::session_projection_repo::AgentProvider::Claude),
+        )
+        .await;
+        let adapter = crate::operation::claude_adapter::ClaudeAdapter::new(
+            harness.route_repo.clone(),
+            Arc::new(crate::state::CodexClient::new_stub()),
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        );
+        assert_legacy_failed_status_compensation(&adapter, harness).await;
+
+        let harness = legacy_compensation_harness(
+            "claude",
+            crate::session_projection_repo::WorkerSessionKind::ClaudeCard,
+            Some(crate::session_projection_repo::AgentProvider::Claude),
+        )
+        .await;
+        let adapter = crate::operation::claude_restart_adapter::ClaudeRestartAdapter::new(
+            harness.route_repo.clone(),
+            Arc::new(crate::state::CodexClient::new_stub()),
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        );
+        assert_legacy_failed_status_compensation(&adapter, harness).await;
+    }
+
     #[test]
     fn phase_split_round_trips_all_variants() {
         let cases = vec![

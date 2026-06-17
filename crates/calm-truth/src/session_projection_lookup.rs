@@ -6,9 +6,9 @@ use crate::db::RouteRepo;
 use crate::error::Result;
 use crate::event::Event;
 use crate::model::{Card, CardRuntimeView};
-use crate::runtime_repo::{
-    AgentProvider, Result as RuntimeResult, RuntimeKind, RuntimeRepo, WorkerSessionProjection,
-    WorkerSessionState,
+use crate::session_projection_repo::{
+    AgentProvider, Result as WorkerSessionProjectionResult, WorkerSessionKind,
+    WorkerSessionProjection, WorkerSessionProjectionRepo, WorkerSessionState,
 };
 use serde_json::Value;
 
@@ -19,7 +19,7 @@ pub async fn resolve_active_thread_for_card(
     card_id: &str,
 ) -> Result<Option<String>> {
     let Some(runtime) = repo
-        .runtime_get_active_for_card(&card_id.to_string())
+        .session_projection_active_for_card(&card_id.to_string())
         .await?
     else {
         return Ok(None);
@@ -36,11 +36,11 @@ pub async fn resolve_card_for_thread(
 ) -> Result<Option<String>> {
     let active = match &provider {
         AgentProvider::Codex => {
-            repo.runtime_get_active_by_thread(AgentProvider::Codex, thread_id)
+            repo.session_projection_active_by_thread(AgentProvider::Codex, thread_id)
                 .await?
         }
         AgentProvider::Claude => {
-            repo.runtime_get_active_by_session(AgentProvider::Claude, thread_id)
+            repo.session_projection_active_by_session(AgentProvider::Claude, thread_id)
                 .await?
         }
     };
@@ -55,7 +55,7 @@ pub async fn resolve_claude_session_for_card(
     card_id: &str,
 ) -> Result<Option<String>> {
     let runtime = repo
-        .runtime_get_projectable_for_card(&card_id.to_string())
+        .session_projection_projectable_for_card(&card_id.to_string())
         .await?;
     if let Some(runtime) = runtime.as_ref()
         && let Some(session_id) = non_empty(runtime.session_id.as_deref())
@@ -73,7 +73,7 @@ pub async fn resolve_claude_session_for_card(
             .map(ToOwned::to_owned)
     });
     tracing::warn!(
-        target: "runtime_lookup::fallback",
+        target: "session_projection_lookup::fallback",
         card_id,
         runtime_id = runtime.as_ref().map(|runtime| runtime.id.as_str()),
         legacy_hit = legacy_session.is_some(),
@@ -86,7 +86,9 @@ pub async fn resolve_claude_session_for_card(
 pub async fn merge_active_shared_thread_attribution(
     repo: &dyn RouteRepo,
 ) -> Result<HashMap<String, String>> {
-    let runtime_rows = repo.runtime_active_shared_thread_attribution().await?;
+    let runtime_rows = repo
+        .session_projection_active_shared_thread_attribution()
+        .await?;
     let mut merged = HashMap::new();
     for (thread_id, card_id) in runtime_rows {
         merged.insert(card_id, thread_id);
@@ -104,12 +106,12 @@ pub async fn merge_active_shared_thread_attribution(
 /// Runtime row is SOT; fields the runtime knows are overwritten in payload to
 /// reflect runtime truth. Fields the runtime has no opinion on are left
 /// untouched.
-pub async fn project_runtime_into_card_payload<R: RuntimeRepo + ?Sized>(
+pub async fn project_runtime_into_card_payload<R: WorkerSessionProjectionRepo + ?Sized>(
     repo: &R,
     card: &mut Card,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let Some(runtime) = repo
-        .runtime_get_projectable_for_card(&card.id.to_string())
+        .session_projection_projectable_for_card(&card.id.to_string())
         .await?
     else {
         return Ok(());
@@ -118,15 +120,17 @@ pub async fn project_runtime_into_card_payload<R: RuntimeRepo + ?Sized>(
     Ok(())
 }
 
-pub async fn project_runtime_into_cards_payload<R: RuntimeRepo + ?Sized>(
+pub async fn project_runtime_into_cards_payload<R: WorkerSessionProjectionRepo + ?Sized>(
     repo: &R,
     cards: &mut [Card],
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     let card_ids = cards
         .iter()
         .map(|card| card.id.to_string())
         .collect::<Vec<_>>();
-    let runtimes = repo.runtime_get_projectable_for_cards(&card_ids).await?;
+    let runtimes = repo
+        .session_projection_projectable_for_cards(&card_ids)
+        .await?;
     for card in cards {
         if let Some(runtime) = runtimes.get(&card.id.to_string()) {
             project_runtime_fields(card, runtime);
@@ -135,10 +139,10 @@ pub async fn project_runtime_into_cards_payload<R: RuntimeRepo + ?Sized>(
     Ok(())
 }
 
-pub async fn project_runtime_into_event_payload<R: RuntimeRepo + ?Sized>(
+pub async fn project_runtime_into_event_payload<R: WorkerSessionProjectionRepo + ?Sized>(
     repo: &R,
     event: &mut Event,
-) -> RuntimeResult<()> {
+) -> WorkerSessionProjectionResult<()> {
     match event {
         Event::CardAdded(card) | Event::CardUpdated(card) => {
             project_runtime_into_card_payload(repo, card).await?;
@@ -152,7 +156,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
     let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
     let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
     let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
-    let source = (runtime.kind == RuntimeKind::SharedSpec).then(|| "shared".to_string());
+    let source = (runtime.kind == WorkerSessionKind::SharedSpec).then(|| "shared".to_string());
     let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
 
     card.runtime = Some(CardRuntimeView {
@@ -175,7 +179,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
         map.insert("terminal_id".into(), Value::String(terminal_id));
     }
 
-    if runtime.kind == RuntimeKind::ClaudeCard
+    if runtime.kind == WorkerSessionKind::ClaudeCard
         && let Some(session_id) = session_id
     {
         map.insert("claude_session_id".into(), Value::String(session_id));
@@ -183,7 +187,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
 
     if matches!(
         runtime.kind,
-        RuntimeKind::CodexCard | RuntimeKind::SharedSpec
+        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedSpec
     ) && let Some(thread_id) = thread_id
     {
         map.insert("codex_thread_id".into(), Value::String(thread_id));
@@ -207,7 +211,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
         terminal_id: non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned),
         thread_id: non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned),
         session_id: non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned),
-        source: (runtime.kind == RuntimeKind::SharedSpec).then(|| "shared".to_string()),
+        source: (runtime.kind == WorkerSessionKind::SharedSpec).then(|| "shared".to_string()),
         thread_status: projected_thread_status(runtime).map(ToOwned::to_owned),
     }
 }
@@ -215,7 +219,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
 fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static str> {
     if !matches!(
         runtime.kind,
-        RuntimeKind::CodexCard | RuntimeKind::SharedSpec
+        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedSpec
     ) {
         return None;
     }
@@ -251,7 +255,7 @@ pub fn card_is_shared_spec(card: &Card, runtime: Option<&WorkerSessionProjection
         == Some("shared");
     if legacy_shared {
         tracing::warn!(
-            target: "runtime_lookup::fallback",
+            target: "session_projection_lookup::fallback",
             card_id = %card.id,
             "runtime shared-card discriminator missed; falling back to card payload"
         );
@@ -260,8 +264,8 @@ pub fn card_is_shared_spec(card: &Card, runtime: Option<&WorkerSessionProjection
 }
 
 fn runtime_marks_shared(runtime: &WorkerSessionProjection) -> bool {
-    matches!(runtime.kind, RuntimeKind::SharedSpec)
-        || (matches!(runtime.kind, RuntimeKind::CodexCard)
+    matches!(runtime.kind, WorkerSessionKind::SharedSpec)
+        || (matches!(runtime.kind, WorkerSessionKind::CodexCard)
             && runtime.agent_provider == Some(AgentProvider::Codex)
             && runtime
                 .thread_id

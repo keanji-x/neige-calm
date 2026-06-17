@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_with_claude_create_tx, runtime_get_active_for_card_tx,
+    append_decision_event_in_tx, card_with_claude_create_tx, session_projection_active_for_card_tx,
     session_set_status_tx,
 };
 use crate::db::write_with_events_typed;
@@ -20,7 +20,7 @@ use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_comman
 use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
-use crate::runtime_repo::{AgentProvider, RuntimeKind, WorkerSessionState};
+use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -338,7 +338,7 @@ impl ProviderAdapter for ClaudeAdapter {
         let runtime_event = Event::RuntimeStarted {
             runtime_id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::ClaudeCard,
+            kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Starting,
         };
@@ -462,7 +462,7 @@ impl ProviderAdapter for ClaudeAdapter {
         match handle {
             Ok(handle) => {
                 let status_result: Result<()> = async {
-                    let existing = ctx.repo.runtime_get_active_for_card(&card_id).await?;
+                    let existing = ctx.repo.session_projection_active_for_card(&card_id).await?;
                     let needs_status_write = existing
                         .as_ref()
                         .map(|runtime| runtime.status != WorkerSessionState::Running)
@@ -499,7 +499,7 @@ impl ProviderAdapter for ClaudeAdapter {
                         move |tx| {
                             Box::pin(async move {
                                 let runtime =
-                                    runtime_get_active_for_card_tx(tx, &card_id_for_tx)
+                                    session_projection_active_for_card_tx(tx, &card_id_for_tx)
                                         .await?
                                         .ok_or_else(|| {
                                             CalmError::Internal(format!(
@@ -568,7 +568,7 @@ impl ProviderAdapter for ClaudeAdapter {
                     json!({ "settings_dir": settings_dir }),
                 ),
                 step(
-                    "runtime_set_status_failed_for_card",
+                    "session_projection_set_status_failed_for_card",
                     json!({ "card_id": card_id }),
                 ),
             ],
@@ -601,10 +601,14 @@ impl ProviderAdapter for ClaudeAdapter {
                 let settings_dir = step_arg_string(step, "settings_dir")?;
                 remove_dir_all_idempotent(Path::new(&settings_dir))
             }
-            "runtime_set_status_failed_for_card" => {
+            // Back-compat: operations that entered `compensating` under a pre-PR10-d
+            // release persisted the legacy op string; accept it during recovery so
+            // in-flight compensation states still drain. New states write the new name.
+            "session_projection_set_status_failed_for_card"
+            | "runtime_set_status_failed_for_card" => {
                 let card_id = step_arg_string(step, "card_id")?;
                 ctx.repo
-                    .runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
+                    .session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await?;
                 Ok(())
             }

@@ -18,7 +18,9 @@ use calm_server::event::{Event, EventBus};
 use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -27,10 +29,10 @@ async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card_id.to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -38,8 +40,6 @@ async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },

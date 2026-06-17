@@ -6,7 +6,7 @@ use std::time::Duration;
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::runtime_repo::{RuntimeRepo, WorkerSessionState};
+use calm_server::session_projection_repo::{WorkerSessionProjectionRepo, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
@@ -88,7 +88,7 @@ async fn claude_transcript_source_exits_during_lazy_retry_when_runtime_becomes_t
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert_eq!(driver.tasks_alive_for_test().await, 1);
-    repo.runtime_set_status_for_card(card_id, WorkerSessionState::Exited)
+    repo.session_projection_set_status_for_card(card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
 
@@ -150,7 +150,7 @@ async fn claude_transcript_source_drains_file_created_as_runtime_exits_during_la
         },
         async move {
             exit_repo
-                .runtime_set_status_for_card(card_id, WorkerSessionState::Exited)
+                .session_projection_set_status_for_card(card_id, WorkerSessionState::Exited)
                 .await
                 .unwrap();
         }

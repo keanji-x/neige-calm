@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::{SqlxRepo, session_set_status_tx};
-use calm_server::runtime_repo::WorkerSessionState;
+use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::worker_flow::claude_transcript::CLAUDE_TRANSCRIPT_SOURCE_KIND;
 
 use support::worker_flow as wf;

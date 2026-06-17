@@ -4,10 +4,10 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::db::Repo;
-use crate::db::sqlite::{runtime_get_by_id_tx, session_mark_superseded_runtime_tx};
+use crate::db::sqlite::{session_mark_superseded_runtime_tx, session_projection_by_id_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
-use crate::runtime_repo::RuntimeId;
+use crate::session_projection_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
 use super::{
@@ -72,7 +72,7 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
         _op: &Operation,
     ) -> Result<TxOutput> {
         let payload: SpecHarnessShutdownOperationPayload = serde_json::from_value(input.clone())?;
-        let runtime = runtime_get_by_id_tx(tx, &payload.runtime_id)
+        let runtime = session_projection_by_id_tx(tx, &payload.runtime_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.runtime_id)))?;
         session_mark_superseded_runtime_tx(tx, &payload.runtime_id).await?;
@@ -103,7 +103,7 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
         let runtime_id = output_string(output, "runtime_id")?;
         if let Some(harness) = self.harness_registry.remove(&runtime_id) {
             harness.shutdown().await?;
-        } else if let Some(runtime) = self.repo.runtime_get_by_id(&runtime_id).await?
+        } else if let Some(runtime) = self.repo.session_projection_by_id(&runtime_id).await?
             && let Some(thread_id) = runtime.thread_id.as_deref()
         {
             let cached_turn = self.daemon.active_turn_id_for_thread(thread_id);

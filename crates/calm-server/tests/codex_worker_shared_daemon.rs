@@ -21,8 +21,8 @@ use calm_server::operation::{
     ProviderAdapter, SpawnCtx, SqlxOperationRepo, TxOutput,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_lookup::project_runtime_into_cards_payload;
-use calm_server::runtime_repo::{RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_lookup::project_runtime_into_cards_payload;
+use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -463,7 +463,11 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
     let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
     let card_id = output.data["card_id"].as_str().unwrap().to_string();
     assert_card_session_mcp_hash_parity(&repo, &card_id, &runtime_id).await;
-    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    let runtime = repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
     assert_eq!(runtime.active_turn_id.as_deref(), Some("fake-turn-0001"));
     assert_eq!(state.shared_codex_appserver.turn_start_count_for_test(), 1);
@@ -474,7 +478,11 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
         let repo = repo.clone();
         let runtime_id = runtime_id.clone();
         async move {
-            let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+            let runtime = repo
+                .session_projection_by_id(&runtime_id)
+                .await
+                .unwrap()
+                .unwrap();
             (runtime.status != WorkerSessionState::Running).then_some(())
         }
     })
@@ -521,7 +529,11 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
         OperationOutcome::Succeeded { .. }
     ));
 
-    let recovered = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    let recovered = repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(recovered.thread_id.as_deref(), Some("fake-thread-0001"));
     assert_eq!(recovered.active_turn_id.as_deref(), Some("fake-turn-0001"));
     assert_eq!(
@@ -762,11 +774,11 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     // exits quickly → attach_reader marks runtime Exited before this read.
     let runtime = boot
         .repo
-        .runtime_get_projectable_for_card(&card.id.to_string())
+        .session_projection_projectable_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("runtime");
-    assert_eq!(runtime.kind, RuntimeKind::CodexCard);
+    assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
     assert_eq!(runtime.thread_id.as_deref(), Some("fake-thread-0001"));
     let terminal_id = card.payload["terminal_id"].as_str().unwrap();
     let entry = wait_for(Duration::from_secs(3), || async {

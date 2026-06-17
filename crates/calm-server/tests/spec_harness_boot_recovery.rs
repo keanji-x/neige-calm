@@ -15,7 +15,9 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::TxOutput;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
@@ -101,10 +103,10 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -112,8 +114,6 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -186,10 +186,10 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -197,8 +197,6 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -216,7 +214,11 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
     .unwrap();
     assert_eq!(recovered, 0);
     assert!(state.harness.get(&runtime_id).is_none());
-    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    let runtime = repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(stored.pending_queue.len(), 1);
@@ -266,10 +268,10 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -277,8 +279,6 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -411,10 +411,10 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -422,8 +422,6 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -445,7 +443,11 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     .await
     .unwrap();
     assert_eq!(recovered, 1);
-    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    let runtime = repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(stored.push_watermark, queued_id.max(missed_id));
@@ -508,10 +510,10 @@ async fn boot_recovery_skips_terminal_waves() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -519,8 +521,6 @@ async fn boot_recovery_skips_terminal_waves() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -588,10 +588,10 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_prepare_deferred_spec_tx(
         &mut tx,
-        &RuntimeInit {
+        &WorkerSessionInit {
             id: placeholder_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -599,8 +599,6 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -709,10 +707,10 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         let mut tx = repo.pool().begin().await.unwrap();
         session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: old_runtime_id.clone(),
                 card_id: card.id.to_string(),
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Idle,
                 terminal_run_id: None,
@@ -720,8 +718,6 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: Some(serde_json::to_value(&old_snapshot).unwrap()),
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: now,
             },
@@ -730,10 +726,10 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         .unwrap();
         session_prepare_deferred_spec_tx(
             &mut tx,
-            &RuntimeInit {
+            &WorkerSessionInit {
                 id: placeholder_id.clone(),
                 card_id: card.id.to_string(),
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Starting,
                 terminal_run_id: None,
@@ -741,8 +737,6 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: Some(serde_json::to_value(&placeholder_snapshot).unwrap()),
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: now + 1,
             },
@@ -798,7 +792,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         .unwrap();
 
     let active = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("phase-2 recovery should leave a new active session");
@@ -1013,10 +1007,10 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -1024,8 +1018,6 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -1047,7 +1039,11 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     .await
     .unwrap();
     assert_eq!(recovered, 1);
-    let runtime = repo.runtime_get_by_id(&runtime_id).await.unwrap().unwrap();
+    let runtime = repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(

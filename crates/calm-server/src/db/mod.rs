@@ -21,7 +21,7 @@ pub mod prelude {
         Repo, RouteRepo, ServerRepoEventWriteExt, ServerRepoOutOfDomainExt, ServerRepoReadExt,
         ServerRepoSyncDomainRawExt,
     };
-    pub use crate::runtime_repo::RuntimeRepo;
+    pub use crate::session_projection_repo::WorkerSessionProjectionRepo;
     pub use calm_truth::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo};
 }
 

@@ -9,7 +9,9 @@ use calm_server::event::EventBus;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -89,10 +91,10 @@ async fn bind_claude_session(repo: &SqlxRepo, card_id: &str, session_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: card_id.to_string(),
-            kind: RuntimeKind::ClaudeCard,
+            kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -100,8 +102,6 @@ async fn bind_claude_session(repo: &SqlxRepo, card_id: &str, session_id: &str) {
             session_id: Some(session_id.to_string()),
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },

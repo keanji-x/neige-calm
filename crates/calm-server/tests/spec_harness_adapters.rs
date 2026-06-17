@@ -6,8 +6,8 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, runtime_get_by_id_tx,
-    session_mcp_token_set_tx, session_start_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, session_mcp_token_set_tx,
+    session_projection_by_id_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -22,7 +22,9 @@ use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperatio
 use calm_server::operation::{OperationKey, OperationOutcome, PhaseTag, TxOutput};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -316,7 +318,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
     ));
 
     let runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime row");
@@ -377,7 +379,11 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         wait_op(&state, &shutdown_id).await,
         OperationOutcome::Succeeded { .. }
     ));
-    let stored = repo.runtime_get_by_id(&runtime.id).await.unwrap().unwrap();
+    let stored = repo
+        .session_projection_by_id(&runtime.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stored.status, WorkerSessionState::Superseded);
     assert!(state.harness.get(&runtime.id).is_none());
 }
@@ -394,10 +400,10 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id,
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Superseded,
             terminal_run_id: None,
@@ -405,8 +411,6 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
             session_id: None,
             active_turn_id: Some(turn_id.clone()),
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -482,7 +486,7 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         .await
         .expect("first mint stores card MCP hash");
     let first_runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("first spec runtime");
@@ -532,7 +536,7 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         .expect("second mint stores card MCP hash");
     assert_ne!(first_hash, second_hash);
     let second_runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("second spec runtime");
@@ -568,10 +572,10 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         .unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card_id.clone(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -579,8 +583,6 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -655,7 +657,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     );
 
     let active = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("old runtime remains active");
@@ -691,10 +693,10 @@ async fn force_new_thread_kills_old_pty_immediately() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card_id.clone(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -702,8 +704,6 @@ async fn force_new_thread_kills_old_pty_immediately() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&old_snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -792,10 +792,10 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: old_runtime_id.clone(),
             card_id: card_id.clone(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -803,8 +803,6 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&old_snapshot).unwrap()),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -856,17 +854,17 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
     }
 
     let active = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("new active runtime");
     assert_ne!(active.id, old_runtime_id);
-    assert_eq!(active.kind, RuntimeKind::SharedSpec);
+    assert_eq!(active.kind, WorkerSessionKind::SharedSpec);
     assert_eq!(active.status, WorkerSessionState::Idle);
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let old = runtime_get_by_id_tx(&mut tx, &old_runtime_id)
+    let old = session_projection_by_id_tx(&mut tx, &old_runtime_id)
         .await
         .unwrap()
         .expect("old runtime");
@@ -922,7 +920,7 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
         OperationOutcome::Succeeded { .. }
     ));
     let first_thread = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime row")
@@ -956,7 +954,7 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
         OperationOutcome::Succeeded { .. }
     ));
     let recovered_thread = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime row after recovery")
@@ -999,7 +997,7 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
         OperationOutcome::Succeeded { .. }
     ));
     let first_thread = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime row")
@@ -1051,7 +1049,7 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
         OperationOutcome::Succeeded { .. }
     ));
     let recovered_thread = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime row after recovery")
@@ -1109,7 +1107,7 @@ async fn reusable_thread_without_token_fails_op() {
         .unwrap();
     assert!(card_mcp_hash(&repo, &card_id).await.is_none());
     let active = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("active runtime before reusable-thread recovery");
@@ -1195,7 +1193,7 @@ async fn reusable_thread_without_token_fails_op() {
         "failed reuse path must not re-mint a card MCP token"
     );
     let active_after = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("active runtime after failed reusable-thread recovery");
@@ -1306,7 +1304,7 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         OperationOutcome::Succeeded { .. }
     ));
     let recovered_thread = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime row after recovery")

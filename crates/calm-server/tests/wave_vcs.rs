@@ -15,7 +15,9 @@ use calm_server::model::{
     new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_fs_view::WaveFsView;
@@ -328,10 +330,10 @@ async fn start_codex_runtime_with_event(
                 .await?;
                 let runtime = session_start_runtime_tx(
                     tx,
-                    RuntimeInit {
+                    WorkerSessionInit {
                         id: runtime_id,
                         card_id: card_id.to_string(),
-                        kind: RuntimeKind::CodexCard,
+                        kind: WorkerSessionKind::CodexCard,
                         agent_provider: Some(AgentProvider::Codex),
                         status: WorkerSessionState::Running,
                         terminal_run_id: Some(terminal.id),
@@ -339,8 +341,6 @@ async fn start_codex_runtime_with_event(
                         session_id: None,
                         active_turn_id: None,
                         handle_state_json: None,
-                        lease_owner: None,
-                        lease_until_ms: None,
                         spawn_op_id: None,
                         now_ms: now_ms(),
                     },
@@ -3021,10 +3021,10 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
     let mut tx = repo.pool().begin().await.expect("begin runtime");
     let runtime = session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: new_id(),
             card_id: worker.id.to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -3032,8 +3032,6 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -3117,10 +3115,10 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
         let terminal_id = terminal.id.clone();
         let runtime = session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: new_id(),
                 card_id: spec.id.to_string(),
-                kind: RuntimeKind::SharedSpec,
+                kind: WorkerSessionKind::SharedSpec,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
                 terminal_run_id: Some(terminal_id.clone()),
@@ -3128,8 +3126,6 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: now_ms(),
             },

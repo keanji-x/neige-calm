@@ -14,14 +14,14 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, runtime_get_active_for_card_tx,
-    session_bind_attribution_tx, session_start_runtime_tx,
+    SqlxRepo, card_with_codex_create_tx, session_bind_attribution_tx,
+    session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
-use calm_server::runtime_repo::{
-    AgentProvider, RuntimeInit, RuntimeKind, ThreadAttribution, WorkerSessionState,
+use calm_server::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -139,7 +139,7 @@ async fn boot() -> Boot {
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
-    if let Some(runtime) = runtime_get_active_for_card_tx(&mut tx, card_id)
+    if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
     {
@@ -159,10 +159,10 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     } else {
         session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: calm_server::model::new_id(),
                 card_id: card_id.to_string(),
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
                 terminal_run_id: None,
@@ -170,8 +170,6 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: now_ms(),
             },

@@ -30,7 +30,7 @@ use calm_server::event::{ArtifactRef, EditAuthor, Event, WaveUpdatedPayload};
 use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
-use calm_server::runtime_repo::{AgentProvider, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -238,7 +238,7 @@ golden_test!(
         payload: json!({"foo": "bar"}),
         runtime: Some(CardRuntimeView {
             runtime_id: "rt-01".into(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             status: WorkerSessionState::Running,
             provider: Some(AgentProvider::Codex),
             terminal_id: Some("term-01".into()),
@@ -267,7 +267,7 @@ golden_test!(
         payload: json!({"n": 1}),
         runtime: Some(CardRuntimeView {
             runtime_id: "rt-02".into(),
-            kind: RuntimeKind::Terminal,
+            kind: WorkerSessionKind::Terminal,
             status: WorkerSessionState::Exited,
             provider: None,
             terminal_id: None,
@@ -295,7 +295,7 @@ golden_test!(
     Event::RuntimeStarted {
         runtime_id: "rt-01".into(),
         card_id: "card-01".into(),
-        kind: RuntimeKind::ClaudeCard,
+        kind: WorkerSessionKind::ClaudeCard,
         agent_provider: Some(AgentProvider::Claude),
         status: WorkerSessionState::Starting,
     }
@@ -307,7 +307,7 @@ golden_test!(
     Event::RuntimeStarted {
         runtime_id: "rt-01".into(),
         card_id: "card-01".into(),
-        kind: RuntimeKind::Terminal,
+        kind: WorkerSessionKind::Terminal,
         agent_provider: None,
         status: WorkerSessionState::Starting,
     }

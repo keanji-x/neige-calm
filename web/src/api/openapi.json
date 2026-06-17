@@ -3495,7 +3495,7 @@
         ],
         "properties": {
           "kind": {
-            "$ref": "#/components/schemas/RuntimeKind"
+            "$ref": "#/components/schemas/WorkerSessionKind"
           },
           "provider": {
             "oneOf": [
@@ -4656,15 +4656,6 @@
           }
         }
       },
-      "RuntimeKind": {
-        "type": "string",
-        "enum": [
-          "terminal",
-          "codex",
-          "claude",
-          "shared-spec"
-        ]
-      },
       "SendSpecInputRequest": {
         "type": "object",
         "required": [
@@ -5594,6 +5585,15 @@
             "description": "Upper bound (inclusive) in unix milliseconds. Wave is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter."
           }
         }
+      },
+      "WorkerSessionKind": {
+        "type": "string",
+        "enum": [
+          "terminal",
+          "codex",
+          "claude",
+          "shared-spec"
+        ]
       },
       "WorkerSessionState": {
         "type": "string",

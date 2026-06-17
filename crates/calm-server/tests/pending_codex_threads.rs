@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, runtime_get_by_id_tx, session_start_runtime_tx, session_supersede_and_start_tx,
+    SqlxRepo, session_projection_by_id_tx, session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
@@ -15,8 +15,10 @@ use calm_server::operation::{
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
-use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_lookup::project_runtime_into_card_payload;
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -28,10 +30,10 @@ use tokio::sync::Mutex;
 async fn runtime_by_id_tx_snapshot(
     repo: &SqlxRepo,
     runtime_id: &str,
-) -> Option<calm_server::runtime_repo::WorkerSessionProjection> {
+) -> Option<calm_server::session_projection_repo::WorkerSessionProjection> {
     let id = runtime_id.to_string();
     let mut tx = repo.pool().begin().await.unwrap();
-    let runtime = runtime_get_by_id_tx(&mut tx, &id).await.unwrap();
+    let runtime = session_projection_by_id_tx(&mut tx, &id).await.unwrap();
     tx.commit().await.unwrap();
     runtime
 }
@@ -73,7 +75,7 @@ async fn boot_pending_server() -> (
 }
 
 async fn seed_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String {
-    seed_card_with_runtime_kind(repo, wave_id, terminal_id, RuntimeKind::CodexCard).await
+    seed_card_with_runtime_kind(repo, wave_id, terminal_id, WorkerSessionKind::CodexCard).await
 }
 
 async fn insert_terminal(repo: &SqlxRepo, card_id: &str, terminal_id: &str) {
@@ -100,7 +102,7 @@ async fn seed_card_with_runtime_kind(
     repo: &SqlxRepo,
     wave_id: &str,
     terminal_id: &str,
-    runtime_kind: RuntimeKind,
+    runtime_kind: WorkerSessionKind,
 ) -> String {
     let card = repo
         .card_create(NewCard {
@@ -118,7 +120,7 @@ async fn seed_card_with_runtime_kind(
 }
 
 async fn runtime_id_for_card(repo: &SqlxRepo, card_id: &str) -> String {
-    repo.runtime_get_active_for_card(&card_id.to_string())
+    repo.session_projection_active_for_card(&card_id.to_string())
         .await
         .unwrap()
         .expect("active runtime")
@@ -129,7 +131,7 @@ async fn start_runtime_for_card(
     repo: &SqlxRepo,
     card_id: &str,
     terminal_id: &str,
-    runtime_kind: RuntimeKind,
+    runtime_kind: WorkerSessionKind,
 ) -> String {
     start_runtime_for_card_with_thread(repo, card_id, terminal_id, runtime_kind, None).await
 }
@@ -138,14 +140,14 @@ async fn start_runtime_for_card_with_thread(
     repo: &SqlxRepo,
     card_id: &str,
     terminal_id: &str,
-    runtime_kind: RuntimeKind,
+    runtime_kind: WorkerSessionKind,
     thread_id: Option<&str>,
 ) -> String {
     let runtime_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card_id.to_string(),
             kind: runtime_kind,
@@ -156,8 +158,6 @@ async fn start_runtime_for_card_with_thread(
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -173,7 +173,7 @@ async fn supersede_runtime_for_card(
     old_runtime_id: &str,
     card_id: &str,
     terminal_id: &str,
-    runtime_kind: RuntimeKind,
+    runtime_kind: WorkerSessionKind,
 ) -> String {
     let runtime_id = new_id();
     let old_runtime_id = old_runtime_id.to_string();
@@ -181,7 +181,7 @@ async fn supersede_runtime_for_card(
     session_supersede_and_start_tx(
         &mut tx,
         &old_runtime_id,
-        RuntimeInit {
+        WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card_id.to_string(),
             kind: runtime_kind,
@@ -192,8 +192,6 @@ async fn supersede_runtime_for_card(
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -296,12 +294,12 @@ async fn register_and_bind_in_arrival_order() {
     );
 
     let runtime_a = repo
-        .runtime_get_active_for_card(&a)
+        .session_projection_active_for_card(&a)
         .await
         .unwrap()
         .expect("runtime a");
     let runtime_b = repo
-        .runtime_get_active_for_card(&b)
+        .session_projection_active_for_card(&b)
         .await
         .unwrap()
         .expect("runtime b");
@@ -359,7 +357,7 @@ async fn bind_persists_to_runtime_and_projects_payload() {
     assert!(card.payload.get("codex_thread_id").is_none());
     assert!(card.payload.get("codex_thread_status").is_none());
     let runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime row");
@@ -381,11 +379,15 @@ async fn bind_persists_to_runtime_and_projects_payload() {
 async fn bind_entry_clears_terminal_run_id() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
-    let card_id =
-        seed_card_with_runtime_kind(&repo, &wave_id, "term-bind-clear", RuntimeKind::SharedSpec)
-            .await;
+    let card_id = seed_card_with_runtime_kind(
+        &repo,
+        &wave_id,
+        "term-bind-clear",
+        WorkerSessionKind::SharedSpec,
+    )
+    .await;
     let runtime_id = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("active runtime")
@@ -398,7 +400,7 @@ async fn bind_entry_clears_terminal_run_id() {
     registry.on_thread_started("T-bind-clear").await.unwrap();
 
     let runtime = repo
-        .runtime_get_by_id(&runtime_id)
+        .session_projection_by_id(&runtime_id)
         .await
         .unwrap()
         .expect("runtime row");
@@ -413,7 +415,7 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-codex-card").await;
     let runtime_id = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("active runtime")
@@ -426,7 +428,7 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
     registry.on_thread_started("T-codex-card").await.unwrap();
 
     let runtime = repo
-        .runtime_get_by_id(&runtime_id)
+        .session_projection_by_id(&runtime_id)
         .await
         .unwrap()
         .expect("runtime row");
@@ -443,13 +445,18 @@ async fn bind_entry_keeps_terminal_run_id_for_codex_card_kind() {
 async fn on_thread_started_drops_entry_when_registered_runtime_inactive() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
-    let card_id =
-        seed_card_with_runtime_kind(&repo, &wave_id, "term-missing", RuntimeKind::SharedSpec).await;
+    let card_id = seed_card_with_runtime_kind(
+        &repo,
+        &wave_id,
+        "term-missing",
+        WorkerSessionKind::SharedSpec,
+    )
+    .await;
     registry
         .register(entry(&repo, &card_id, &wave_id, "term-missing").await)
         .await
         .unwrap();
-    repo.runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
+    repo.session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
         .await
         .unwrap();
 
@@ -458,7 +465,7 @@ async fn on_thread_started_drops_entry_when_registered_runtime_inactive() {
     assert_eq!(bound, None);
     assert_eq!(registry.pending_count().await, 0);
     assert!(
-        repo.runtime_get_active_for_card(&card_id)
+        repo.session_projection_active_for_card(&card_id)
             .await
             .unwrap()
             .is_none()
@@ -470,22 +477,23 @@ async fn on_thread_started_drops_registered_runtime_even_if_runtime_reappears() 
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id =
-        seed_card_with_runtime_kind(&repo, &wave_id, "term-retry", RuntimeKind::SharedSpec).await;
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-retry", WorkerSessionKind::SharedSpec)
+            .await;
     registry
         .register(entry(&repo, &card_id, &wave_id, "term-retry").await)
         .await
         .unwrap();
-    repo.runtime_complete_for_card(&card_id, WorkerSessionState::Failed)
+    repo.session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
         .await
         .unwrap();
 
     let runtime_id =
-        start_runtime_for_card(&repo, &card_id, "term-retry", RuntimeKind::SharedSpec).await;
+        start_runtime_for_card(&repo, &card_id, "term-retry", WorkerSessionKind::SharedSpec).await;
 
     assert_eq!(registry.on_thread_started("T-retry").await.unwrap(), None);
     assert_eq!(registry.pending_count().await, 0);
     let runtime = repo
-        .runtime_get_by_id(&runtime_id)
+        .session_projection_by_id(&runtime_id)
         .await
         .unwrap()
         .expect("reappeared runtime row");
@@ -579,7 +587,7 @@ async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id =
-        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", WorkerSessionKind::CodexCard).await;
     let r1 = runtime_id_for_card(&repo, &card_id).await;
     registry
         .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))
@@ -588,8 +596,14 @@ async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
 
     repo.terminal_delete("term-r1").await.unwrap();
     insert_terminal(&repo, &card_id, "term-r2").await;
-    let r2 =
-        supersede_runtime_for_card(&repo, &r1, &card_id, "term-r2", RuntimeKind::CodexCard).await;
+    let r2 = supersede_runtime_for_card(
+        &repo,
+        &r1,
+        &card_id,
+        "term-r2",
+        WorkerSessionKind::CodexCard,
+    )
+    .await;
     registry
         .register(entry_with_runtime_id(&card_id, &wave_id, "term-r2", &r2))
         .await
@@ -604,7 +618,7 @@ async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
         .expect("old runtime");
     assert_eq!(old_runtime.status, WorkerSessionState::Superseded);
     let replacement_runtime = repo
-        .runtime_get_by_id(&r2)
+        .session_projection_by_id(&r2)
         .await
         .unwrap()
         .expect("replacement runtime");
@@ -614,7 +628,7 @@ async fn expire_dead_pending_only_expires_entry_whose_terminal_died() {
     let bound = registry.on_thread_started("T-r2-own").await.unwrap();
     assert_eq!(bound.as_deref(), Some(card_id.as_str()));
     let replacement_runtime = repo
-        .runtime_get_by_id(&r2)
+        .session_projection_by_id(&r2)
         .await
         .unwrap()
         .expect("replacement runtime");
@@ -671,7 +685,7 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
     // The live card is still pending — it'll receive its OWN thread/started later.
     assert_eq!(registry.pending_count().await, 1);
     let live_runtime = repo
-        .runtime_get_active_for_card(&live_card)
+        .session_projection_active_for_card(&live_card)
         .await
         .unwrap()
         .expect("live runtime");
@@ -680,7 +694,7 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
     let next = registry.on_thread_started("T-live-own").await.unwrap();
     assert_eq!(next.as_deref(), Some(live_card.as_str()));
     let runtime = repo
-        .runtime_get_active_for_card(&live_card)
+        .session_projection_active_for_card(&live_card)
         .await
         .unwrap()
         .expect("live runtime");
@@ -692,7 +706,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id =
-        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", WorkerSessionKind::CodexCard).await;
     let r1 = runtime_id_for_card(&repo, &card_id).await;
     registry
         .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))
@@ -705,10 +719,10 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
     session_supersede_and_start_tx(
         &mut tx,
         &r1,
-        RuntimeInit {
+        WorkerSessionInit {
             id: r2.clone(),
             card_id: card_id.clone(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::TurnPending,
             terminal_run_id: Some("term-r1".to_string()),
@@ -716,8 +730,6 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -735,14 +747,14 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
         .expect("old runtime");
     assert_eq!(old_runtime.thread_id, None);
     let new_runtime = repo
-        .runtime_get_by_id(&r2)
+        .session_projection_by_id(&r2)
         .await
         .unwrap()
         .expect("new runtime");
     assert_eq!(new_runtime.status, WorkerSessionState::TurnPending);
     assert_eq!(new_runtime.thread_id, None);
     let active_runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("active respawned runtime");
@@ -759,7 +771,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
     let next = registry.on_thread_started("T-live-own").await.unwrap();
     assert_eq!(next.as_deref(), Some(live_card.as_str()));
     let live_runtime = repo
-        .runtime_get_active_for_card(&live_card)
+        .session_projection_active_for_card(&live_card)
         .await
         .unwrap()
         .expect("live runtime");
@@ -771,7 +783,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id =
-        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", WorkerSessionKind::CodexCard).await;
     let r1 = runtime_id_for_card(&repo, &card_id).await;
     let r2 = new_id();
 
@@ -789,10 +801,10 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
     session_supersede_and_start_tx(
         &mut tx,
         &r1,
-        RuntimeInit {
+        WorkerSessionInit {
             id: r2.clone(),
             card_id: card_id.clone(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::TurnPending,
             terminal_run_id: Some("term-r1".to_string()),
@@ -800,8 +812,6 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -820,7 +830,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
     assert_eq!(old_runtime.status, WorkerSessionState::Superseded);
     assert_eq!(old_runtime.thread_id, None);
     let active_runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("active respawned runtime");
@@ -840,7 +850,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
     assert_eq!(r2_bound.as_deref(), Some(card_id.as_str()));
     assert_eq!(registry.pending_count().await, 0);
     let replacement_runtime = repo
-        .runtime_get_by_id(&r2)
+        .session_projection_by_id(&r2)
         .await
         .unwrap()
         .expect("replacement runtime");
@@ -926,14 +936,14 @@ async fn unknown_thread_started_when_no_pending() {
 async fn already_mapped_thread_does_not_consume_pending() {
     let (repo, registry, server, wave_id) = boot_pending_server().await;
     let mapped = seed_card(&repo, &wave_id, "term-mapped").await;
-    repo.runtime_complete_for_card(&mapped, WorkerSessionState::Failed)
+    repo.session_projection_complete_for_card(&mapped, WorkerSessionState::Failed)
         .await
         .unwrap();
     start_runtime_for_card_with_thread(
         &repo,
         &mapped,
         "term-mapped",
-        RuntimeKind::CodexCard,
+        WorkerSessionKind::CodexCard,
         Some("T-mapped"),
     )
     .await;
@@ -952,7 +962,7 @@ async fn already_mapped_thread_does_not_consume_pending() {
         Some(mapped.as_str())
     );
     let pending_runtime = repo
-        .runtime_get_active_for_card(&pending_card)
+        .session_projection_active_for_card(&pending_card)
         .await
         .unwrap()
         .expect("pending runtime");
@@ -977,7 +987,7 @@ async fn kernel_initiated_threads_bypass_pending_registry() {
 
     assert_eq!(registry.pending_count().await, 1);
     let runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime");
@@ -1007,7 +1017,7 @@ async fn tui_fresh_start_thread_binds_to_pending_after_kernel_initiated_skipped(
 
     assert_eq!(registry.pending_count().await, 0);
     let runtime = repo
-        .runtime_get_active_for_card(&card_id)
+        .session_projection_active_for_card(&card_id)
         .await
         .unwrap()
         .expect("runtime");
@@ -1134,7 +1144,7 @@ async fn compensation_remove_uses_runtime_id_for_same_card_spawns() {
         events.clone(),
     ));
     let card_id =
-        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", RuntimeKind::CodexCard).await;
+        seed_card_with_runtime_kind(&repo, &wave_id, "term-r1", WorkerSessionKind::CodexCard).await;
     let r1 = runtime_id_for_card(&repo, &card_id).await;
     registry
         .register(entry_with_runtime_id(&card_id, &wave_id, "term-r1", &r1))

@@ -103,7 +103,7 @@ export const waveSchema = z.object({
 });
 
 export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec']);
-export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
+export type WorkerSessionKind = z.infer<typeof runtimeKindSchema>;
 
 export const agentProviderSchema = z.enum(['codex', 'claude']);
 export type AgentProvider = z.infer<typeof agentProviderSchema>;

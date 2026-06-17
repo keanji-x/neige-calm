@@ -35,7 +35,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
-use crate::runtime_lookup::project_runtime_into_card_payload;
+use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,

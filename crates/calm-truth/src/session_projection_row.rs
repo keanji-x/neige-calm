@@ -1,6 +1,7 @@
 use crate::db::sqlite::worker_session_from_row;
-use crate::runtime_repo::{
-    AgentProvider, CardId, Result, RuntimeKind, RuntimeRepoError, WorkerSessionProjection,
+use crate::session_projection_repo::{
+    AgentProvider, CardId, Result, WorkerSessionKind, WorkerSessionProjection,
+    WorkerSessionProjectionRepoError,
 };
 use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionState};
 use sqlx::sqlite::SqliteRow;
@@ -96,9 +97,10 @@ pub(crate) fn card_runtime_from_session(
 }
 
 pub(crate) fn card_runtime_from_ws_join_row(row: &SqliteRow) -> Result<WorkerSessionProjection> {
-    let ws = worker_session_from_row(row).map_err(|err| RuntimeRepoError::Message {
-        message: err.to_string(),
-    })?;
+    let ws =
+        worker_session_from_row(row).map_err(|err| WorkerSessionProjectionRepoError::Message {
+            message: err.to_string(),
+        })?;
     let card_id: String = row.try_get("card_id")?;
     card_runtime_from_session(&ws, card_id)
 }
@@ -106,13 +108,13 @@ pub(crate) fn card_runtime_from_ws_join_row(row: &SqliteRow) -> Result<WorkerSes
 fn runtime_kind_from_session_identity(
     provider: WorkerProviderKind,
     contract: WorkerContract,
-) -> Result<RuntimeKind> {
+) -> Result<WorkerSessionKind> {
     match (provider, contract) {
-        (WorkerProviderKind::Terminal, WorkerContract::Executor) => Ok(RuntimeKind::Terminal),
-        (WorkerProviderKind::Codex, WorkerContract::Executor) => Ok(RuntimeKind::CodexCard),
-        (WorkerProviderKind::Codex, WorkerContract::Planner) => Ok(RuntimeKind::SharedSpec),
-        (WorkerProviderKind::Claude, WorkerContract::Executor) => Ok(RuntimeKind::ClaudeCard),
-        _ => Err(RuntimeRepoError::Message {
+        (WorkerProviderKind::Terminal, WorkerContract::Executor) => Ok(WorkerSessionKind::Terminal),
+        (WorkerProviderKind::Codex, WorkerContract::Executor) => Ok(WorkerSessionKind::CodexCard),
+        (WorkerProviderKind::Codex, WorkerContract::Planner) => Ok(WorkerSessionKind::SharedSpec),
+        (WorkerProviderKind::Claude, WorkerContract::Executor) => Ok(WorkerSessionKind::ClaudeCard),
+        _ => Err(WorkerSessionProjectionRepoError::Message {
             message: format!(
                 "unmappable session identity (provider={provider:?}, contract={contract:?})"
             ),
@@ -137,7 +139,7 @@ pub(crate) fn run_status_from_db(value: &str) -> Result<WorkerSessionState> {
         "failed" => Ok(WorkerSessionState::Failed),
         "exited" => Ok(WorkerSessionState::Exited),
         "superseded" => Ok(WorkerSessionState::Superseded),
-        other => Err(RuntimeRepoError::Message {
+        other => Err(WorkerSessionProjectionRepoError::Message {
             message: format!("unknown runtime status {other:?}"),
         }),
     }
@@ -185,7 +187,7 @@ mod tests {
     }
 
     fn expected_runtime(
-        kind: RuntimeKind,
+        kind: WorkerSessionKind,
         agent_provider: Option<AgentProvider>,
         status: WorkerSessionState,
     ) -> WorkerSessionProjection {
@@ -216,7 +218,11 @@ mod tests {
 
         assert_eq!(
             card_runtime_from_session(&ws, "card-1".into()).unwrap(),
-            expected_runtime(RuntimeKind::Terminal, None, WorkerSessionState::Starting)
+            expected_runtime(
+                WorkerSessionKind::Terminal,
+                None,
+                WorkerSessionState::Starting
+            )
         );
     }
 
@@ -231,7 +237,7 @@ mod tests {
         assert_eq!(
             card_runtime_from_session(&ws, "card-1".into()).unwrap(),
             expected_runtime(
-                RuntimeKind::CodexCard,
+                WorkerSessionKind::CodexCard,
                 Some(AgentProvider::Codex),
                 WorkerSessionState::Running
             )
@@ -249,7 +255,7 @@ mod tests {
         assert_eq!(
             card_runtime_from_session(&ws, "card-1".into()).unwrap(),
             expected_runtime(
-                RuntimeKind::SharedSpec,
+                WorkerSessionKind::SharedSpec,
                 Some(AgentProvider::Codex),
                 WorkerSessionState::Idle
             )
@@ -267,7 +273,7 @@ mod tests {
         assert_eq!(
             card_runtime_from_session(&ws, "card-1".into()).unwrap(),
             expected_runtime(
-                RuntimeKind::ClaudeCard,
+                WorkerSessionKind::ClaudeCard,
                 Some(AgentProvider::Claude),
                 WorkerSessionState::TurnPending
             )
@@ -289,7 +295,7 @@ mod tests {
             assert!(
                 matches!(
                     err,
-                    RuntimeRepoError::Message { ref message } if message == &expected
+                    WorkerSessionProjectionRepoError::Message { ref message } if message == &expected
                 ),
                 "unexpected error: {err:?}"
             );

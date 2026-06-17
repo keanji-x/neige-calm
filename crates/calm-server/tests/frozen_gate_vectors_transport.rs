@@ -15,9 +15,9 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, runtime_get_active_for_card_tx,
-    session_bind_attribution_tx, session_insert_tx, session_mark_wave_root_tx,
-    session_start_runtime_tx, session_supersede_and_start_tx,
+    SqlxRepo, card_with_codex_create_tx, session_bind_attribution_tx, session_insert_tx,
+    session_mark_wave_root_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
+    session_supersede_and_start_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
@@ -26,8 +26,8 @@ use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::role_gate::enforce_role;
-use calm_server::runtime_repo::{
-    AgentProvider, RuntimeInit, RuntimeKind, ThreadAttribution, WorkerSessionState,
+use calm_server::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_truth::decision_gate::PrincipalDecisionGate;
@@ -151,7 +151,7 @@ async fn boot_with_registry(
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
-    let runtime_id = if let Some(runtime) = runtime_get_active_for_card_tx(&mut tx, card_id)
+    let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
     {
@@ -173,10 +173,10 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
     } else {
         let runtime = session_start_runtime_tx(
             &mut tx,
-            RuntimeInit {
+            WorkerSessionInit {
                 id: calm_server::model::new_id(),
                 card_id: card_id.to_string(),
-                kind: RuntimeKind::CodexCard,
+                kind: WorkerSessionKind::CodexCard,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
                 terminal_run_id: None,
@@ -184,8 +184,6 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: None,
-                lease_owner: None,
-                lease_until_ms: None,
                 spawn_op_id: None,
                 now_ms: now_ms(),
             },
@@ -200,17 +198,17 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
 
 async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
-    let existing = runtime_get_active_for_card_tx(&mut tx, card_id)
+    let existing = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
         .expect("active runtime before supersede");
     let runtime = session_supersede_and_start_tx(
         &mut tx,
         &existing.id,
-        RuntimeInit {
+        WorkerSessionInit {
             id: calm_server::model::new_id(),
             card_id: card_id.to_string(),
-            kind: RuntimeKind::CodexCard,
+            kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -218,8 +216,6 @@ async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &s
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: now_ms(),
         },

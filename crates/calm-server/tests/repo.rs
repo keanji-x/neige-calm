@@ -12,8 +12,10 @@ use calm_server::db::sqlite::{
 };
 use calm_server::error::CalmError;
 use calm_server::model::*;
-use calm_server::runtime_lookup::project_runtime_into_card_payload;
-use calm_server::runtime_repo::{AgentProvider, RuntimeInit, RuntimeKind, WorkerSessionState};
+use calm_server::session_projection_lookup::project_runtime_into_card_payload;
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use serde_json::json;
 
 async fn fresh_repo() -> SqlxRepo {
@@ -58,10 +60,10 @@ async fn make_card(repo: &SqlxRepo, wave_id: &str, kind: &str) -> Card {
 
 fn runtime_init(
     card_id: String,
-    kind: RuntimeKind,
+    kind: WorkerSessionKind,
     agent_provider: Option<AgentProvider>,
-) -> RuntimeInit {
-    RuntimeInit {
+) -> WorkerSessionInit {
+    WorkerSessionInit {
         id: new_id(),
         card_id,
         kind,
@@ -72,8 +74,6 @@ fn runtime_init(
         session_id: None,
         active_turn_id: None,
         handle_state_json: None,
-        lease_owner: None,
-        lease_until_ms: None,
         spawn_op_id: None,
         now_ms: now_ms(),
     }
@@ -85,7 +85,7 @@ async fn start_root_runtime(repo: &SqlxRepo, card: &Card) -> String {
         &mut tx,
         runtime_init(
             card.id.to_string(),
-            RuntimeKind::SharedSpec,
+            WorkerSessionKind::SharedSpec,
             Some(AgentProvider::Codex),
         ),
     )
@@ -1091,7 +1091,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
     );
     assert_eq!(got_card.payload["schemaVersion"], json!(1));
     let runtime = repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("runtime row");
@@ -1337,7 +1337,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     // status hint.
     assert_eq!(got_card.payload["cwd"], json!("/workspace"));
     let runtime = repo
-        .runtime_get_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.id.to_string())
         .await
         .unwrap()
         .expect("runtime row");
@@ -1851,10 +1851,10 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: calm_server::model::new_id(),
             card_id: mapped.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: Some(mapped_term.id.to_string()),
@@ -1862,8 +1862,6 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
@@ -1872,10 +1870,10 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     .unwrap();
     session_start_runtime_tx(
         &mut tx,
-        RuntimeInit {
+        WorkerSessionInit {
             id: calm_server::model::new_id(),
             card_id: pending.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::TurnPending,
             terminal_run_id: Some(term.id.to_string()),
@@ -1883,8 +1881,6 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
@@ -1894,10 +1890,10 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     let phantom_session_id = calm_server::model::new_id();
     session_prepare_deferred_spec_tx(
         &mut tx,
-        &RuntimeInit {
+        &WorkerSessionInit {
             id: phantom_session_id.clone(),
             card_id: phantom.id.to_string(),
-            kind: RuntimeKind::SharedSpec,
+            kind: WorkerSessionKind::SharedSpec,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -1905,8 +1901,6 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(json!({"mode": "harness"})),
-            lease_owner: None,
-            lease_until_ms: None,
             spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },
