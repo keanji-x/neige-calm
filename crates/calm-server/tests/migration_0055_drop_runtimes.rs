@@ -142,6 +142,32 @@ async fn seed_card(pool: &SqlitePool, wave_id: &str, card_id: &str) {
         .unwrap();
 }
 
+async fn set_card_session(pool: &SqlitePool, card_id: &str, session_id: &str) {
+    sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+        .bind(session_id)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn set_wave_root(pool: &SqlitePool, wave_id: &str, session_id: &str) {
+    sqlx::query("UPDATE waves SET root_session_id = ?1 WHERE id = ?2")
+        .bind(session_id)
+        .bind(wave_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn worker_session_state(pool: &SqlitePool, session_id: &str) -> String {
+    sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 struct WorkerSessionSeed<'a> {
     id: &'a str,
     wave_id: &'a str,
@@ -561,6 +587,384 @@ async fn migration_0055_dedup_resolves_double_active_before_index_create() {
     .await
     .unwrap();
     assert_eq!(runtime_table, 0);
+}
+
+#[tokio::test]
+async fn migration_0055_repoints_cards_session_id_from_superseded() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-card-stale", "card-stale").await;
+
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-card-old",
+            wave_id: "wave-card-stale",
+            card_id: Some("card-stale"),
+            state: "running",
+            created_at_ms: 100,
+            updated_at_ms: 100,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-card-new",
+            wave_id: "wave-card-stale",
+            card_id: Some("card-stale"),
+            state: "idle",
+            created_at_ms: 200,
+            updated_at_ms: 100,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    set_card_session(&pool, "card-stale", "ws-card-old").await;
+    insert_runtime(
+        &pool,
+        RuntimeSeed {
+            id: "ws-card-old",
+            card_id: "card-stale",
+            kind: "codex",
+            agent_provider: Some("codex"),
+            status: "running",
+            created_at_ms: 100,
+            updated_at_ms: 100,
+        },
+    )
+    .await;
+    insert_runtime(
+        &pool,
+        RuntimeSeed {
+            id: "ws-card-new",
+            card_id: "card-stale",
+            kind: "codex",
+            agent_provider: Some("codex"),
+            status: "exited",
+            created_at_ms: 200,
+            updated_at_ms: 100,
+        },
+    )
+    .await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let card_session: Option<String> =
+        sqlx::query_scalar("SELECT session_id FROM cards WHERE id = 'card-stale'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(card_session.as_deref(), Some("ws-card-new"));
+    assert_eq!(
+        worker_session_state(&pool, "ws-card-old").await,
+        "superseded"
+    );
+    assert_eq!(worker_session_state(&pool, "ws-card-new").await, "idle");
+}
+
+#[tokio::test]
+async fn migration_0055_repoints_waves_root_from_superseded() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-root-stale", "card-root-stale").await;
+
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-root-old",
+            wave_id: "wave-root-stale",
+            card_id: Some("card-root-stale"),
+            state: "running",
+            created_at_ms: 100,
+            updated_at_ms: 100,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-root-new",
+            wave_id: "wave-root-stale",
+            card_id: Some("card-root-stale"),
+            state: "turn_pending",
+            created_at_ms: 200,
+            updated_at_ms: 100,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    set_card_session(&pool, "card-root-stale", "ws-root-old").await;
+    set_wave_root(&pool, "wave-root-stale", "ws-root-old").await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let root_session_id: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = 'wave-root-stale'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(root_session_id.as_deref(), Some("ws-root-new"));
+    assert_eq!(
+        worker_session_state(&pool, "ws-root-old").await,
+        "superseded"
+    );
+    assert_eq!(
+        worker_session_state(&pool, "ws-root-new").await,
+        "turn_pending"
+    );
+}
+
+#[tokio::test]
+async fn migration_0055_cards_session_id_unchanged_for_terminal_pointer() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-terminal-card", "card-terminal").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-card-terminal",
+            wave_id: "wave-terminal-card",
+            card_id: Some("card-terminal"),
+            state: "exited",
+            created_at_ms: 100,
+            updated_at_ms: 200,
+            completed_at_ms: Some(200),
+        },
+    )
+    .await;
+    set_card_session(&pool, "card-terminal", "ws-card-terminal").await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let card_session: Option<String> =
+        sqlx::query_scalar("SELECT session_id FROM cards WHERE id = 'card-terminal'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(card_session.as_deref(), Some("ws-card-terminal"));
+    assert_eq!(
+        worker_session_state(&pool, "ws-card-terminal").await,
+        "exited"
+    );
+}
+
+#[tokio::test]
+async fn migration_0055_waves_root_unchanged_for_active_root() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+    seed_card(&pool, "wave-active-root", "card-active-root").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-active-root",
+            wave_id: "wave-active-root",
+            card_id: Some("card-active-root"),
+            state: "idle",
+            created_at_ms: 100,
+            updated_at_ms: 200,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    set_wave_root(&pool, "wave-active-root", "ws-active-root").await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let root_session_id: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = 'wave-active-root'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(root_session_id.as_deref(), Some("ws-active-root"));
+}
+
+#[tokio::test]
+async fn migration_0055_full_systemic_audit() {
+    let pool = fresh_pool().await;
+    stage_pre_0055_schema(&pool).await;
+
+    seed_card(&pool, "wave-clean-card", "card-clean").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-clean-card",
+            wave_id: "wave-clean-card",
+            card_id: Some("card-clean"),
+            state: "idle",
+            created_at_ms: 100,
+            updated_at_ms: 100,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    set_card_session(&pool, "card-clean", "ws-clean-card").await;
+
+    seed_card(&pool, "wave-null-card", "card-null").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-null-card",
+            wave_id: "wave-null-card",
+            card_id: Some("card-null"),
+            state: "running",
+            created_at_ms: 110,
+            updated_at_ms: 110,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+
+    seed_card(&pool, "wave-superseded-card", "card-superseded").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-superseded-card-old",
+            wave_id: "wave-superseded-card",
+            card_id: Some("card-superseded"),
+            state: "running",
+            created_at_ms: 120,
+            updated_at_ms: 120,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-superseded-card-new",
+            wave_id: "wave-superseded-card",
+            card_id: Some("card-superseded"),
+            state: "turn_pending",
+            created_at_ms: 130,
+            updated_at_ms: 120,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    set_card_session(&pool, "card-superseded", "ws-superseded-card-old").await;
+
+    seed_card(&pool, "wave-terminal-pointer", "card-terminal-pointer").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-terminal-pointer",
+            wave_id: "wave-terminal-pointer",
+            card_id: Some("card-terminal-pointer"),
+            state: "failed",
+            created_at_ms: 140,
+            updated_at_ms: 140,
+            completed_at_ms: Some(140),
+        },
+    )
+    .await;
+    set_card_session(&pool, "card-terminal-pointer", "ws-terminal-pointer").await;
+
+    seed_card(&pool, "wave-null-root-mix", "card-null-root-mix").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-null-root-mix",
+            wave_id: "wave-null-root-mix",
+            card_id: Some("card-null-root-mix"),
+            state: "idle",
+            created_at_ms: 150,
+            updated_at_ms: 150,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+
+    seed_card(
+        &pool,
+        "wave-superseded-root-mix",
+        "card-superseded-root-mix",
+    )
+    .await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-superseded-root-old",
+            wave_id: "wave-superseded-root-mix",
+            card_id: Some("card-superseded-root-mix"),
+            state: "running",
+            created_at_ms: 160,
+            updated_at_ms: 160,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-superseded-root-new",
+            wave_id: "wave-superseded-root-mix",
+            card_id: Some("card-superseded-root-mix"),
+            state: "idle",
+            created_at_ms: 170,
+            updated_at_ms: 160,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    set_wave_root(&pool, "wave-superseded-root-mix", "ws-superseded-root-old").await;
+
+    seed_card(&pool, "wave-active-root-mix", "card-active-root-mix").await;
+    insert_worker_session(
+        &pool,
+        WorkerSessionSeed {
+            id: "ws-active-root-mix",
+            wave_id: "wave-active-root-mix",
+            card_id: Some("card-active-root-mix"),
+            state: "turn_pending",
+            created_at_ms: 180,
+            updated_at_ms: 180,
+            completed_at_ms: None,
+        },
+    )
+    .await;
+    set_wave_root(&pool, "wave-active-root-mix", "ws-active-root-mix").await;
+
+    apply_sql(&pool, "0055_drop_runtimes", MIGRATION_0055_SQL).await;
+
+    let card_sessions: Vec<(String, Option<String>)> =
+        sqlx::query("SELECT id, session_id FROM cards ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.get("id"), row.get("session_id")))
+            .collect();
+    assert!(card_sessions.contains(&("card-clean".into(), Some("ws-clean-card".into()))));
+    assert!(card_sessions.contains(&("card-null".into(), Some("ws-null-card".into()))));
+    assert!(card_sessions.contains(&(
+        "card-superseded".into(),
+        Some("ws-superseded-card-new".into())
+    )));
+    assert!(card_sessions.contains(&(
+        "card-terminal-pointer".into(),
+        Some("ws-terminal-pointer".into())
+    )));
+
+    let wave_roots: Vec<(String, Option<String>)> =
+        sqlx::query("SELECT id, root_session_id FROM waves ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.get("id"), row.get("root_session_id")))
+            .collect();
+    assert!(wave_roots.contains(&("wave-null-root-mix".into(), Some("ws-null-root-mix".into()))));
+    assert!(wave_roots.contains(&(
+        "wave-superseded-root-mix".into(),
+        Some("ws-superseded-root-new".into())
+    )));
+    assert!(wave_roots.contains(&(
+        "wave-active-root-mix".into(),
+        Some("ws-active-root-mix".into())
+    )));
 }
 
 #[tokio::test]
