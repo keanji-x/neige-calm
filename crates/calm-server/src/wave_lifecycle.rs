@@ -14,7 +14,9 @@ use sqlx::{Sqlite, Transaction};
 
 // #679 PR1 — moved vocabulary, re-exported at the old paths. Source
 // definitions live in calm-types; do NOT re-declare them here.
-pub use calm_types::wave_lifecycle::{ActorKind, TransitionError, actor_kind, validate_transition};
+pub use calm_types::wave_lifecycle::{
+    ActorKind, TransitionError, actor_is_spec_author, actor_kind, validate_transition,
+};
 
 /// Auto-promote a draft wave to planning from inside an audited write tx.
 ///

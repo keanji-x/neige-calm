@@ -105,10 +105,22 @@ pub enum ActorKind {
 pub fn actor_kind(actor: &ActorId) -> ActorKind {
     match actor {
         ActorId::User => ActorKind::User,
-        ActorId::Kernel | ActorId::KernelDispatcher | ActorId::AiSpec(_) => ActorKind::SpecAgent,
-        ActorId::AiCodex(_) | ActorId::AiClaude(_) => ActorKind::Worker,
+        ActorId::Kernel
+        | ActorId::KernelDispatcher
+        | ActorId::AiSpec(_)
+        | ActorId::AiSpecSession(_) => ActorKind::SpecAgent,
+        ActorId::AiCodex(_)
+        | ActorId::AiClaude(_)
+        | ActorId::AiCodexSession(_)
+        | ActorId::AiClaudeSession(_) => ActorKind::Worker,
         ActorId::Plugin(_) => ActorKind::Other,
     }
+}
+
+/// True when the actor represents the spec author identity, independent of
+/// whether the actor is still card-keyed or already session-keyed.
+pub fn actor_is_spec_author(actor: &ActorId) -> bool {
+    matches!(actor, ActorId::AiSpec(_) | ActorId::AiSpecSession(_))
 }
 
 /// What the validator returns when a transition is denied. Mapped at

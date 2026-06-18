@@ -23,8 +23,9 @@ use crate::runtime::TimestampMs;
 /// Execution-session identifier (`worker_sessions.id`, PR2). Same opaque
 /// newtype pattern as [`crate::ids`] — `#[serde(transparent)]` keeps the
 /// wire shape a bare string.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct WorkerSessionId(pub String);
 
 impl WorkerSessionId {
@@ -72,7 +73,7 @@ impl AsRef<str> for WorkerSessionId {
 ///
 /// PR1 declares the type; the Principal gate (in-tx root check, token →
 /// session handshake) is PR7. The persisted-event `ActorId` is deliberately
-/// untouched (hard-problem 1, owned by PR11).
+/// untouched (hard-problem 1, owned by #770).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Principal {

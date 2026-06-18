@@ -74,7 +74,7 @@ pub(crate) fn event_warrants_spec_push_with_role(
 ) -> bool {
     match event {
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-            !matches!(actor, ActorId::AiSpec(_))
+            !crate::wave_lifecycle::actor_is_spec_author(actor)
         }
         // Issue #644 PR-C (§6.5) — the gate runner's verdict is always
         // pushed: it is kernel-only at the role gate (actor
@@ -1191,6 +1191,7 @@ fn sha256_hex(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calm_types::worker::WorkerSessionId;
 
     /// Env-override permits parsing — covers the four cases the helper
     /// documents (unset, empty, unparseable, zero, valid).
@@ -1784,6 +1785,8 @@ mod tests {
             ActorId::KernelDispatcher,
             ActorId::Plugin("p".into()),
             ActorId::AiClaude(worker.clone()),
+            ActorId::AiCodexSession(WorkerSessionId::from("sess-codex")),
+            ActorId::AiClaudeSession(WorkerSessionId::from("sess-claude")),
         ] {
             assert!(
                 event_warrants_spec_push(&completed, &actor, &write),
@@ -1794,11 +1797,19 @@ mod tests {
                 "task.failed must push for actor {actor}"
             );
         }
-        assert!(!event_warrants_spec_push(
-            &completed,
-            &ActorId::AiSpec(spec.clone()),
-            &write
-        ));
+        for actor in [
+            ActorId::AiSpec(spec.clone()),
+            ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
+        ] {
+            assert!(
+                !event_warrants_spec_push(&completed, &actor, &write),
+                "task.completed must not self-push for actor {actor}"
+            );
+            assert!(
+                !event_warrants_spec_push(&failed, &actor, &write),
+                "task.failed must not self-push for actor {actor}"
+            );
+        }
 
         // The two request kinds are dispatcher *inputs*, never spec pushes
         // — for any actor, including the spec that authored them.
