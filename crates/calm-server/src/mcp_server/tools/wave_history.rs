@@ -14,8 +14,8 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::wave_file::resolve_wave_for_identity;
 use crate::model::CardRole;
 use crate::wave_vcs::{self, CommitLogEntry, FileDiff};
+use calm_truth::wave_vcs_repo::WaveVcsRepo;
 use serde_json::{Map, Value, json};
-use sqlx::SqlitePool;
 use std::sync::Arc;
 
 pub const TOOL_WAVE_DIFF: &str = "calm.wave.diff";
@@ -100,29 +100,30 @@ async fn wave_diff(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
-    let pool = wave_vcs_pool(&ctx)?;
+    let vcs = wave_vcs_repo(&ctx)?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_WAVE_DIFF)?;
     let from = required_string(obj, "from", TOOL_WAVE_DIFF)?;
     let to = optional_string(obj, "to", TOOL_WAVE_DIFF)?;
     let path = optional_string(obj, "path", TOOL_WAVE_DIFF)?;
-    ensure_commit_in_wave(pool, &wave.id, from).await?;
+    ensure_commit_in_wave(vcs, &wave.id, from).await?;
     let to = match to {
         Some(to) => {
-            ensure_commit_in_wave(pool, &wave.id, to).await?;
+            ensure_commit_in_wave(vcs, &wave.id, to).await?;
             to.to_string()
         }
-        None => wave_vcs::head(pool, &wave.id)
+        None => vcs
+            .head(&wave.id)
             .await
             .map_err(vcs_error_to_rpc)?
             .ok_or_else(|| {
                 RpcError::invalid_params("calm.wave.diff: current wave has no VCS HEAD")
             })?,
     };
-    let files =
-        wave_vcs::diff_with_patches(pool, from, &to, path, wave_vcs::DEFAULT_PATCH_MAX_LINES)
-            .await
-            .map_err(vcs_error_to_rpc)?;
+    let files = vcs
+        .diff_with_patches(from, &to, path, wave_vcs::DEFAULT_PATCH_MAX_LINES)
+        .await
+        .map_err(vcs_error_to_rpc)?;
     Ok(json!({
         "from": from,
         "to": to,
@@ -137,15 +138,13 @@ async fn wave_cat_at(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
-    let pool = wave_vcs_pool(&ctx)?;
+    let vcs = wave_vcs_repo(&ctx)?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_WAVE_CAT_AT)?;
     let commit = required_string(obj, "commit", TOOL_WAVE_CAT_AT)?;
     let path = required_string(obj, "path", TOOL_WAVE_CAT_AT)?;
-    ensure_commit_in_wave(pool, &wave.id, commit).await?;
-    let blob = wave_vcs::cat_at(pool, commit, path)
-        .await
-        .map_err(vcs_error_to_rpc)?;
+    ensure_commit_in_wave(vcs, &wave.id, commit).await?;
+    let blob = vcs.cat_at(commit, path).await.map_err(vcs_error_to_rpc)?;
     Ok(json!({
         "commit": blob.commit,
         "path": blob.path,
@@ -160,12 +159,13 @@ async fn wave_log(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
-    let pool = wave_vcs_pool(&ctx)?;
+    let vcs = wave_vcs_repo(&ctx)?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_WAVE_LOG)?;
     let path = optional_string(obj, "path", TOOL_WAVE_LOG)?;
     let limit = optional_limit(obj, TOOL_WAVE_LOG)?;
-    let log = wave_vcs::log(pool, &wave.id, path, limit)
+    let log = vcs
+        .log(&wave.id, path, limit)
         .await
         .map_err(vcs_error_to_rpc)?;
     Ok(json!({
@@ -174,18 +174,19 @@ async fn wave_log(
     }))
 }
 
-fn wave_vcs_pool(ctx: &AppContext) -> Result<&SqlitePool, RpcError> {
-    ctx.wave_vcs_pool
-        .as_ref()
+fn wave_vcs_repo(ctx: &AppContext) -> Result<&dyn WaveVcsRepo, RpcError> {
+    ctx.wave_vcs
+        .as_deref()
         .ok_or_else(|| RpcError::internal("calm.wave history requires sqlite-backed wave-vcs"))
 }
 
 async fn ensure_commit_in_wave(
-    pool: &SqlitePool,
+    vcs: &dyn WaveVcsRepo,
     wave_id: &WaveId,
     commit_hash: &str,
 ) -> Result<(), RpcError> {
-    match wave_vcs::commit_record(pool, commit_hash)
+    match vcs
+        .commit_record(commit_hash)
         .await
         .map_err(vcs_error_to_rpc)?
     {

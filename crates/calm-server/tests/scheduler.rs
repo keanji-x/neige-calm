@@ -137,7 +137,9 @@ async fn boot() -> Boot {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs_pool: repo.sqlite_pool(),
+        wave_vcs: repo
+            .sqlite_pool()
+            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
         events: events.clone(),
         write: write.clone(),
         daemon_token_hash: None,

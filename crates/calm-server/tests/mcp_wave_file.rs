@@ -196,7 +196,9 @@ async fn boot() -> Boot {
     ));
     let ctx = Arc::new(AppContext {
         repo: route_repo,
-        wave_vcs_pool: Some(sqlx_repo.pool().clone()),
+        wave_vcs: Some(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared(
+            sqlx_repo.pool().clone(),
+        )),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
