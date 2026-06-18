@@ -2434,23 +2434,6 @@ pub(crate) async fn checkpoint_app_server_interact_tx(
     Ok(())
 }
 
-// Future parking consumers resolve operation ids inside their own completion tx.
-#[allow(dead_code)]
-pub(crate) async fn find_operation_id_by_kind_idempotency_tx(
-    tx: &mut Tx<'_>,
-    kind: &str,
-    idempotency_key: &str,
-) -> Result<Option<OperationId>> {
-    let id = sqlx::query_scalar(
-        "SELECT id FROM operations WHERE kind = ?1 AND idempotency_key = ?2 LIMIT 1",
-    )
-    .bind(kind)
-    .bind(idempotency_key)
-    .fetch_optional(&mut **tx)
-    .await?;
-    Ok(id)
-}
-
 pub(crate) async fn complete_parked_tx(
     tx: &mut Tx<'_>,
     op_id: &OperationId,

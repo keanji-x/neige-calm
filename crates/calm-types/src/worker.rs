@@ -283,29 +283,6 @@ impl ExitInterpretation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExitCommitMapping {
-    pub session_state: WorkerSessionState,
-    pub runtime_status: WorkerSessionState,
-    pub exit_interpretation: &'static str,
-}
-
-pub fn exit_commit_mapping(interpretation: &ExitInterpretation) -> Option<ExitCommitMapping> {
-    match interpretation {
-        ExitInterpretation::Completed => Some(ExitCommitMapping {
-            session_state: WorkerSessionState::Exited,
-            runtime_status: WorkerSessionState::Exited,
-            exit_interpretation: interpretation.as_db_str(),
-        }),
-        ExitInterpretation::Failed { .. } => Some(ExitCommitMapping {
-            session_state: WorkerSessionState::Failed,
-            runtime_status: WorkerSessionState::Failed,
-            exit_interpretation: interpretation.as_db_str(),
-        }),
-        ExitInterpretation::PreserveCard | ExitInterpretation::ResumeEligible => None,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // WorkerSession entity — issue #679 §1
 // ---------------------------------------------------------------------------
