@@ -6885,42 +6885,6 @@ mod runtime_read_flip_tests {
         (card_id, placeholder_id)
     }
 
-    async fn runtime_get_projectable_for_card_from_runtimes_reference(
-        pool: &SqlitePool,
-        card_id: &str,
-    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_projectable_for_card_from_pool(pool, card_id).await
-    }
-
-    async fn runtime_get_active_by_thread_from_runtimes_reference(
-        pool: &SqlitePool,
-        provider: AgentProvider,
-        thread_id: &str,
-    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_active_by_thread_from_pool(pool, provider, thread_id).await
-    }
-
-    async fn runtime_get_active_by_session_from_runtimes_reference(
-        pool: &SqlitePool,
-        provider: AgentProvider,
-        session_id: &str,
-    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_active_by_session_from_pool(pool, provider, session_id).await
-    }
-
-    async fn runtime_active_shared_thread_attribution_from_runtimes_reference(
-        pool: &SqlitePool,
-    ) -> WorkerSessionProjectionResult<Vec<(String, String)>> {
-        runtime_active_shared_thread_attribution_from_pool(pool).await
-    }
-
-    async fn runtime_get_active_for_terminal_from_runtimes_reference_tx(
-        tx: &mut WorkerSessionProjectionTx<'_>,
-        terminal_id: &str,
-    ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        session_projection_active_for_terminal_tx(tx, terminal_id).await
-    }
-
     fn assert_ws_backed_projection(
         expected: &WorkerSessionProjection,
         actual: &WorkerSessionProjection,
@@ -6931,6 +6895,7 @@ mod runtime_read_flip_tests {
         }
     }
 
+    #[allow(dead_code)]
     fn assert_optional_ws_backed_projection(
         expected: Option<WorkerSessionProjection>,
         actual: Option<WorkerSessionProjection>,
@@ -6950,25 +6915,18 @@ mod runtime_read_flip_tests {
             .expect("worker session card_id")
     }
 
-    async fn assert_projectable_card_matches_runtimes_reference(
+    async fn assert_projectable_card_picks_active_winner(
         repo: &SqlxRepo,
         history: &ProjectableHistory,
         expected_winner_id: &str,
     ) {
-        let expected =
-            runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &history.card_id)
-                .await
-                .expect("runtimes-backed projectable reference")
-                .expect("reference projectable runtime");
-        assert_eq!(expected.id, expected_winner_id);
-
-        let actual = runtime_get_projectable_for_card_from_pool(repo.pool(), &history.card_id)
+        let read = runtime_get_projectable_for_card_from_pool(repo.pool(), &history.card_id)
             .await
             .expect("worker-session projectable read")
             .expect("projectable runtime from worker_sessions");
-        assert_ws_backed_projection(&expected, &actual);
-        assert_ne!(actual.id, history.superseded.id);
-        assert_ne!(actual.status, WorkerSessionState::Superseded);
+        assert_eq!(read.id, expected_winner_id);
+        assert_ne!(read.id, history.superseded.id);
+        assert_ne!(read.status, WorkerSessionState::Superseded);
     }
 
     #[tokio::test]
@@ -7324,7 +7282,7 @@ mod runtime_read_flip_tests {
     }
 
     #[tokio::test]
-    async fn runtime_get_active_by_thread_from_pool_matches_reference_and_uses_thread_key() {
+    async fn runtime_get_active_by_thread_from_pool_uses_thread_key_and_isolates_provider() {
         let repo = fresh_repo().await;
         let codex = seed_runtime_with_keys(
             &repo,
@@ -7353,17 +7311,6 @@ mod runtime_read_flip_tests {
         )
         .await;
 
-        let expected = runtime_get_active_by_thread_from_runtimes_reference(
-            repo.pool(),
-            AgentProvider::Codex,
-            "cohort-b-thread",
-        )
-        .await
-        .expect("runtimes-backed by-thread reference");
-        assert_eq!(
-            expected.as_ref().map(|runtime| runtime.id.as_str()),
-            Some(codex.id.as_str())
-        );
         let actual = runtime_get_active_by_thread_from_pool(
             repo.pool(),
             AgentProvider::Codex,
@@ -7371,15 +7318,10 @@ mod runtime_read_flip_tests {
         )
         .await
         .expect("worker-session by-thread read");
-        assert_optional_ws_backed_projection(expected, actual);
-
-        let claude_reference = runtime_get_active_by_thread_from_runtimes_reference(
-            repo.pool(),
-            AgentProvider::Claude,
-            "cohort-b-thread",
-        )
-        .await
-        .expect("runtimes-backed claude by-thread reference");
+        assert_eq!(
+            actual.as_ref().map(|runtime| runtime.id.as_str()),
+            Some(codex.id.as_str())
+        );
         let claude_actual = runtime_get_active_by_thread_from_pool(
             repo.pool(),
             AgentProvider::Claude,
@@ -7387,12 +7329,11 @@ mod runtime_read_flip_tests {
         )
         .await
         .expect("worker-session claude by-thread read");
-        assert_eq!(claude_reference, None);
         assert_eq!(claude_actual, None);
     }
 
     #[tokio::test]
-    async fn runtime_get_active_by_session_from_pool_matches_reference_and_uses_agent_session_key()
+    async fn runtime_get_active_by_session_from_pool_uses_agent_session_key_and_ignores_thread_key()
     {
         let repo = fresh_repo().await;
         let claude = seed_runtime_with_keys(
@@ -7422,17 +7363,6 @@ mod runtime_read_flip_tests {
         )
         .await;
 
-        let expected = runtime_get_active_by_session_from_runtimes_reference(
-            repo.pool(),
-            AgentProvider::Claude,
-            "cohort-b-claude-session",
-        )
-        .await
-        .expect("runtimes-backed by-session reference");
-        assert_eq!(
-            expected.as_ref().map(|runtime| runtime.id.as_str()),
-            Some(claude.id.as_str())
-        );
         let actual = runtime_get_active_by_session_from_pool(
             repo.pool(),
             AgentProvider::Claude,
@@ -7440,15 +7370,10 @@ mod runtime_read_flip_tests {
         )
         .await
         .expect("worker-session by-session read");
-        assert_optional_ws_backed_projection(expected, actual);
-
-        let codex_thread_reference = runtime_get_active_by_session_from_runtimes_reference(
-            repo.pool(),
-            AgentProvider::Codex,
-            "cohort-b-codex-thread",
-        )
-        .await
-        .expect("runtimes-backed codex by-session reference");
+        assert_eq!(
+            actual.as_ref().map(|runtime| runtime.id.as_str()),
+            Some(claude.id.as_str())
+        );
         let codex_thread_actual = runtime_get_active_by_session_from_pool(
             repo.pool(),
             AgentProvider::Codex,
@@ -7456,12 +7381,11 @@ mod runtime_read_flip_tests {
         )
         .await
         .expect("worker-session codex by-session read");
-        assert_eq!(codex_thread_reference, None);
         assert_eq!(codex_thread_actual, None);
     }
 
     #[tokio::test]
-    async fn runtime_active_shared_thread_attribution_from_pool_matches_reference_ordering() {
+    async fn runtime_active_shared_thread_attribution_from_pool_filters_and_orders_pairs() {
         let repo = fresh_repo().await;
         let shared = seed_runtime_with_keys(
             &repo,
@@ -7516,64 +7440,54 @@ mod runtime_read_flip_tests {
         )
         .await;
 
-        let expected =
-            runtime_active_shared_thread_attribution_from_runtimes_reference(repo.pool())
-                .await
-                .expect("runtimes-backed attribution reference");
         let actual = runtime_active_shared_thread_attribution_from_pool(repo.pool())
             .await
             .expect("worker-session attribution read");
 
         assert_eq!(
-            expected,
+            actual,
             vec![
                 ("thread-shared".to_string(), shared.card_id.clone()),
                 ("thread-codex".to_string(), codex.card_id.clone()),
             ]
         );
-        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
-    async fn runtime_get_active_for_terminal_tx_matches_reference_inside_tx() {
+    async fn runtime_get_active_for_terminal_tx_reads_active_terminal_session_inside_tx() {
         let repo = fresh_repo().await;
         let (runtime, terminal_id) = seed_terminal_runtime(&repo, "terminal-key").await;
         let mut tx = repo.pool().begin().await.expect("begin terminal read tx");
-        let expected =
-            runtime_get_active_for_terminal_from_runtimes_reference_tx(&mut tx, &terminal_id)
-                .await
-                .expect("runtimes-backed terminal reference");
-        assert_eq!(
-            expected.as_ref().map(|runtime| runtime.id.as_str()),
-            Some(runtime.id.as_str())
-        );
         let actual = session_projection_active_for_terminal_tx(&mut tx, &terminal_id)
             .await
             .expect("worker-session terminal read");
+        assert_eq!(
+            actual.as_ref().map(|runtime| runtime.id.as_str()),
+            Some(runtime.id.as_str())
+        );
         tx.commit().await.expect("commit terminal read tx");
-        assert_optional_ws_backed_projection(expected, actual);
     }
 
     #[tokio::test]
-    async fn runtime_get_projectable_for_card_from_pool_matches_reference_for_active_history() {
+    async fn runtime_get_projectable_for_card_from_pool_picks_active_winner_for_active_history() {
         let repo = fresh_repo().await;
         let history = seed_projectable_history(&repo, "projectable-active", true).await;
         let active = history.active.as_ref().expect("active runtime");
 
         assert_eq!(history.superseded.status, WorkerSessionState::Superseded);
         assert_eq!(history.exited.status, WorkerSessionState::Exited);
-        assert_projectable_card_matches_runtimes_reference(&repo, &history, &active.id).await;
+        assert_projectable_card_picks_active_winner(&repo, &history, &active.id).await;
     }
 
     #[tokio::test]
-    async fn runtime_get_projectable_for_card_from_pool_matches_reference_without_active_history() {
+    async fn runtime_get_projectable_for_card_from_pool_picks_exited_winner_without_active_history()
+    {
         let repo = fresh_repo().await;
         let history = seed_projectable_history(&repo, "projectable-no-active", false).await;
 
         assert_eq!(history.superseded.status, WorkerSessionState::Superseded);
         assert!(history.active.is_none());
-        assert_projectable_card_matches_runtimes_reference(&repo, &history, &history.exited.id)
-            .await;
+        assert_projectable_card_picks_active_winner(&repo, &history, &history.exited.id).await;
     }
 
     #[tokio::test]
@@ -7582,18 +7496,11 @@ mod runtime_read_flip_tests {
         let (card_id, placeholder_id) =
             seed_deferred_projectable_placeholder(&repo, "projectable-placeholder").await;
 
-        let expected =
-            runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &card_id)
-                .await
-                .expect("worker-session projectable reference")
-                .expect("placeholder reference");
-        assert_eq!(expected.id, placeholder_id);
-
         let actual = runtime_get_projectable_for_card_from_pool(repo.pool(), &card_id)
             .await
             .expect("worker-session projectable read")
             .expect("placeholder projectable read");
-        assert_ws_backed_projection(&expected, &actual);
+        assert_eq!(actual.id, placeholder_id);
     }
 
     // Phase 1 supersedes the old active worker session before inserting the
@@ -7645,12 +7552,6 @@ mod runtime_read_flip_tests {
             placeholder_id
         );
 
-        let reference =
-            runtime_get_projectable_for_card_from_runtimes_reference(repo.pool(), &card_id)
-                .await
-                .expect("worker-session projectable reference")
-                .expect("placeholder reference");
-        assert_eq!(reference.id, placeholder_id);
         assert_eq!(active.status, WorkerSessionState::Running);
     }
 
@@ -7751,7 +7652,7 @@ mod runtime_read_flip_tests {
     }
 
     #[tokio::test]
-    async fn runtime_get_projectable_for_cards_from_pool_matches_reference_for_pointer_histories() {
+    async fn runtime_get_projectable_for_cards_from_pool_picks_pointer_history_winners() {
         let repo = fresh_repo().await;
         let active_history =
             seed_projectable_history(&repo, "projectable-batch-active", true).await;
@@ -7771,34 +7672,19 @@ mod runtime_read_flip_tests {
             .expect("worker-session batch projectable read");
 
         assert_eq!(actual.len(), 3);
-        let expected_active = runtime_get_projectable_for_card_from_runtimes_reference(
-            repo.pool(),
-            &active_history.card_id,
-        )
-        .await
-        .expect("active runtimes-backed reference")
-        .expect("active reference runtime");
-        let expected_no_active = runtime_get_projectable_for_card_from_runtimes_reference(
-            repo.pool(),
-            &no_active_history.card_id,
-        )
-        .await
-        .expect("no-active runtimes-backed reference")
-        .expect("no-active reference runtime");
-
-        assert_eq!(expected_active.id, active.id);
-        assert_eq!(expected_no_active.id, no_active_history.exited.id);
-        assert_ws_backed_projection(
-            &expected_active,
+        assert_eq!(
             actual
                 .get(&active_history.card_id)
-                .expect("active card batch runtime"),
+                .expect("active card batch runtime")
+                .id,
+            active.id
         );
-        assert_ws_backed_projection(
-            &expected_no_active,
+        assert_eq!(
             actual
                 .get(&no_active_history.card_id)
-                .expect("no-active card batch runtime"),
+                .expect("no-active card batch runtime")
+                .id,
+            no_active_history.exited.id
         );
         assert_eq!(
             actual
