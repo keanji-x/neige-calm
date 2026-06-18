@@ -91,7 +91,20 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         })?;
 
     let synthetic = match actor {
-        ActorId::AiSpecSession(_) => ActorId::AiSpec(card_id),
+        ActorId::AiSpecSession(_) => {
+            // Live read gave ground-truth card_id; the AiSpec path in enforce_role
+            // does not re-check role/scope for ordinary events, so verify the card
+            // is actually Spec-roled before granting spec authority. Fail-closed on
+            // non-Spec or unknown card. Worker variants below stay delegated;
+            // enforce_role's self-scope/UnknownCard arms already cover every role.
+            if cache.get(&card_id) != Some(CardRole::Spec) {
+                return Err(RoleViolation::SessionSpecRoleMismatch {
+                    session: session_id,
+                    card: card_id,
+                });
+            }
+            ActorId::AiSpec(card_id)
+        }
         ActorId::AiCodexSession(_) => ActorId::AiCodex(card_id),
         ActorId::AiClaudeSession(_) => ActorId::AiClaude(card_id),
         _ => unreachable!("session actor match above guarantees session variant"),
@@ -526,6 +539,115 @@ mod tests {
         .await;
 
         assert!(res.is_ok(), "spec session should update wave: {res:?}");
+        assert_eq!(tx.worker_session_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn session_resolver_denies_spec_session_bound_to_worker_card_on_ordinary_event() {
+        let worker_card = CardId::from("worker-card");
+        let (cache, wcc) = seeded_caches(&worker_card, CardRole::Worker);
+        let mut tx = FakeWriteTx::with_worker_session(worker_session(
+            "s-spec-worker",
+            Some(worker_card.clone()),
+        ));
+
+        let err = enforce_role_resolving_session(
+            &mut tx,
+            &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-worker")),
+            &cove_updated(),
+            &card_scope(worker_card.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        )
+        .await
+        .expect_err("spec session bound to worker card must deny");
+
+        match err {
+            RoleViolation::SessionSpecRoleMismatch { session, card } => {
+                assert_eq!(session, WorkerSessionId::from("s-spec-worker"));
+                assert_eq!(card, worker_card);
+            }
+            other => panic!("unexpected violation: {other:?}"),
+        }
+        assert_eq!(tx.worker_session_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn session_resolver_denies_spec_session_bound_to_unknown_card_on_ordinary_event() {
+        let cache = CardRoleCache::new();
+        let wcc = WaveCoveCache::new();
+        let ghost = CardId::from("ghost");
+        let mut tx =
+            FakeWriteTx::with_worker_session(worker_session("s-spec-ghost", Some(ghost.clone())));
+
+        let err = enforce_role_resolving_session(
+            &mut tx,
+            &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-ghost")),
+            &cove_updated(),
+            &card_scope(ghost.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        )
+        .await
+        .expect_err("spec session bound to unknown card must deny");
+
+        match err {
+            RoleViolation::SessionSpecRoleMismatch { session, card } => {
+                assert_eq!(session, WorkerSessionId::from("s-spec-ghost"));
+                assert_eq!(card, ghost);
+            }
+            other => panic!("unexpected violation: {other:?}"),
+        }
+        assert_eq!(tx.worker_session_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn session_resolver_allows_spec_session_bound_to_spec_card_on_ordinary_event() {
+        let spec_card = CardId::from("spec-card");
+        let (cache, wcc) = seeded_caches(&spec_card, CardRole::Spec);
+        let mut tx = FakeWriteTx::with_worker_session(worker_session(
+            "s-spec-ordinary",
+            Some(spec_card.clone()),
+        ));
+
+        let res = enforce_role_resolving_session(
+            &mut tx,
+            &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-ordinary")),
+            &cove_updated(),
+            &card_scope(spec_card.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        )
+        .await;
+
+        assert!(
+            res.is_ok(),
+            "spec session bound to spec card should pass ordinary event: {res:?}"
+        );
+        assert_eq!(tx.worker_session_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn session_resolver_denies_empty_card_id_via_worker_variant_sync_gate() {
+        let cache = CardRoleCache::new();
+        let wcc = WaveCoveCache::new();
+        let mut tx = FakeWriteTx::with_worker_session(worker_session(
+            "s-empty-card",
+            Some(CardId::from("")),
+        ));
+
+        let err = enforce_role_resolving_session(
+            &mut tx,
+            &ActorId::AiCodexSession(WorkerSessionId::from("s-empty-card")),
+            &cove_updated(),
+            &EventScope::System,
+            &cache,
+            &wcc,
+        )
+        .await
+        .expect_err("worker session resolving to empty card id must deny");
+
+        assert!(matches!(err, RoleViolation::EmptyAiCardId));
         assert_eq!(tx.worker_session_reads, 1);
     }
 

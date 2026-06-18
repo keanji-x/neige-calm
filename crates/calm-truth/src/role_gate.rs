@@ -92,6 +92,14 @@ pub enum RoleViolation {
     #[error("error reading authority for session {session}; denied fail-closed (#770).")]
     SessionResolutionError { session: WorkerSessionId },
 
+    #[error(
+        "session {session} claims spec authority but its resolved card {card} is not Spec-roled (or unknown); denied fail-closed (#770)."
+    )]
+    SessionSpecRoleMismatch {
+        session: WorkerSessionId,
+        card: CardId,
+    },
+
     #[error("only spec cards (or User/Kernel) may emit wave.updated (actor={actor})")]
     NotSpecForWave { actor: String },
 
