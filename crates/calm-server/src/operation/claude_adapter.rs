@@ -421,12 +421,12 @@ impl ProviderAdapter for ClaudeAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let card_id = output_string(output, "card_id")?;
-        let terminal_id = output_string(output, "terminal_id")?;
-        let settings_path = PathBuf::from(output_string(output, "settings_path")?);
+        let card_id = output.output_string("card_id", "claude")?;
+        let terminal_id = output.output_string("terminal_id", "claude")?;
+        let settings_path = PathBuf::from(output.output_string("settings_path", "claude")?);
         let settings_dir = settings_path_parent(&settings_path)?;
-        let command_line = output_string(output, "command_line")?;
-        let cwd = output_string(output, "cwd")?;
+        let command_line = output.output_string("command_line", "claude")?;
+        let cwd = output.output_string("cwd", "claude")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
@@ -551,9 +551,9 @@ impl ProviderAdapter for ClaudeAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        let terminal_id = output_string(output, "terminal_id")?;
-        let card_id = output_string(output, "card_id")?;
-        let settings_path = output_string(output, "settings_path")?;
+        let terminal_id = output.output_string("terminal_id", "claude")?;
+        let card_id = output.output_string("card_id", "claude")?;
+        let settings_path = output.output_string("settings_path", "claude")?;
         let settings_dir = settings_path_parent(Path::new(&settings_path))?
             .to_string_lossy()
             .to_string();
@@ -562,12 +562,12 @@ impl ProviderAdapter for ClaudeAdapter {
             from_phase,
             reason: reason.to_string(),
             steps: vec![
-                step("reap_terminal_pty", json!({ "terminal_id": terminal_id })),
-                step(
+                CompensationStep::new("reap_terminal_pty", json!({ "terminal_id": terminal_id })),
+                CompensationStep::new(
                     "delete_claude_settings_dir",
                     json!({ "settings_dir": settings_dir }),
                 ),
-                step(
+                CompensationStep::new(
                     "session_projection_set_status_failed_for_card",
                     json!({ "card_id": card_id }),
                 ),
@@ -650,29 +650,10 @@ fn remove_dir_all_idempotent(path: &Path) -> Result<()> {
     }
 }
 
-fn step(op: &str, args: Value) -> CompensationStep {
-    CompensationStep {
-        op: op.into(),
-        args,
-        completed: false,
-        attempts: 0,
-        last_error: None,
-    }
-}
-
 fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
     step.args
         .get(key)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| CalmError::Internal(format!("claude compensation step missing {key} arg")))
-}
-
-fn output_string(output: &TxOutput, key: &str) -> Result<String> {
-    output
-        .data
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Internal(format!("claude tx_output missing {key}")))
 }

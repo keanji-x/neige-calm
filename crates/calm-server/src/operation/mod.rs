@@ -133,6 +133,40 @@ impl TxOutput {
             post_commit_events: Vec::new(),
         }
     }
+
+    pub(crate) fn output_string(&self, key: &str, ctx: &str) -> Result<String> {
+        self.data
+            .get(key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| CalmError::Internal(format!("{ctx} tx_output missing {key}")))
+    }
+
+    pub(crate) fn output_optional_string(&self, key: &str, ctx: &str) -> Result<Option<String>> {
+        match self.data.get(key) {
+            Some(Value::String(value)) => Ok(Some(value.clone())),
+            Some(Value::Null) | None => Ok(None),
+            Some(_) => Err(CalmError::Internal(format!(
+                "{ctx} tx_output {key} must be string or null"
+            ))),
+        }
+    }
+
+    pub(crate) fn set_output_data(&mut self, key: &str, value: Value, ctx: &str) -> Result<()> {
+        let data = self
+            .data
+            .as_object_mut()
+            .ok_or_else(|| CalmError::Internal(format!("{ctx} tx_output data is not an object")))?;
+        data.insert(key.to_string(), value);
+        Ok(())
+    }
+
+    pub(crate) fn non_empty_string(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    }
 }
 
 #[derive(Clone)]
@@ -407,6 +441,28 @@ pub struct CompensationStep {
     pub completed: bool,
     pub attempts: u32,
     pub last_error: Option<String>,
+}
+
+impl CompensationStep {
+    pub(crate) fn new(op: &str, args: Value) -> Self {
+        Self {
+            op: op.to_string(),
+            args,
+            completed: false,
+            attempts: 0,
+            last_error: None,
+        }
+    }
+
+    pub(crate) fn arg_string(&self, key: &str, ctx: &str) -> Result<String> {
+        self.args
+            .get(key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                CalmError::Internal(format!("{ctx} compensation step {} missing {key}", self.op))
+            })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

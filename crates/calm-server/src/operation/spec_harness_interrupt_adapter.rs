@@ -102,8 +102,8 @@ impl ProviderAdapter for SpecHarnessInterruptAdapter {
         _op: &Operation,
         _ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let runtime_id = output_string(output, "runtime_id")?;
-        let reason = output_string(output, "reason")?;
+        let runtime_id = output.output_string("runtime_id", "spec harness")?;
+        let reason = output.output_string("reason", "spec harness")?;
         let harness = self
             .harness_registry
             .get(&runtime_id)
@@ -136,13 +136,4 @@ impl ProviderAdapter for SpecHarnessInterruptAdapter {
     ) -> Result<()> {
         Ok(())
     }
-}
-
-fn output_string(output: &TxOutput, key: &str) -> Result<String> {
-    output
-        .data
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Internal(format!("spec harness tx_output missing {key}")))
 }

@@ -100,7 +100,7 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
         _op: &Operation,
         _ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let runtime_id = output_string(output, "runtime_id")?;
+        let runtime_id = output.output_string("runtime_id", "spec harness")?;
         if let Some(harness) = self.harness_registry.remove(&runtime_id) {
             harness.shutdown().await?;
         } else if let Some(runtime) = self.repo.session_projection_by_id(&runtime_id).await?
@@ -155,13 +155,4 @@ impl ProviderAdapter for SpecHarnessShutdownAdapter {
     ) -> Result<()> {
         Ok(())
     }
-}
-
-fn output_string(output: &TxOutput, key: &str) -> Result<String> {
-    output
-        .data
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Internal(format!("spec harness tx_output missing {key}")))
 }

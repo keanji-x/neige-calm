@@ -336,9 +336,9 @@ impl ProviderAdapter for TerminalAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output_card_id(output)?;
-        let terminal_id = output_string(output, "terminal_id")?;
-        let program = output_string(output, "program")?;
-        let cwd = output_string(output, "cwd")?;
+        let terminal_id = output.output_string("terminal_id", "terminal")?;
+        let program = output.output_string("program", "terminal")?;
+        let cwd = output.output_string("cwd", "terminal")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
         match self
@@ -457,8 +457,8 @@ impl ProviderAdapter for TerminalAdapter {
             steps: vec![CompensationStep {
                 op: "rollback_terminal_card".into(),
                 args: json!({
-                    "card_id": output_string(output, "card_id")?,
-                    "terminal_id": output_string(output, "terminal_id")?,
+                    "card_id": output.output_string("card_id", "terminal")?,
+                    "terminal_id": output.output_string("terminal_id", "terminal")?,
                     "wave_id": output_wave_id(output)?,
                 }),
                 completed: false,
@@ -661,10 +661,10 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output_card_id(output)?;
-        let terminal_id = output_string(output, "terminal_id")?;
-        let wave_id = WaveId::from(output_string(output, "wave_id")?);
-        let cmd = output_string(output, "cmd")?;
-        let cwd = output_string(output, "cwd")?;
+        let terminal_id = output.output_string("terminal_id", "terminal")?;
+        let wave_id = WaveId::from(output.output_string("wave_id", "terminal")?);
+        let cmd = output.output_string("cmd", "terminal")?;
+        let cwd = output.output_string("cwd", "terminal")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
         let existing_term = ctx
             .repo
@@ -790,8 +790,8 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             steps: vec![CompensationStep {
                 op: "cleanup_terminal_worker".into(),
                 args: json!({
-                    "card_id": output_string(output, "card_id")?,
-                    "terminal_id": output_string(output, "terminal_id")?,
+                    "card_id": output.output_string("card_id", "terminal")?,
+                    "terminal_id": output.output_string("terminal_id", "terminal")?,
                 }),
                 completed: false,
                 attempts: 0,
@@ -907,15 +907,6 @@ fn output_card_id(output: &TxOutput) -> Result<String> {
     Err(CalmError::Internal(
         "terminal tx_output missing card_id".into(),
     ))
-}
-
-fn output_string(output: &TxOutput, key: &str) -> Result<String> {
-    output
-        .data
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Internal(format!("terminal tx_output missing {key}")))
 }
 
 fn normalize_program(program: String) -> String {

@@ -402,12 +402,13 @@ impl ProviderAdapter for CodexAdapter {
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
         let payload: CodexCreateOperationPayload = serde_json::from_value(op.payload.clone())?;
-        let card_id = output_string(output, "card_id")?;
-        let cwd = output_string(output, "cwd")?;
+        let card_id = output.output_string("card_id", "codex")?;
+        let cwd = output.output_string("cwd", "codex")?;
 
         if let Some(prompt_text) = output_prompt(output)? {
             let mut notifs = self.shared_codex_appserver.subscribe_notifications();
-            let thread_id = match output_optional_string(output, "codex_thread_id")?
+            let thread_id = match output
+                .output_optional_string("codex_thread_id", "codex")?
                 .or_else(|| phase_minted_thread_id(&op.phase))
             {
                 Some(thread_id) => thread_id,
@@ -416,7 +417,8 @@ impl ProviderAdapter for CodexAdapter {
                         .repo
                         .session_projection_active_for_card(&card_id)
                         .await?
-                        && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
+                        && let Some(thread_id) =
+                            TxOutput::non_empty_string(runtime.thread_id.as_deref())
                     {
                         thread_id
                     } else {
@@ -436,7 +438,7 @@ impl ProviderAdapter for CodexAdapter {
                     }
                 }
             };
-            set_output_data(output, "codex_thread_id", json!(thread_id.clone()))?;
+            output.set_output_data("codex_thread_id", json!(thread_id.clone()), "codex")?;
             let updated = persist_prompt_thread(
                 ctx,
                 &self.card_role_cache,
@@ -454,7 +456,7 @@ impl ProviderAdapter for CodexAdapter {
                 self.shared_codex_appserver
                     .turn_start(&thread_id, vec![InputItem::text(prompt_text)])
                     .await?;
-                set_output_data(output, "turn_started_at_ms", json!(now_ms()))?;
+                output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
                 checkpoint_prompt_turn_started(ctx, op, output, &thread_id).await?;
             }
             match await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await {
@@ -466,7 +468,7 @@ impl ProviderAdapter for CodexAdapter {
             self.shared_codex_appserver
                 .ensure_respawn_for_current_settings()
                 .await?;
-            set_output_data(output, "pending_registered", json!(true))?;
+            output.set_output_data("pending_registered", json!(true), "codex")?;
             let updated = persist_pending_thread_status(
                 ctx,
                 &self.card_role_cache,
@@ -492,11 +494,11 @@ impl ProviderAdapter for CodexAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let terminal_id = output_string(output, "terminal_id")?;
-        let card_id = output_string(output, "card_id")?;
-        let wave_id = output_string(output, "wave_id")?;
-        let runtime_id = output_string(output, "runtime_id")?;
-        let cwd = output_string(output, "cwd")?;
+        let terminal_id = output.output_string("terminal_id", "codex")?;
+        let card_id = output.output_string("card_id", "codex")?;
+        let wave_id = output.output_string("wave_id", "codex")?;
+        let runtime_id = output.output_string("runtime_id", "codex")?;
+        let cwd = output.output_string("cwd", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         let term = ctx
@@ -506,7 +508,7 @@ impl ProviderAdapter for CodexAdapter {
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
         let is_prompted = output_prompt(output)?.is_some();
         let command_line = if is_prompted {
-            let thread_id = output_string(output, "codex_thread_id")?;
+            let thread_id = output.output_string("codex_thread_id", "codex")?;
             format!(
                 "codex resume {} --remote {}",
                 shell_single_quote(&thread_id),
@@ -562,31 +564,31 @@ impl ProviderAdapter for CodexAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        let card_id = output_string(output, "card_id")?;
-        let terminal_id = output_string(output, "terminal_id")?;
-        let mut steps = vec![step(
+        let card_id = output.output_string("card_id", "codex")?;
+        let terminal_id = output.output_string("terminal_id", "codex")?;
+        let mut steps = vec![CompensationStep::new(
             "reap_terminal_pty",
             json!({ "terminal_id": terminal_id }),
         )];
         if output_prompt(output)?.is_some() {
-            steps.push(step(
+            steps.push(CompensationStep::new(
                 "interrupt_shared_codex_turn",
                 json!({
                     "card_id": card_id.clone(),
-                    "thread_id": output_optional_string(output, "codex_thread_id")?,
+                    "thread_id": output.output_optional_string("codex_thread_id", "codex")?,
                 }),
             ));
-            steps.push(step(
+            steps.push(CompensationStep::new(
                 "session_projection_set_status_failed_for_card",
                 json!({ "card_id": card_id }),
             ));
         } else {
-            let runtime_id = output_string(output, "runtime_id")?;
-            steps.push(step(
+            let runtime_id = output.output_string("runtime_id", "codex")?;
+            steps.push(CompensationStep::new(
                 "pending_codex_threads_remove_by_card",
                 json!({ "card_id": card_id.clone(), "runtime_id": runtime_id }),
             ));
-            steps.push(step(
+            steps.push(CompensationStep::new(
                 "card_payload_clear_pending_status",
                 json!({ "card_id": card_id }),
             ));
@@ -612,7 +614,7 @@ impl ProviderAdapter for CodexAdapter {
         }
         match step.op.as_str() {
             "reap_terminal_pty" => {
-                let terminal_id = step_arg_string(step, "terminal_id")?;
+                let terminal_id = step.arg_string("terminal_id", "codex")?;
                 if let Some(term) = ctx.repo.terminal_get(&terminal_id).await? {
                     reap_terminal_artifacts_with_renderer(
                         Some(ctx.terminal_renderer.as_ref()),
@@ -623,7 +625,7 @@ impl ProviderAdapter for CodexAdapter {
                 Ok(())
             }
             "interrupt_shared_codex_turn" => {
-                let card_id = step_arg_string(step, "card_id")?;
+                let card_id = step.arg_string("card_id", "codex")?;
                 let thread_id =
                     if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str) {
                         Some(thread_id.to_string())
@@ -631,7 +633,9 @@ impl ProviderAdapter for CodexAdapter {
                         ctx.repo
                             .session_projection_active_for_card(&card_id)
                             .await?
-                            .and_then(|runtime| non_empty_string(runtime.thread_id.as_deref()))
+                            .and_then(|runtime| {
+                                TxOutput::non_empty_string(runtime.thread_id.as_deref())
+                            })
                     };
                 if let Some(thread_id) = thread_id
                     && let Err(e) = self
@@ -653,22 +657,22 @@ impl ProviderAdapter for CodexAdapter {
             // in-flight compensation states still drain. New states write the new name.
             "session_projection_set_status_failed_for_card"
             | "runtime_set_status_failed_for_card" => {
-                let card_id = step_arg_string(step, "card_id")?;
+                let card_id = step.arg_string("card_id", "codex")?;
                 ctx.repo
                     .session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
                     .await?;
                 Ok(())
             }
             "pending_codex_threads_remove_by_card" => {
-                let runtime_id = output_string(output, "runtime_id")?;
+                let runtime_id = output.output_string("runtime_id", "codex")?;
                 self.pending_codex_threads
                     .remove_by_runtime(&runtime_id)
                     .await;
                 Ok(())
             }
             "card_payload_clear_pending_status" => {
-                let card_id = step_arg_string(step, "card_id")?;
-                let runtime_id = output_string(output, "runtime_id")?;
+                let card_id = step.arg_string("card_id", "codex")?;
+                let runtime_id = output.output_string("runtime_id", "codex")?;
                 match crate::pending_codex_threads::card_payload_clear_pending_status(
                     ctx.repo.as_ref(),
                     &ctx.events,
@@ -826,12 +830,12 @@ impl ProviderAdapter for CodexWorkerAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let card_id = output_string(output, "card_id")?;
-        let runtime_id = output_string(output, "runtime_id")?;
-        let terminal_id = output_string(output, "terminal_id")?;
-        let wave_id = WaveId::from(output_string(output, "wave_id")?);
-        let cwd = output_string(output, "cwd")?;
-        let rendered_prompt = output_string(output, "prompt")?;
+        let card_id = output.output_string("card_id", "codex")?;
+        let runtime_id = output.output_string("runtime_id", "codex")?;
+        let terminal_id = output.output_string("terminal_id", "codex")?;
+        let wave_id = WaveId::from(output.output_string("wave_id", "codex")?);
+        let cwd = output.output_string("cwd", "codex")?;
+        let rendered_prompt = output.output_string("prompt", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
         let term = ctx
@@ -924,11 +928,11 @@ impl ProviderAdapter for CodexWorkerAdapter {
             version: 1,
             from_phase,
             reason: reason.to_string(),
-            steps: vec![step(
+            steps: vec![CompensationStep::new(
                 "cleanup_codex_worker",
                 json!({
-                    "card_id": output_string(output, "card_id")?,
-                    "terminal_id": output_string(output, "terminal_id")?,
+                    "card_id": output.output_string("card_id", "codex")?,
+                    "terminal_id": output.output_string("terminal_id", "codex")?,
                 }),
             )],
         })
@@ -950,18 +954,18 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 step.op
             )));
         }
-        let card_id = step_arg_string(step, "card_id")?;
-        let terminal_id = step_arg_string(step, "terminal_id")?;
-        let runtime_id = output_string(output, "runtime_id")?;
+        let card_id = step.arg_string("card_id", "codex")?;
+        let terminal_id = step.arg_string("terminal_id", "codex")?;
+        let runtime_id = output.output_string("runtime_id", "codex")?;
         let runtime_turn = ctx
             .repo
             .session_projection_by_id(&runtime_id)
             .await?
             .and_then(|runtime| {
-                non_empty_string(runtime.thread_id.as_deref()).map(|thread_id| {
+                TxOutput::non_empty_string(runtime.thread_id.as_deref()).map(|thread_id| {
                     (
                         thread_id,
-                        non_empty_string(runtime.active_turn_id.as_deref()),
+                        TxOutput::non_empty_string(runtime.active_turn_id.as_deref()),
                     )
                 })
             });
@@ -1043,36 +1047,37 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         .session_projection_by_id(&runtime_id)
         .await?
         .ok_or_else(|| CalmError::Internal(format!("worker runtime {runtime_id} vanished")))?;
-    let persisted_turn_id = non_empty_string(runtime.active_turn_id.as_deref());
+    let persisted_turn_id = TxOutput::non_empty_string(runtime.active_turn_id.as_deref());
     let worker_instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Worker.prompt_template(),
         ctx.wave_id.as_str(),
     );
-    let thread_id = if let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref()) {
-        thread_id
-    } else {
-        let thread_id = ctx
-            .shared_codex_appserver
-            .thread_start_mint_for_card(
+    let thread_id =
+        if let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) {
+            thread_id
+        } else {
+            let thread_id = ctx
+                .shared_codex_appserver
+                .thread_start_mint_for_card(
+                    card_id,
+                    SharedThreadStartParams {
+                        cwd: ctx.cwd.to_string(),
+                        approval_policy: "never".into(),
+                        sandbox_mode: "workspace-write".into(),
+                        developer_instructions: Some(worker_instructions),
+                        config: None,
+                    },
+                )
+                .await?;
+            tracing::info!(
+                target: "shared_codex_daemon::worker",
                 card_id,
-                SharedThreadStartParams {
-                    cwd: ctx.cwd.to_string(),
-                    approval_policy: "never".into(),
-                    sandbox_mode: "workspace-write".into(),
-                    developer_instructions: Some(worker_instructions),
-                    config: None,
-                },
-            )
-            .await?;
-        tracing::info!(
-            target: "shared_codex_daemon::worker",
-            card_id,
-            wave_id = %ctx.wave_id,
-            thread_id = %thread_id,
-            "thread_start_succeeded"
-        );
-        thread_id
-    };
+                wave_id = %ctx.wave_id,
+                thread_id = %thread_id,
+                "thread_start_succeeded"
+            );
+            thread_id
+        };
 
     persist_shared_worker_runtime_fields(
         ctx.spawn_ctx,
@@ -1623,13 +1628,6 @@ fn insert_payload_string(map: &mut serde_json::Map<String, Value>, key: &str, va
         .or_insert_with(|| Value::String(value.to_string()));
 }
 
-fn non_empty_string(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
 fn validate_optional_color(value: Option<&str>, field: &str) -> Result<()> {
     if let Some(value) = value {
         normalize_optional_css_color(Some(value), field)?;
@@ -1647,25 +1645,6 @@ fn output_prompt(output: &TxOutput) -> Result<Option<String>> {
     }
 }
 
-fn output_string(output: &TxOutput, key: &str) -> Result<String> {
-    output
-        .data
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Internal(format!("codex tx_output missing {key}")))
-}
-
-fn output_optional_string(output: &TxOutput, key: &str) -> Result<Option<String>> {
-    match output.data.get(key) {
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(Value::Null) | None => Ok(None),
-        Some(_) => Err(CalmError::Internal(format!(
-            "codex tx_output {key} must be string or null"
-        ))),
-    }
-}
-
 fn output_optional_i64(output: &TxOutput, key: &str) -> Result<Option<i64>> {
     match output.data.get(key) {
         Some(Value::Number(value)) => value.as_i64().map(Some).ok_or_else(|| {
@@ -1678,15 +1657,6 @@ fn output_optional_i64(output: &TxOutput, key: &str) -> Result<Option<i64>> {
     }
 }
 
-fn set_output_data(output: &mut TxOutput, key: &str, value: Value) -> Result<()> {
-    let data = output
-        .data
-        .as_object_mut()
-        .ok_or_else(|| CalmError::Internal("codex tx_output data is not an object".into()))?;
-    data.insert(key.to_string(), value);
-    Ok(())
-}
-
 fn phase_minted_thread_id(phase: &Phase) -> Option<String> {
     match phase {
         Phase::AppServerInteract {
@@ -1697,26 +1667,6 @@ fn phase_minted_thread_id(phase: &Phase) -> Option<String> {
         } => Some(thread_id.clone()),
         _ => None,
     }
-}
-
-fn step(op: &str, args: Value) -> CompensationStep {
-    CompensationStep {
-        op: op.to_string(),
-        args,
-        completed: false,
-        attempts: 0,
-        last_error: None,
-    }
-}
-
-fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
-    step.args
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            CalmError::Internal(format!("codex compensation step {} missing {key}", step.op))
-        })
 }
 
 #[cfg(test)]

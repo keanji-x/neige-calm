@@ -313,13 +313,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             "snapshot": snapshot,
         });
         if let Some(old_runtime_id) = old_runtime_id {
-            set_output_data(&mut output, "old_runtime_id", json!(old_runtime_id))?;
+            output.set_output_data("old_runtime_id", json!(old_runtime_id), "spec harness")?;
         }
         if let Some(old_runtime_status) = old_runtime_status {
-            set_output_data(
-                &mut output,
+            output.set_output_data(
                 "old_runtime_status",
                 serde_json::to_value(old_runtime_status)?,
+                "spec harness",
             )?;
         }
         Ok(output)
@@ -334,17 +334,18 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
         let reset_harness_items = payload.reset_harness_items;
         let force_new_thread = payload.force_new_thread;
-        let card_id = output_string(output, "card_id")?;
-        let wave_id = output_string(output, "wave_id")?;
-        let runtime_id = output_string(output, "runtime_id")?;
+        let card_id = output.output_string("card_id", "spec harness")?;
+        let wave_id = output.output_string("wave_id", "spec harness")?;
+        let runtime_id = output.output_string("runtime_id", "spec harness")?;
         let runtime_deferred = output_bool(output, "runtime_deferred")?;
-        let cwd = output_string(output, "cwd")?;
+        let cwd = output.output_string("cwd", "spec harness")?;
         // OLD PTY shutdown at Phase-2 entry, immediately after the Phase-1
         // tx commit. Per RATIFY-8 section 5 / 1.4, force_new_thread is a
         // hard reset: the DB-side supersede lives in calm-truth, and the
         // handle kill stays here as the first app-server-side action after
         // commit.
-        if let Some(old_runtime_id) = output_optional_string(output, "old_runtime_id")?
+        if let Some(old_runtime_id) =
+            output.output_optional_string("old_runtime_id", "spec harness")?
             && old_runtime_id != runtime_id
             && let Some(old_handle) = self.harness_registry.remove(&old_runtime_id)
         {
@@ -366,7 +367,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             .repo
             .session_projection_active_for_card(&card_id)
             .await?
-            && let Some(thread_id) = non_empty_string(runtime.thread_id.as_deref())
+            && let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref())
         {
             Some(thread_id)
         } else {
@@ -424,11 +425,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     .await?
             }
         };
-        set_output_data(output, "codex_thread_id", json!(thread_id.clone()))?;
+        output.set_output_data("codex_thread_id", json!(thread_id.clone()), "spec harness")?;
         let mut snapshot = output_snapshot(output)?;
         snapshot.phase = HarnessPhaseTag::Idle;
         snapshot.last_thread_id = Some(thread_id.clone());
-        set_output_data(output, "snapshot", serde_json::to_value(&snapshot)?)?;
+        output.set_output_data("snapshot", serde_json::to_value(&snapshot)?, "spec harness")?;
         let mut card: crate::model::Card = serde_json::from_value(output.result.clone())?;
         let mut card_payload = card.payload.clone();
         let Some(map) = card_payload.as_object_mut() else {
@@ -493,15 +494,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             if existing_id != runtime_id {
                                 old_runtime_id = Some(existing_id.clone());
                                 old_runtime_status = Some(existing_status);
-                                set_output_data(
-                                    &mut checkpoint_output,
+                                checkpoint_output.set_output_data(
                                     "old_runtime_id",
                                     json!(existing_id),
+                                    "spec harness",
                                 )?;
-                                set_output_data(
-                                    &mut checkpoint_output,
+                                checkpoint_output.set_output_data(
                                     "old_runtime_status",
                                     serde_json::to_value(existing_status)?,
+                                    "spec harness",
                                 )?;
                             }
                             session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
@@ -567,13 +568,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         drop(mint_lock_guard);
         card = updated_card;
         if let Some(old_runtime_id) = old_runtime_id {
-            set_output_data(output, "old_runtime_id", json!(old_runtime_id))?;
+            output.set_output_data("old_runtime_id", json!(old_runtime_id), "spec harness")?;
         }
         if let Some(old_runtime_status) = old_runtime_status {
-            set_output_data(
-                output,
+            output.set_output_data(
                 "old_runtime_status",
                 serde_json::to_value(old_runtime_status)?,
+                "spec harness",
             )?;
         }
         if reset_harness_items {
@@ -605,10 +606,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let runtime_id = output_string(output, "runtime_id")?;
-        let card_id = output_string(output, "card_id")?;
-        let wave_id = output_string(output, "wave_id")?;
-        let thread_id = output_optional_string(output, "codex_thread_id")?;
+        let runtime_id = output.output_string("runtime_id", "spec harness")?;
+        let card_id = output.output_string("card_id", "spec harness")?;
+        let wave_id = output.output_string("wave_id", "spec harness")?;
+        let thread_id = output.output_optional_string("codex_thread_id", "spec harness")?;
         let snapshot = output_snapshot(output)?;
         if let Some(existing) = self.harness_registry.remove(&runtime_id) {
             existing.shutdown().await?;
@@ -640,9 +641,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         op: &Operation,
     ) -> Result<CompensationStateVersioned> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
-        let card_id = output_string(output, "card_id")?;
-        let runtime_id = output_string(output, "runtime_id")?;
-        let thread_id = output_optional_string(output, "codex_thread_id")?;
+        let card_id = output.output_string("card_id", "spec harness")?;
+        let runtime_id = output.output_string("runtime_id", "spec harness")?;
+        let thread_id = output.output_optional_string("codex_thread_id", "spec harness")?;
         let mut steps = Vec::new();
         if from_phase == PhaseTag::AppServerInteract
             && is_reusable_thread_missing_card_mcp_token_failure(reason)
@@ -658,7 +659,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             from_phase,
             PhaseTag::SpawnStarted | PhaseTag::SpawnSucceeded
         ) {
-            steps.push(step(
+            steps.push(CompensationStep::new(
                 "abort_harness_task",
                 json!({ "runtime_id": runtime_id }),
             ));
@@ -668,7 +669,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             PhaseTag::AppServerInteract | PhaseTag::SpawnStarted | PhaseTag::SpawnSucceeded
         ) && (!payload.force_new_thread || thread_id.is_some())
         {
-            steps.push(step(
+            steps.push(CompensationStep::new(
                 "interrupt_thread",
                 json!({
                     "card_id": card_id,
@@ -676,8 +677,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 }),
             ));
         }
-        steps.push(step("fail_runtime", json!({ "runtime_id": runtime_id })));
-        if let Some(old_runtime_id) = output_optional_string(output, "old_runtime_id")? {
+        steps.push(CompensationStep::new(
+            "fail_runtime",
+            json!({ "runtime_id": runtime_id }),
+        ));
+        if let Some(old_runtime_id) =
+            output.output_optional_string("old_runtime_id", "spec harness")?
+        {
             let old_runtime_status =
                 output
                     .data
@@ -688,7 +694,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                             "spec harness tx_output missing old_runtime_status".into(),
                         )
                     })?;
-            steps.push(step(
+            steps.push(CompensationStep::new(
                 "restore_old_runtime",
                 json!({
                     "runtime_id": old_runtime_id,
@@ -716,7 +722,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         }
         match step.op.as_str() {
             "abort_harness_task" => {
-                let runtime_id = step_arg_string(step, "runtime_id")?;
+                let runtime_id = step.arg_string("runtime_id", "spec harness")?;
                 if let Some(handle) = self.harness_registry.remove(&runtime_id) {
                     handle.shutdown().await?;
                 }
@@ -728,12 +734,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 {
                     tracing::warn!(thread_id, error = %e, "spec harness compensation interrupt failed");
                 }
-                let card_id = step_arg_string(step, "card_id")?;
+                let card_id = step.arg_string("card_id", "spec harness")?;
                 clear_card_runtime_fields(ctx, &card_id).await?;
                 Ok(())
             }
             "fail_runtime" => {
-                let runtime_id = step_arg_string(step, "runtime_id")?;
+                let runtime_id = step.arg_string("runtime_id", "spec harness")?;
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
                         session_fail_if_active_runtime_tx(tx, &runtime_id)
@@ -744,12 +750,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 .await
             }
             "restore_old_runtime" => {
-                let runtime_id = step_arg_string(step, "runtime_id")?;
+                let runtime_id = step.arg_string("runtime_id", "spec harness")?;
                 let status = step_arg_run_status(step, "status")?;
                 restore_old_runtime_after_spawn_failure(ctx.repo.as_ref(), runtime_id, status).await
             }
             "delete_runtime" => {
-                let runtime_id = step_arg_string(step, "runtime_id")?;
+                let runtime_id = step.arg_string("runtime_id", "spec harness")?;
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
                         session_delete_tx(tx, &runtime_id)
@@ -771,16 +777,6 @@ fn is_reusable_thread_missing_card_mcp_token_failure(reason: &str) -> bool {
     reason.contains(REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR)
 }
 
-fn step(op: &str, args: Value) -> CompensationStep {
-    CompensationStep {
-        op: op.into(),
-        args,
-        completed: false,
-        attempts: 0,
-        last_error: None,
-    }
-}
-
 fn output_snapshot(output: &TxOutput) -> Result<HarnessSnapshot> {
     let value = output
         .data
@@ -788,32 +784,6 @@ fn output_snapshot(output: &TxOutput) -> Result<HarnessSnapshot> {
         .cloned()
         .ok_or_else(|| CalmError::Internal("spec harness output missing snapshot".into()))?;
     Ok(serde_json::from_value(value)?)
-}
-
-fn output_string(output: &TxOutput, key: &str) -> Result<String> {
-    output
-        .data
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Internal(format!("spec harness tx_output missing {key}")))
-}
-
-fn non_empty_string(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn output_optional_string(output: &TxOutput, key: &str) -> Result<Option<String>> {
-    match output.data.get(key) {
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(Value::Null) | None => Ok(None),
-        Some(_) => Err(CalmError::Internal(format!(
-            "spec harness tx_output {key} must be string or null"
-        ))),
-    }
 }
 
 fn output_bool(output: &TxOutput, key: &str) -> Result<bool> {
@@ -827,15 +797,9 @@ fn output_bool(output: &TxOutput, key: &str) -> Result<bool> {
 }
 
 fn output_existing_thread_id(output: &TxOutput) -> Result<Option<String>> {
-    Ok(output_optional_string(output, "codex_thread_id")?.filter(|id| !id.trim().is_empty()))
-}
-
-fn set_output_data(output: &mut TxOutput, key: &str, value: Value) -> Result<()> {
-    let obj = output.data.as_object_mut().ok_or_else(|| {
-        CalmError::Internal("spec harness tx_output data is not an object".into())
-    })?;
-    obj.insert(key.to_string(), value);
-    Ok(())
+    Ok(output
+        .output_optional_string("codex_thread_id", "spec harness")?
+        .filter(|id| !id.trim().is_empty()))
 }
 
 async fn clear_card_runtime_fields(ctx: &SpawnCtx, card_id: &str) -> Result<()> {
@@ -911,19 +875,6 @@ fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessi
         ))
     })?;
     Ok(serde_json::from_value(value)?)
-}
-
-fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
-    step.args
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            CalmError::Internal(format!(
-                "spec harness compensation step {} missing {key}",
-                step.op
-            ))
-        })
 }
 
 // The per-card lock behavior test moved to `crate::per_card_lock::tests`
