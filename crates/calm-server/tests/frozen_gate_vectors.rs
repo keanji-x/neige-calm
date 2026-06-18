@@ -43,12 +43,16 @@ use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_types::worker::{
+    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -56,7 +60,7 @@ use serde_json::{Value, json};
 /// silently dropped from a JSON file (e.g. a bad merge) fails loudly.
 /// Adding/removing vectors updates this constant in the same
 /// `FROZEN-VECTOR-CHANGE:` commit that touches the vectors dir.
-const EXPECTED_VECTOR_COUNT: usize = 51;
+const EXPECTED_VECTOR_COUNT: usize = 59;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,8 +115,50 @@ impl Fixture {
         let report = seed_card(&repo, &cache, &home_wave, CardRole::ReportCard).await;
         let other = seed_card(&repo, &cache, &home_wave, CardRole::Worker).await;
 
+        let worker_session = seed_worker_session(
+            &repo,
+            &home_wave,
+            "session-worker-vector-0001",
+            WorkerSessionState::Running,
+            Some(worker.clone()),
+            WorkerContract::Executor,
+        )
+        .await;
+        let spec_session = seed_worker_session(
+            &repo,
+            &home_wave,
+            "session-spec-vector-0001",
+            WorkerSessionState::Running,
+            Some(spec.clone()),
+            WorkerContract::Planner,
+        )
+        .await;
+        let terminal_session = seed_worker_session(
+            &repo,
+            &home_wave,
+            "session-terminal-vector-0001",
+            WorkerSessionState::Exited,
+            Some(worker.clone()),
+            WorkerContract::Executor,
+        )
+        .await;
+        let cardless_session = seed_worker_session(
+            &repo,
+            &home_wave,
+            "session-cardless-vector-0001",
+            WorkerSessionState::Running,
+            None,
+            WorkerContract::Executor,
+        )
+        .await;
+
         let subst = vec![
             ("$CLAUDE_WORKER_CARD", claude_worker.as_str().to_string()),
+            ("$TERMINAL_SESSION", terminal_session.as_str().to_string()),
+            ("$CARDLESS_SESSION", cardless_session.as_str().to_string()),
+            ("$UNKNOWN_SESSION", "session-never-minted-0000".to_string()),
+            ("$WORKER_SESSION", worker_session.as_str().to_string()),
+            ("$SPEC_SESSION", spec_session.as_str().to_string()),
             ("$UNKNOWN_CARD", "card-never-minted-0000".to_string()),
             ("$WORKER_CARD", worker.as_str().to_string()),
             ("$REPORT_CARD", report.as_str().to_string()),
@@ -196,6 +242,55 @@ async fn seed_card(
         .unwrap();
     cache.insert(card.id.clone(), role, wave.clone());
     CardId::from(card.id.as_str())
+}
+
+async fn seed_worker_session(
+    repo: &SqlxRepo,
+    wave: &WaveId,
+    session_id: &str,
+    state: WorkerSessionState,
+    card_id: Option<CardId>,
+    contract: WorkerContract,
+) -> WorkerSessionId {
+    let session = WorkerSession {
+        id: WorkerSessionId::from(session_id),
+        wave_id: wave.clone(),
+        provider: WorkerProviderKind::Codex,
+        mode: SessionMode::Resumable,
+        contract,
+        parent_session_id: None,
+        requester_session_id: None,
+        state,
+        mcp_token_hash: None,
+        thread_id: None,
+        agent_session_id: None,
+        active_turn_id: None,
+        terminal_run_id: None,
+        card_id,
+        handle_state_json: None,
+        liveness: LivenessTag::Unknown,
+        liveness_probed_at_ms: None,
+        exit_code: None,
+        exit_interpretation: None,
+        spawn_op_id: None,
+        last_activity_ms: None,
+        last_thread_status: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        completed_at_ms: None,
+    };
+    let id = session.id.clone();
+    calm_server::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            session_insert_tx(tx, session)
+                .await
+                .map_err(CalmError::from)?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed worker session");
+    id
 }
 
 /// Replace `$PLACEHOLDER` tokens inside every string of a JSON value.
