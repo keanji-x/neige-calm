@@ -96,7 +96,7 @@ jobs:
                 --glob '!crates/calm-truth/migrations/**'
                 --glob '!crates/calm-server/tests/migration_0055_drop_runtimes.rs')
           # (a) DDL / JOIN / REPLACE — bare or quoted — that the verb-list ratchet misses
-          if rg -niP '\b(create\s+(temp(orary)?\s+)?table|alter\s+table|replace\s+into|join|create\s+(unique\s+)?index\s+\w+\s+on)\s+(if\s+not\s+exists\s+)?"?runtimes"?\b' crates/ "${EXCL[@]}"; then
+          if rg -niP '\b((create\s+(temp(orary)?\s+)?table|alter\s+table|replace\s+into|join)\s+(if\s+not\s+exists\s+)?|create\s+(unique\s+)?index\s+(if\s+not\s+exists\s+)?\S+\s+on\s+)"?runtimes"?\b' crates/ "${EXCL[@]}"; then
             echo "::error::dropped 'runtimes' table reintroduced via DDL/JOIN/REPLACE (migration 0055 dropped it)"
             exit 1
           fi
