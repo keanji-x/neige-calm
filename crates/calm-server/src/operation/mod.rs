@@ -3,6 +3,7 @@ mod parked_fence_model;
 
 mod driver;
 mod repo_sqlite;
+pub(crate) mod workspace_lease;
 
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
@@ -1746,6 +1747,91 @@ mod tests {
         assert!(plan.items.iter().any(|item| {
             matches!(item, RecoveryItem::VerifyParked { op_id } if op_id == &parked.id)
         }));
+    }
+
+    #[tokio::test]
+    async fn recover_on_boot_reclaims_dead_workspace_lease() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let cove = crate::db::RepoSyncDomainRaw::cove_create(
+            &sqlx_repo,
+            crate::model::NewCove {
+                name: "lease reclaim".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = crate::db::RepoSyncDomainRaw::wave_create(
+            &sqlx_repo,
+            crate::model::NewWave {
+                cove_id: cove.id,
+                title: "lease reclaim".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            },
+        )
+        .await
+        .unwrap();
+        let card = crate::db::RepoSyncDomainRaw::card_create(
+            &sqlx_repo,
+            crate::model::NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+        let lease_id = new_id();
+        let path = format!(".claude/worktrees/{}/{}", wave.id, card.id);
+        std::fs::create_dir_all(&path).unwrap();
+        let now = now_ms();
+        sqlx::query(
+            r#"INSERT INTO workspace_leases (
+                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, ?3, ?4, 'held', 'dead-owner', ?5, 'dead-boot', ?6, ?6)"#,
+        )
+        .bind(&lease_id)
+        .bind(card.id.as_str())
+        .bind(wave.id.as_str())
+        .bind(&path)
+        .bind(now + 60_000)
+        .bind(now)
+        .execute(sqlx_repo.pool())
+        .await
+        .unwrap();
+
+        let pool = sqlx_repo.pool().clone();
+        let repo = Arc::new(SqlxOperationRepo::new(pool));
+        let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
+        let plan = runtime.recover_on_boot().await.unwrap();
+        assert!(plan.items.is_empty());
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                .bind(&lease_id)
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "released");
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "boot reclaim removes dead lease directory"
+        );
+        let released_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(released_events, 1);
     }
 
     #[cfg(target_os = "linux")]

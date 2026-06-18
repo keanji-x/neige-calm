@@ -23,6 +23,9 @@ use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{
     WorkerCleanupOutcome, compensate_worker_rows, worker_spawn_failure_preserved,
 };
+use crate::operation::workspace_lease::{
+    acquire_workspace_lease_tx, release_workspace_lease_by_id, workspace_lease_path_for,
+};
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
@@ -169,6 +172,8 @@ pub struct CodexWorkerOperationPayload {
     pub wave_id: String,
     pub idempotency_key: String,
     pub goal: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub context: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -738,7 +743,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());
-        let cwd = default_cwd();
+        let cwd = workspace_lease_path_for(wave_id.as_str(), &card_id)?;
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_worker_prompt(
             &payload.goal,
@@ -770,6 +775,9 @@ impl ProviderAdapter for CodexWorkerAdapter {
             RequestTheme::default_dark(),
         )
         .await?;
+
+        let (lease, lease_event) =
+            acquire_workspace_lease_tx(tx, &card_id, card.wave_id.as_str(), &op.id).await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -808,10 +816,12 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "wave_id": card.wave_id,
             "terminal_id": term.id,
             "cwd": cwd,
+            "lease_id": lease.lease_id,
             "env": env,
             "prompt": rendered_prompt,
             "scope": scope,
         });
+        output.post_commit_events.push(lease_event);
         Ok(output)
     }
 
@@ -924,17 +934,25 @@ impl ProviderAdapter for CodexWorkerAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
+        let mut steps = Vec::new();
+        if let Some(lease_id) = output.output_optional_string("lease_id", "codex")? {
+            steps.push(CompensationStep::new(
+                "release_workspace_lease",
+                json!({ "lease_id": lease_id }),
+            ));
+        }
+        steps.push(CompensationStep::new(
+            "cleanup_codex_worker",
+            json!({
+                "card_id": output.output_string("card_id", "codex")?,
+                "terminal_id": output.output_string("terminal_id", "codex")?,
+            }),
+        ));
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase,
             reason: reason.to_string(),
-            steps: vec![CompensationStep::new(
-                "cleanup_codex_worker",
-                json!({
-                    "card_id": output.output_string("card_id", "codex")?,
-                    "terminal_id": output.output_string("terminal_id", "codex")?,
-                }),
-            )],
+            steps,
         })
     }
 
@@ -946,6 +964,12 @@ impl ProviderAdapter for CodexWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
+            return Ok(());
+        }
+        if step.op == "release_workspace_lease" {
+            let lease_id = step.arg_string("lease_id", "codex")?;
+            let pool = ctx.operation_repo.sqlite_pool();
+            release_workspace_lease_by_id(&pool, &ctx.events, &lease_id).await?;
             return Ok(());
         }
         if step.op != "cleanup_codex_worker" {
@@ -1672,6 +1696,139 @@ fn phase_minted_thread_id(phase: &Phase) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::sqlite::begin_immediate_tx;
+    use crate::event::EventBus;
+    use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+    use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+    use sqlx::Row;
+    use std::sync::Arc;
+
+    struct WorkerLeaseHarness {
+        repo: Arc<crate::db::sqlite::SqlxRepo>,
+        adapter: CodexWorkerAdapter,
+        wave_id: String,
+        events: EventBus,
+    }
+
+    async fn worker_lease_harness() -> WorkerLeaseHarness {
+        let repo = Arc::new(
+            crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let cove = crate::db::RepoSyncDomainRaw::cove_create(
+            repo.as_ref(),
+            crate::model::NewCove {
+                name: "workspace leases".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = crate::db::RepoSyncDomainRaw::wave_create(
+            repo.as_ref(),
+            crate::model::NewWave {
+                cove_id: cove.id,
+                title: "workspace leases".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+        )
+        .await
+        .unwrap();
+        let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
+        let full_repo: Arc<dyn crate::db::Repo> = repo.clone();
+        WorkerLeaseHarness {
+            adapter: CodexWorkerAdapter::new(
+                route_repo,
+                Arc::new(CodexClient::new_stub()),
+                SharedCodexAppServer::new_stub(full_repo),
+                None,
+                CardRoleCache::new(),
+                WaveCoveCache::new(),
+            ),
+            repo,
+            wave_id: wave.id.to_string(),
+            events: EventBus::new(),
+        }
+    }
+
+    fn worker_payload(wave_id: &str, key: &str) -> Value {
+        serde_json::to_value(CodexWorkerOperationPayload {
+            actor: ActorId::KernelDispatcher,
+            wave_id: wave_id.to_string(),
+            idempotency_key: format!("{wave_id}:{key}"),
+            goal: format!("do {key}"),
+            cwd: None,
+            context: Value::Null,
+            acceptance_criteria: None,
+        })
+        .unwrap()
+    }
+
+    fn worker_op(id: &str, payload: Value) -> Operation {
+        Operation {
+            id: id.to_string(),
+            operation_key: format!("op-key-{id}"),
+            kind: "codex-worker".into(),
+            idempotency_key: Some(id.to_string()),
+            payload_hash: "hash".into(),
+            target_type: "unknown".into(),
+            target_id: None,
+            target: json!({ "type": "unknown", "id": null }),
+            payload,
+            tx_output: None,
+            phase: Phase::Pending,
+            phase_detail: None,
+            attempt: 0,
+            last_error: None,
+            compensation_state: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_artifacts: None,
+            parked_at_ms: None,
+            parked_deadline_ms: None,
+        }
+    }
+
+    async fn prepare_worker(
+        harness: &WorkerLeaseHarness,
+        key: &str,
+    ) -> (TxOutput, Vec<BroadcastEnvelope>) {
+        let payload = worker_payload(&harness.wave_id, key);
+        let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+        let op_id = op_repo
+            .insert_operation(
+                "codex-worker",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(format!("op-{key}")),
+                    payload_hash: format!("hash-{key}"),
+                },
+                payload.clone(),
+            )
+            .await
+            .unwrap();
+        let op = op_repo
+            .claim_drive_batch(1)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|op| op.id == op_id)
+            .unwrap();
+        let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+        let output = harness
+            .adapter
+            .prepare_tx(&mut tx, &payload, &op)
+            .await
+            .unwrap();
+        let events = output.post_commit_events.clone();
+        tx.commit().await.unwrap();
+        (output, events)
+    }
 
     #[test]
     fn render_worker_prompt_goal_only() {
@@ -1714,5 +1871,132 @@ mod tests {
     fn render_worker_prompt_skips_blank_ac() {
         let out = render_worker_prompt("g", &Value::Null, Some("   "));
         assert_eq!(out, "Goal:\ng");
+    }
+
+    #[tokio::test]
+    async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
+        let harness = worker_lease_harness().await;
+        let (output, events) = prepare_worker(&harness, "a").await;
+        let card_id = output.output_string("card_id", "test").unwrap();
+        let lease_id = output.output_string("lease_id", "test").unwrap();
+        let cwd = output.output_string("cwd", "test").unwrap();
+
+        assert!(cwd.starts_with(".claude/worktrees/"));
+        assert!(std::path::Path::new(&cwd).is_dir(), "leased cwd exists");
+        let row = sqlx::query(
+            "SELECT state, path, card_id, wave_id FROM workspace_leases WHERE lease_id = ?1",
+        )
+        .bind(&lease_id)
+        .fetch_one(harness.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("state"), "held");
+        assert_eq!(row.get::<String, _>("path"), cwd);
+        assert_eq!(row.get::<String, _>("card_id"), card_id);
+        assert_eq!(row.get::<String, _>("wave_id"), harness.wave_id);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].event, Event::WorkspaceLeased { .. }));
+
+        assert!(
+            release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+                .await
+                .unwrap()
+        );
+        assert!(!std::path::Path::new(&cwd).exists(), "leased cwd removed");
+    }
+
+    #[tokio::test]
+    async fn codex_worker_budget_parallelism_gets_disjoint_lease_paths() {
+        let harness = worker_lease_harness().await;
+        let (first, _) = prepare_worker(&harness, "a").await;
+        let (second, _) = prepare_worker(&harness, "b").await;
+        let first_card = first.output_string("card_id", "test").unwrap();
+        let second_card = second.output_string("card_id", "test").unwrap();
+        let first_cwd = first.output_string("cwd", "test").unwrap();
+        let second_cwd = second.output_string("cwd", "test").unwrap();
+
+        assert_ne!(first_card, second_card);
+        assert_ne!(first_cwd, second_cwd);
+        assert!(first_cwd.starts_with(".claude/worktrees/"));
+        assert!(second_cwd.starts_with(".claude/worktrees/"));
+
+        let held: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE state = 'held'")
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(held, 2);
+
+        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &first_card)
+            .await
+            .unwrap();
+        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &second_card)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_lease_release_flips_row_and_persists_event() {
+        let harness = worker_lease_harness().await;
+        let (output, _) = prepare_worker(&harness, "a").await;
+        let card_id = output.output_string("card_id", "test").unwrap();
+        let lease_id = output.output_string("lease_id", "test").unwrap();
+
+        assert!(
+            release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+                .await
+                .unwrap()
+        );
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                .bind(&lease_id)
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(state, "released");
+        let released_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(released_events, 1);
+
+        assert!(
+            !release_workspace_lease_for_card_repo(
+                harness.repo.as_ref(),
+                &harness.events,
+                &card_id
+            )
+            .await
+            .unwrap(),
+            "release is idempotent after the row is released"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_worker_compensation_starts_with_workspace_lease_release() {
+        let harness = worker_lease_harness().await;
+        let (output, _) = prepare_worker(&harness, "a").await;
+        let op = worker_op("op-a", Value::Null);
+        let state = harness
+            .adapter
+            .plan_compensation(PhaseTag::SpawnStarted, "boom", &output, &op)
+            .await
+            .unwrap();
+
+        assert_eq!(state.steps[0].op, "release_workspace_lease");
+        assert_eq!(state.steps[1].op, "cleanup_codex_worker");
+        let lease_id = output.output_string("lease_id", "test").unwrap();
+        release_workspace_lease_for_card_repo(
+            harness.repo.as_ref(),
+            &harness.events,
+            &output.output_string("card_id", "test").unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.steps[0].arg_string("lease_id", "test").unwrap(),
+            lease_id
+        );
     }
 }

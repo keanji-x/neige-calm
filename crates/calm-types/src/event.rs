@@ -324,7 +324,11 @@ impl EventScope {
 ///   `task.gate_result` to the event union. A v3 tab whose per-frame
 ///   gate cached `syncEventVersion=3` at mount would otherwise advance
 ///   its replay cursor past the new variant and silently fail zod.
-pub const SYNC_EVENT_VERSION: u32 = 4;
+/// * `5` — workspace-lease wire kinds (issue #760 slice 1). Adds
+///   `workspace.leased` and `workspace.released` to the event union.
+///   A v4 tab would otherwise advance past those rows and fail zod on
+///   replay before refreshing onto a bundle that understands them.
+pub const SYNC_EVENT_VERSION: u32 = 5;
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
@@ -711,6 +715,31 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
+    /// Issue #760 slice 1 — the kernel acquired a workflow-agnostic
+    /// isolated workspace lease for a Codex task. The lease is just a
+    /// directory plus a durable row; git/worktree semantics are layered
+    /// by later plugin slices. The event is persisted with card scope,
+    /// and the card/wave ids are also carried here so topic filtering can
+    /// route replay/live frames without inspecting the envelope scope.
+    #[serde(rename = "workspace.leased")]
+    WorkspaceLeased {
+        wave_id: WaveId,
+        card_id: CardId,
+        lease_id: String,
+        path: String,
+    },
+
+    /// Issue #760 slice 1 — the kernel released a workspace lease after
+    /// worker completion, compensation, or boot reclaim. The payload
+    /// mirrors [`Event::WorkspaceLeased`] routing fields and carries the
+    /// durable lease id for audit correlation.
+    #[serde(rename = "workspace.released")]
+    WorkspaceReleased {
+        wave_id: WaveId,
+        card_id: CardId,
+        lease_id: String,
+    },
+
     /// Issue #644 PR-C (§6.5) — the kernel `task-verify` runner completed a
     /// `task-verify` attempt and recorded its verdict. Appended in the
     /// SAME tx as the `verifying → done|failed` tasks-row flip (the
@@ -939,6 +968,14 @@ impl Event {
                 entity_kind: None,
                 entity_id: None,
             },
+            Event::WorkspaceLeased { card_id, .. } | Event::WorkspaceReleased { card_id, .. } => {
+                EventMetadata {
+                    kind_tag,
+                    plugin_id: None,
+                    entity_kind: Some("card".into()),
+                    entity_id: Some(card_id.to_string()),
+                }
+            }
             // Issue #644 PR-C — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via
             // the events kind clause + the envelope's wave scope.
@@ -985,6 +1022,8 @@ impl Event {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
+            Event::WorkspaceLeased { .. } => "workspace.leased",
+            Event::WorkspaceReleased { .. } => "workspace.released",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
@@ -1141,6 +1180,17 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
         | Event::TaskGateResult { .. } => vec!["*".into()],
+
+        Event::WorkspaceLeased {
+            wave_id, card_id, ..
+        }
+        | Event::WorkspaceReleased {
+            wave_id, card_id, ..
+        } => vec![
+            format!("card:{}", card_id),
+            format!("wave:{}", wave_id),
+            "*".into(),
+        ],
 
         // Issue #644 — plan revisions are wave-scoped on the payload, so
         // wave subscribers (future UI task list) can filter without the
@@ -1379,6 +1429,21 @@ mod scope_tests {
             agent_message: None,
         };
         assert_eq!(task_dispatched.kind_tag(), "task.dispatched");
+
+        let workspace_leased = Event::WorkspaceLeased {
+            wave_id: WaveId::from("wave-1"),
+            card_id: CardId::from("card-1"),
+            lease_id: "lease-1".into(),
+            path: ".claude/worktrees/wave-1/card-1".into(),
+        };
+        assert_eq!(workspace_leased.kind_tag(), "workspace.leased");
+
+        let workspace_released = Event::WorkspaceReleased {
+            wave_id: WaveId::from("wave-1"),
+            card_id: CardId::from("card-1"),
+            lease_id: "lease-1".into(),
+        };
+        assert_eq!(workspace_released.kind_tag(), "workspace.released");
 
         let claude_hook = Event::ClaudeHook {
             card_id: CardId::from("card-1"),
@@ -1786,6 +1851,51 @@ mod scope_tests {
         assert!(json["data"].get("agent_message").is_none());
     }
 
+    #[test]
+    fn workspace_lease_events_serde_round_trip_and_topics() {
+        let leased = Event::WorkspaceLeased {
+            wave_id: WaveId::from("wave-1"),
+            card_id: CardId::from("card-1"),
+            lease_id: "lease-1".into(),
+            path: ".claude/worktrees/wave-1/card-1".into(),
+        };
+        let json = serde_json::to_value(&leased).unwrap();
+        assert_eq!(json["ev"], "workspace.leased");
+        assert_eq!(json["data"]["wave_id"], "wave-1");
+        assert_eq!(json["data"]["card_id"], "card-1");
+        assert_eq!(json["data"]["lease_id"], "lease-1");
+        assert_eq!(json["data"]["path"], ".claude/worktrees/wave-1/card-1");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "workspace.leased");
+        assert_eq!(
+            topics(&back),
+            vec!["card:card-1", "wave:wave-1", "*"],
+            "workspace lease events route by card and wave"
+        );
+        let meta = back.metadata();
+        assert_eq!(meta.entity_kind.as_deref(), Some("card"));
+        assert_eq!(meta.entity_id.as_deref(), Some("card-1"));
+
+        let released = Event::WorkspaceReleased {
+            wave_id: WaveId::from("wave-1"),
+            card_id: CardId::from("card-1"),
+            lease_id: "lease-1".into(),
+        };
+        let json = serde_json::to_value(&released).unwrap();
+        assert_eq!(json["ev"], "workspace.released");
+        assert_eq!(json["data"]["lease_id"], "lease-1");
+        assert!(json["data"].get("path").is_none());
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "workspace.released");
+        assert_eq!(
+            topics(&back),
+            vec!["card:card-1", "wave:wave-1", "*"],
+            "workspace release events route by card and wave"
+        );
+    }
+
     // ----- PR2 of #247: EditAuthor + WaveReportEdited -------------------
     //
     // Pin the wire shape of the structured edit-log variant + its
@@ -2104,6 +2214,17 @@ mod scope_tests {
                 kind: "codex".into(),
                 agent_message: None,
             },
+            Event::WorkspaceLeased {
+                wave_id: WaveId::from("wave-1"),
+                card_id: CardId::from("card-workspace"),
+                lease_id: "lease-1".into(),
+                path: ".claude/worktrees/wave-1/card-workspace".into(),
+            },
+            Event::WorkspaceReleased {
+                wave_id: WaveId::from("wave-1"),
+                card_id: CardId::from("card-workspace"),
+                lease_id: "lease-1".into(),
+            },
         ]
     }
 
@@ -2247,6 +2368,25 @@ mod scope_tests {
                     "old_runtime_id": "runtime-1",
                     "new_runtime_id": "runtime-2",
                     "card_id": "card-1",
+                }),
+            ),
+            (
+                "workspace.leased",
+                "workspace.leased",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "card_id": "card-1",
+                    "lease_id": "lease-1",
+                    "path": ".claude/worktrees/wave-1/card-1",
+                }),
+            ),
+            (
+                "workspace.released",
+                "workspace.released",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "card_id": "card-1",
+                    "lease_id": "lease-1",
                 }),
             ),
         ] {

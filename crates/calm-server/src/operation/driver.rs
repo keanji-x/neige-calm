@@ -10,6 +10,7 @@ use crate::event::EventBus;
 use crate::model::now_ms;
 use crate::proc_identity::signal_process_group;
 
+use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationId, OperationKey,
     OperationRepo, OperationResult, ParkedClaimMode, ParkedCompletion, ParkedOutcome,
@@ -238,6 +239,7 @@ impl OperationRuntime {
     }
 
     pub async fn recover_on_boot(&self) -> Result<RecoveryPlan> {
+        reclaim_dead_workspace_leases_on_boot(&self.repo.sqlite_pool(), &self.events).await?;
         let rows = self.repo.abandoned_running_operations_on_boot().await?;
         let mut items = Vec::new();
         for op in rows {

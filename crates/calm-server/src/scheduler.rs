@@ -115,6 +115,12 @@ pub fn lifecycle_allows_scheduling(lifecycle: WaveLifecycle) -> bool {
 /// `verifying` before PR-C). Deps are satisfied **only** by `done`
 /// siblings: `canceled`/`failed` never satisfy a dependency (§3.1), so
 /// successors sit `pending` until the spec revises the plan.
+///
+/// Issue #760 slice 1: resource disjointness for `budget > 1` is not a
+/// second scheduler predicate. Codex tasks acquire a durable workspace
+/// lease at operation claim time, and the lease path is
+/// `.claude/worktrees/<wave>/<card>`, so concurrent claims are disjoint by
+/// construction. This function intentionally remains budget arithmetic.
 pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
     let done_keys: BTreeSet<&str> = tasks
         .iter()
@@ -156,6 +162,7 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 wave_id: task.wave_id.clone(),
                 idempotency_key: task.id.clone(),
                 goal: task.goal.clone(),
+                cwd: task.cwd.clone(),
                 context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
                 acceptance_criteria: task.acceptance_criteria.clone(),
             })?;
@@ -1720,6 +1727,11 @@ mod tests {
             p1["actor"],
             serde_json::to_value(ActorId::KernelDispatcher).unwrap()
         );
+        assert_eq!(
+            p1["cwd"],
+            Value::Null,
+            "codex cwd None stays None instead of materializing default_cwd()"
+        );
 
         let mut terminal = task("t", TaskStatus::Pending, &[], 0);
         terminal.kind = TaskKind::Terminal;
@@ -1729,6 +1741,42 @@ mod tests {
         assert_eq!(kind, "terminal-worker");
         assert_eq!(p["cmd"], json!("make test"));
         assert_eq!(p["cwd"], json!("/repo"));
+    }
+
+    #[test]
+    fn codex_payload_preserves_optional_cwd_from_task_row() {
+        let mut codex = task("a", TaskStatus::Pending, &[], 0);
+        codex.cwd = Some("/repo".into());
+        let (kind, p) = build_worker_payload(&codex).unwrap();
+        assert_eq!(kind, "codex-worker");
+        assert_eq!(p["cwd"], json!("/repo"));
+
+        codex.cwd = None;
+        let (_, p1) = build_worker_payload(&codex).unwrap();
+        assert_eq!(
+            p1["cwd"],
+            Value::Null,
+            "None is preserved and resolved only by the worker lease"
+        );
+        let (_, p2) = build_worker_payload(&codex).unwrap();
+        assert_eq!(p1, p2);
+        assert_eq!(
+            stable_payload_hash(&p1).unwrap(),
+            stable_payload_hash(&p2).unwrap()
+        );
+    }
+
+    #[test]
+    fn budget_greater_than_one_relies_on_claim_time_workspace_leases() {
+        let tasks = vec![
+            task("a", TaskStatus::Pending, &[], 0),
+            task("b", TaskStatus::Pending, &[], 0),
+        ];
+        let ready = compute_ready(&tasks, 2);
+        assert_eq!(keys(&ready), vec!["a", "b"]);
+        // There is intentionally no cwd/resource collision check here:
+        // Codex claims acquire `.claude/worktrees/<wave>/<card>` leases,
+        // and card ids make those paths structurally disjoint.
     }
 
     #[test]
