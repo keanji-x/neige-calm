@@ -123,7 +123,7 @@ async fn boot() -> Boot {
 }
 
 /// Mint a real codex Worker card through the production tx helper: card row,
-/// terminal row, `card_mcp_tokens` row, and an ACTIVE `runtimes` row, all in
+/// terminal row, `card_mcp_tokens` row, and an ACTIVE `worker_sessions` row, all in
 /// one committed transaction.
 async fn mint_codex_worker(boot: &Boot) -> (Card, Terminal) {
     let mut tx = boot.repo.pool().begin().await.expect("begin mint tx");
@@ -203,7 +203,7 @@ async fn assert_identity_present(repo: &SqlxRepo, card_id: &str) -> String {
     assert_eq!(
         worker_session_rows(repo, &active.id).await,
         1,
-        "worker_sessions mirror row minted"
+        "worker_sessions row minted"
     );
     active.id
 }
@@ -264,7 +264,7 @@ async fn delete_card_route_cascades_mcp_token_and_runtime() {
     assert_eq!(
         worker_session_rows(&boot.repo, &runtime_id).await,
         0,
-        "worker_sessions mirror row deleted by card_delete_tx before the card cascade"
+        "worker_sessions row deleted by card_delete_tx before the card cascade"
     );
     // The terminal id no longer resolves a runtime either (the row is gone,
     // not merely detached via the SET NULL terminal_run_id FK).
@@ -314,6 +314,6 @@ async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
     assert_eq!(
         worker_session_rows(&boot.repo, &runtime_id).await,
         0,
-        "worker session mirror row gone via card_delete_tx's explicit same-tx cleanup"
+        "worker session row gone via card_delete_tx's explicit same-tx cleanup"
     );
 }

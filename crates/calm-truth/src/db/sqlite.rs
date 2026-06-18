@@ -6895,18 +6895,6 @@ mod runtime_read_flip_tests {
         }
     }
 
-    #[allow(dead_code)]
-    fn assert_optional_ws_backed_projection(
-        expected: Option<WorkerSessionProjection>,
-        actual: Option<WorkerSessionProjection>,
-    ) {
-        match (expected, actual) {
-            (Some(expected), Some(actual)) => assert_ws_backed_projection(&expected, &actual),
-            (None, None) => {}
-            (expected, actual) => panic!("runtime projection mismatch: {expected:?} != {actual:?}"),
-        }
-    }
-
     async fn worker_session_card_id(pool: &SqlitePool, id: &str) -> Option<String> {
         sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id = ?1")
             .bind(id)
