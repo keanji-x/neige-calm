@@ -12,9 +12,8 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::wave_file::resolve_wave_for_identity;
 use crate::model::CardRole;
-use crate::wave_vcs;
+use calm_truth::wave_vcs_repo::WaveVcsRepo;
 use serde_json::{Value, json};
-use sqlx::SqlitePool;
 use std::sync::Arc;
 
 pub const TOOL_ADMIN_WAVE_GC: &str = "calm.admin.wave_gc";
@@ -75,7 +74,7 @@ async fn wave_gc(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
-    let pool = wave_vcs_pool(&ctx)?;
+    let wave_vcs = wave_vcs_repo(&ctx)?;
     let (_card, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
 
     let obj = args.as_object().ok_or_else(|| {
@@ -104,31 +103,22 @@ async fn wave_gc(
     let wave_ref: WaveId = WaveId::from(wave_id);
 
     if dry_run {
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool)
-            .await
-            .map_err(|e| RpcError::internal(format!("calm.admin.wave_gc: begin tx: {e}")))?;
-        let pruned = wave_vcs::prune_wave_history_tx(&mut tx, &wave_ref, keep)
+        let pruned = wave_vcs
+            .prune_wave_history(&wave_ref, keep, true)
             .await
             .map_err(|e| RpcError::internal(format!("calm.admin.wave_gc: prune: {e}")))?;
-        tx.rollback()
-            .await
-            .map_err(|e| RpcError::internal(format!("calm.admin.wave_gc: rollback: {e}")))?;
         return Ok(json!({
             "wave_id": wave_id, "keep": keep, "dry_run": true,
             "pruned_commits": pruned, "swept_objects": 0
         }));
     }
 
-    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool)
-        .await
-        .map_err(|e| RpcError::internal(format!("calm.admin.wave_gc: begin tx: {e}")))?;
-    let pruned = wave_vcs::prune_wave_history_tx(&mut tx, &wave_ref, keep)
+    let pruned = wave_vcs
+        .prune_wave_history(&wave_ref, keep, false)
         .await
         .map_err(|e| RpcError::internal(format!("calm.admin.wave_gc: prune: {e}")))?;
-    tx.commit()
-        .await
-        .map_err(|e| RpcError::internal(format!("calm.admin.wave_gc: commit prune: {e}")))?;
-    let swept = wave_vcs::sweep_unreferenced_objects_once(pool)
+    let swept = wave_vcs
+        .sweep_unreferenced_objects()
         .await
         .map_err(|e| RpcError::internal(format!("calm.admin.wave_gc: sweep: {e}")))?;
 
@@ -144,8 +134,8 @@ async fn vacuum(
     _args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
-    let pool = wave_vcs_pool(&ctx)?;
-    sqlx::query("VACUUM").execute(pool).await.map_err(|e| {
+    let wave_vcs = wave_vcs_repo(&ctx)?;
+    wave_vcs.vacuum().await.map_err(|e| {
         RpcError::internal(format!(
             "calm.admin.vacuum: VACUUM failed (db locked?): {e}"
         ))
@@ -153,8 +143,8 @@ async fn vacuum(
     Ok(json!({ "ok": true }))
 }
 
-fn wave_vcs_pool(ctx: &AppContext) -> Result<&SqlitePool, RpcError> {
-    ctx.wave_vcs_pool
-        .as_ref()
+fn wave_vcs_repo(ctx: &AppContext) -> Result<&dyn WaveVcsRepo, RpcError> {
+    ctx.wave_vcs
+        .as_deref()
         .ok_or_else(|| RpcError::internal("calm.admin requires sqlite-backed wave-vcs"))
 }

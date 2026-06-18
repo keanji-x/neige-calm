@@ -24,9 +24,9 @@ use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
 use crate::state::WriteContext;
+use calm_truth::wave_vcs_repo::WaveVcsRepo;
 use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
-use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -175,9 +175,9 @@ pub struct AppContext {
     /// sync-domain raw writes reachable from a tool handler).
     pub repo: Arc<dyn RouteRepo>,
     /// Read-only wave-vcs drill-ins need the sqlite-backed audit tables.
-    /// This is copied from the full internal repo at MCP server spawn time
+    /// This is built from the full internal repo at MCP server spawn time
     /// instead of widening the route-facing repo trait.
-    pub wave_vcs_pool: Option<SqlitePool>,
+    pub wave_vcs: Option<Arc<dyn WaveVcsRepo>>,
     /// Event bus for `write_with_event_typed` broadcasts.
     pub events: EventBus,
     /// #480 PR2 write-surface caches shared with REST/worker paths.
@@ -416,7 +416,7 @@ mod tests {
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(AppContext {
             repo: route_repo,
-            wave_vcs_pool: None,
+            wave_vcs: None,
             events: EventBus::new(),
             write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
             daemon_token_hash: None,

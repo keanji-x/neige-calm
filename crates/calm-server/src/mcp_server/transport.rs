@@ -43,6 +43,7 @@ use crate::mcp_server::registry::{
 use crate::model::CardRole;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
+use calm_truth::wave_vcs_repo::SqlxWaveVcsRepo;
 use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -164,11 +165,11 @@ impl McpServer {
                 .map_err(|e| anyhow::anyhow!("chmod mcp socket {}: {e}", socket_path.display()))?;
         }
 
-        let wave_vcs_pool = repo.sqlite_pool();
+        let wave_vcs = repo.sqlite_pool().map(SqlxWaveVcsRepo::shared);
         let route_repo: Arc<dyn RouteRepo> = repo;
         let ctx = Arc::new(AppContext {
             repo: route_repo,
-            wave_vcs_pool,
+            wave_vcs,
             events,
             write,
             daemon_token_hash,
