@@ -3487,7 +3487,7 @@
       },
       "CardRuntimeView": {
         "type": "object",
-        "description": "Live runtime projection joined from the `runtimes` table when a card is\nfetched or serialized.\n\nThis view is not part of the idempotency contract: across retries the\nruntime row may have advanced, so `Card.runtime` may differ between the\nfirst POST response and a retry POST response returning the same operation\nresult. Future cleanup (#581 item 4) will remove the legacy payload-key\nprojection; this typed view is the forward-compatible reader path.",
+        "description": "Live runtime projection read from `worker_sessions` when a card is fetched\nor serialized.\n\nThis view is not part of the idempotency contract: across retries the\nworker session may have advanced, so `Card.runtime` may differ between the\nfirst POST response and a retry POST response returning the same operation\nresult. Future cleanup (#581 item 4) will remove the legacy payload-key\nprojection; this typed view is the forward-compatible reader path.",
         "required": [
           "runtime_id",
           "kind",

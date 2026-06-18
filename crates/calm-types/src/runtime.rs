@@ -1,13 +1,12 @@
 //! Runtime projection vocabulary — the data half of calm-server's
 //! `session_projection_repo` module (#679 PR1).
 //!
-//! `WorkerSessionKind` / `AgentProvider` / `TerminalRunRef` /
-//! `WorkerSessionProjection` are TS-exported wire types, so they live here in the
-//! vocabulary crate. The `WorkerSessionProjectionRepo` trait, its error type and the sqlx
-//! `Tx` alias stay in calm-server (IO). The whole `runtimes` family is
-//! scheduled to be superseded by `worker_sessions`
-//! ([`crate::worker::WorkerSession`]) across #679 PR2–PR9; this module is
-//! the dual-write-window vocabulary, not the destination.
+//! `WorkerSessionKind` / `AgentProvider` / `WorkerSessionProjection` are
+//! TS-exported wire types, so they live here in the vocabulary crate. The
+//! `WorkerSessionProjectionRepo` trait, its error type and the sqlx `Tx`
+//! alias stay in calm-server (IO). The wire vocabulary keeps the historic
+//! runtime names, while durable execution state lives only in
+//! `worker_sessions` ([`crate::worker::WorkerSession`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,16 +38,6 @@ pub enum AgentProvider {
     Codex,
     #[serde(rename = "claude")]
     Claude,
-}
-
-/// Legacy joined-terminal projection vocabulary.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
-pub struct TerminalRunRef {
-    pub terminal_id: String,
-    pub program: String,
-    pub cwd: Option<String>,
-    pub pid: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]

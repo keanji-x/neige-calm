@@ -25,7 +25,6 @@ tracing = "0.1"
 utoipa = "5"
 tokio = { version = "1", features = ["sync", "time", "fs", "rt"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate", "chrono", "json"] }
-chrono = { version = "0.4", features = ["serde"] }
 
 # Existing truth-coupled helpers moved with the SQLite repo. These are not
 # transport/API crates and do not pierce the server boundary.

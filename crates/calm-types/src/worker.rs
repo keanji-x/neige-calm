@@ -449,15 +449,13 @@ impl From<&Liveness> for LivenessTag {
     }
 }
 
-/// The execution-truth entity (issue #679 §1) — flipped successor of the
-/// `runtimes` row: execution identity (MCP token hash, codex thread,
-/// liveness) hangs off the **session**, and the card points at it
-/// (`cards.session_id`, PR2 DDL) instead of owning it.
+/// The execution-truth entity (issue #679 §1): execution identity (MCP token
+/// hash, codex thread, liveness) hangs off the **session**, and the card points
+/// at it (`cards.session_id`) instead of owning it.
 ///
-/// Pure struct, field-per-column against the §1 DDL. No table exists in
-/// PR1; calm-truth's repos return this type from PR2 on. Root-ness is
-/// **not** a field — it is derived from `wave.root_session_id` (single
-/// source of truth, §1).
+/// Pure struct, field-per-column against the current `worker_sessions` schema.
+/// Root-ness is **not** a field — it is derived from `wave.root_session_id`
+/// (single source of truth, §1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkerSession {
     pub id: WorkerSessionId,
@@ -477,10 +475,11 @@ pub struct WorkerSession {
     pub agent_session_id: Option<String>,
     pub active_turn_id: Option<String>,
     pub terminal_run_id: Option<String>,
-    /// Owning card. `Some` for every live/reachable session — dual-written on
-    /// insert and backfilled from runtimes/cards.session_id in migration 0054.
+    /// Owning card. `Some` for every live/reachable session. Migration 0054
+    /// backfilled it from `cards.session_id` for rows created before the
+    /// column existed.
     /// `None` ONLY for a pre-existing leaked terminal deferred-spec placeholder
-    /// (card deleted before Phase-2 minted the runtimes mirror). #679 PR9b-0.
+    /// whose card had already been deleted before the backfill. #679 PR9b-0.
     pub card_id: Option<CardId>,
     /// Spec `HarnessSnapshot` moves here as-is (opaque to the kernel).
     pub handle_state_json: Option<Value>,
@@ -495,9 +494,10 @@ pub struct WorkerSession {
     /// breadcrumb, not truth (T4).
     pub spawn_op_id: Option<String>,
     /// Durable codex worker-liveness signal (#741 §1.2; T2, push-fed):
-    /// timestamp of the last observed thread activity. `worker_sessions`-only
-    /// (no `runtimes` mirror), never bumps `updated_at_ms`. `None` until the
-    /// activity feeder first stamps it.
+    /// timestamp of the last observed thread activity. Observation-only writes
+    /// never bump `updated_at_ms` because projection reads use that timestamp
+    /// to choose the winning active session per card. `None` until the activity
+    /// feeder first stamps it.
     pub last_activity_ms: Option<TimestampMs>,
     /// Durable codex worker-liveness signal (#741 §1.2; T2, push-fed): the
     /// last observed thread status string (idle|active|waitingOnUserInput|

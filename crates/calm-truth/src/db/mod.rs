@@ -181,9 +181,9 @@ pub type WriteWithActorEventsFn<'a> = Box<
 ///     will not surface the card.
 ///   * No `CardAdded` broadcast fired — no subscriber learned about
 ///     the row at the time it was written.
-///   * The terminal-sweeper will NOT reap the orphan while the runtime
-///     row is active: its SQL excludes terminals still referenced by
-///     `runtimes.terminal_run_id`.
+///   * The terminal-sweeper will NOT reap the orphan while the terminal's
+///     card has an active worker session: its SQL excludes terminals whose
+///     `card_id` appears on a `worker_sessions` row in an active state.
 ///   * The operation idempotency row owns future retries — a user
 ///     who re-dispatches with the same key observes the existing
 ///     operation result instead of a fresh worker spawn.
@@ -398,9 +398,9 @@ pub trait RepoRead: Send + Sync + 'static {
     // ---- terminals (read-only)
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
-    /// Return every terminal row that has no active runtime pointing at it
-    /// via `runtimes.terminal_run_id`, and whose `created_at` is older than
-    /// `grace_seconds` ago.
+    /// Return every terminal row whose card has no active worker session
+    /// (`starting`, `running`, `idle`, or `turn_pending`), and whose
+    /// `created_at` is older than `grace_seconds` ago.
     /// Used exclusively by the `terminal_sweeper` background task.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
     /// Return every terminal row whose child has not recorded an exit yet.
