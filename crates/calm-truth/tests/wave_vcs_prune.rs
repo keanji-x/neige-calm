@@ -281,6 +281,83 @@ async fn surviving_commits(pool: &SqlitePool, wave_id: &WaveId) -> Vec<TestCommi
 }
 
 #[tokio::test]
+async fn prune_all_waves_once_trims_history_to_keep_and_preserves_head() {
+    let fixture = fixture_with_commits(7).await;
+    let keep = 3;
+    let head_before = wave_vcs::head(fixture.pool(), &fixture.wave_id)
+        .await
+        .expect("head")
+        .expect("head exists");
+
+    let pruned = wave_vcs::prune_all_waves_once(fixture.pool(), keep)
+        .await
+        .expect("prune all waves");
+
+    assert_eq!(pruned, 4);
+    assert_eq!(
+        commit_count(fixture.pool(), &fixture.wave_id).await,
+        keep as i64
+    );
+    assert_eq!(
+        wave_vcs::head(fixture.pool(), &fixture.wave_id)
+            .await
+            .expect("head after prune"),
+        Some(head_before)
+    );
+
+    let expected_recent = fixture
+        .commits
+        .iter()
+        .rev()
+        .take(keep)
+        .map(|commit| commit.hash.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        commit_hashes(fixture.pool(), &fixture.wave_id).await,
+        expected_recent
+    );
+
+    for commit in &fixture.commits[..fixture.commits.len() - keep] {
+        assert!(
+            !commit_exists(fixture.pool(), &commit.hash).await,
+            "{} should be pruned",
+            commit.hash
+        );
+    }
+}
+
+#[tokio::test]
+async fn prune_all_waves_once_leaves_wave_at_or_below_keep_untouched() {
+    let fixture = fixture_with_commits(4).await;
+    let keep = 4;
+    let head_before = wave_vcs::head(fixture.pool(), &fixture.wave_id)
+        .await
+        .expect("head")
+        .expect("head exists");
+    let hashes_before = commit_hashes(fixture.pool(), &fixture.wave_id).await;
+
+    let pruned = wave_vcs::prune_all_waves_once(fixture.pool(), keep)
+        .await
+        .expect("prune all waves");
+
+    assert_eq!(pruned, 0);
+    assert_eq!(
+        commit_count(fixture.pool(), &fixture.wave_id).await,
+        keep as i64
+    );
+    assert_eq!(
+        wave_vcs::head(fixture.pool(), &fixture.wave_id)
+            .await
+            .expect("head after prune"),
+        Some(head_before)
+    );
+    assert_eq!(
+        commit_hashes(fixture.pool(), &fixture.wave_id).await,
+        hashes_before
+    );
+}
+
+#[tokio::test]
 async fn prune_keep_one_preserves_head_and_ref() {
     let fixture = fixture_with_commits(6).await;
     let head_before = wave_vcs::head(fixture.pool(), &fixture.wave_id)

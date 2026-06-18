@@ -1005,7 +1005,8 @@ impl AppState {
         // unreferenced objects on a slower hourly cadence with a one-hour
         // grace window; see `wave_vcs::sweep_unreferenced_objects_once`.
         if let Some(pool) = state.raw.sqlite_pool() {
-            crate::wave_vcs::spawn_unreferenced_object_sweeper(pool);
+            crate::wave_vcs::spawn_unreferenced_object_sweeper(pool.clone());
+            crate::wave_vcs::spawn_wave_history_pruner(pool);
         }
 
         Ok(state)
