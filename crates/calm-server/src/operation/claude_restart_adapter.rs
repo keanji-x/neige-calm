@@ -269,12 +269,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let card_id = output_string(output, "card_id")?;
-        let terminal_id = output_string(output, "terminal_id")?;
-        let settings_path = PathBuf::from(output_string(output, "settings_path")?);
+        let card_id = output.output_string("card_id", "claude restart")?;
+        let terminal_id = output.output_string("terminal_id", "claude restart")?;
+        let settings_path = PathBuf::from(output.output_string("settings_path", "claude restart")?);
         let settings_dir = settings_path_parent(&settings_path)?;
-        let command_line = output_string(output, "command_line")?;
-        let cwd = output_string(output, "cwd")?;
+        let command_line = output.output_string("command_line", "claude restart")?;
+        let cwd = output.output_string("cwd", "claude restart")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
@@ -399,8 +399,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        let card_id = output_string(output, "card_id")?;
-        let terminal_id = output_string(output, "terminal_id")?;
+        let card_id = output.output_string("card_id", "claude restart")?;
+        let terminal_id = output.output_string("terminal_id", "claude restart")?;
         let prev_exit_code = output_optional_i32(output, "prev_exit_code");
         let prev_signal_killed = output_bool(output, "prev_signal_killed");
         Ok(CompensationStateVersioned {
@@ -480,15 +480,6 @@ fn settings_path_parent(path: &Path) -> Result<PathBuf> {
     path.parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| CalmError::Internal("claude settings_path has no parent".into()))
-}
-
-fn output_string(output: &TxOutput, key: &str) -> Result<String> {
-    output
-        .data
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Internal(format!("claude restart tx_output missing {key}")))
 }
 
 fn output_optional_i32(output: &TxOutput, key: &str) -> Option<i32> {

@@ -20,22 +20,26 @@ use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use crate::operation::task_verify_adapter::TaskVerifyAdapter;
 use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
-use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo};
+use crate::operation::{
+    OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
+};
 use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
-use crate::shared_codex_home::SharedCodexHome;
+use crate::state_clients::resolve_mcp_stdio_shim_bin;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::worker_flow::WorkerFlowDriver;
 use axum::extract::FromRef;
 use std::collections::{HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
 const HOOK_INGEST_CACHE_CAPACITY: usize = 4096;
+
+pub use crate::state_clients::{CodexClient, DaemonClient};
 
 /// Fixed-size FIFO cache for hook ingest idempotency keys.
 ///
@@ -328,6 +332,115 @@ fn build_aspect_registry() -> Arc<AspectRegistry> {
     Arc::new(AspectRegistry::new())
 }
 
+struct OperationAdapterInputs {
+    route_repo: Arc<dyn RouteRepo>,
+    repo: Arc<dyn Repo>,
+    codex: Arc<CodexClient>,
+    shared_codex_appserver: Arc<SharedCodexAppServer>,
+    pending_codex_threads: Arc<PendingThreadStartRegistry>,
+    pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
+    terminal_spawn_hook: Option<SpawnHook>,
+    harness: HarnessRegistry,
+    mcp_server: Option<Arc<McpServer>>,
+    gate_logs_dir: PathBuf,
+}
+
+fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn ProviderAdapter>> {
+    let terminal_adapter: Arc<dyn ProviderAdapter> =
+        if let Some(spawn_hook) = input.terminal_spawn_hook.clone() {
+            Arc::new(TerminalAdapter::new_with_spawn_hook(
+                input.route_repo.clone(),
+                input.card_role_cache.clone(),
+                input.wave_cove_cache.clone(),
+                spawn_hook,
+            ))
+        } else {
+            Arc::new(TerminalAdapter::new(
+                input.route_repo.clone(),
+                input.card_role_cache.clone(),
+                input.wave_cove_cache.clone(),
+            ))
+        };
+    let terminal_worker_adapter: Arc<dyn ProviderAdapter> =
+        if let Some(spawn_hook) = input.terminal_spawn_hook {
+            Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
+                input.route_repo.clone(),
+                input.card_role_cache.clone(),
+                input.wave_cove_cache.clone(),
+                spawn_hook,
+            ))
+        } else {
+            Arc::new(TerminalWorkerAdapter::new(
+                input.route_repo.clone(),
+                input.card_role_cache.clone(),
+                input.wave_cove_cache.clone(),
+            ))
+        };
+    let codex_adapter: Arc<dyn ProviderAdapter> = Arc::new(CodexAdapter::new(
+        input.route_repo.clone(),
+        input.codex.clone(),
+        input.shared_codex_appserver.clone(),
+        input.pending_codex_threads.clone(),
+        input.pending_codex_threads_spawn_serial.clone(),
+        input.card_role_cache.clone(),
+        input.wave_cove_cache.clone(),
+    ));
+    let codex_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
+        input.route_repo.clone(),
+        input.codex.clone(),
+        input.shared_codex_appserver.clone(),
+        input.mcp_server.clone(),
+        input.card_role_cache.clone(),
+        input.wave_cove_cache.clone(),
+    ));
+    let claude_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeAdapter::new(
+        input.route_repo.clone(),
+        input.codex.clone(),
+        input.card_role_cache.clone(),
+        input.wave_cove_cache.clone(),
+    ));
+    let claude_restart_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeRestartAdapter::new(
+        input.route_repo.clone(),
+        input.codex.clone(),
+        input.card_role_cache.clone(),
+        input.wave_cove_cache.clone(),
+    ));
+    let spec_harness_start_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(SpecHarnessStartAdapter::new(
+            input.repo.clone(),
+            input.shared_codex_appserver.clone(),
+            input.harness.clone(),
+            input.card_role_cache.clone(),
+            input.wave_cove_cache.clone(),
+            input
+                .mcp_server
+                .as_ref()
+                .map(|server| server.shim_config.socket_path.clone()),
+        ));
+    let spec_harness_interrupt_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(SpecHarnessInterruptAdapter::new(input.harness.clone()));
+    let spec_harness_shutdown_adapter: Arc<dyn ProviderAdapter> = Arc::new(
+        SpecHarnessShutdownAdapter::new(input.harness, input.shared_codex_appserver, input.repo),
+    );
+    let task_verify_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
+
+    vec![
+        terminal_adapter,
+        terminal_worker_adapter,
+        codex_adapter,
+        codex_worker_adapter,
+        claude_adapter,
+        claude_restart_adapter,
+        spec_harness_start_adapter,
+        spec_harness_interrupt_adapter,
+        spec_harness_shutdown_adapter,
+        task_verify_adapter,
+    ]
+}
+
 impl AppState {
     /// Bypass the sync-domain gate. **For test-fixture seeding only** —
     /// production code MUST go through `write_with_event_typed` /
@@ -452,96 +565,24 @@ impl AppState {
             repo.sqlite_pool()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
         ));
-        let terminal_adapter = if let Some(spawn_hook) = terminal_spawn_hook.clone() {
-            Arc::new(TerminalAdapter::new_with_spawn_hook(
-                route_repo.clone(),
-                card_role_cache.clone(),
-                wave_cove_cache.clone(),
-                spawn_hook,
-            ))
-        } else {
-            Arc::new(TerminalAdapter::new(
-                route_repo.clone(),
-                card_role_cache.clone(),
-                wave_cove_cache.clone(),
-            ))
-        };
-        let terminal_worker_adapter = if let Some(spawn_hook) = terminal_spawn_hook {
-            Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
-                route_repo.clone(),
-                card_role_cache.clone(),
-                wave_cove_cache.clone(),
-                spawn_hook,
-            ))
-        } else {
-            Arc::new(TerminalWorkerAdapter::new(
-                route_repo.clone(),
-                card_role_cache.clone(),
-                wave_cove_cache.clone(),
-            ))
-        };
-        let codex_adapter = Arc::new(CodexAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            shared_codex_appserver.clone(),
-            pending_codex_threads.clone(),
-            pending_codex_threads_spawn_serial.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            shared_codex_appserver.clone(),
-            None,
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let claude_adapter = Arc::new(ClaudeAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
-            repo.clone(),
-            shared_codex_appserver.clone(),
-            harness.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-            None,
-        ));
-        let spec_harness_interrupt_adapter =
-            Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
-        let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
-            harness.clone(),
-            shared_codex_appserver.clone(),
-            repo.clone(),
-        ));
-        let task_verify_adapter = Arc::new(TaskVerifyAdapter::new(
-            TaskVerifyAdapter::default_gate_logs_dir(),
-        ));
+        let adapters = build_operation_adapters(OperationAdapterInputs {
+            route_repo: route_repo.clone(),
+            repo: repo.clone(),
+            codex: codex.clone(),
+            shared_codex_appserver: shared_codex_appserver.clone(),
+            pending_codex_threads: pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial: pending_codex_threads_spawn_serial.clone(),
+            card_role_cache: card_role_cache.clone(),
+            wave_cove_cache: wave_cove_cache.clone(),
+            terminal_spawn_hook,
+            harness: harness.clone(),
+            mcp_server: None,
+            gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+        });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo.clone(),
-            vec![
-                terminal_adapter,
-                terminal_worker_adapter,
-                codex_adapter,
-                codex_worker_adapter,
-                claude_adapter,
-                claude_restart_adapter,
-                spec_harness_start_adapter,
-                spec_harness_interrupt_adapter,
-                spec_harness_shutdown_adapter,
-                task_verify_adapter,
-            ],
+            adapters,
             events.clone(),
             completion.clone(),
             SpawnCtx::new(
@@ -649,80 +690,24 @@ impl AppState {
             Arc::new(SqlxOperationRepo::new(self.raw.sqlite_pool().expect(
                 "OperationRuntime rebuild requires a sqlite-backed Repo",
             )));
-        let terminal_adapter = Arc::new(TerminalAdapter::new(
-            route_repo.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-        ));
-        let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
-            route_repo.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-        ));
-        let codex_adapter = Arc::new(CodexAdapter::new(
-            route_repo.clone(),
-            self.codex.clone(),
-            self.shared_codex_appserver.clone(),
-            self.pending_codex_threads.clone(),
-            self.pending_codex_threads_spawn_serial.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-        ));
-        let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
-            route_repo.clone(),
-            self.codex.clone(),
-            self.shared_codex_appserver.clone(),
-            self.mcp_server.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-        ));
-        let claude_adapter = Arc::new(ClaudeAdapter::new(
-            route_repo.clone(),
-            self.codex.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-        ));
-        let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
-            route_repo.clone(),
-            self.codex.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-        ));
-        let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
-            self.raw.clone(),
-            self.shared_codex_appserver.clone(),
-            self.harness.clone(),
-            self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
-            self.mcp_server
-                .as_ref()
-                .map(|server| server.shim_config.socket_path.clone()),
-        ));
-        let spec_harness_interrupt_adapter =
-            Arc::new(SpecHarnessInterruptAdapter::new(self.harness.clone()));
-        let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
-            self.harness.clone(),
-            self.shared_codex_appserver.clone(),
-            self.raw.clone(),
-        ));
-        let task_verify_adapter = Arc::new(TaskVerifyAdapter::new(
-            TaskVerifyAdapter::default_gate_logs_dir(),
-        ));
+        let adapters = build_operation_adapters(OperationAdapterInputs {
+            route_repo: route_repo.clone(),
+            repo: self.raw.clone(),
+            codex: self.codex.clone(),
+            shared_codex_appserver: self.shared_codex_appserver.clone(),
+            pending_codex_threads: self.pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial.clone(),
+            card_role_cache: self.card_role_cache.clone(),
+            wave_cove_cache: self.wave_cove_cache.clone(),
+            terminal_spawn_hook: None,
+            harness: self.harness.clone(),
+            mcp_server: self.mcp_server.clone(),
+            gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+        });
         let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
             operation_repo.clone(),
-            vec![
-                terminal_adapter,
-                terminal_worker_adapter,
-                codex_adapter,
-                codex_worker_adapter,
-                claude_adapter,
-                claude_restart_adapter,
-                spec_harness_start_adapter,
-                spec_harness_interrupt_adapter,
-                spec_harness_shutdown_adapter,
-                task_verify_adapter,
-            ],
+            adapters,
             self.events.clone(),
             completion.clone(),
             SpawnCtx::new(
@@ -900,77 +885,25 @@ impl AppState {
             repo.sqlite_pool()
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
         ));
-        let terminal_adapter = Arc::new(TerminalAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
-            route_repo.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let codex_adapter = Arc::new(CodexAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            shared_codex_appserver.clone(),
-            pending_codex_threads.clone(),
-            pending_codex_threads_spawn_serial.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            shared_codex_appserver.clone(),
-            Some(mcp_server.clone()),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let claude_adapter = Arc::new(ClaudeAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
-            route_repo.clone(),
-            codex.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-        ));
-        let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
-            repo.clone(),
-            shared_codex_appserver.clone(),
-            harness.clone(),
-            card_role_cache.clone(),
-            wave_cove_cache.clone(),
-            Some(mcp_server.shim_config.socket_path.clone()),
-        ));
-        let spec_harness_interrupt_adapter =
-            Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
-        let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
-            harness.clone(),
-            shared_codex_appserver.clone(),
-            repo.clone(),
-        ));
-        let task_verify_adapter = Arc::new(TaskVerifyAdapter::new(gate_logs_dir.clone()));
+        let adapters = build_operation_adapters(OperationAdapterInputs {
+            route_repo: route_repo.clone(),
+            repo: repo.clone(),
+            codex: codex.clone(),
+            shared_codex_appserver: shared_codex_appserver.clone(),
+            pending_codex_threads: pending_codex_threads.clone(),
+            pending_codex_threads_spawn_serial: pending_codex_threads_spawn_serial.clone(),
+            card_role_cache: card_role_cache.clone(),
+            wave_cove_cache: wave_cove_cache.clone(),
+            terminal_spawn_hook: None,
+            harness: harness.clone(),
+            mcp_server: Some(mcp_server.clone()),
+            gate_logs_dir: gate_logs_dir.clone(),
+        });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(
             OperationRuntime::new(
                 operation_repo.clone(),
-                vec![
-                    terminal_adapter,
-                    terminal_worker_adapter,
-                    codex_adapter,
-                    codex_worker_adapter,
-                    claude_adapter,
-                    claude_restart_adapter,
-                    spec_harness_start_adapter,
-                    spec_harness_interrupt_adapter,
-                    spec_harness_shutdown_adapter,
-                    task_verify_adapter,
-                ],
+                adapters,
                 events.clone(),
                 completion.clone(),
                 SpawnCtx::new(
@@ -1100,328 +1033,5 @@ impl FromRef<AppState> for CodexShellState {
 impl FromRef<AppState> for WriteContext {
     fn from_ref(s: &AppState) -> Self {
         s.route.write.clone()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DaemonClient — terminal support paths shared by renderer-backed flows.
-// ---------------------------------------------------------------------------
-
-/// Lightweight handle the REST + WS halves both consult. It owns the
-/// per-terminal data paths and the optional proc-supervisor socket used by
-/// renderer-backed sessions.
-pub struct DaemonClient {
-    /// Per-terminal sockets live under this directory as `<terminal_id>.sock`.
-    /// Created on first use by `routes::terminal::create`. Defaults to
-    /// `<config.data_dir>/terminals`.
-    pub data_dir: PathBuf,
-    /// Control socket for `calm-proc-supervisor`. Production config resolves
-    /// this to `<CALM_DATA_DIR>/proc-supervisor.sock`; fixture tests may leave
-    /// it unset to use an in-process framed supervisor.
-    pub proc_supervisor_sock: Option<PathBuf>,
-}
-
-impl DaemonClient {
-    /// Real constructor. Pulls terminal data paths from the resolved config.
-    pub fn new(cfg: &Config) -> Self {
-        let data_dir = cfg.data_dir_resolved().join("terminals");
-        Self {
-            data_dir,
-            proc_supervisor_sock: Some(cfg.proc_supervisor_sock_resolved()),
-        }
-    }
-
-    /// Placeholder for tests / dev paths that don't have a full `Config`.
-    /// Sockets land in a per-uid tempdir.
-    pub fn new_stub() -> Self {
-        let tmp = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("calm-terminals");
-        Self {
-            data_dir: tmp,
-            proc_supervisor_sock: None,
-        }
-    }
-
-    /// Socket path for a given terminal id.
-    pub fn sock_path(&self, terminal_id: &str) -> PathBuf {
-        self.data_dir.join(format!("{terminal_id}.sock"))
-    }
-
-    /// PR3a (#293) — per-card directory for a spec card's `codex
-    /// app-server` listen socket: `<data_dir>/appserver/<card_id>/`.
-    ///
-    /// **Must be user-owned**, NOT a bare sticky `/tmp` directory: the
-    /// `codex app-server` `chmod 0700`s the socket's *parent* dir at boot
-    /// and EPERMs if it can't (spike caveat #2). We hang it off the daemon
-    /// data dir's parent (`self.data_dir` is `<data_dir>/terminals`, so
-    /// `parent()` is the resolved `data_dir`, which is the user-owned
-    /// `$HOME/.local/share/neige-calm` in production and a per-test
-    /// tempdir under test). The 0700 chmod lands on this per-card subdir,
-    /// **never** the shared `data_dir` itself. Falls back to `self.data_dir`
-    /// only in the degenerate case where it has no parent.
-    pub fn appserver_sock_dir(&self, card_id: &str) -> PathBuf {
-        let base = self.data_dir.parent().unwrap_or(&self.data_dir);
-        base.join("appserver").join(card_id)
-    }
-
-    /// PR3a (#293) — the `app.sock` path inside [`appserver_sock_dir`].
-    /// Passed to `codex app-server --listen unix://<path>` (kernel side)
-    /// and `codex resume <tid> --remote unix://<path>` (TUI side).
-    pub fn appserver_sock_path(&self, card_id: &str) -> PathBuf {
-        self.appserver_sock_dir(card_id).join("app.sock")
-    }
-
-    /// Kernel-private transient stdin injection. Routes directly through
-    /// the in-process renderer's supervisor writer and waits for the
-    /// matching InputAck generated from the supervisor WriteAck.
-    pub async fn inject_stdin_renderer(
-        &self,
-        renderer: &TerminalRendererRegistry,
-        terminal_id: &str,
-        bytes: &[u8],
-        timeout: Duration,
-    ) -> anyhow::Result<()> {
-        tokio::time::timeout(timeout, async move {
-            let entry = renderer
-                .get(terminal_id)
-                .ok_or_else(|| anyhow::anyhow!("no live renderer for terminal {terminal_id}"))?;
-            let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel();
-            entry
-                .handle
-                .supervisor_tx
-                .send(crate::terminal_renderer::SupervisorControl::Write(
-                    crate::terminal_renderer::PtyWrite {
-                        data: bytes.to_vec(),
-                        input_seq: 1,
-                        ack: Some(ack_tx),
-                    },
-                ))
-                .map_err(|_| anyhow::anyhow!("renderer supervisor writer is closed"))?;
-            match ack_rx.recv().await {
-                Some(calm_session::DaemonMsg::InputAck { input_seq: 1 }) => Ok(()),
-                Some(other) => Err(anyhow::anyhow!(
-                    "expected InputAck(1) from renderer, got {other:?}"
-                )),
-                None => Err(anyhow::anyhow!("renderer ack channel closed")),
-            }
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("inject_stdin to {terminal_id} timed out after {timeout:?}"))?
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CodexClient — owned by Track Codex.
-//
-// Carries the codex CLI path, the hook bridge path, and the ingest URL.
-// The actual spawn lives in `routes::codex_cards::create_codex_card`.
-// ---------------------------------------------------------------------------
-
-pub struct CodexClient {
-    /// `codex` CLI to spawn. Defaults to `codex` (PATH lookup).
-    pub codex_bin: String,
-    /// `claude` CLI to spawn for manually-created Claude worker cards.
-    /// Defaults to `claude` (PATH lookup).
-    pub claude_bin: String,
-    /// `neige-codex-bridge` binary path. The actual command codex invokes
-    /// is `/usr/local/bin/neige-codex-bridge` (declared in
-    /// `docker/codex-requirements.toml` as a policy-managed hook); this
-    /// field records the canonical local path so the binary lookup at
-    /// `cargo run` / packaging time picks up the workspace build. Resolved
-    /// as a sibling of `calm-server` exe, falling back to bare name.
-    pub bridge_bin: PathBuf,
-    /// Loopback URL the bridge POSTs to (`http://127.0.0.1:<port>`).
-    pub ingest_url: String,
-    /// Per-card CODEX_HOME parent. Lives under `data_dir/codex-homes/`,
-    /// which is `$HOME/.local/share/neige-calm/codex-homes/` by default
-    /// — bind-mounted into the container, so it survives `docker compose
-    /// down/up` and the codex card's auth.json + state stay alive across
-    /// restarts. (The old `/tmp/`-based location was wiped on every
-    /// container recreate, leaving the daemon stuck in a respawn loop.)
-    pub codex_homes_dir: PathBuf,
-    /// Single shared CODEX_HOME for the future shared Codex app-server.
-    /// PR1 seeds/configures it only; legacy per-card callers keep using
-    /// `codex_homes_dir` until later #410 PRs switch them.
-    pub shared_codex_home: Arc<SharedCodexHome>,
-    /// Parent directory for generated per-Claude-card `settings.json`
-    /// files. This is only a hook settings sidecar, not a Claude home.
-    pub claude_settings_dir: PathBuf,
-    /// Test-only handle. When `new_stub()` constructs the client it stows
-    /// a `tempfile::TempDir` here whose path contains both the legacy
-    /// `codex_homes_dir` and PR1's shared `codex-home`.
-    /// Holding the handle for the lifetime of the `CodexClient` (which
-    /// is itself held inside `Arc<CodexClient>` on `AppState.codex`)
-    /// guarantees the per-card `$CODEX_HOME` subdirs created under it
-    /// get cleaned up when the test drops its `AppState` — closing the
-    /// 134 GB-per-day leak described in issue #267 where the prior
-    /// hardcoded `temp_dir().join("neige-codex-homes-stub")` shared one
-    /// global dir across every test run.
-    ///
-    /// Production (`new`) leaves this `None`: `data_dir_resolved()` is a
-    /// long-lived path that must survive the server process and the
-    /// orchestration layer manages its lifecycle.
-    _codex_homes_tempdir: Option<tempfile::TempDir>,
-}
-
-impl CodexClient {
-    pub fn new(cfg: &Config) -> Self {
-        let data_dir = cfg.data_dir_resolved();
-        let legacy_homes_parent = data_dir.join("codex-homes");
-        Self {
-            codex_bin: cfg.codex_bin.clone(),
-            claude_bin: cfg.claude_bin.clone(),
-            bridge_bin: cfg
-                .codex_bridge_bin
-                .clone()
-                .unwrap_or_else(resolve_codex_bridge_bin),
-            ingest_url: cfg.codex_ingest_url_resolved(),
-            codex_homes_dir: legacy_homes_parent.clone(),
-            shared_codex_home: Arc::new(SharedCodexHome::new(
-                data_dir.join("codex-home"),
-                legacy_homes_parent,
-            )),
-            claude_settings_dir: data_dir.join("claude-settings"),
-            _codex_homes_tempdir: None,
-        }
-    }
-
-    /// Test stub — never actually spawns codex; tests that touch the
-    /// codex routes don't need a real binary on PATH.
-    ///
-    /// **#267 — per-test temp dir for `codex_homes_dir`.** Earlier
-    /// versions hardcoded the path to
-    /// `std::env::temp_dir().join("neige-codex-homes-stub")`, a single
-    /// global dir every test instance wrote into and nobody cleaned up
-    /// — across enough test runs the dir grew to 100+ GB of codex
-    /// session state (per-card `logs_*.sqlite*`, `history`, the seeded
-    /// `~/.codex` copy). Now each `new_stub()` mints its own
-    /// `tempfile::TempDir`, stashed in `_codex_homes_tempdir`, with
-    /// `codex-homes/` for legacy per-card homes and `codex-home/` for
-    /// PR1's shared home under it. The directory disappears when the
-    /// `CodexClient` (and the `Arc` on `AppState.codex`) drops at test
-    /// teardown. Falls back to the old shared path only if
-    /// `TempDir::new()` fails — vanishingly rare in practice and the
-    /// failure case isn't worth losing test coverage.
-    pub fn new_stub() -> Self {
-        let (temp_root, tmp) = match tempfile::Builder::new()
-            .prefix("neige-codex-homes-stub-")
-            .tempdir()
-        {
-            Ok(tmp) => (tmp.path().to_path_buf(), Some(tmp)),
-            Err(e) => {
-                // #272 (N2) — bumped from `warn!` to `error!`. This
-                // fallback resurrects the pre-#267 shared `/tmp/neige-
-                // codex-homes-stub` leak path; if it fires in CI the
-                // test will silently revive the 134 GB/day leak fixed
-                // by PR #271. `error!` is loud enough that triage
-                // catches it on first occurrence instead of after the
-                // next disk-full incident.
-                tracing::error!(
-                    error = %e,
-                    "failed to create per-test codex_homes tempdir; \
-                     falling back to shared `/tmp/neige-codex-homes-stub` \
-                     — RESURRECTS THE #267 LEAK PATH (this test run will leak)"
-                );
-                (std::env::temp_dir().join("neige-codex-homes-stub"), None)
-            }
-        };
-        let codex_homes_dir = temp_root.join("codex-homes");
-        let shared_codex_home = Arc::new(SharedCodexHome::new(
-            temp_root.join("codex-home"),
-            codex_homes_dir.clone(),
-        ));
-        if let Err(e) = std::fs::create_dir_all(&codex_homes_dir) {
-            tracing::error!(
-                error = %e,
-                path = %codex_homes_dir.display(),
-                "failed to create stub codex_homes_dir"
-            );
-        }
-        Self {
-            codex_bin: "codex".into(),
-            claude_bin: "claude".into(),
-            bridge_bin: PathBuf::from("neige-codex-bridge"),
-            ingest_url: "http://127.0.0.1:0".into(),
-            claude_settings_dir: codex_homes_dir.join("claude-settings"),
-            codex_homes_dir,
-            shared_codex_home,
-            _codex_homes_tempdir: tmp,
-        }
-    }
-
-    /// Shared CODEX_HOME accessor (`codex_home_dir()` in the #410 PR gates).
-    pub fn codex_home_dir(&self) -> &Path {
-        self.shared_codex_home.path()
-    }
-}
-
-fn resolve_codex_bridge_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let candidate = dir.join("neige-codex-bridge");
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    PathBuf::from("neige-codex-bridge")
-}
-
-/// PR7a (#136) — resolve the path to `neige-mcp-stdio-shim`. Same
-/// "explicit override, sibling of running exe, else bare-name PATH lookup"
-/// pattern as the codex-bridge resolver. The codex daemon will spawn this
-/// binary from the path baked into each per-card `$CODEX_HOME/config.toml`'s
-/// `[mcp_servers.calm].command` entry.
-fn resolve_mcp_stdio_shim_bin(cfg: &Config) -> PathBuf {
-    if let Some(path) = &cfg.mcp_stdio_shim_bin {
-        return path.clone();
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let candidate = dir.join("neige-mcp-stdio-shim");
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    PathBuf::from("neige-mcp-stdio-shim")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// PR3a (#293) — the per-card app-server socket must land under the
-    /// user-owned data dir (the `app-server` 0700-chmods the socket's
-    /// parent, which EPERMs on a shared sticky /tmp), in a per-card subdir
-    /// — NOT directly in the shared data dir.
-    #[test]
-    fn appserver_sock_path_is_under_user_owned_data_dir_per_card() {
-        // Mirror production: data_dir = <data_dir>/terminals.
-        let data_dir = PathBuf::from("/home/u/.local/share/neige-calm");
-        let daemon = DaemonClient {
-            data_dir: data_dir.join("terminals"),
-            proc_supervisor_sock: None,
-        };
-
-        let dir = daemon.appserver_sock_dir("card-abc");
-        let sock = daemon.appserver_sock_path("card-abc");
-
-        // Per-card subdir under <data_dir>/appserver/<card_id>/.
-        assert_eq!(dir, data_dir.join("appserver").join("card-abc"));
-        assert_eq!(sock, dir.join("app.sock"));
-
-        // The 0700 chmod lands on the per-card subdir, never the shared
-        // data dir itself.
-        assert_ne!(dir, data_dir);
-        assert!(sock.starts_with(&data_dir));
-        assert!(sock.starts_with(data_dir.join("appserver")));
-        // Each card gets its own subdir.
-        assert_ne!(
-            daemon.appserver_sock_dir("card-abc"),
-            daemon.appserver_sock_dir("card-xyz")
-        );
     }
 }

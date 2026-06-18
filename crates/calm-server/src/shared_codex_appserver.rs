@@ -339,6 +339,7 @@ impl SupervisorState {
     }
 }
 
+// ===================== Construction & public thread/turn API =====================
 impl SharedCodexAppServer {
     pub fn new_stub(repo: Arc<dyn Repo>) -> Arc<Self> {
         Self::new_stub_inner(repo, None, false)
@@ -712,79 +713,10 @@ impl SharedCodexAppServer {
     pub fn cached_card_for_thread(&self, thread_id: &str) -> Option<String> {
         self.thread_cache.get(thread_id).map(|v| v.value().clone())
     }
+}
 
-    #[cfg(feature = "fixtures")]
-    pub fn active_turn_for_test(&self, thread_id: &str) -> Option<String> {
-        self.active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn turn_start_count_for_test(&self) -> u64 {
-        self.fake
-            .as_ref()
-            .map(|fake| fake.next_turn.load(Ordering::SeqCst).saturating_sub(1))
-            .unwrap_or(0)
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn started_turns_for_test(&self) -> Vec<(String, Vec<InputItem>)> {
-        self.fake
-            .as_ref()
-            .map(|fake| {
-                fake.started_turns
-                    .lock()
-                    .expect("fake shared codex started turns mutex poisoned")
-                    .clone()
-            })
-            .unwrap_or_default()
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn interrupted_turns_for_test(&self) -> Vec<(String, String)> {
-        self.fake
-            .as_ref()
-            .map(|fake| {
-                fake.interrupted_turns
-                    .lock()
-                    .expect("fake shared codex interrupted turns mutex poisoned")
-                    .clone()
-            })
-            .unwrap_or_default()
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn fail_next_thread_start_for_test(&self) {
-        if let Some(fake) = self.fake.as_ref() {
-            fake.fail_next_thread_start.store(true, Ordering::SeqCst);
-        }
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn notification_receiver_count_for_test(&self) -> usize {
-        self.notifications.receiver_count()
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn emit_turn_started_for_test(&self, thread_id: &str, turn_id: &str) {
-        let _ = self.notifications.send(Notification::TurnStarted {
-            thread_id: thread_id.to_string(),
-            turn: serde_json::json!({ "id": turn_id }),
-        });
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn emit_notification_for_test(&self, notification: Notification) {
-        let _ = self.notifications.send(notification);
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn set_active_turn_for_test(&self, thread_id: &str, turn_id: &str) {
-        self.active_turns
-            .insert(thread_id.to_string(), turn_id.to_string());
-    }
-
+// ===================== Env / config derivation =====================
+impl SharedCodexAppServer {
     pub fn effective_proxy_env(settings_value: Option<&str>, env_keys: &[&str]) -> Option<String> {
         Self::effective_proxy_env_from(settings_value, env_keys, |key| std::env::var(key).ok())
     }
@@ -817,12 +749,6 @@ impl SharedCodexAppServer {
         hex[..16].to_string()
     }
 
-    async fn connected_client(&self) -> Result<Arc<CodexAppServer>> {
-        self.running_client()
-            .await
-            .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
-    }
-
     async fn current_env_signature(&self) -> Result<String> {
         let settings = load_settings(self.repo.as_ref()).await?;
         let http_proxy = Self::effective_proxy_env(
@@ -838,6 +764,39 @@ impl SharedCodexAppServer {
             http_proxy.as_deref(),
             https_proxy.as_deref(),
         ))
+    }
+
+    async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
+        for stale in [
+            "NEIGE_CARD_ID",
+            "NEIGE_HOOK_PROVIDER",
+            "NEIGE_MCP_TOKEN",
+            "NEIGE_HOOK_URL",
+        ] {
+            cmd.env_remove(stale);
+        }
+
+        cmd.env("CODEX_HOME", self.home.path())
+            .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
+
+        let settings = load_settings(self.repo.as_ref()).await?;
+        if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
+            cmd.env("HTTP_PROXY", p).env("http_proxy", p);
+        }
+        if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
+            cmd.env("HTTPS_PROXY", p).env("https_proxy", p);
+        }
+
+        Ok(())
+    }
+}
+
+// ===================== Process lifecycle / supervision =====================
+impl SharedCodexAppServer {
+    async fn connected_client(&self) -> Result<Arc<CodexAppServer>> {
+        self.running_client()
+            .await
+            .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
     }
 
     async fn try_takeover_live(
@@ -1049,30 +1008,6 @@ impl SharedCodexAppServer {
         })
     }
 
-    async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
-        for stale in [
-            "NEIGE_CARD_ID",
-            "NEIGE_HOOK_PROVIDER",
-            "NEIGE_MCP_TOKEN",
-            "NEIGE_HOOK_URL",
-        ] {
-            cmd.env_remove(stale);
-        }
-
-        cmd.env("CODEX_HOME", self.home.path())
-            .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
-
-        let settings = load_settings(self.repo.as_ref()).await?;
-        if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
-            cmd.env("HTTP_PROXY", p).env("http_proxy", p);
-        }
-        if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
-            cmd.env("HTTPS_PROXY", p).env("https_proxy", p);
-        }
-
-        Ok(())
-    }
-
     async fn reap_and_respawn_with_current_settings(self: &Arc<Self>) -> Result<()> {
         if !self
             .needs_respawn_on_next_thread_start
@@ -1194,186 +1129,6 @@ impl SharedCodexAppServer {
                 }
                 Err(e) => return Err(e),
             }
-        }
-    }
-
-    async fn install_client(&self, mut notifications: crate::codex_appserver::NotificationStream) {
-        // #741 §1.3 — stamp the daemon (re)connect wall-clock. This is the
-        // common path for BOTH fresh-spawn and hot-takeover connects, so the
-        // 741-3 reaper's REBUILD_GRACE is reset on every reconnect. Always-on
-        // (cheap); nothing consumes it until 741-3.
-        self.daemon_connected_at_ms
-            .store(now_ms(), Ordering::SeqCst);
-        let tx = self.notifications.clone();
-        let pending = self.pending_codex_threads_handle.clone();
-        let repo = self.repo.clone();
-        let thread_cache = self.thread_cache.clone();
-        let active_turns = self.active_turns.clone();
-        let kernel_initiated_threads = self.kernel_initiated_threads.clone();
-        let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
-        tokio::spawn(async move {
-            while let Some(notification) = notifications.recv().await {
-                if let Some(thread_id) = thread_started_id(&notification) {
-                    match handle_thread_started_notification(
-                        pending.as_ref(),
-                        &repo,
-                        &thread_cache,
-                        &kernel_initiated_threads,
-                        &kernel_thread_start_serial,
-                        thread_id,
-                    )
-                    .await
-                    {
-                        Ok(ThreadStartedHandling::PendingBound) => continue,
-                        Ok(ThreadStartedHandling::DispatchNormally) => {}
-                        Err(e) => {
-                            tracing::warn!(
-                                target = "shared_codex_daemon::pending_bind",
-                                %thread_id,
-                                error = %e,
-                                "failed to bind pending shared codex empty-card thread start"
-                            );
-                        }
-                    }
-                }
-                track_active_turn(&active_turns, &notification);
-                if let Some(thread_id) = turn_completed_thread_id(&notification) {
-                    kernel_initiated_threads.lock().await.remove(thread_id);
-                }
-                let _ = tx.send(notification);
-            }
-        });
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub async fn mark_kernel_initiated_thread_for_test(&self, thread_id: &str) {
-        self.kernel_initiated_threads
-            .lock()
-            .await
-            .insert(thread_id.to_string());
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub async fn handle_thread_started_notification_for_test(
-        &self,
-        thread_id: &str,
-    ) -> Result<bool> {
-        let handled = handle_thread_started_notification(
-            self.pending_codex_threads_handle.as_ref(),
-            &self.repo,
-            &self.thread_cache,
-            &self.kernel_initiated_threads,
-            &self.kernel_thread_start_serial,
-            thread_id,
-        )
-        .await?;
-        Ok(matches!(handled, ThreadStartedHandling::PendingBound))
-    }
-
-    async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
-        self.thread_cache.clear();
-        self.active_turns.clear();
-
-        let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
-        for (card_id, thread_id) in active_threads {
-            self.thread_cache.insert(thread_id, card_id);
-        }
-        Ok(())
-    }
-
-    async fn resume_cached_threads(&self, mode: ResumeMode) {
-        let Some(client) = self.running_client().await else {
-            return;
-        };
-        for entry in self.thread_cache.iter() {
-            let thread_id = entry.key().clone();
-            let card_id = entry.value().clone();
-            tracing::info!(
-                target = "shared_codex_daemon::resume",
-                %thread_id,
-                %card_id,
-                "resuming shared codex thread"
-            );
-            if mode == ResumeMode::HotTakeover {
-                Self::resume_thread_plain(&client, &thread_id, &card_id).await;
-                continue;
-            }
-
-            let raw_token = match write_in_tx_typed(self.repo.as_ref(), {
-                let thread_id = thread_id.clone();
-                let card_id = card_id.clone();
-                move |tx| {
-                    Box::pin(async move {
-                        let Some(runtime) =
-                            session_projection_active_for_card_tx(tx, &card_id).await?
-                        else {
-                            return Ok(None);
-                        };
-                        if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
-                            return Ok(None);
-                        }
-                        mint_and_persist_card_token(tx, &card_id, &runtime.id)
-                            .await
-                            .map(Some)
-                    })
-                }
-            })
-            .await
-            {
-                Ok(Some(raw_token)) => raw_token,
-                Ok(None) => {
-                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
-                    continue;
-                }
-                Err(e) => {
-                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
-                    tracing::warn!(
-                        target = "shared_codex_daemon::resume",
-                        %thread_id,
-                        %card_id,
-                        error = %e,
-                        "shared codex thread token refresh failed; resumed without config"
-                    );
-                    continue;
-                }
-            };
-            let mut set = serde_json::Map::new();
-            for (key, value) in card_mcp_env(&self.kernel_mcp_socket_path, raw_token.as_str()) {
-                set.insert(key.to_string(), serde_json::Value::String(value));
-            }
-            let config = json!({
-                "shell_environment_policy": {
-                    "set": set,
-                },
-            });
-            // Invariant: only the cold respawn caller may rotate and reemit
-            // per-card MCP config, and only for the card's active thread.
-            // Hot takeover always plain-resumes because loaded threads ignore
-            // resume config and keep using their existing environment.
-            if let Err(e) = client
-                .thread_resume_with_config(&thread_id, Some(config))
-                .await
-            {
-                tracing::warn!(
-                    target = "shared_codex_daemon::resume",
-                    %thread_id,
-                    %card_id,
-                    error = %e,
-                    "shared codex thread resume failed; leaving mapping intact"
-                );
-            }
-        }
-    }
-
-    async fn resume_thread_plain(client: &CodexAppServer, thread_id: &str, card_id: &str) {
-        if let Err(e) = client.thread_resume(thread_id).await {
-            tracing::warn!(
-                target = "shared_codex_daemon::resume",
-                %thread_id,
-                %card_id,
-                error = %e,
-                "shared codex thread resume failed; leaving mapping intact"
-            );
         }
     }
 
@@ -1506,9 +1261,7 @@ impl SharedCodexAppServer {
             }
         })
     }
-}
 
-impl SharedCodexAppServer {
     /// #480 §C — typestate transition: begin/finish a fresh process spawn.
     /// **Invariant**: must hold `transition_serial` for the duration.
     /// PR5a stub: parallel-writes the new state but does NOT replace the
@@ -1583,6 +1336,305 @@ impl SharedCodexAppServer {
             }),
             _ => None,
         }
+    }
+}
+
+// ===================== Notification routing & thread cache =====================
+impl SharedCodexAppServer {
+    async fn install_client(&self, mut notifications: crate::codex_appserver::NotificationStream) {
+        // #741 §1.3 — stamp the daemon (re)connect wall-clock. This is the
+        // common path for BOTH fresh-spawn and hot-takeover connects, so the
+        // 741-3 reaper's REBUILD_GRACE is reset on every reconnect. Always-on
+        // (cheap); nothing consumes it until 741-3.
+        self.daemon_connected_at_ms
+            .store(now_ms(), Ordering::SeqCst);
+        let tx = self.notifications.clone();
+        let pending = self.pending_codex_threads_handle.clone();
+        let repo = self.repo.clone();
+        let thread_cache = self.thread_cache.clone();
+        let active_turns = self.active_turns.clone();
+        let kernel_initiated_threads = self.kernel_initiated_threads.clone();
+        let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
+        tokio::spawn(async move {
+            while let Some(notification) = notifications.recv().await {
+                if let Some(thread_id) = thread_started_id(&notification) {
+                    match handle_thread_started_notification(
+                        pending.as_ref(),
+                        &repo,
+                        &thread_cache,
+                        &kernel_initiated_threads,
+                        &kernel_thread_start_serial,
+                        thread_id,
+                    )
+                    .await
+                    {
+                        Ok(ThreadStartedHandling::PendingBound) => continue,
+                        Ok(ThreadStartedHandling::DispatchNormally) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                target = "shared_codex_daemon::pending_bind",
+                                %thread_id,
+                                error = %e,
+                                "failed to bind pending shared codex empty-card thread start"
+                            );
+                        }
+                    }
+                }
+                track_active_turn(&active_turns, &notification);
+                if let Some(thread_id) = turn_completed_thread_id(&notification) {
+                    kernel_initiated_threads.lock().await.remove(thread_id);
+                }
+                let _ = tx.send(notification);
+            }
+        });
+    }
+
+    async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
+        self.thread_cache.clear();
+        self.active_turns.clear();
+
+        let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
+        for (card_id, thread_id) in active_threads {
+            self.thread_cache.insert(thread_id, card_id);
+        }
+        Ok(())
+    }
+
+    async fn resume_cached_threads(&self, mode: ResumeMode) {
+        let Some(client) = self.running_client().await else {
+            return;
+        };
+        for entry in self.thread_cache.iter() {
+            let thread_id = entry.key().clone();
+            let card_id = entry.value().clone();
+            tracing::info!(
+                target = "shared_codex_daemon::resume",
+                %thread_id,
+                %card_id,
+                "resuming shared codex thread"
+            );
+            if mode == ResumeMode::HotTakeover {
+                Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                continue;
+            }
+
+            let raw_token = match write_in_tx_typed(self.repo.as_ref(), {
+                let thread_id = thread_id.clone();
+                let card_id = card_id.clone();
+                move |tx| {
+                    Box::pin(async move {
+                        let Some(runtime) =
+                            session_projection_active_for_card_tx(tx, &card_id).await?
+                        else {
+                            return Ok(None);
+                        };
+                        if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
+                            return Ok(None);
+                        }
+                        mint_and_persist_card_token(tx, &card_id, &runtime.id)
+                            .await
+                            .map(Some)
+                    })
+                }
+            })
+            .await
+            {
+                Ok(Some(raw_token)) => raw_token,
+                Ok(None) => {
+                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                    continue;
+                }
+                Err(e) => {
+                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                    tracing::warn!(
+                        target = "shared_codex_daemon::resume",
+                        %thread_id,
+                        %card_id,
+                        error = %e,
+                        "shared codex thread token refresh failed; resumed without config"
+                    );
+                    continue;
+                }
+            };
+            let mut set = serde_json::Map::new();
+            for (key, value) in card_mcp_env(&self.kernel_mcp_socket_path, raw_token.as_str()) {
+                set.insert(key.to_string(), serde_json::Value::String(value));
+            }
+            let config = json!({
+                "shell_environment_policy": {
+                    "set": set,
+                },
+            });
+            // Invariant: only the cold respawn caller may rotate and reemit
+            // per-card MCP config, and only for the card's active thread.
+            // Hot takeover always plain-resumes because loaded threads ignore
+            // resume config and keep using their existing environment.
+            if let Err(e) = client
+                .thread_resume_with_config(&thread_id, Some(config))
+                .await
+            {
+                tracing::warn!(
+                    target = "shared_codex_daemon::resume",
+                    %thread_id,
+                    %card_id,
+                    error = %e,
+                    "shared codex thread resume failed; leaving mapping intact"
+                );
+            }
+        }
+    }
+
+    async fn resume_thread_plain(client: &CodexAppServer, thread_id: &str, card_id: &str) {
+        if let Err(e) = client.thread_resume(thread_id).await {
+            tracing::warn!(
+                target = "shared_codex_daemon::resume",
+                %thread_id,
+                %card_id,
+                error = %e,
+                "shared codex thread resume failed; leaving mapping intact"
+            );
+        }
+    }
+}
+
+// ===================== Test-only helpers =====================
+#[cfg(any(test, feature = "fixtures"))]
+impl SharedCodexAppServer {
+    #[cfg(feature = "fixtures")]
+    pub fn active_turn_for_test(&self, thread_id: &str) -> Option<String> {
+        self.active_turns
+            .get(thread_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn turn_start_count_for_test(&self) -> u64 {
+        self.fake
+            .as_ref()
+            .map(|fake| fake.next_turn.load(Ordering::SeqCst).saturating_sub(1))
+            .unwrap_or(0)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn started_turns_for_test(&self) -> Vec<(String, Vec<InputItem>)> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.started_turns
+                    .lock()
+                    .expect("fake shared codex started turns mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn interrupted_turns_for_test(&self) -> Vec<(String, String)> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.interrupted_turns
+                    .lock()
+                    .expect("fake shared codex interrupted turns mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn fail_next_thread_start_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.fail_next_thread_start.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn notification_receiver_count_for_test(&self) -> usize {
+        self.notifications.receiver_count()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn emit_turn_started_for_test(&self, thread_id: &str, turn_id: &str) {
+        let _ = self.notifications.send(Notification::TurnStarted {
+            thread_id: thread_id.to_string(),
+            turn: serde_json::json!({ "id": turn_id }),
+        });
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn emit_notification_for_test(&self, notification: Notification) {
+        let _ = self.notifications.send(notification);
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn set_active_turn_for_test(&self, thread_id: &str, turn_id: &str) {
+        self.active_turns
+            .insert(thread_id.to_string(), turn_id.to_string());
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn mark_kernel_initiated_thread_for_test(&self, thread_id: &str) {
+        self.kernel_initiated_threads
+            .lock()
+            .await
+            .insert(thread_id.to_string());
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn handle_thread_started_notification_for_test(
+        &self,
+        thread_id: &str,
+    ) -> Result<bool> {
+        let handled = handle_thread_started_notification(
+            self.pending_codex_threads_handle.as_ref(),
+            &self.repo,
+            &self.thread_cache,
+            &self.kernel_initiated_threads,
+            &self.kernel_thread_start_serial,
+            thread_id,
+        )
+        .await?;
+        Ok(matches!(handled, ThreadStartedHandling::PendingBound))
+    }
+
+    pub fn sock_path(&self) -> &Path {
+        &self.sock
+    }
+
+    pub async fn spawn_env_for_test(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, Option<String>>> {
+        let mut cmd = Command::new(&self.codex_bin);
+        self.apply_spawn_env(&mut cmd).await?;
+        Ok(cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect())
+    }
+
+    pub fn needs_respawn_on_next_thread_start_for_test(&self) -> bool {
+        self.needs_respawn_on_next_thread_start
+            .load(Ordering::SeqCst)
+    }
+
+    pub async fn taken_over_pid_watcher_active_for_test(&self) -> bool {
+        let core = self.core.lock().await;
+        matches!(
+            &core.state,
+            SupervisorState::Running {
+                watcher: SupervisorWatcher {
+                    kind: WatcherKind::TakenOverPid { .. },
+                    ..
+                },
+                ..
+            }
+        )
     }
 }
 
@@ -1920,49 +1972,6 @@ async fn connect_initialized(
         })
         .await?;
     Ok((client, notifications))
-}
-
-#[cfg(any(test, feature = "fixtures"))]
-impl SharedCodexAppServer {
-    pub fn sock_path(&self) -> &Path {
-        &self.sock
-    }
-
-    pub async fn spawn_env_for_test(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, Option<String>>> {
-        let mut cmd = Command::new(&self.codex_bin);
-        self.apply_spawn_env(&mut cmd).await?;
-        Ok(cmd
-            .as_std()
-            .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|v| v.to_string_lossy().into_owned()),
-                )
-            })
-            .collect())
-    }
-
-    pub fn needs_respawn_on_next_thread_start_for_test(&self) -> bool {
-        self.needs_respawn_on_next_thread_start
-            .load(Ordering::SeqCst)
-    }
-
-    pub async fn taken_over_pid_watcher_active_for_test(&self) -> bool {
-        let core = self.core.lock().await;
-        matches!(
-            &core.state,
-            SupervisorState::Running {
-                watcher: SupervisorWatcher {
-                    kind: WatcherKind::TakenOverPid { .. },
-                    ..
-                },
-                ..
-            }
-        )
-    }
 }
 
 #[cfg(any(test, feature = "fixtures"))]
