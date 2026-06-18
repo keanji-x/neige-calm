@@ -17,14 +17,17 @@ use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::{TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use serde_json::{Value, json};
 
 struct Boot {
@@ -38,11 +41,12 @@ struct Boot {
 }
 
 async fn boot() -> Boot {
-    let repo: Arc<dyn Repo> = Arc::new(
+    let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite"),
     );
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let cove = repo
         .cove_create(NewCove {
             name: "mcp-plan".into(),
@@ -99,6 +103,20 @@ async fn boot() -> Boot {
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
+    seed_runtime_session(
+        &sqlx_repo,
+        spec_card.id.as_str(),
+        "spec-session",
+        "spec-thread",
+    )
+    .await;
+    seed_runtime_session(
+        &sqlx_repo,
+        worker_card.id.as_str(),
+        "worker-session",
+        "worker-thread",
+    )
+    .await;
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -127,6 +145,30 @@ async fn boot() -> Boot {
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
     }
+}
+
+async fn seed_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str, thread_id: &str) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: session_id.to_string(),
+            card_id: card_id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Running,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.to_string()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 async fn call_tool(
@@ -394,11 +436,12 @@ async fn upsert_creates_rows_and_emits_plan_updated() {
         }
         other => panic!("expected PlanUpdated, got {other:?}"),
     }
-    assert!(
-        matches!(envelope.actor, calm_server::ids::ActorId::AiSpec(_)),
-        "actor = {:?}",
-        envelope.actor
-    );
+    match &envelope.actor {
+        calm_server::ids::ActorId::AiSpecSession(session_id) => {
+            assert_eq!(session_id.as_str(), "spec-session")
+        }
+        other => panic!("expected AiSpecSession actor; got {other:?}"),
+    }
 }
 
 #[tokio::test]

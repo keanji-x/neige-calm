@@ -91,7 +91,7 @@ struct Boot {
     repo: Arc<dyn Repo>,
 }
 
-fn planner_session(id: &str, wave_id: WaveId) -> WorkerSession {
+fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
         wave_id,
@@ -106,7 +106,7 @@ fn planner_session(id: &str, wave_id: WaveId) -> WorkerSession {
         agent_session_id: None,
         active_turn_id: None,
         terminal_run_id: None,
-        card_id: Some(CardId(format!("card-{id}"))),
+        card_id: Some(card_id),
         handle_state_json: None,
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,
@@ -121,8 +121,13 @@ fn planner_session(id: &str, wave_id: WaveId) -> WorkerSession {
     }
 }
 
-async fn seed_wave_root_session(repo: &dyn RepoEventWrite, wave_id: &WaveId, session_id: &str) {
-    let session = planner_session(session_id, wave_id.clone());
+async fn seed_wave_root_session(
+    repo: &dyn RepoEventWrite,
+    wave_id: &WaveId,
+    card_id: &CardId,
+    session_id: &str,
+) {
+    let session = planner_session(session_id, wave_id.clone(), card_id.clone());
     let root_session_id = session.id.clone();
     let wave_id = wave_id.clone();
     calm_server::db::write_in_tx_typed(repo, move |tx| {
@@ -187,7 +192,7 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    seed_wave_root_session(repo.as_ref(), &wave.id, SPEC_SESSION_ID).await;
+    seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, SPEC_SESSION_ID).await;
 
     // Shared caches. Both AppState and AppContext must hold the same
     // clones so a write on either side updates a single source of truth.

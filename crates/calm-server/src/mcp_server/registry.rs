@@ -48,20 +48,22 @@ pub struct CardIdentity {
 
 impl CardIdentity {
     /// Convert to the `ActorId` the role gate will see for any
-    /// `write_with_event` call this connection drives. Mapping:
+    /// `write_with_event` call this connection drives. MCP writes are
+    /// keyed by worker session, not card id. Mapping:
     ///
-    /// * `CardRole::Spec`       → [`ActorId::AiSpec`]
-    /// * `CardRole::Worker`     → [`ActorId::AiCodex`]
+    /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
+    /// * `CardRole::Worker`     → [`ActorId::AiCodexSession`]
     /// * `CardRole::ReportCard` → unreachable here too (report cards are
     ///   read-only kernel-projected payload and don't get an MCP token).
-    ///   Mapped to `AiCodex` for the same total-function reason — the
+    ///   Mapped to `AiCodexSession` for the same total-function reason — the
     ///   role gate refuses report-card actors as soon as they try to
     ///   emit `WaveUpdated`, so a token-row leak surfaces as a clear
     ///   `Forbidden` rather than a panic.
     pub fn to_actor_id(&self) -> ActorId {
+        let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
-            CardRole::Spec => ActorId::AiSpec(self.card_id.clone()),
-            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodex(self.card_id.clone()),
+            CardRole::Spec => ActorId::AiSpecSession(session_id),
+            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodexSession(session_id),
         }
     }
 
@@ -103,11 +105,18 @@ pub struct ToolCallIdentity {
 }
 
 impl ToolCallIdentity {
+    /// Convert to the `ActorId` the role gate will see for this MCP tool
+    /// call. MCP writes are keyed by worker session, not card id. Mapping:
+    ///
+    /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
+    /// * `CardRole::Worker`     → [`ActorId::AiCodexSession`]
+    /// * `CardRole::ReportCard` → `AiCodexSession` as a total-function
+    ///   fallback; write gates still reject report-card writes.
     pub fn to_actor_id(&self) -> ActorId {
-        let card_id = CardId::from(self.card_id.clone());
+        let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
-            CardRole::Spec => ActorId::AiSpec(card_id),
-            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodex(card_id),
+            CardRole::Spec => ActorId::AiSpecSession(session_id),
+            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodexSession(session_id),
         }
     }
 
@@ -371,6 +380,48 @@ mod tests {
             cove_id: "cove-1".to_string(),
             thread_id: "thread-1".to_string(),
         }
+    }
+
+    fn card_identity_with_role(role: CardRole) -> CardIdentity {
+        CardIdentity {
+            card_id: CardId::from("card-1"),
+            role,
+            session_id: "session-1".to_string(),
+            wave_id: Some("wave-1".to_string()),
+            cove_id: "cove-1".to_string(),
+        }
+    }
+
+    #[test]
+    fn card_identity_to_actor_id_uses_session_actor_for_each_role() {
+        assert_eq!(
+            card_identity_with_role(CardRole::Spec).to_actor_id(),
+            ActorId::AiSpecSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
+            card_identity_with_role(CardRole::Worker).to_actor_id(),
+            ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
+            card_identity_with_role(CardRole::ReportCard).to_actor_id(),
+            ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
+        );
+    }
+
+    #[test]
+    fn tool_call_identity_to_actor_id_uses_session_actor_for_each_role() {
+        assert_eq!(
+            identity_with_role(CardRole::Spec).to_actor_id(),
+            ActorId::AiSpecSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
+            identity_with_role(CardRole::Worker).to_actor_id(),
+            ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
+            identity_with_role(CardRole::ReportCard).to_actor_id(),
+            ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
+        );
     }
 
     #[test]

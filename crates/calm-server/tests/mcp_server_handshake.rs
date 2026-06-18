@@ -397,8 +397,8 @@ async fn initialize_with_valid_token_binds_session_principal_and_card_actor() {
             assert_eq!(identity.cove_id, b.cove_id);
             assert_eq!(
                 identity.to_actor_id(),
-                ActorId::AiSpec(identity.card_id.clone()),
-                "persisted-event actor must stay card-derived"
+                ActorId::AiSpecSession(WorkerSessionId::from(b.session_id.as_str())),
+                "persisted-event actor must be session-derived"
             );
             assert_eq!(
                 identity.to_principal(),

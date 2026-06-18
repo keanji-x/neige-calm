@@ -7,7 +7,7 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
@@ -22,7 +22,9 @@ use calm_server::operation::{
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_lookup::project_runtime_into_cards_payload;
-use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -59,7 +61,8 @@ struct Boot {
 
 async fn boot(start_shared: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
-    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let cove = repo
         .cove_create(NewCove {
             name: "worker-shared".into(),
@@ -92,6 +95,7 @@ async fn boot(start_shared: bool) -> Boot {
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
     cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    seed_spec_session(&sqlx_repo, spec_card.id.as_str()).await;
     let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wcc).await.unwrap();
 
@@ -157,6 +161,30 @@ async fn boot(start_shared: bool) -> Boot {
         spec_card_id: spec_card.id,
         _tmp: tmp,
     }
+}
+
+async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: "spec-session".to_string(),
+            card_id: spec_card_id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Running,
+            terminal_run_id: None,
+            thread_id: Some("spec-thread".to_string()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 fn spawn_dispatcher(boot: &Boot) -> Dispatcher {

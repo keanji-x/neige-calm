@@ -217,8 +217,8 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
 
     let env = wait_for_kind(&mut rx, "task.completed").await;
     match &env.actor {
-        ActorId::AiCodex(cid) => assert_eq!(cid.as_str(), b.card_id.as_str()),
-        other => panic!("expected AiCodex actor; got {other:?}"),
+        ActorId::AiCodexSession(sid) => assert_eq!(sid.as_str(), b.session_id.as_str()),
+        other => panic!("expected AiCodexSession actor; got {other:?}"),
     }
     match &env.scope {
         EventScope::Card { card, .. } => assert_eq!(card.as_str(), b.card_id.as_str()),
@@ -249,8 +249,8 @@ async fn legacy_alias_task_completed_still_dispatches_via_warn() {
 
     let env = wait_for_kind(&mut rx, "task.completed").await;
     match &env.actor {
-        ActorId::AiCodex(cid) => assert_eq!(cid.as_str(), b.card_id.as_str()),
-        other => panic!("expected AiCodex actor; got {other:?}"),
+        ActorId::AiCodexSession(sid) => assert_eq!(sid.as_str(), b.session_id.as_str()),
+        other => panic!("expected AiCodexSession actor; got {other:?}"),
     }
     match &env.event {
         Event::TaskCompleted {
@@ -284,7 +284,9 @@ async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
 
     let task_env = recv_bus(&mut rx).await;
     match &task_env.actor {
-        ActorId::AiCodex(card_id) => assert_eq!(card_id.as_str(), b.card_id.as_str()),
+        ActorId::AiCodexSession(session_id) => {
+            assert_eq!(session_id.as_str(), b.session_id.as_str())
+        }
         other => panic!("expected worker actor first; got {other:?}"),
     }
     assert!(matches!(
@@ -354,8 +356,8 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
 
     let env = wait_for_kind(&mut rx, "task.failed").await;
     match &env.actor {
-        ActorId::AiCodex(cid) => assert_eq!(cid.as_str(), b.card_id.as_str()),
-        other => panic!("expected AiCodex actor; got {other:?}"),
+        ActorId::AiCodexSession(sid) => assert_eq!(sid.as_str(), b.session_id.as_str()),
+        other => panic!("expected AiCodexSession actor; got {other:?}"),
     }
     match &env.event {
         Event::TaskFailed { reason, .. } => assert_eq!(reason, "stub failure"),
@@ -398,14 +400,14 @@ async fn smuggled_card_id_in_args_is_ignored() {
 
     let env = wait_for_kind(&mut rx, "task.completed").await;
     // The actor / scope must still bind to the connection's card
-    // (b.card_id), NOT the smuggled other_card_id.
+    // through its session, NOT the smuggled other_card_id.
     match &env.actor {
-        ActorId::AiCodex(cid) => assert_eq!(
-            cid.as_str(),
-            b.card_id.as_str(),
-            "smuggled card_id must not override identity binding"
+        ActorId::AiCodexSession(sid) => assert_eq!(
+            sid.as_str(),
+            b.session_id.as_str(),
+            "smuggled card_id must not override session identity binding"
         ),
-        other => panic!("expected AiCodex actor; got {other:?}"),
+        other => panic!("expected AiCodexSession actor; got {other:?}"),
     }
     match &env.scope {
         EventScope::Card { card, .. } => assert_eq!(
