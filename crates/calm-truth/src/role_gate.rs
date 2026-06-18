@@ -60,6 +60,7 @@ use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::CardRole;
 use crate::wave_cove_cache::WaveCoveCache;
+use crate::worker::WorkerSessionId;
 use thiserror::Error;
 
 /// Reasons the gate may refuse a write. Surfaced verbatim into the
@@ -69,6 +70,14 @@ use thiserror::Error;
 pub enum RoleViolation {
     #[error("AiCodex/AiClaude/AiSpec actor has empty card id (likely from legacy AI header path)")]
     EmptyAiCardId,
+
+    /// A session-keyed actor reached the sync gate; session→authority
+    /// resolution lands in HP1-a-2 (#770) — until then session actors
+    /// are denied.
+    #[error(
+        "session-keyed actor {session} reached sync role gate before session authority resolution"
+    )]
+    SessionActorUnresolved { session: WorkerSessionId },
 
     #[error("only spec cards (or User/Kernel) may emit wave.updated (actor={actor})")]
     NotSpecForWave { actor: String },
@@ -125,6 +134,12 @@ pub fn enforce_role(
     {
         return Err(RoleViolation::EmptyAiCardId);
     }
+    if let ActorId::AiSpecSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
+        actor
+        && s.as_str().is_empty()
+    {
+        return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
+    }
 
     // --- (2) `WaveUpdated` is spec-only. ---
     //
@@ -161,6 +176,13 @@ pub fn enforce_role(
                 // to it rather than re-binding via the cache.
                 return Err(RoleViolation::NotSpecForWave {
                     actor: ai_worker_actor_label(actor, card_id),
+                });
+            }
+            ActorId::AiSpecSession(session)
+            | ActorId::AiCodexSession(session)
+            | ActorId::AiClaudeSession(session) => {
+                return Err(RoleViolation::SessionActorUnresolved {
+                    session: session.clone(),
                 });
             }
         }
@@ -202,6 +224,13 @@ pub fn enforce_role(
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
+            ActorId::AiSpecSession(session)
+            | ActorId::AiCodexSession(session)
+            | ActorId::AiClaudeSession(session) => {
+                return Err(RoleViolation::SessionActorUnresolved {
+                    session: session.clone(),
+                });
+            }
         }
     }
 
@@ -235,6 +264,13 @@ pub fn enforce_role(
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
+            ActorId::AiSpecSession(session)
+            | ActorId::AiCodexSession(session)
+            | ActorId::AiClaudeSession(session) => {
+                return Err(RoleViolation::SessionActorUnresolved {
+                    session: session.clone(),
+                });
+            }
         }
     }
 
@@ -265,6 +301,13 @@ pub fn enforce_role(
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
+            ActorId::AiSpecSession(session)
+            | ActorId::AiCodexSession(session)
+            | ActorId::AiClaudeSession(session) => {
+                return Err(RoleViolation::SessionActorUnresolved {
+                    session: session.clone(),
+                });
+            }
         }
     }
 
@@ -286,6 +329,12 @@ pub fn enforce_role(
     //     one level up). Cove is immutable per wave so the lookup is
     //     stable for the card's lifetime.
     //
+    if let ActorId::AiSpecSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
+        actor
+    {
+        return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
+    }
+
     if let ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) = actor {
         match cache.get(card_id) {
             None => {
@@ -1050,6 +1099,90 @@ mod tests {
             artifacts: vec![ArtifactRef::from("a-1")],
             agent_message: None,
         }
+    }
+
+    fn session_actors() -> [(ActorId, &'static str); 3] {
+        [
+            (
+                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
+                "sess-spec",
+            ),
+            (
+                ActorId::AiCodexSession(WorkerSessionId::from("sess-codex")),
+                "sess-codex",
+            ),
+            (
+                ActorId::AiClaudeSession(WorkerSessionId::from("sess-claude")),
+                "sess-claude",
+            ),
+        ]
+    }
+
+    fn assert_session_unresolved(
+        res: Result<(), RoleViolation>,
+        expected_session: &str,
+        context: &str,
+    ) {
+        match res {
+            Err(RoleViolation::SessionActorUnresolved { session }) => {
+                assert_eq!(
+                    session,
+                    WorkerSessionId::from(expected_session),
+                    "{context}"
+                );
+            }
+            other => panic!("{context}: expected SessionActorUnresolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_actors_are_deny_closed_for_sync_role_gate() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let dispatch = codex_worker_requested();
+        let worker_event = task_completed();
+
+        for (actor, session) in session_actors() {
+            assert_session_unresolved(
+                enforce_role(&actor, &wave_updated(), &wave_scope("w", "c"), &cache, &wcc),
+                session,
+                "wave.updated must deny unresolved session actor",
+            );
+            assert_session_unresolved(
+                enforce_role(&actor, &dispatch, &wave_scope("w", "c"), &cache, &wcc),
+                session,
+                "dispatch request must deny unresolved session actor",
+            );
+            assert_session_unresolved(
+                enforce_role(
+                    &actor,
+                    &worker_event,
+                    &card_scope("worker-1", "w", "c"),
+                    &cache,
+                    &wcc,
+                ),
+                session,
+                "card-scoped worker event must deny unresolved session actor",
+            );
+        }
+    }
+
+    #[test]
+    fn empty_session_actor_id_is_rejected_as_unresolved() {
+        let cache = CardRoleCache::new();
+        let wcc = WaveCoveCache::new();
+        let res = enforce_role(
+            &ActorId::AiCodexSession(WorkerSessionId::from("")),
+            &cove_updated(),
+            &EventScope::System,
+            &cache,
+            &wcc,
+        );
+        assert_session_unresolved(
+            res,
+            "",
+            "empty session actor id must use session-unresolved denial",
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@
  * `X-Calm-Actor` value through the request stack and remains the
  * audit-log truth until PR3 swaps it.
  */
-export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId };
+export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId } | { "kind": "AiSpecSession", "id": WorkerSessionId } | { "kind": "AiCodexSession", "id": WorkerSessionId } | { "kind": "AiClaudeSession", "id": WorkerSessionId };
 
 export type AgentProvider = "codex" | "claude";
 
@@ -524,6 +524,13 @@ cwd: string,
  * is the first defensible point.
  */
 terminal_at: number | null, created_at: number, updated_at: number, };
+
+/**
+ * Execution-session identifier (`worker_sessions.id`, PR2). Same opaque
+ * newtype pattern as [`crate::ids`] — `#[serde(transparent)]` keeps the
+ * wire shape a bare string.
+ */
+export type WorkerSessionId = string;
 
 export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec";
 

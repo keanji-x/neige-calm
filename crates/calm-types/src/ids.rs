@@ -32,12 +32,14 @@
 //!
 //! `ActorId` is card-shaped (`AiSpec(CardId)` / `AiCodex(CardId)` /
 //! `AiClaude(CardId)`) and lives in the persisted event log. Evolving it to
-//! session identity is issue #679 hard-problem 1, owned by PR11. PR1 moves
-//! the definition verbatim — the TS-bindings byte gate pins the shape.
+//! session identity is issue #679 hard-problem 1, owned by #770 (HP1). PR1
+//! moves the definition verbatim — the TS-bindings byte gate pins the shape.
 //!
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
+
+use crate::worker::WorkerSessionId;
 
 /// Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
 /// kernel treats the value as opaque; never parses it.
@@ -76,6 +78,12 @@ pub enum ActorId {
     AiSpec(CardId),
     AiCodex(CardId),
     AiClaude(CardId),
+    #[schema(value_type = String)]
+    AiSpecSession(WorkerSessionId),
+    #[schema(value_type = String)]
+    AiCodexSession(WorkerSessionId),
+    #[schema(value_type = String)]
+    AiClaudeSession(WorkerSessionId),
 }
 
 impl std::fmt::Display for ActorId {
@@ -91,6 +99,12 @@ impl std::fmt::Display for ActorId {
             Self::AiCodex(id) => write!(f, "ai:codex:{}", id.as_str()),
             Self::AiClaude(id) if id.as_str().is_empty() => f.write_str("ai:claude"),
             Self::AiClaude(id) => write!(f, "ai:claude:{}", id.as_str()),
+            Self::AiSpecSession(id) if id.as_str().is_empty() => f.write_str("ai:spec-session"),
+            Self::AiSpecSession(id) => write!(f, "ai:spec-session:{}", id.as_str()),
+            Self::AiCodexSession(id) if id.as_str().is_empty() => f.write_str("ai:codex-session"),
+            Self::AiCodexSession(id) => write!(f, "ai:codex-session:{}", id.as_str()),
+            Self::AiClaudeSession(id) if id.as_str().is_empty() => f.write_str("ai:claude-session"),
+            Self::AiClaudeSession(id) => write!(f, "ai:claude-session:{}", id.as_str()),
         }
     }
 }
@@ -183,6 +197,24 @@ mod tests {
         let back: ActorId = serde_json::from_str(&s).unwrap();
         assert_eq!(back, claude);
 
+        let codex_session = ActorId::AiCodexSession(WorkerSessionId::from("sess-9"));
+        let s = serde_json::to_string(&codex_session).unwrap();
+        assert_eq!(s, r#"{"kind":"AiCodexSession","id":"sess-9"}"#);
+        let back: ActorId = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, codex_session);
+
+        let spec_session = ActorId::AiSpecSession(WorkerSessionId::from("sess-9"));
+        let s = serde_json::to_string(&spec_session).unwrap();
+        assert_eq!(s, r#"{"kind":"AiSpecSession","id":"sess-9"}"#);
+        let back: ActorId = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, spec_session);
+
+        let claude_session = ActorId::AiClaudeSession(WorkerSessionId::from("sess-9"));
+        let s = serde_json::to_string(&claude_session).unwrap();
+        assert_eq!(s, r#"{"kind":"AiClaudeSession","id":"sess-9"}"#);
+        let back: ActorId = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, claude_session);
+
         // Unit-variant round-trip: serde adjacently-tagged enums encode
         // unit variants with just the `kind` discriminator (no `id`
         // payload). Round-trip is the contract we care about — exact
@@ -201,5 +233,30 @@ mod tests {
             "ai:spec:card-7"
         );
         assert_eq!(ActorId::AiCodex(CardId::from("")).to_string(), "ai:codex");
+        assert_eq!(
+            ActorId::AiSpecSession(WorkerSessionId::from("sess-7")).to_string(),
+            "ai:spec-session:sess-7"
+        );
+        assert_eq!(
+            ActorId::AiCodexSession(WorkerSessionId::from("sess-8")).to_string(),
+            "ai:codex-session:sess-8"
+        );
+        assert_eq!(
+            ActorId::AiClaudeSession(WorkerSessionId::from("")).to_string(),
+            "ai:claude-session"
+        );
+    }
+
+    #[test]
+    fn actor_id_decodes_both_card_and_session_forms() {
+        let card: ActorId = serde_json::from_str(r#"{"kind":"AiCodex","id":"card-7"}"#).unwrap();
+        assert_eq!(card, ActorId::AiCodex(CardId::from("card-7")));
+
+        let session: ActorId =
+            serde_json::from_str(r#"{"kind":"AiCodexSession","id":"sess-7"}"#).unwrap();
+        assert_eq!(
+            session,
+            ActorId::AiCodexSession(WorkerSessionId::from("sess-7"))
+        );
     }
 }
