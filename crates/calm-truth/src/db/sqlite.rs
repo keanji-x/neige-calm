@@ -1884,8 +1884,9 @@ pub async fn terminal_create_tx(
 }
 
 /// Atomically create a `terminal`-kind card AND its associated terminal row
-/// inside a single transaction. Runtime identity is written to `runtimes`;
-/// API/WS responses project the legacy payload fields at read time.
+/// inside a single transaction. Runtime identity is written to
+/// `worker_sessions`; API/WS responses project the legacy payload fields at
+/// read time.
 ///
 /// This is the kernel side of #13's plan to collapse today's 3-step
 /// terminal-card recipe (card-add → terminal-create → card-update) into one
@@ -1893,7 +1894,8 @@ pub async fn terminal_create_tx(
 /// `POST /api/waves/:id/terminal-cards` endpoint and delete the old recipe.
 ///
 /// On any failure the surrounding transaction rolls back, so partial state
-/// (card without terminal, or terminal without runtime row) is impossible.
+/// (card without terminal, or terminal without worker-session row) is
+/// impossible.
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -2056,9 +2058,9 @@ pub async fn card_with_terminal_rollback_tx(
 }
 
 /// Atomically create a `codex`-kind card, its associated terminal row, and
-/// the initial `Starting` runtime row inside a single transaction. Runtime
-/// identity is written to `runtimes`; API/WS responses project the legacy
-/// payload fields at read time.
+/// the initial `Starting` worker-session row inside a single transaction.
+/// Runtime identity is written to `worker_sessions`; API/WS responses project
+/// the legacy payload fields at read time.
 ///
 /// Twin of [`card_with_terminal_create_tx`] for the codex-card flow (#117).
 /// Differs in two places from the terminal helper:
@@ -2079,7 +2081,8 @@ pub async fn card_with_terminal_rollback_tx(
 /// see.
 ///
 /// On any failure the surrounding transaction rolls back; a partial state
-/// (card without terminal, or terminal without runtime row) is impossible.
+/// (card without terminal, or terminal without worker-session row) is
+/// impossible.
 /// PR7a (#136) — third return slot is `Some(raw_token)` for Spec/Worker
 /// cards. The caller is expected to thread the raw value into the codex
 /// daemon's `NEIGE_MCP_TOKEN` env var immediately and discard it — the
@@ -2671,10 +2674,11 @@ pub async fn session_set_liveness_tx(
 /// T2 durable codex worker-liveness feeder (#741 §1.3). Stamps the push-fed
 /// `last_activity_ms` / `last_thread_status` columns on an *active* session.
 ///
-/// Like `session_set_liveness_tx` these are `worker_sessions`-ONLY columns with
-/// no `runtimes` mirror, so this MUST NOT touch `updated_at_ms` (bumping it
-/// would break dual-write parity). 0 rows affected is benign — the session is
-/// terminal or missing — and returns `Ok(())`.
+/// Like `session_set_liveness_tx` these are observation columns on
+/// `worker_sessions`, so this MUST NOT touch `updated_at_ms`: projection reads
+/// select the active session per card with `ORDER BY ws.updated_at_ms DESC`, and
+/// an observation-only bump could reorder which session wins. 0 rows affected
+/// is benign — the session is terminal or missing — and returns `Ok(())`.
 pub async fn session_record_activity_tx(
     tx: &mut SessionTx<'_>,
     id: &WorkerSessionId,
@@ -2707,11 +2711,12 @@ pub async fn session_record_activity_tx(
 /// `thread_id` instead of the internal session id. The durable notification
 /// subscriber sees only thread ids, so this is the path it writes through.
 ///
-/// Like [`session_record_activity_tx`] these are `worker_sessions`-ONLY columns
-/// with no `runtimes` mirror, so this MUST NOT touch `updated_at_ms` (bumping it
-/// would break dual-write parity). The match is also pinned to `provider='codex'`
-/// (thread ids are codex-scoped). 0 rows affected is benign — no active codex
-/// session owns the thread — and returns `Ok(())`.
+/// Like [`session_record_activity_tx`] these are observation columns on
+/// `worker_sessions`, so this MUST NOT touch `updated_at_ms`: projection reads
+/// select the active session per card with `ORDER BY ws.updated_at_ms DESC`, and
+/// an observation-only bump could reorder which session wins. The match is also
+/// pinned to `provider='codex'` (thread ids are codex-scoped). 0 rows affected
+/// is benign — no active codex session owns the thread — and returns `Ok(())`.
 pub async fn session_record_activity_by_thread_tx(
     tx: &mut SessionTx<'_>,
     thread_id: &str,

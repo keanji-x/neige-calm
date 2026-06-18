@@ -1,32 +1,30 @@
-//! Issue #679 PR0-C — pin the CURRENT delete-card CASCADE semantics.
+//! Issue #679 PR0-C — pin the CURRENT delete-card cleanup semantics.
 //!
 //! Today, deleting a card destroys its card-owned execution identity in the
 //! same transaction:
 //!
-//!   * `card_mcp_tokens.card_id`  → `cards(id)` ON DELETE CASCADE (migration 0010)
-//!   * `runtimes.card_id`         → `cards(id)` ON DELETE CASCADE (migration 0028)
+//!   * `card_mcp_tokens.card_id` -> `cards(id)` ON DELETE CASCADE (migration 0010)
+//!   * `worker_sessions.card_id` -> explicit DELETE in `card_delete_tx`
 //!
-//! `card_delete_tx` deletes same-id `worker_sessions` mirrors before
-//! `DELETE FROM cards`; token/runtime cleanup remains FK-driven. That means
-//! deleting a *view* (the card) silently kills execution *truth* (the worker's
-//! MCP credential and its runtime/session rows), even while the runtime is
-//! still active.
+//! `card_delete_tx` deletes same-id `worker_sessions` rows before
+//! `DELETE FROM cards`; token cleanup remains FK-driven. That means deleting
+//! a *view* (the card) silently kills execution *truth* (the worker's MCP
+//! credential and its session rows), even while the session is still active.
 //!
-//! ⚠ This test pins CURRENT cascade semantics; PR9b of #679 will
-//! consciously flip it (execution identity moves to `worker_sessions` and
-//! survives card deletion) — do not "fix" this test casually. When PR9b
-//! lands, this file must be flipped *deliberately, in the same PR*, as the
-//! design's explicit acknowledgement of the semantic change.
+//! ⚠ This test pins CURRENT cleanup semantics — do not "fix" this test
+//! casually. Any future semantic change must flip this file deliberately, in
+//! the same PR, as the design's explicit acknowledgement of the behavior
+//! change.
 //!
 //! Coverage:
 //!   1. Route layer (`DELETE /api/cards/:id`, same boot shape as
 //!      cards_deletable.rs): real codex worker card minted through
-//!      `card_with_codex_create_tx` (card + terminal + MCP token + runtime
-//!      in one tx), runtime still ACTIVE — delete returns 204 and the token,
-//!      runtime, and mirror session rows are gone.
+//!      `card_with_codex_create_tx` (card + terminal + MCP token + session
+//!      in one tx), session still ACTIVE — delete returns 204 and the token
+//!      and session rows are gone.
 //!   2. Repo layer (`terminal_delete_tx` + `card_delete_tx` in one tx, the
-//!      exact statement sequence the route runs): pins FK-driven token/runtime
-//!      cleanup plus the explicit same-tx worker-session cleanup.
+//!      exact statement sequence the route runs): pins FK-driven token cleanup
+//!      plus the explicit same-tx worker-session cleanup.
 
 #![cfg(unix)]
 
@@ -250,8 +248,9 @@ async fn delete_card_route_cascades_mcp_token_and_runtime() {
             .is_none(),
         "terminal row removed by the route's explicit pre-delete"
     );
-    // CURRENT semantics under pin: execution identity is destroyed with the
-    // card, via FK CASCADE alone (migrations 0010 / 0028).
+    // CURRENT semantics under pin: token identity is destroyed with the
+    // card by FK CASCADE, and worker-session identity by the explicit
+    // same-tx DELETE in card_delete_tx.
     assert_eq!(
         token_rows(&boot.repo, &card_id).await,
         0,
@@ -260,7 +259,7 @@ async fn delete_card_route_cascades_mcp_token_and_runtime() {
     assert_eq!(
         runtime_rows(&boot.repo, &card_id).await,
         0,
-        "runtimes row CASCADE-deleted with the card (migration 0028)"
+        "worker_sessions row deleted by explicit DELETE in card_delete_tx"
     );
     assert_eq!(
         worker_session_rows(&boot.repo, &runtime_id).await,
@@ -310,7 +309,7 @@ async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
     assert_eq!(
         runtime_rows(&boot.repo, &card_id).await,
         0,
-        "runtime row gone with no explicit runtime delete in the tx: pure FK CASCADE"
+        "worker_sessions row gone via card_delete_tx's explicit same-tx cleanup"
     );
     assert_eq!(
         worker_session_rows(&boot.repo, &runtime_id).await,

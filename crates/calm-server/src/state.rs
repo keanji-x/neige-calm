@@ -1060,9 +1060,9 @@ impl AppState {
         let state = state.into_app_state();
 
         // Orphan-terminal sweeper (Scope C). Ticks every 30s, reaps
-        // terminal rows that no active runtime references via
-        // `runtimes.terminal_run_id` (with a 1-minute grace window), and
-        // emits `Event::TerminalDeleted` through the same `write_with_event`
+        // terminal rows whose card has no active worker session (with a
+        // 1-minute grace window), and emits `Event::TerminalDeleted`
+        // through the same `write_with_event`
         // pipeline every other write uses so the cleanup is audited. See
         // `terminal_sweeper` module docs and `docs/sync-engine-design.md` §10.
         crate::terminal_sweeper::spawn(state.clone());

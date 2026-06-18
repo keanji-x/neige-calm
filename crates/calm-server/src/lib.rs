@@ -106,10 +106,6 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
     tracing::info!(running, stale, "reconcile_supervisor_on_boot: complete",);
 }
 
-pub async fn revive_orphans_on_boot(state: &state::AppState) {
-    reconcile_supervisor_on_boot(state).await;
-}
-
 pub async fn assert_worker_sessions_card_id_complete_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
