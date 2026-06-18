@@ -539,7 +539,7 @@ mod tests {
         }
     }
 
-    fn worker_session(id: &str, wave_id: WaveId) -> WorkerSession {
+    fn worker_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
         WorkerSession {
             id: WorkerSessionId::from(id),
             wave_id,
@@ -554,7 +554,7 @@ mod tests {
             agent_session_id: None,
             active_turn_id: None,
             terminal_run_id: None,
-            card_id: Some(CardId(format!("card-{id}"))),
+            card_id: Some(card_id),
             handle_state_json: None,
             liveness: LivenessTag::Unknown,
             liveness_probed_at_ms: None,
@@ -572,9 +572,10 @@ mod tests {
     async fn seed_wave_root_session(
         repo: &SqlxRepo,
         wave_id: &WaveId,
+        card_id: &CardId,
         session_id: &WorkerSessionId,
     ) {
-        let root_session = worker_session(session_id.as_str(), wave_id.clone());
+        let root_session = worker_session(session_id.as_str(), wave_id.clone(), card_id.clone());
         let wave_id = wave_id.clone();
         let session_id = session_id.clone();
         crate::db::write_in_tx_typed(repo, move |tx| {
@@ -639,7 +640,7 @@ mod tests {
             .expect("create report card");
 
         let root_session_id = WorkerSessionId::from("root-session");
-        seed_wave_root_session(repo.as_ref(), &wave.id, &root_session_id).await;
+        seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
@@ -774,7 +775,7 @@ mod tests {
             .expect("create report card");
 
         let root_session_id = WorkerSessionId::from("root-session");
-        seed_wave_root_session(repo.as_ref(), &wave.id, &root_session_id).await;
+        seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());

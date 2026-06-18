@@ -81,8 +81,10 @@ async fn neige_task_completed_emits_task_completed_event() {
 
     let env = wait_for_kind(&mut rx, "task.completed").await;
     match &env.actor {
-        ActorId::AiCodex(card_id) => assert_eq!(card_id.as_str(), boot.card_id.as_str()),
-        other => panic!("expected AiCodex actor; got {other:?}"),
+        ActorId::AiCodexSession(session_id) => {
+            assert_eq!(session_id.as_str(), boot.session_id.as_str())
+        }
+        other => panic!("expected AiCodexSession actor; got {other:?}"),
     }
     match &env.event {
         Event::TaskCompleted {
@@ -124,8 +126,10 @@ async fn neige_task_failed_emits_task_failed_event() {
 
     let env = wait_for_kind(&mut rx, "task.failed").await;
     match &env.actor {
-        ActorId::AiCodex(card_id) => assert_eq!(card_id.as_str(), boot.card_id.as_str()),
-        other => panic!("expected AiCodex actor; got {other:?}"),
+        ActorId::AiCodexSession(session_id) => {
+            assert_eq!(session_id.as_str(), boot.session_id.as_str())
+        }
+        other => panic!("expected AiCodexSession actor; got {other:?}"),
     }
     match &env.event {
         Event::TaskFailed {

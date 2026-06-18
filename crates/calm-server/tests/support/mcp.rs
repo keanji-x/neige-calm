@@ -34,6 +34,7 @@ pub struct CardBoot {
     pub other_card_id: String,
     pub raw_token: String,
     pub daemon_token: Option<String>,
+    pub session_id: String,
     pub thread_id: String,
     pub socket_path: PathBuf,
     pub _tmp: TempDir,
@@ -138,7 +139,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     .expect("mint sidekick card");
     tx.commit().await.unwrap();
     let thread_id = format!("thread-{card_id}");
-    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+    let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     let events = EventBus::new();
     let registry = build_default_registry();
@@ -167,23 +168,25 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         other_card_id,
         raw_token,
         daemon_token,
+        session_id,
         thread_id,
         socket_path,
         _tmp: tmp,
     }
 }
 
-async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
-    if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+    let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
     {
+        let runtime_id = runtime.id.clone();
         session_bind_attribution_tx(
             &mut tx,
-            &runtime.id,
+            &runtime_id,
             ThreadAttribution {
-                runtime_id: runtime.id.clone(),
+                runtime_id: runtime_id.clone(),
                 provider: AgentProvider::Codex,
                 thread_id: Some(thread_id.to_string()),
                 session_id: None,
@@ -192,8 +195,9 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
         )
         .await
         .unwrap();
+        runtime_id
     } else {
-        session_start_runtime_tx(
+        let runtime = session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
                 id: calm_server::model::new_id(),
@@ -212,8 +216,10 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
         )
         .await
         .unwrap();
-    }
+        runtime.id
+    };
     tx.commit().await.unwrap();
+    runtime_id
 }
 
 pub async fn connect(

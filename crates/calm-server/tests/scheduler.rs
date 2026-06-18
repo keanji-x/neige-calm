@@ -27,7 +27,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, task_insert_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, task_insert_tx};
 use calm_server::error::Result as CalmResult;
 use calm_server::event::EventBus;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
@@ -48,6 +48,9 @@ use calm_server::operation::{
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::scheduler::{Scheduler, TerminalTaskHook, build_worker_payload};
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::state::{DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -69,11 +72,12 @@ struct Boot {
 }
 
 async fn boot() -> Boot {
-    let repo: Arc<dyn Repo> = Arc::new(
+    let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite"),
     );
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let cove = repo
         .cove_create(NewCove {
             name: "scheduler-test".into(),
@@ -130,6 +134,20 @@ async fn boot() -> Boot {
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
+    seed_runtime_session(
+        &sqlx_repo,
+        spec_card.id.as_str(),
+        "spec-session",
+        "spec-thread",
+    )
+    .await;
+    seed_runtime_session(
+        &sqlx_repo,
+        worker_card.id.as_str(),
+        "worker-session",
+        "worker-thread",
+    )
+    .await;
     let wave_cove_cache = WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache);
@@ -160,6 +178,39 @@ async fn boot() -> Boot {
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
     }
+}
+
+async fn seed_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str, thread_id: &str) {
+    seed_runtime_session_in_pool(repo.pool(), card_id, session_id, thread_id).await;
+}
+
+async fn seed_runtime_session_in_pool(
+    pool: &sqlx::SqlitePool,
+    card_id: &str,
+    session_id: &str,
+    thread_id: &str,
+) {
+    let mut tx = pool.begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: session_id.to_string(),
+            card_id: card_id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Running,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.to_string()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 /// Build a real `OperationRuntime` over the boot repo with the supplied
@@ -1560,6 +1611,14 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         .expect("sibling worker card");
     boot.card_role_cache
         .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    seed_runtime_session_in_pool(
+        &pool,
+        sibling.id.as_str(),
+        "sibling-session",
+        "sibling-thread",
+    )
+    .await;
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
@@ -2245,6 +2304,14 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         .expect("sibling worker card");
     boot.card_role_cache
         .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    seed_runtime_session_in_pool(
+        &pool,
+        sibling.id.as_str(),
+        "sibling-session",
+        "sibling-thread",
+    )
+    .await;
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
@@ -2363,6 +2430,14 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         .expect("forged sibling card");
     boot.card_role_cache
         .insert(sibling.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    seed_runtime_session_in_pool(
+        &pool,
+        sibling.id.as_str(),
+        "forged-session",
+        "forged-thread",
+    )
+    .await;
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
