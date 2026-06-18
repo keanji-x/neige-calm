@@ -358,6 +358,38 @@ async fn prune_all_waves_once_leaves_wave_at_or_below_keep_untouched() {
 }
 
 #[tokio::test]
+async fn prune_all_waves_once_preserves_active_session_last_seen_endpoint() {
+    let fixture = fixture_with_commits(6).await;
+    let last_seen = &fixture.commits[1];
+    let head = fixture.commits.last().expect("head");
+    let snapshot = harness_snapshot(Some(&last_seen.hash));
+    insert_active_session(
+        fixture.pool(),
+        &fixture.wave_id,
+        "wrapper-last-seen",
+        Some(&snapshot),
+    )
+    .await;
+    let before_diff = wave_vcs::diff(fixture.pool(), &last_seen.hash, &head.hash, None)
+        .await
+        .expect("diff before prune");
+
+    let pruned = wave_vcs::prune_all_waves_once(fixture.pool(), 1)
+        .await
+        .expect("prune all waves");
+
+    assert!(pruned > 0);
+    assert!(commit_exists(fixture.pool(), &last_seen.hash).await);
+    assert!(commit_exists(fixture.pool(), &head.hash).await);
+    assert_eq!(
+        wave_vcs::diff(fixture.pool(), &last_seen.hash, &head.hash, None)
+            .await
+            .expect("diff after prune"),
+        before_diff
+    );
+}
+
+#[tokio::test]
 async fn prune_keep_one_preserves_head_and_ref() {
     let fixture = fixture_with_commits(6).await;
     let head_before = wave_vcs::head(fixture.pool(), &fixture.wave_id)

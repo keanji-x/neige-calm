@@ -1031,16 +1031,37 @@ pub async fn prune_all_waves_once(pool: &SqlitePool, keep: usize) -> Result<u64>
 
     for wave_id in wave_ids {
         let wave_id = WaveId::from(wave_id);
-        let mut tx = begin_immediate_tx(pool).await?;
+        let mut tx = match begin_immediate_tx(pool).await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!(
+                    wave_id = %wave_id.as_str(),
+                    error = %e,
+                    "wave_vcs: prune failed for wave; continuing"
+                );
+                continue;
+            }
+        };
         let res = prune_wave_history_tx(&mut tx, &wave_id, keep).await;
         match res {
             Ok(pruned) => {
-                tx.commit().await?;
-                total_pruned += pruned;
+                if let Err(e) = tx.commit().await {
+                    tracing::warn!(
+                        wave_id = %wave_id.as_str(),
+                        error = %e,
+                        "wave_vcs: prune failed for wave; continuing"
+                    );
+                } else {
+                    total_pruned += pruned;
+                }
             }
             Err(e) => {
                 let _ = tx.rollback().await;
-                return Err(e);
+                tracing::warn!(
+                    wave_id = %wave_id.as_str(),
+                    error = %e,
+                    "wave_vcs: prune failed for wave; continuing"
+                );
             }
         }
     }
