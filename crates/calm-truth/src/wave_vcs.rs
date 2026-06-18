@@ -42,6 +42,11 @@ pub const DEFAULT_PATCH_MAX_LINES: usize = 200;
 const LOG_FILTER_SCAN_LIMIT: usize = 1000;
 const OBJECT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const OBJECT_SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
+const WAVE_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+// Keep aligned with the existing `neige wave-gc` default.
+const DEFAULT_WAVE_HISTORY_PRUNE_KEEP: usize = 50;
+const WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV: &str = "NEIGE_WAVE_PRUNE_INTERVAL_SECS";
+const WAVE_HISTORY_PRUNE_KEEP_ENV: &str = "NEIGE_WAVE_PRUNE_KEEP";
 const ATTRIBUTION_COMMIT_BOUND: usize = 50;
 
 pub type ObjectHash = String;
@@ -972,6 +977,104 @@ pub async fn prune_wave_history_tx(
     .execute(&mut **tx)
     .await?;
     Ok(result.rows_affected())
+}
+
+/// Spawn the wave-history pruner. It runs the same keep-N prune used by the
+/// manual admin GC path, across all waves, without running VACUUM.
+pub fn spawn_wave_history_pruner(pool: SqlitePool) {
+    let Some((interval, keep)) = wave_history_pruner_config_from_env() else {
+        tracing::info!("wave_vcs: history pruner disabled");
+        return;
+    };
+
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(interval);
+        // Match the object sweeper: skip the immediate boot tick and let the
+        // server settle before taking SQLite writer locks for cleanup.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if let Err(e) = prune_all_waves_once(&pool, keep).await {
+                tracing::warn!(error = %e, "wave_vcs: history prune failed");
+            }
+        }
+    });
+}
+
+fn wave_history_pruner_config_from_env() -> Option<(Duration, usize)> {
+    let interval = match std::env::var(WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(0) => return None,
+            Ok(secs) => Duration::from_secs(secs),
+            Err(_) => WAVE_HISTORY_PRUNE_INTERVAL,
+        },
+        Err(_) => WAVE_HISTORY_PRUNE_INTERVAL,
+    };
+    let keep = match std::env::var(WAVE_HISTORY_PRUNE_KEEP_ENV) {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => DEFAULT_WAVE_HISTORY_PRUNE_KEEP,
+        },
+        Err(_) => DEFAULT_WAVE_HISTORY_PRUNE_KEEP,
+    };
+    Some((interval, keep))
+}
+
+/// One all-wave history prune pass. Public so integration tests can drive
+/// cleanup deterministically without waiting for the scheduled task.
+pub async fn prune_all_waves_once(pool: &SqlitePool, keep: usize) -> Result<u64> {
+    let wave_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM waves ORDER BY id")
+        .fetch_all(pool)
+        .await?;
+    let wave_count = wave_ids.len();
+    let mut total_pruned = 0;
+
+    for wave_id in wave_ids {
+        let wave_id = WaveId::from(wave_id);
+        let mut tx = match begin_immediate_tx(pool).await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!(
+                    wave_id = %wave_id.as_str(),
+                    error = %e,
+                    "wave_vcs: prune failed for wave; continuing"
+                );
+                continue;
+            }
+        };
+        let res = prune_wave_history_tx(&mut tx, &wave_id, keep).await;
+        match res {
+            Ok(pruned) => {
+                if let Err(e) = tx.commit().await {
+                    tracing::warn!(
+                        wave_id = %wave_id.as_str(),
+                        error = %e,
+                        "wave_vcs: prune failed for wave; continuing"
+                    );
+                } else {
+                    total_pruned += pruned;
+                }
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                tracing::warn!(
+                    wave_id = %wave_id.as_str(),
+                    error = %e,
+                    "wave_vcs: prune failed for wave; continuing"
+                );
+            }
+        }
+    }
+
+    if total_pruned > 0 {
+        tracing::info!(
+            pruned = total_pruned,
+            waves = wave_count,
+            keep,
+            "wave_vcs: pruned wave history"
+        );
+    }
+    Ok(total_pruned)
 }
 
 /// Spawn the unreferenced-object sweeper. Content-addressed objects are not
@@ -3245,5 +3348,51 @@ mod tests {
             commit_hash_for_tree(&wave_id, "tree-1", "draft", &base).unwrap(),
             commit_hash_for_tree(&wave_id, "tree-1", "draft", &other_author).unwrap()
         );
+    }
+
+    #[test]
+    fn wave_history_pruner_config_from_env_respects_disable_and_defaults() {
+        let saved_interval = std::env::var(WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV).ok();
+        let saved_keep = std::env::var(WAVE_HISTORY_PRUNE_KEEP_ENV).ok();
+        fn set(key: &str, value: &str) {
+            // SAFETY: this test owns the wave-pruner env vars it mutates.
+            unsafe { std::env::set_var(key, value) };
+        }
+        fn remove(key: &str) {
+            // SAFETY: see `set`.
+            unsafe { std::env::remove_var(key) };
+        }
+
+        remove(WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV);
+        remove(WAVE_HISTORY_PRUNE_KEEP_ENV);
+        assert_eq!(
+            wave_history_pruner_config_from_env(),
+            Some((WAVE_HISTORY_PRUNE_INTERVAL, DEFAULT_WAVE_HISTORY_PRUNE_KEEP))
+        );
+
+        set(WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV, "0");
+        assert_eq!(wave_history_pruner_config_from_env(), None);
+
+        set(WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV, "17");
+        set(WAVE_HISTORY_PRUNE_KEEP_ENV, "23");
+        assert_eq!(
+            wave_history_pruner_config_from_env(),
+            Some((Duration::from_secs(17), 23))
+        );
+
+        set(WAVE_HISTORY_PRUNE_KEEP_ENV, "0");
+        assert_eq!(
+            wave_history_pruner_config_from_env(),
+            Some((Duration::from_secs(17), DEFAULT_WAVE_HISTORY_PRUNE_KEEP))
+        );
+
+        match saved_interval {
+            Some(value) => set(WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV, &value),
+            None => remove(WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV),
+        }
+        match saved_keep {
+            Some(value) => set(WAVE_HISTORY_PRUNE_KEEP_ENV, &value),
+            None => remove(WAVE_HISTORY_PRUNE_KEEP_ENV),
+        }
     }
 }
