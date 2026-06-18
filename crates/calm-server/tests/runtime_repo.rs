@@ -21,7 +21,7 @@ use calm_server::session_projection_repo::{
 };
 use calm_types::worker::{
     ExitInterpretation, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind,
-    WorkerSession, WorkerSessionId, exit_commit_mapping,
+    WorkerSession, WorkerSessionId,
 };
 use serde_json::json;
 
@@ -1529,14 +1529,21 @@ async fn session_commit_exit_commits_session_and_runtime_in_lockstep() {
         let repo = fresh_repo().await;
         let (session_id, _) = mint_terminal_session(&repo, Some("task-exit")).await;
         let probe_ms = now_ms() + 10;
-        let mapping = exit_commit_mapping(&interpretation).expect("exit commit mapping");
+        let expected_state = match &interpretation {
+            ExitInterpretation::Completed => WorkerSessionState::Exited,
+            ExitInterpretation::Failed { .. } => WorkerSessionState::Failed,
+            ExitInterpretation::PreserveCard | ExitInterpretation::ResumeEligible => {
+                unreachable!("test only covers committed exit interpretations")
+            }
+        };
+        let expected_exit_interpretation = interpretation.as_db_str();
         let outcome = repo
             .session_commit_exit(
                 &session_id,
-                mapping.session_state,
+                expected_state,
                 probe_ms,
                 exit_code,
-                mapping.exit_interpretation,
+                expected_exit_interpretation,
             )
             .await
             .unwrap();
@@ -1544,13 +1551,13 @@ async fn session_commit_exit_commits_session_and_runtime_in_lockstep() {
             CommitExitOutcome::Committed(session) => session,
             CommitExitOutcome::Absorbed => panic!("exit commit should win"),
         };
-        assert_eq!(committed.state, mapping.session_state);
+        assert_eq!(committed.state, expected_state);
         assert_eq!(committed.liveness, LivenessTag::Exited);
         assert_eq!(committed.liveness_probed_at_ms, Some(probe_ms));
         assert_eq!(committed.exit_code, exit_code);
         assert_eq!(
             committed.exit_interpretation.as_deref(),
-            Some(mapping.exit_interpretation)
+            Some(expected_exit_interpretation)
         );
         assert_eq!(committed.updated_at_ms, probe_ms);
         assert_eq!(committed.completed_at_ms, Some(probe_ms));
@@ -1560,7 +1567,7 @@ async fn session_commit_exit_commits_session_and_runtime_in_lockstep() {
             .await
             .unwrap()
             .expect("runtime row");
-        assert_eq!(runtime.status, mapping.runtime_status);
+        assert_eq!(runtime.status, expected_state);
         assert_eq!(runtime.updated_at_ms, probe_ms);
         assert_eq!(runtime.completed_at_ms, Some(probe_ms));
     }

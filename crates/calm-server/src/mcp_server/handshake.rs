@@ -38,7 +38,6 @@ use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{CardIdentity, ConnectionIdentity};
 use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
-use std::sync::Arc;
 
 /// Custom JSON-RPC error code for "presented MCP token did not resolve
 /// to a known session". Distinct from `InvalidParams` (the params were
@@ -176,22 +175,6 @@ fn initialize_result_payload(protocol_version_advertised: &str) -> Value {
             "version": env!("CARGO_PKG_VERSION"),
         },
     })
-}
-
-/// Helper used by the transport when an `initialize` arrives without a
-/// `_meta` block or with a totally-empty `params`. Kept here (rather
-/// than inlined in `transport.rs`) so the error message stays close
-/// to the auth-slot documentation above and future schema changes
-/// touch one file.
-#[allow(dead_code)] // PR7b uses this from the `tools/list` path
-pub fn invalid_initialize_params(msg: impl Into<String>) -> RpcError {
-    RpcError::invalid_params(msg)
-}
-
-// Suppress an unused-import lint if `Arc` isn't used in stripped builds.
-#[allow(dead_code)]
-fn _force_arc_in_scope() -> Arc<()> {
-    Arc::new(())
 }
 
 #[cfg(test)]
