@@ -85,6 +85,11 @@ pub enum RoleViolation {
     SessionRowMissing { session: WorkerSessionId },
 
     #[error(
+        "session {session} is not in an active-authority state (terminal/inactive); denied fail-closed (#770)."
+    )]
+    SessionNotActive { session: WorkerSessionId },
+
+    #[error(
         "session {session} has no bound card; cardless authority lands with PR11; denied for now (#770)."
     )]
     CardlessSessionDenied { session: WorkerSessionId },

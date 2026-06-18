@@ -84,6 +84,12 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
             session: session_id.clone(),
         })?;
 
+    if !session.state.is_active_authority() {
+        return Err(RoleViolation::SessionNotActive {
+            session: session_id,
+        });
+    }
+
     let card_id = session
         .card_id
         .ok_or_else(|| RoleViolation::CardlessSessionDenied {
@@ -691,6 +697,41 @@ mod tests {
 
         assert!(matches!(err, RoleViolation::CardlessSessionDenied { .. }));
         assert_eq!(tx.worker_session_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn session_resolver_denies_terminal_session_rows_before_card_delegation() {
+        let worker_card = CardId::from("worker-card");
+        let (cache, wcc) = seeded_caches(&worker_card, CardRole::Worker);
+
+        for (session_id, state) in [
+            ("s-exited", WorkerSessionState::Exited),
+            ("s-failed", WorkerSessionState::Failed),
+            ("s-superseded", WorkerSessionState::Superseded),
+        ] {
+            let mut session = worker_session(session_id, Some(worker_card.clone()));
+            session.state = state;
+            let mut tx = FakeWriteTx::with_worker_session(session);
+
+            let err = enforce_role_resolving_session(
+                &mut tx,
+                &ActorId::AiCodexSession(WorkerSessionId::from(session_id)),
+                &cove_updated(),
+                &card_scope(worker_card.as_str(), "w", "c"),
+                &cache,
+                &wcc,
+            )
+            .await
+            .expect_err("terminal session row must deny before card delegation");
+
+            match err {
+                RoleViolation::SessionNotActive { session } => {
+                    assert_eq!(session, WorkerSessionId::from(session_id));
+                }
+                other => panic!("unexpected violation for {state:?}: {other:?}"),
+            }
+            assert_eq!(tx.worker_session_reads, 1);
+        }
     }
 
     #[tokio::test]
