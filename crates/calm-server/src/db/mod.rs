@@ -813,7 +813,7 @@ pub mod sqlite {
     use crate::error::Result;
     use crate::ids::WaveId;
     use crate::model::{Card, CardRole, Terminal};
-    use crate::routes::theme::RequestTheme;
+    use calm_truth::model::RequestTheme;
 
     pub async fn require_wave_exists_tx(
         tx: &mut Transaction<'_, Sqlite>,
