@@ -11,10 +11,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = { version = "2", features = ["serde"] }
-portable-pty = "0.9"
-tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
-anyhow = "1"
 thiserror = "1"
 # VT parser for the server-side `TerminalModel`. We only use the
 # lower-level `Parser` + `Perform` API (no built-in grid — we maintain

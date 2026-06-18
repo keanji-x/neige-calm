@@ -24,7 +24,6 @@ calm-session = { path = "../calm-session" }
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 portable-pty = "0.9"
-serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

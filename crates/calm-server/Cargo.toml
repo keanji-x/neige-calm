@@ -128,7 +128,6 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # IDs / time / encoding
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-base64 = "0.22"
 hex = "0.4"
 
 # Slice H — per-plugin auth tokens. `rand` for OsRng, `sha2` for SHA-256
@@ -165,11 +164,9 @@ toml_edit = "0.22"
 semver = "1"
 
 # OpenAPI generation — utoipa derives schemas off our model structs and
-# path attributes off the handlers; utoipa-axum surfaces an `OpenApi` value
-# from the registered routes. No swagger-ui — the frontend consumes the
+# path attributes off the handlers. No swagger-ui — the frontend consumes the
 # raw `/api/openapi.json` document to generate TypeScript types.
 utoipa = { version = "5", features = ["axum_extras"] }
-utoipa-axum = "0.2"
 
 # WS event TS bindings: ts-rs moved to calm-types together with every
 # `#[ts(export)]`-tagged type (#679 PR1). calm-server deliberately has NO
@@ -201,7 +198,6 @@ calm-provider = { path = "../calm-provider" }
 calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }
 blake3 = "1.8"
-similar = "2"
 
 # Plugin host (Slice B): unix-only — used by `plugin_host::process` to send a
 # real SIGTERM before falling back to SIGKILL. `tokio::process::Child::kill()`
