@@ -1,8 +1,9 @@
-//! Card-derived decision-write sink for the pre-PR7 MCP tool paths.
+//! MCP identity decision-write sink for the pre-PR7 MCP tool paths.
 //!
 //! This module is a structural seam for #679 PR6a-2. The production MCP
-//! handlers still derive their persisted actor from `ToolCallIdentity` and
-//! call the card-aware inherent methods below. The principal-based
+//! handlers derive their session-shaped persisted actor from
+//! `ToolCallIdentity::to_actor_id()` and call the card-aware inherent methods
+//! below. The principal-based
 //! `DecisionSink::commit` entry remains inert until PR7 flips authority.
 
 use crate::db::{RouteRepo, write_with_actor_events_typed};

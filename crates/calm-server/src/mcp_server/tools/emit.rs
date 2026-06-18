@@ -222,8 +222,8 @@ async fn task_fail(
 }
 
 // ---------------------------------------------------------------------------
-// Shared emit path — derives the existing card actor and delegates the
-// eventized write to CardDecisionSink.
+// Shared emit path — derives the session-shaped actor from ToolCallIdentity
+// inside CardDecisionSink and delegates the eventized write.
 // ---------------------------------------------------------------------------
 
 async fn commit_worker_task_report_for_identity(
