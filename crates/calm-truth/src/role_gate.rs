@@ -79,6 +79,19 @@ pub enum RoleViolation {
     )]
     SessionActorUnresolved { session: WorkerSessionId },
 
+    #[error(
+        "session {session} has no live worker_sessions row (deleted / unknown / never-committed); denied fail-closed (#770)."
+    )]
+    SessionRowMissing { session: WorkerSessionId },
+
+    #[error(
+        "session {session} has no bound card; cardless authority lands with PR11; denied for now (#770)."
+    )]
+    CardlessSessionDenied { session: WorkerSessionId },
+
+    #[error("error reading authority for session {session}; denied fail-closed (#770).")]
+    SessionResolutionError { session: WorkerSessionId },
+
     #[error("only spec cards (or User/Kernel) may emit wave.updated (actor={actor})")]
     NotSpecForWave { actor: String },
 
