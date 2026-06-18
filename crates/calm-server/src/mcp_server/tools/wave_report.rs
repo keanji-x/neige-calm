@@ -426,10 +426,10 @@ pub(crate) async fn load_report_for_wave(
 
 /// MCP-side thin wrapper around [`CardDecisionSink::commit_report_write`].
 ///
-/// Resolves the actor from the per-call [`ToolCallIdentity`] (always
-/// maps to `ActorId::AiSpec` here — `require_role` upstream guarantees
-/// the role is Spec by the time we reach this site), tags every write
-/// as the spec-MCP emitter inside the sink, and projects the returned
+/// Resolves the session-shaped actor from the per-call [`ToolCallIdentity`]
+/// (Spec maps to `ActorId::AiSpecSession`; `require_role` upstream guarantees
+/// the role is Spec by the time we reach this site), tags every write as the
+/// spec-MCP emitter inside the sink, and projects the returned
 /// `Card` into the MCP wire shape `{ updated_at }`. The error mapping
 /// reproduces the pre-PR3 contract
 /// (`CalmError::Forbidden` → `-32403`, anything else → internal).

@@ -120,9 +120,11 @@ pub async fn handle_initialize(
         return Err(token_not_recognized());
     }
 
-    // 4. Recover the card-derived actor identity from the authenticated
-    //    session. The persisted event actor remains card-shaped; the
-    //    session Principal is threaded alongside it for the PR7 gate work.
+    // 4. Recover the card/session binding metadata from the authenticated
+    //    session. The persisted event actor is session-shaped (#770 HP1-b:
+    //    `to_actor_id` keys on `session_id`); this lookup supplies role,
+    //    card_id, and cove_id for MCP `require_role` gating, `Principal`,
+    //    and wave/card resolution, not for actor minting.
     let card = repo
         .card_identity_get_by_session(session.id.as_str())
         .await
