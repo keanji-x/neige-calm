@@ -1,5 +1,10 @@
 use std::{io, path::Path};
 
+#[cfg(test)]
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
 use sqlx::{Row, SqlitePool};
 
 use crate::db::sqlite::{append_decision_event_in_tx, begin_immediate_tx};
@@ -185,7 +190,7 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
                 continue;
             }
         }
-        if release_workspace_lease_by_id(pool, events, &lease.lease_id).await? {
+        if release_workspace_lease_on_boot(pool, events, &lease.lease_id).await? {
             reclaimed += 1;
         }
     }
@@ -198,7 +203,35 @@ async fn release_workspace_lease(
     lease: WorkspaceLease,
 ) -> Result<bool> {
     remove_workspace_dir_if_exists(&lease.path)?;
+    complete_workspace_lease_release(pool, events, lease).await
+}
 
+async fn release_workspace_lease_on_boot(
+    pool: &SqlitePool,
+    events: &EventBus,
+    lease_id: &str,
+) -> Result<bool> {
+    let Some(lease) = workspace_lease_by_id(pool, lease_id).await? else {
+        return Ok(false);
+    };
+
+    if let Err(error) = remove_workspace_dir_if_exists(&lease.path) {
+        tracing::warn!(
+            lease_id = %lease.lease_id,
+            path = %lease.path,
+            error = %error,
+            "boot workspace lease reclaim could not remove workspace directory; marking lease released"
+        );
+    }
+
+    complete_workspace_lease_release(pool, events, lease).await
+}
+
+async fn complete_workspace_lease_release(
+    pool: &SqlitePool,
+    events: &EventBus,
+    lease: WorkspaceLease,
+) -> Result<bool> {
     let mut tx = begin_immediate_tx(pool).await?;
     let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.wave_id).await?;
     let now = now_ms();
@@ -499,6 +532,13 @@ fn operation_phase_is_recoverable(phase: &str) -> bool {
 
 fn remove_workspace_dir_if_exists(path: &str) -> Result<()> {
     let path = Path::new(path);
+    #[cfg(test)]
+    if take_forced_workspace_dir_remove_failure(path) {
+        return Err(CalmError::Internal(format!(
+            "remove workspace lease directory {}: forced removal failure for test",
+            path.display()
+        )));
+    }
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -507,6 +547,29 @@ fn remove_workspace_dir_if_exists(path: &str) -> Result<()> {
             path.display()
         ))),
     }
+}
+
+#[cfg(test)]
+static FORCED_WORKSPACE_DIR_REMOVE_FAILURES: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn fail_next_workspace_dir_removal_for_test(path: &str) {
+    FORCED_WORKSPACE_DIR_REMOVE_FAILURES
+        .get_or_init(|| Mutex::new(BTreeSet::new()))
+        .lock()
+        .expect("forced workspace dir removal failures lock")
+        .insert(path.to_string());
+}
+
+#[cfg(test)]
+fn take_forced_workspace_dir_remove_failure(path: &Path) -> bool {
+    let Some(failures) = FORCED_WORKSPACE_DIR_REMOVE_FAILURES.get() else {
+        return false;
+    };
+    failures
+        .lock()
+        .expect("forced workspace dir removal failures lock")
+        .remove(path.to_string_lossy().as_ref())
 }
 
 pub(crate) fn workspace_lease_path_for(wave_id: &str, card_id: &str) -> Result<String> {
