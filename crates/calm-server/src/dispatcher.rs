@@ -239,6 +239,8 @@ fn dispatcher_operation_runtime(
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         ),
     );
+    let forge_action_adapter =
+        Arc::new(crate::operation::forge_action_adapter::ForgeActionAdapter::new());
     let completion = OperationCompletionBus::new();
     Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -253,6 +255,7 @@ fn dispatcher_operation_runtime(
             spec_harness_interrupt_adapter,
             spec_harness_shutdown_adapter,
             task_verify_adapter,
+            forge_action_adapter,
         ],
         events.clone(),
         completion.clone(),
