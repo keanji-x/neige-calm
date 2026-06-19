@@ -700,6 +700,8 @@ pub(crate) async fn send_spec_input(
     let audit_actor = if runtime.status.is_active_authority() {
         ActorId::AiSpecSession(WorkerSessionId::from(runtime.id.clone()))
     } else {
+        // `ensure_live_spec_harness` only returns active runtimes today. Keep this fallback
+        // defensive if that contract changes, rather than minting a gate-denying AiSpecSession.
         spec_input_audit_actor(&actor, &card.id)
     };
 
