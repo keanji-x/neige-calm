@@ -873,18 +873,42 @@ impl ProviderAdapter for ForgeActionAdapter {
                             .await;
                             return;
                         };
-                        if let Err(e) =
-                            complete_from_probe(&pool, &completion, &events, &op_id, &frozen, probe)
-                                .await
+                        match complete_from_probe(
+                            &pool,
+                            &completion,
+                            &events,
+                            &op_id,
+                            &frozen,
+                            probe,
+                        )
+                        .await
                         {
-                            let _ = complete_forge_op_failed(
-                                &pool,
-                                &completion,
-                                &op_id,
-                                e.to_string(),
-                                Some("gate-infra".into()),
-                            )
-                            .await;
+                            Ok(ParkedRecovery::Fail { reason }) => {
+                                let last_error_class = if reason.contains("gate-infra") {
+                                    "gate-infra"
+                                } else {
+                                    "action-not-landed"
+                                };
+                                let _ = complete_forge_op_failed(
+                                    &pool,
+                                    &completion,
+                                    &op_id,
+                                    reason,
+                                    Some(last_error_class.into()),
+                                )
+                                .await;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                let _ = complete_forge_op_failed(
+                                    &pool,
+                                    &completion,
+                                    &op_id,
+                                    e.to_string(),
+                                    Some("gate-infra".into()),
+                                )
+                                .await;
+                            }
                         }
                     });
                     Ok(ParkedRecovery::LeaveParked)

@@ -942,6 +942,78 @@ async fn forge_action_boot_live_reattach_completes_via_probe_and_no_probe_fails(
     assert_eq!(event["head_sha"], json!("live-probe-head"));
 
     let boot = TestBoot::new().await;
+    let action = boot.temp_path("live-not-landed-action.sh");
+    let counter = boot.temp_path("live-not-landed-counter");
+    let sentinel = boot.temp_path("live-not-landed-sentinel");
+    let finish = boot.temp_path("live-not-landed-finish");
+    let probe = boot.temp_path("live-not-landed-probe.sh");
+    write_counter_action(&action);
+    write_probe(&probe, "ignored-merge", "ignored-head", 1);
+    let (mut child, artifacts) =
+        spawn_live_counter_action(&action, &counter, &sentinel, &finish).await;
+    wait_for_file(&sentinel).await;
+    assert_eq!(read_counter(&counter), 1);
+
+    let idem = "forge-live-reattach-not-landed";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("live-not-landed-result.json"),
+            Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
+        ),
+        artifacts,
+    )
+    .await?;
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(
+        matches!(
+            plan.items.as_slice(),
+            [RecoveryItem::VerifyParked { op_id: item_op_id }] if item_op_id == &op_id
+        ),
+        "live not-landed parked op should use recover_parked: {:?}",
+        plan.items
+    );
+    boot.runtime.apply_recovery(plan).await?;
+    assert_eq!(phase(&boot.repo, &op_id).await, "parked");
+    fs::write(&finish, "").expect("release live not-landed fake action");
+    let status = child
+        .wait()
+        .await
+        .expect("wait live not-landed fake action");
+    assert!(status.success());
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error == "forge action process dead and probe reports not landed"
+                && class == "action-not-landed"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(
+        read_counter(&counter),
+        1,
+        "live not-landed reattach must not re-run argv"
+    );
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+
+    let boot = TestBoot::new().await;
     let action = boot.temp_path("live-no-probe-action.sh");
     let counter = boot.temp_path("live-no-probe-counter");
     let sentinel = boot.temp_path("live-no-probe-sentinel");
