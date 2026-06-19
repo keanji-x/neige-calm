@@ -239,7 +239,7 @@ export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.delet
  * ts-rs would emit `last_error: string | null` which would diverge
  * from what the server actually serializes.)
  */
-last_error?: string, } } | { "ev": "codex.hook", "data": { 
+last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "codex.hook", "data": { 
 /**
  * Owning card id — topic key `card:<card_id>`.
  */

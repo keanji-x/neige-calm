@@ -484,6 +484,15 @@ golden_test!(
 );
 
 golden_test!(
+    plugin_tool_registered,
+    "plugin_tool_registered.json",
+    Event::PluginToolRegistered {
+        plugin_id: "plugin-x".into(),
+        tool_name: "make_status_card".into(),
+    }
+);
+
+golden_test!(
     codex_hook_full,
     "codex_hook.full.json",
     Event::CodexHook {
@@ -780,7 +789,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 32] = [
+const ALL_KIND_TAGS: [&str; 33] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -801,6 +810,7 @@ const ALL_KIND_TAGS: [&str; 32] = [
     "overlay.deleted",
     "terminal.deleted",
     "plugin.state",
+    "plugin.tool.registered",
     "codex.hook",
     "claude.hook",
     "codex.worker_requested",
@@ -847,7 +857,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 51,
+        files, 52,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -888,6 +898,7 @@ fn kind_tag_list_matches_enum() {
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",
             Event::PluginState { .. } => "plugin.state",
+            Event::PluginToolRegistered { .. } => "plugin.tool.registered",
             Event::CodexHook { .. } => "codex.hook",
             Event::ClaudeHook { .. } => "claude.hook",
             Event::CodexWorkerRequested { .. } => "codex.worker_requested",
@@ -908,7 +919,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        32,
+        33,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

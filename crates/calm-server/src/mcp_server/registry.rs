@@ -201,6 +201,10 @@ pub struct AppContext {
     /// directory the gate runner writes — a `--data-dir` flag without
     /// `CALM_DATA_DIR` must not split the two.
     pub gate_logs_dir: std::path::PathBuf,
+    /// Late-bound plugin host handle. MCP server boot intentionally happens
+    /// before plugin host construction; plugin-tool discovery/routing reads
+    /// this cell at dispatch time once `AppState::new` has populated it.
+    pub plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;
@@ -472,6 +476,7 @@ mod tests {
             write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
+            plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 

@@ -203,6 +203,7 @@ async fn boot() -> Boot {
         write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
         daemon_token_hash: None,
         gate_logs_dir: gate_logs_dir.clone(),
+        plugin_host: Arc::new(tokio::sync::OnceCell::new()),
     });
 
     let mut registry = ToolRegistry::new();

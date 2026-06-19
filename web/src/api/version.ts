@@ -48,15 +48,20 @@
  *   with backend `SYNC_EVENT_VERSION` bumped 4 → 5 in lockstep. Older
  *   frontends' zod schemas don't know the new discriminators and would
  *   silently drop workspace invalidation frames, so bump here.
- * * `7` — forge PR merge events (issue #760 slice 6):
+ * * `7` — plugin-tool registration wire kind (issue #760 slice 2).
+ *   Adds `plugin.tool.registered` to the WS event union (backend
+ *   `SYNC_EVENT_VERSION` bumped 5 → 6 in lockstep). Older frontends'
+ *   zod schemas don't know the new discriminator and would silently
+ *   drop plugin-tool registration frames, so bump here.
+ * * `8` — forge PR merge events (issue #760 slice 6):
  *   `forge.pr.merged` joins the WS event union with backend
- *   `SYNC_EVENT_VERSION` bumped 5 → 6 in lockstep. Older frontends'
+ *   `SYNC_EVENT_VERSION` bumped 6 → 7 in lockstep. Older frontends'
  *   zod schemas don't know the new discriminator and would silently
  *   drop forge invalidation frames, so bump here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 7;
+export const WEB_COMPAT_VERSION = 8;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

@@ -109,17 +109,24 @@ fn main() {
                 "result": result
             })
         } else if method == "tools/call" {
+            let requested_name = v
+                .pointer("/params/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
             let result = match mode.as_str() {
                 "no_uri" => serde_json::json!({
                     "content": [],
                     "isError": false,
+                    "_meta": { "requested_name": requested_name },
                     "structuredContent": { "msg": "no uri here" }
                 }),
                 "is_error" => serde_json::json!({
                     "content": [
                         { "type": "text", "text": "tool failed on purpose" }
                     ],
-                    "isError": true
+                    "isError": true,
+                    "_meta": { "requested_name": requested_name }
                 }),
                 _ /* "card" or anything else */ => {
                     let structured: serde_json::Value =
@@ -129,7 +136,8 @@ fn main() {
                         "content": [],
                         "isError": false,
                         "_meta": {
-                            "ui": { "resourceUri": resource_uri }
+                            "ui": { "resourceUri": resource_uri },
+                            "requested_name": requested_name
                         },
                         "structuredContent": structured
                     })

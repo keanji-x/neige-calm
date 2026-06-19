@@ -29,7 +29,7 @@ pub mod registry;
 pub mod resources;
 pub mod version;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -558,6 +558,15 @@ impl PluginHost {
             .collect()
     }
 
+    /// Snapshot ids that are currently running.
+    pub async fn running_plugin_ids(&self) -> BTreeSet<String> {
+        let map = self.processes.lock().await;
+        map.iter()
+            .filter(|(_, rp)| matches!(rp.status, PluginRuntimeStatus::Running))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// Most-recent stderr lines, oldest → newest. `n` clamps to the ring
     /// capacity inside `PluginProcess`.
     pub async fn stderr_tail(&self, id: &str, n: usize) -> Option<Vec<String>> {
@@ -569,7 +578,9 @@ impl PluginHost {
     /// or to drive other outbound RPC.
     pub async fn mcp_client(&self, id: &str) -> Option<Arc<McpClient>> {
         let map = self.processes.lock().await;
-        map.get(id).map(|rp| Arc::clone(&rp.mcp))
+        map.get(id)
+            .filter(|rp| matches!(rp.status, PluginRuntimeStatus::Running))
+            .map(|rp| Arc::clone(&rp.mcp))
     }
 
     /// Dispatch a `neige.*` callback method against the in-kernel handler,
