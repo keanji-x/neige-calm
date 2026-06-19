@@ -13,8 +13,8 @@ use crate::actor::Actor;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, terminal_delete_tx,
 };
-use crate::db::write_with_event_typed;
 use crate::db::{RepoRead, RouteRepo};
+use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::harness::{HarnessPhaseTag, Observation, is_harness_snapshot_value};
@@ -23,6 +23,7 @@ use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
@@ -1251,14 +1252,9 @@ pub(crate) async fn delete_card(
     let terminal_id = term.map(|t| t.id);
 
     let write_for_tx = s.write.clone();
-    let (_unit, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor.to_actor_id(),
-        scope,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
+    let delete_actor = actor.to_actor_id();
+    let (_unit, _ids) =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
                 // Drop the terminal row first so the RESTRICT FK lets the
                 // card delete through. Idempotent: NotFound is OK (the
@@ -1271,17 +1267,19 @@ pub(crate) async fn delete_card(
                         Err(e) => return Err(e),
                     }
                 }
+                let mut events = release_workspace_lease_for_card_tx(tx, card_id.as_ref()).await?;
                 card_delete_tx(tx, card_id.as_ref(), write_for_tx.role_cache()).await?;
-                Ok((
-                    (),
+                events.push((
+                    delete_actor,
+                    scope,
                     Event::CardDeleted {
                         id: card_id,
                         wave_id,
                     },
-                ))
+                ));
+                Ok(((), events))
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -121,6 +121,32 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
     Ok(true)
 }
 
+pub(crate) async fn release_workspace_lease_for_card_tx(
+    tx: &mut Tx<'_>,
+    card_id: &str,
+) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    let row = sqlx::query(
+        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+           FROM workspace_leases
+           WHERE card_id = ?1
+             AND state IN ('held','releasing')
+           ORDER BY created_at_ms DESC, lease_id DESC
+           LIMIT 1"#,
+    )
+    .bind(card_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else {
+        return Ok(Vec::new());
+    };
+    let lease = row_to_workspace_lease(row)?;
+    let mut events = Vec::new();
+    if let Some(event) = release_workspace_lease_tx(tx, lease).await? {
+        events.push(event);
+    }
+    Ok(events)
+}
+
 pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
     pool: &SqlitePool,
     events: &EventBus,
@@ -283,36 +309,45 @@ pub(crate) async fn release_workspace_leases_for_wave_tx(
         .collect::<Result<Vec<_>>>()?;
     let mut events = Vec::new();
     for lease in leases {
-        remove_workspace_dir_if_exists(&lease.path)?;
-        let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
-        let now = now_ms();
-        let rows = sqlx::query(
-            r#"UPDATE workspace_leases
-               SET state = 'released',
-                   updated_at_ms = ?1,
-                   released_at_ms = COALESCE(released_at_ms, ?1)
-               WHERE lease_id = ?2
-                 AND state IN ('held','releasing')"#,
-        )
-        .bind(now)
-        .bind(&lease.lease_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-        if rows == 0 {
-            continue;
+        if let Some(event) = release_workspace_lease_tx(tx, lease).await? {
+            events.push(event);
         }
-        events.push((
-            ActorId::KernelDispatcher,
-            scope,
-            Event::WorkspaceReleased {
-                wave_id: WaveId::from(lease.wave_id),
-                card_id: CardId::from(lease.card_id),
-                lease_id: lease.lease_id,
-            },
-        ));
     }
     Ok(events)
+}
+
+async fn release_workspace_lease_tx(
+    tx: &mut Tx<'_>,
+    lease: WorkspaceLease,
+) -> Result<Option<(ActorId, EventScope, Event)>> {
+    remove_workspace_dir_if_exists(&lease.path)?;
+    let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
+    let now = now_ms();
+    let rows = sqlx::query(
+        r#"UPDATE workspace_leases
+           SET state = 'released',
+               updated_at_ms = ?1,
+               released_at_ms = COALESCE(released_at_ms, ?1)
+           WHERE lease_id = ?2
+             AND state IN ('held','releasing')"#,
+    )
+    .bind(now)
+    .bind(&lease.lease_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if rows == 0 {
+        return Ok(None);
+    }
+    Ok(Some((
+        ActorId::KernelDispatcher,
+        scope,
+        Event::WorkspaceReleased {
+            wave_id: WaveId::from(lease.wave_id),
+            card_id: CardId::from(lease.card_id),
+            lease_id: lease.lease_id,
+        },
+    )))
 }
 
 async fn complete_workspace_lease_release_repo(

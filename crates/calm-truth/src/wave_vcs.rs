@@ -523,6 +523,14 @@ pub async fn commit_events_with_author_in_tx(
     {
         return Ok(None);
     }
+    if events.iter().all(|event| {
+        matches!(
+            event,
+            Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. }
+        )
+    }) {
+        return Ok(None);
+    }
 
     let now = now_ms();
     let mut delta = PathDelta::default();

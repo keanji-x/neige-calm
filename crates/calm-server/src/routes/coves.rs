@@ -23,11 +23,12 @@ use crate::db::sqlite::{
     cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx,
     overlay_delete_by_entity_tx, overlay_delete_subtree_by_cove_tx, terminal_delete_tx,
 };
-use crate::db::write_with_event_typed;
+use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Cove, CoveKind, CovePatch, NewCove};
+use crate::operation::workspace_lease::release_workspace_leases_for_wave_tx;
 use crate::state::{AppState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use axum::{
@@ -332,14 +333,9 @@ pub(crate) async fn delete_cove(
     let scope = EventScope::Cove {
         cove: id.clone().into(),
     };
-    let (_unit, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor.to_actor_id(),
-        scope,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
+    let delete_actor = actor.to_actor_id();
+    let (_unit, _ids) =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first; tolerate NotFound on each
                 // (a racing sweeper tick may have beaten us to one).
@@ -352,11 +348,21 @@ pub(crate) async fn delete_cove(
                 }
                 overlay_delete_subtree_by_cove_tx(tx, &id).await?;
                 overlay_delete_by_entity_tx(tx, "cove", &id).await?;
+                let mut events = Vec::new();
+                let wave_ids: Vec<String> =
+                    sqlx::query_scalar("SELECT id FROM waves WHERE cove_id = ?1")
+                        .bind(&id)
+                        .fetch_all(&mut **tx)
+                        .await?;
+                for wave_id in &wave_ids {
+                    events
+                        .extend(release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?);
+                }
                 cove_delete_tx(tx, &id).await?;
-                Ok(((), Event::CoveDeleted { id: id.into() }))
+                events.push((delete_actor, scope, Event::CoveDeleted { id: id.into() }));
+                Ok(((), events))
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

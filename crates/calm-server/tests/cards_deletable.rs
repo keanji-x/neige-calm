@@ -47,7 +47,7 @@ struct Boot {
     app: axum::Router,
     cove_id: String,
     repo: Arc<dyn Repo>,
-    _tmp: TempDir,
+    tmp: TempDir,
 }
 
 async fn boot() -> Boot {
@@ -102,7 +102,7 @@ async fn boot() -> Boot {
         app,
         cove_id: cove.id.to_string(),
         repo,
-        _tmp: tmp,
+        tmp,
     }
 }
 
@@ -125,6 +125,10 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 }
 
 async fn delete(app: axum::Router, uri: &str) -> StatusCode {
+    delete_with_body(app, uri).await.0
+}
+
+async fn delete_with_body(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
             Request::builder()
@@ -135,7 +139,10 @@ async fn delete(app: axum::Router, uri: &str) -> StatusCode {
         )
         .await
         .unwrap();
-    resp.status()
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
 }
 
 async fn patch(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -154,6 +161,41 @@ async fn patch(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value)
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, body)
+}
+
+async fn insert_held_workspace_lease(
+    boot: &Boot,
+    lease_id: &str,
+    card_id: &str,
+    wave_id: &str,
+) -> String {
+    let lease_path = boot
+        .tmp
+        .path()
+        .join("workspace-leases")
+        .join(wave_id)
+        .join(card_id);
+    std::fs::create_dir_all(&lease_path).unwrap();
+    let lease_path = lease_path.to_str().unwrap().to_string();
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query(
+        r#"INSERT INTO workspace_leases (
+               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
+    )
+    .bind(lease_id)
+    .bind(card_id)
+    .bind(wave_id)
+    .bind(&lease_path)
+    .bind("owner-delete-test")
+    .bind(60_000_i64)
+    .bind(1_i64)
+    .execute(&pool)
+    .await
+    .unwrap();
+    lease_path
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +430,57 @@ async fn delete_card_returns_204_for_deletable_worker_card() {
     assert!(after.is_none(), "worker card row removed");
 }
 
+#[tokio::test]
+async fn delete_card_releases_active_workspace_lease_before_card_row_delete() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-760-card-delete-lease", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
+    let wave_id = body["id"].as_str().unwrap().to_string();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        &format!("/api/waves/{wave_id}/cards"),
+        json!({"kind": "plugin:t:v"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "worker card create body: {body}"
+    );
+    let card_id = body["id"].as_str().unwrap().to_string();
+    let lease_id = format!("lease-{card_id}");
+    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &wave_id).await;
+    assert!(std::path::Path::new(&lease_path).is_dir());
+
+    let status = delete(boot.app.clone(), &format!("/api/cards/{card_id}")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(
+        !std::path::Path::new(&lease_path).exists(),
+        "card delete removes active lease directory before card row delete"
+    );
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+            .bind(&lease_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "released");
+    let released_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(released_events, 1);
+}
+
 // ---------------------------------------------------------------------------
 // (4) Wave delete cascade — undeletable cards still go away when their
 // parent wave is deleted. The guard scopes to `/api/cards/:id` only.
@@ -444,26 +537,8 @@ async fn wave_delete_releases_active_workspace_leases_before_cascade() {
     let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
     let card_id = cards[0].id.as_str().to_string();
     let lease_id = format!("lease-{card_id}");
-    let lease_path = format!(".claude/worktrees/{wave_id}/{card_id}");
-    std::fs::create_dir_all(&lease_path).unwrap();
+    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &wave_id).await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
-               lease_id, card_id, wave_id, path, state, lease_owner,
-               lease_until_ms, boot_id, created_at_ms, updated_at_ms
-           )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
-    )
-    .bind(&lease_id)
-    .bind(&card_id)
-    .bind(&wave_id)
-    .bind(&lease_path)
-    .bind("wave-delete-test-owner")
-    .bind(60_000_i64)
-    .bind(1_i64)
-    .execute(&pool)
-    .await
-    .unwrap();
     assert!(std::path::Path::new(&lease_path).is_dir());
 
     let status = delete(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
@@ -480,6 +555,47 @@ async fn wave_delete_releases_active_workspace_leases_before_cascade() {
             .await
             .unwrap();
     assert_eq!(remaining, 0, "wave cascade removes released lease rows");
+    let released_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(released_events, 1);
+}
+
+#[tokio::test]
+async fn cove_delete_releases_wave_workspace_leases_before_cascade() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-760-cove-delete-lease", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
+    let wave_id = body["id"].as_str().unwrap().to_string();
+    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    let card_id = cards[0].id.as_str().to_string();
+    let lease_id = format!("lease-{card_id}");
+    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &wave_id).await;
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    assert!(std::path::Path::new(&lease_path).is_dir());
+
+    let (status, body) =
+        delete_with_body(boot.app.clone(), &format!("/api/coves/{}", boot.cove_id)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "delete body: {body}");
+
+    assert!(
+        !std::path::Path::new(&lease_path).exists(),
+        "cove delete removes active lease directory before wave cascade"
+    );
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE lease_id = ?1")
+            .bind(&lease_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, 0, "cove cascade removes released lease row");
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
             .fetch_one(&pool)
