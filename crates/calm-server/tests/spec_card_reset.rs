@@ -752,6 +752,21 @@ async fn send_spec_input_emits_audit_event() {
     });
     assert!(found, "expected harness.user_message.enqueued: {events:?}");
 
+    let actor_row: (String,) = sqlx::query_as(
+        "SELECT actor FROM events \
+         WHERE kind = 'harness.user_message.enqueued' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    let actor_json: Value = serde_json::from_str(&actor_row.0).expect("events.actor is JSON");
+    assert_eq!(
+        actor_json,
+        json!({"kind": "User"}),
+        "human spec input must keep User audit attribution"
+    );
+
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
