@@ -20,8 +20,8 @@ use calm_server::operation::forge_action_adapter::{
 };
 use calm_server::operation::{
     Operation, OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo,
-    OperationResult, OperationRuntime, Phase, RecoveryItem, SpawnArtifacts, SpawnCtx, SpawnOutcome,
-    SqlxOperationRepo, TxOutput,
+    OperationResult, OperationRuntime, ParkedRecovery, Phase, RecoveryItem, RecoveryMode,
+    SpawnArtifacts, SpawnCtx, SpawnOutcome, SqlxOperationRepo, TxOutput,
 };
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
@@ -392,13 +392,23 @@ async fn seed_parked_forge_op(
     payload: Value,
     artifacts: SpawnArtifacts,
 ) -> CalmResult<String> {
+    seed_parked_forge_op_with_deadline(boot, idem, payload, artifacts, now_ms() + 30_000).await
+}
+
+async fn seed_parked_forge_op_with_deadline(
+    boot: &TestBoot,
+    idem: &str,
+    payload: Value,
+    artifacts: SpawnArtifacts,
+    deadline_ms: i64,
+) -> CalmResult<String> {
     let (op_id, op, _output) = claimed_spawn_started_forge_op(boot, idem, payload).await?;
     boot.operation_repo
         .record_spawn_artifacts(&op, &artifacts)
         .await?;
     let parked = boot
         .operation_repo
-        .set_parked(&op, now_ms() + 30_000)
+        .set_parked(&op, deadline_ms)
         .await?
         .expect("operation parks");
     assert_eq!(parked.phase, Phase::Parked);
@@ -1039,6 +1049,125 @@ async fn forge_action_crash_then_probe_reextracts_probe_typed_output_fields() ->
         "probe recovery must not re-run argv"
     );
     assert!(!sentinel.exists());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_dead_past_deadline_uses_probe_and_no_probe_times_out() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("past-deadline-probe-action.sh");
+    let counter = boot.temp_path("past-deadline-probe-counter");
+    let sentinel = boot.temp_path("past-deadline-probe-sentinel");
+    let finish = boot.temp_path("past-deadline-probe-finish");
+    let probe = boot.temp_path("past-deadline-probe.sh");
+    write_counter_action(&action);
+    write_probe(&probe, "past-deadline-merge", "past-deadline-head", 0);
+
+    let idem = "forge-past-deadline-dead-probe";
+    let op_id = seed_parked_forge_op_with_deadline(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("past-deadline-probe-result.json"),
+            Some(vec![probe.display().to_string()]),
+        ),
+        dead_artifacts(),
+        now_ms() - 1,
+    )
+    .await?;
+
+    let op = boot
+        .operation_repo
+        .get_operation(&op_id)
+        .await?
+        .expect("parked op exists");
+    let adapter = ForgeActionAdapter::new();
+    let recovery = adapter
+        .recover_parked(
+            &op,
+            &dead_artifacts(),
+            false,
+            RecoveryMode::PastDeadline,
+            &boot.spawn_ctx,
+        )
+        .await?;
+    assert!(matches!(recovery, ParkedRecovery::LeaveParked));
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("past-deadline-merge"));
+    assert_eq!(event["head_sha"], json!("past-deadline-head"));
+    assert_eq!(
+        read_counter(&counter),
+        0,
+        "dead past-deadline probe recovery must not re-run argv"
+    );
+    assert!(!sentinel.exists());
+
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("past-deadline-no-probe-action.sh");
+    let counter = boot.temp_path("past-deadline-no-probe-counter");
+    let sentinel = boot.temp_path("past-deadline-no-probe-sentinel");
+    let finish = boot.temp_path("past-deadline-no-probe-finish");
+    write_counter_action(&action);
+    let idem = "forge-past-deadline-dead-no-probe";
+    let op_id = seed_parked_forge_op_with_deadline(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("past-deadline-no-probe-result.json"),
+        ),
+        dead_artifacts(),
+        now_ms() - 1,
+    )
+    .await?;
+
+    let op = boot
+        .operation_repo
+        .get_operation(&op_id)
+        .await?
+        .expect("parked op exists");
+    let adapter = ForgeActionAdapter::new();
+    let recovery = adapter
+        .recover_parked(
+            &op,
+            &dead_artifacts(),
+            false,
+            RecoveryMode::PastDeadline,
+            &boot.spawn_ctx,
+        )
+        .await?;
+    assert!(
+        matches!(
+            recovery,
+            ParkedRecovery::Fail { ref reason } if reason == "action-timeout"
+        ),
+        "{recovery:?}"
+    );
+    assert_eq!(
+        read_counter(&counter),
+        0,
+        "dead past-deadline no-probe recovery must not re-run argv"
+    );
+    assert!(!sentinel.exists());
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
 
     Ok(())
 }

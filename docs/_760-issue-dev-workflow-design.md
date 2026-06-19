@@ -560,7 +560,9 @@ spawn/park/recover skeleton, but with the forge-specific contract — NOT a line
    typed event the live path would have. `recover_parked` receives a `SpawnCtx`
    (`operation/mod.rs:596-611`), so shelling the probe during recovery is contract-legal. Boot mode
    spawns a reattach observer that polls until dead then re-reads the probe (borrowing
-   `task_verify_adapter.rs:1077-1099`); `PastDeadline` returns `Fail{reason: action-timeout}`. This
+   `task_verify_adapter.rs:1077-1099`); past deadline, a DEAD action is still probed because the
+   probe is truth for did-it-land, while `action-timeout` is for a still-ALIVE wedged action or a
+   DEAD action with no probe configured. This
    is what makes "did my merge happen, and with what `merge_sha`?" answerable after a crash via a
    side-effect-free probe.
 6. **`complete_forge_op_with_result` — CUSTOM atomic completion helper for ALL oracle actions (R4-2 +

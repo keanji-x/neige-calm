@@ -868,27 +868,27 @@ impl ProviderAdapter for ForgeActionAdapter {
             };
         }
 
-        match mode {
-            RecoveryMode::PastDeadline => Ok(ParkedRecovery::Fail {
-                reason: "action-timeout".into(),
-            }),
-            RecoveryMode::Boot | RecoveryMode::PreDeadlineProbe => {
-                let Some(probe) = frozen.probe.as_ref() else {
-                    return Ok(ParkedRecovery::Fail {
-                        reason: "forge action process dead with no probe; gate-infra".into(),
-                    });
-                };
-                complete_from_probe(
-                    &ctx.operation_repo.sqlite_pool(),
-                    &ctx.completion,
-                    &ctx.events,
-                    &op.id,
-                    &frozen,
-                    probe,
-                )
-                .await
-            }
-        }
+        // Dead process: the action's process is gone; the plugin probe is the ONLY
+        // truth for whether the irreversible action landed, so run it regardless of
+        // the deadline -- a dead-but-landed action past deadline MUST still emit its
+        // typed event (exactly-once recovery). Fail only when no probe is available.
+        let Some(probe) = frozen.probe.as_ref() else {
+            return Ok(ParkedRecovery::Fail {
+                reason: match mode {
+                    RecoveryMode::PastDeadline => "action-timeout".into(),
+                    _ => "forge action process dead with no probe; gate-infra".into(),
+                },
+            });
+        };
+        complete_from_probe(
+            &ctx.operation_repo.sqlite_pool(),
+            &ctx.completion,
+            &ctx.events,
+            &op.id,
+            &frozen,
+            probe,
+        )
+        .await
     }
 
     async fn plan_compensation(
