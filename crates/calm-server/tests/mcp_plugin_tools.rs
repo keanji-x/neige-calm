@@ -30,10 +30,11 @@ use tokio::time::{Instant, sleep};
 const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
-const EXPOSED_NAME: &str = "plugin.dev.echo.do.thing";
-const SECRET_NAME: &str = "plugin.dev.echo.secret";
-const STOPPED_COLLIDING_PLUGIN_ID: &str = "dev";
-const STOPPED_COLLIDING_TOOL_NAME: &str = "echo.do.thing";
+const EXPOSED_NAME: &str = "plugin.dev.echo_do.thing";
+const SECRET_NAME: &str = "plugin.dev.echo_secret";
+const COLLIDING_PLUGIN_ID: &str = "dev";
+const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
+const COLLIDING_EXPOSED_NAME: &str = "plugin.dev_echo.do.thing";
 
 struct Fixture {
     _server: Arc<McpServer>,
@@ -45,7 +46,7 @@ struct Fixture {
 }
 
 #[tokio::test]
-async fn worker_mcp_discovers_and_routes_declared_dotted_plugin_tools_only() {
+async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
     let fx = boot_fixture().await;
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.raw_token).await;
@@ -58,13 +59,25 @@ async fn worker_mcp_discovers_and_routes_declared_dotted_plugin_tools_only() {
         names.iter().any(|name| name == EXPOSED_NAME),
         "declared plugin tool missing from tools/list: {names:?}"
     );
+    assert!(
+        names.iter().any(|name| name == COLLIDING_EXPOSED_NAME),
+        "prefix-colliding plugin tool missing from tools/list: {names:?}"
+    );
     assert_eq!(
         names
             .iter()
             .filter(|name| name.as_str() == EXPOSED_NAME)
             .count(),
         1,
-        "stopped prefix-colliding manifest must not duplicate tools/list entries: {names:?}"
+        "dotted plugin tool must be advertised once: {names:?}"
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.as_str() == COLLIDING_EXPOSED_NAME)
+            .count(),
+        1,
+        "prefix-colliding plugin tool must be advertised once: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name == SECRET_NAME),
@@ -76,8 +89,8 @@ async fn worker_mcp_discovers_and_routes_declared_dotted_plugin_tools_only() {
         "fixture must have the dotted plugin running: {running_ids:?}"
     );
     assert!(
-        !running_ids.contains(STOPPED_COLLIDING_PLUGIN_ID),
-        "fixture must leave the prefix-colliding plugin stopped: {running_ids:?}"
+        running_ids.contains(COLLIDING_PLUGIN_ID),
+        "fixture must have the prefix-colliding plugin running: {running_ids:?}"
     );
 
     send_frame(
@@ -130,7 +143,39 @@ async fn worker_mcp_discovers_and_routes_declared_dotted_plugin_tools_only() {
         "kernel must forward the stripped inner tool name to the plugin"
     );
 
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            5,
+            COLLIDING_EXPOSED_NAME,
+            &fx.thread_id,
+            json!({ "payload": "from-worker-colliding" }),
+        ),
+    )
+    .await;
+    let colliding_routed = recv_frame(&mut rd).await;
+    assert!(
+        colliding_routed.get("error").is_none(),
+        "prefix-colliding plugin tool call errored: {colliding_routed:#?}"
+    );
+    assert_eq!(colliding_routed["result"]["isError"], false);
+    assert_eq!(
+        colliding_routed["result"]["structuredContent"],
+        json!({
+            "echo": "through-kernel-colliding",
+            "tool": COLLIDING_TOOL_NAME
+        })
+    );
+    assert_eq!(
+        colliding_routed["result"]["_meta"]["requested_name"], COLLIDING_TOOL_NAME,
+        "kernel must forward the stripped inner tool name to the prefix-colliding plugin"
+    );
+
     fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
+    fx.plugin_host
+        .stop(COLLIDING_PLUGIN_ID)
+        .await
+        .expect("stop prefix-colliding plugin");
 }
 
 fn tool_names_from_response(resp: &Value) -> Vec<String> {
@@ -239,6 +284,11 @@ async fn boot_fixture() -> Fixture {
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
     wait_for_running(&plugin_host, PLUGIN_ID).await;
+    plugin_host
+        .spawn(COLLIDING_PLUGIN_ID)
+        .await
+        .expect("spawn prefix-colliding plugin");
+    wait_for_running(&plugin_host, COLLIDING_PLUGIN_ID).await;
 
     let plugin_host_cell = Arc::new(OnceCell::new());
     assert!(
@@ -282,6 +332,11 @@ async fn boot_plugin_host(
     std::fs::create_dir_all(&plugins_data_dir).expect("create plugin data dir");
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub"))
         .expect("symlink stub plugin");
+    let colliding_install_dir = plugins_dir.join(COLLIDING_PLUGIN_ID);
+    let colliding_bin_dir = colliding_install_dir.join("bin");
+    std::fs::create_dir_all(&colliding_bin_dir).expect("create colliding plugin bin dir");
+    std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), colliding_bin_dir.join("stub"))
+        .expect("symlink colliding stub plugin");
 
     let manifest_json = json!({
         "manifest_version": 1,
@@ -304,23 +359,27 @@ async fn boot_plugin_host(
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
     let registry = PluginRegistry::empty();
     registry.insert(manifest, Some(install_dir.clone()));
-    let stopped_colliding_manifest_json = json!({
+    let colliding_manifest_json = json!({
         "manifest_version": 1,
-        "id": STOPPED_COLLIDING_PLUGIN_ID,
+        "id": COLLIDING_PLUGIN_ID,
         "version": "0.1.0",
         "min_kernel_version": "0.0.1",
-        "display_name": "Stopped prefix collision",
+        "display_name": "Prefix collision",
         "entrypoint": {
-            "command": "bin/stub"
+            "command": "bin/stub",
+            "env": {
+                "STUB_TOOLCALL_MODE": "card",
+                "STUB_TOOLCALL_STRUCTURED_JSON": r#"{"echo":"through-kernel-colliding","tool":"echo.do.thing"}"#
+            }
         },
         "exposes_tools": [
-            { "name": STOPPED_COLLIDING_TOOL_NAME, "description": "would collide if routable" }
+            { "name": COLLIDING_TOOL_NAME, "description": "collides under dotted boundary" }
         ],
         "permissions": {}
     });
-    let stopped_colliding_manifest: Manifest =
-        Manifest::parse(&stopped_colliding_manifest_json.to_string()).expect("manifest parses");
-    registry.insert(stopped_colliding_manifest, None);
+    let colliding_manifest: Manifest =
+        Manifest::parse(&colliding_manifest_json.to_string()).expect("manifest parses");
+    registry.insert(colliding_manifest, Some(colliding_install_dir.clone()));
 
     repo.plugin_install(NewPlugin {
         id: PLUGIN_ID.into(),
@@ -332,6 +391,16 @@ async fn boot_plugin_host(
     })
     .await
     .expect("seed plugin row");
+    repo.plugin_install(NewPlugin {
+        id: COLLIDING_PLUGIN_ID.into(),
+        version: "0.1.0".into(),
+        install_path: colliding_install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed colliding plugin row");
 
     Arc::new(PluginHost::new_full(
         Arc::new(registry),

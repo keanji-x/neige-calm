@@ -509,7 +509,10 @@ async fn plugin_tool_descriptors(ctx: &Arc<AppContext>) -> Vec<ToolDescriptor> {
         }
         for entry in manifest.exposes_tools {
             descriptors.push(ToolDescriptor {
-                name: format!("plugin.{}.{}", plugin_id, entry.name),
+                // Plugin ids exclude `_` (is_valid_plugin_id), so `_` is an
+                // unambiguous id↔tool boundary; tool names may contain `.`/`_`
+                // after it.
+                name: format!("plugin.{}_{}", plugin_id, entry.name),
                 description: entry.description.unwrap_or_default(),
                 input_schema: json!({ "type": "object" }),
                 annotations: None,
@@ -629,7 +632,7 @@ fn plugin_tool_route(
         if !running_ids.contains(&plugin_id) {
             continue;
         }
-        let prefix = format!("{plugin_id}.");
+        let prefix = format!("{plugin_id}_");
         if let Some(tool_name) = rest.strip_prefix(&prefix)
             && manifest
                 .exposes_tools
@@ -647,9 +650,12 @@ fn plugin_tool_route(
             Ok(Some((plugin_id, tool_name)))
         }
         _ => {
+            // Unreachable by construction: plugin ids cannot contain `_`, so
+            // the `_` id/tool boundary guarantees at most one running manifest
+            // can match. Keep this as defense-in-depth against future changes.
             let mut matches = candidates
                 .into_iter()
-                .map(|(plugin_id, tool_name)| format!("plugin.{plugin_id}.{tool_name}"))
+                .map(|(plugin_id, tool_name)| format!("plugin.{plugin_id}_{tool_name}"))
                 .collect::<Vec<_>>();
             matches.sort();
             Err(RpcError::custom(
