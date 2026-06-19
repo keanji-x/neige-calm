@@ -35,6 +35,12 @@ use super::{
 
 pub const FORGE_ACTION_KIND: &str = "forge-action";
 
+/// The forge event kinds the adapter can construct via Event::from_kind_and_payload
+/// and persist. validate_payload rejects any other event_kind BEFORE the irreversible
+/// action can run, so a typo'd/unsupported kind can never execute the side effect and
+/// then fail to record its authoritative event. Slice ③ appends its forge.* kinds here.
+const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &["forge.pr.merged"];
+
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -293,10 +299,11 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             "forge-action event_spec.event_kind must not be empty".into(),
         ));
     }
-    if !payload.event_spec.event_kind.starts_with("forge.") {
-        return Err(CalmError::BadRequest(
-            "forge-action event_kind must be a forge.* kind".into(),
-        ));
+    if !SUPPORTED_FORGE_EVENT_KINDS.contains(&payload.event_spec.event_kind.as_str()) {
+        return Err(CalmError::BadRequest(format!(
+            "forge-action event_kind `{}` is not a supported forge event kind",
+            payload.event_spec.event_kind
+        )));
     }
     if payload.cwd_lease.as_os_str().is_empty() {
         return Err(CalmError::BadRequest(

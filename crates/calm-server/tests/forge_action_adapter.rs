@@ -526,7 +526,35 @@ async fn forge_action_rejects_non_forge_event_kind() -> CalmResult<()> {
         matches!(
             err,
             CalmError::BadRequest(ref message)
-                if message == "forge-action event_kind must be a forge.* kind"
+                if message == "forge-action event_kind `wave.deleted` is not a supported forge event kind"
+        ),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_unsupported_forge_event_kind() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let adapter = ForgeActionAdapter::new();
+    let idem = "forge-unsupported-event-kind";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec!["/bin/true".into()],
+        boot.temp_path("unsupported-event-kind-result.json"),
+    );
+    payload["event_spec"]["event_kind"] = json!("forge.pr.merge");
+
+    let err = adapter
+        .validate(&payload)
+        .await
+        .expect_err("unsupported forge event kind must be rejected");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action event_kind `forge.pr.merge` is not a supported forge event kind"
         ),
         "{err:?}"
     );
