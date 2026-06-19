@@ -10,11 +10,14 @@ use axum::http::Request;
 use calm_server::actor::actor_middleware;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use http_body_util::BodyExt;
@@ -90,6 +93,38 @@ async fn ingest_emits_and_persists_claude_hook_events() {
         .with_state(state);
     let mut rx = events.subscribe();
 
+    let runtime_id =
+        bind_claude_runtime_session(repo.as_ref(), card.id.as_str(), "claude-session-active").await;
+    let active_payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "claude-session-active",
+    });
+    post_and_assert(
+        &app,
+        repo.as_ref(),
+        &mut rx,
+        card.id.as_str(),
+        active_payload,
+        "hook.claude.stop",
+        json!({ "kind": "AiClaudeSession", "id": runtime_id }),
+    )
+    .await;
+
+    let unresolved_payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "missing-claude-session",
+    });
+    post_and_assert(
+        &app,
+        repo.as_ref(),
+        &mut rx,
+        card.id.as_str(),
+        unresolved_payload,
+        "hook.claude.stop",
+        json!({ "kind": "AiClaude", "id": card.id.as_str() }),
+    )
+    .await;
+
     let pre_tool_payload = json!({
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
@@ -102,6 +137,7 @@ async fn ingest_emits_and_persists_claude_hook_events() {
         card.id.as_str(),
         pre_tool_payload,
         "hook.claude.pre_tool_use",
+        json!({ "kind": "AiClaude", "id": card.id.as_str() }),
     )
     .await;
 
@@ -115,6 +151,7 @@ async fn ingest_emits_and_persists_claude_hook_events() {
         card.id.as_str(),
         stop_payload,
         "hook.claude.stop",
+        json!({ "kind": "AiClaude", "id": card.id.as_str() }),
     )
     .await;
 
@@ -130,6 +167,7 @@ async fn ingest_emits_and_persists_claude_hook_events() {
         card.id.as_str(),
         stop_failure_payload,
         "hook.claude.stop_failure",
+        json!({ "kind": "AiClaude", "id": card.id.as_str() }),
     )
     .await;
 
@@ -144,8 +182,34 @@ async fn ingest_emits_and_persists_claude_hook_events() {
         card.id.as_str(),
         session_end_payload,
         "hook.claude.session_end",
+        json!({ "kind": "AiClaude", "id": card.id.as_str() }),
     )
     .await;
+}
+
+async fn bind_claude_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str) -> String {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: new_id(),
+            card_id: card_id.to_string(),
+            kind: WorkerSessionKind::ClaudeCard,
+            agent_provider: Some(AgentProvider::Claude),
+            status: WorkerSessionState::Running,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: Some(session_id.to_string()),
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    runtime.id
 }
 
 async fn post_and_assert(
@@ -155,6 +219,7 @@ async fn post_and_assert(
     card_id: &str,
     payload: Value,
     expected_kind: &str,
+    expected_actor: Value,
 ) {
     let uri = format!("/internal/claude/hook?card_id={card_id}");
     let resp = app
@@ -204,7 +269,7 @@ async fn post_and_assert(
     assert_eq!(row.0, "claude.hook");
     assert_eq!(
         serde_json::from_str::<Value>(&row.1).unwrap(),
-        json!({ "kind": "AiClaude", "id": card_id })
+        expected_actor
     );
     let stored_payload = serde_json::from_str::<Value>(&row.2).unwrap();
     assert_eq!(stored_payload["card_id"], card_id);

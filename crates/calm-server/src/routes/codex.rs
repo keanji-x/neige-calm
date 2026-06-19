@@ -31,7 +31,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::role_gate::RoleViolation;
-use crate::session_projection_lookup::resolve_card_for_thread;
+use crate::session_projection_lookup::resolve_session_for_thread;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{
@@ -40,6 +40,7 @@ use axum::{
     http::StatusCode,
     routing::post,
 };
+use calm_types::worker::WorkerSessionId;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -79,6 +80,13 @@ impl HookProvider {
         match self {
             Self::Codex => ActorId::AiCodex(card_id),
             Self::Claude => ActorId::AiClaude(card_id),
+        }
+    }
+
+    fn session_actor(self, session_id: WorkerSessionId) -> ActorId {
+        match self {
+            Self::Codex => ActorId::AiCodexSession(session_id),
+            Self::Claude => ActorId::AiClaudeSession(session_id),
         }
     }
 
@@ -192,7 +200,7 @@ pub(crate) async fn ingest_provider_hook(
         }
     }
 
-    cross_check_session_card(s, &card_id_str, &payload, provider).await?;
+    let resolved_session = cross_check_session_card(s, &card_id_str, &payload, provider).await?;
 
     // PR3 (#136) — reattribute the hook to the codex card that produced
     // it. PR2's stopgap stamped `ActorId::Kernel` because there was no
@@ -222,7 +230,9 @@ pub(crate) async fn ingest_provider_hook(
 
     s.repo
         .log_pure_event(
-            provider.actor(card_id_typed.clone()),
+            resolved_session
+                .map(|session_id| provider.session_actor(session_id))
+                .unwrap_or_else(|| provider.actor(card_id_typed.clone())),
             scope,
             None,
             &s.events,
@@ -244,7 +254,7 @@ async fn cross_check_session_card(
     card_id_str: &str,
     payload: &Value,
     provider: HookProvider,
-) -> Result<()> {
+) -> Result<Option<WorkerSessionId>> {
     let Some(session_id) = payload
         .get("session_id")
         .and_then(Value::as_str)
@@ -256,20 +266,21 @@ async fn cross_check_session_card(
             query_card = %card_id_str,
             "hook ingest proceeding without payload session_id"
         );
-        return Ok(());
+        return Ok(None);
     };
 
-    let resolved_card =
-        resolve_card_for_thread(s.repo.as_ref(), provider.into_agent_provider(), session_id)
-            .await?;
-    if let Some(other_card) = resolved_card
-        && other_card != card_id_str
-    {
+    let Some((worker_session_id, resolved_card)) =
+        resolve_session_for_thread(s.repo.as_ref(), provider.into_agent_provider(), session_id)
+            .await?
+    else {
+        return Ok(None);
+    };
+    if resolved_card != card_id_str {
         tracing::warn!(
             target: "hook.ingest.card_mismatch",
             provider = ?provider,
             query_card = %card_id_str,
-            payload_card = %other_card,
+            payload_card = %resolved_card,
             session_id = %session_id,
             "hook ingest rejected: session_id maps to different card"
         );
@@ -278,7 +289,7 @@ async fn cross_check_session_card(
         ));
     }
 
-    Ok(())
+    Ok(Some(worker_session_id))
 }
 
 fn hook_idempotency_key(provider: HookProvider, card_id: &str, payload: &Value) -> String {

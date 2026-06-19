@@ -41,6 +41,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use calm_types::worker::WorkerSessionId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
@@ -696,7 +697,11 @@ pub(crate) async fn send_spec_input(
         wave: wave.id.clone(),
         cove: wave.cove_id.clone(),
     };
-    let audit_actor = spec_input_audit_actor(&actor, &card.id);
+    let audit_actor = if runtime.status.is_active_authority() {
+        ActorId::AiSpecSession(WorkerSessionId::from(runtime.id.clone()))
+    } else {
+        spec_input_audit_actor(&actor, &card.id)
+    };
 
     let text = body.text;
     harness.observe(Observation::UserMessage { text })?;

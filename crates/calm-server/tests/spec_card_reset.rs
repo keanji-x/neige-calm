@@ -756,7 +756,7 @@ async fn send_spec_input_emits_audit_event() {
 }
 
 #[tokio::test]
-async fn send_spec_input_with_ai_codex_actor_emits_audit_event() {
+async fn send_spec_input_with_ai_codex_actor_emits_spec_session_audit_event() {
     let boot = boot().await;
     let (card, runtime_id, harness) = seed_live_spec_harness(&boot).await;
 
@@ -790,8 +790,8 @@ async fn send_spec_input_with_ai_codex_actor_emits_audit_event() {
     let actor_json: Value = serde_json::from_str(&actor_row.0).expect("events.actor is JSON");
     assert_eq!(
         actor_json,
-        json!({"kind": "AiCodex", "id": card.id.as_str()}),
-        "ai:codex route actor must be rebound to the spec card id"
+        json!({"kind": "AiSpecSession", "id": runtime_id.as_str()}),
+        "active spec harness input must be attributed to the worker session"
     );
 
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
