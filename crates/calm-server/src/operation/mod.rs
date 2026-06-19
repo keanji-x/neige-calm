@@ -1865,6 +1865,139 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    async fn recover_on_boot_releases_workspace_lease_when_dir_removal_fails() {
+        let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let cove = crate::db::RepoSyncDomainRaw::cove_create(
+            &sqlx_repo,
+            crate::model::NewCove {
+                name: "lease reclaim removal failure".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = crate::db::RepoSyncDomainRaw::wave_create(
+            &sqlx_repo,
+            crate::model::NewWave {
+                cove_id: cove.id,
+                title: "lease reclaim removal failure".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            },
+        )
+        .await
+        .unwrap();
+        let card = crate::db::RepoSyncDomainRaw::card_create(
+            &sqlx_repo,
+            crate::model::NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+        let pool = sqlx_repo.pool().clone();
+        let repo = Arc::new(SqlxOperationRepo::new(pool));
+        let op_id = repo
+            .insert_operation(
+                "codex-worker",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(new_id()),
+                    payload_hash: "hash".into(),
+                },
+                json!({ "wave_id": wave.id.clone() }),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"UPDATE operations
+               SET phase = 'succeeded',
+                   updated_at_ms = ?1
+               WHERE id = ?2"#,
+        )
+        .bind(now_ms())
+        .bind(&op_id)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let path_buf = tempdir.path().join("workspace");
+        std::fs::create_dir_all(&path_buf).unwrap();
+        let path = path_buf.to_str().unwrap().to_string();
+        let lease_id = new_id();
+        let now = now_ms();
+        let stale_boot = stale_boot_id();
+        sqlx::query(
+            r#"INSERT INTO workspace_leases (
+                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
+        )
+        .bind(&lease_id)
+        .bind(card.id.as_str())
+        .bind(wave.id.as_str())
+        .bind(&path)
+        .bind(&op_id)
+        .bind(now + 60_000)
+        .bind(&stale_boot)
+        .bind(now)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        workspace_lease::fail_next_workspace_dir_removal_for_test(&path);
+
+        let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
+        let plan = runtime
+            .recover_on_boot()
+            .await
+            .expect("boot reclaim tolerates workspace dir removal failure");
+        assert!(plan.items.is_empty());
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                .bind(&lease_id)
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "released");
+        assert!(
+            path_buf.exists(),
+            "failed boot cleanup leaves the orphaned workspace dir for manual cleanup"
+        );
+
+        let replacement = new_id();
+        sqlx::query(
+            r#"INSERT INTO workspace_leases (
+                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, ?3, ?4, 'held', 'replacement-owner', ?5, 'replacement-boot', ?6, ?6)"#,
+        )
+        .bind(&replacement)
+        .bind(card.id.as_str())
+        .bind(wave.id.as_str())
+        .bind(&path)
+        .bind(now + 120_000)
+        .bind(now + 1)
+        .execute(&repo.pool)
+        .await
+        .expect("released lease row frees the active path index");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
     async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() {
         let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
