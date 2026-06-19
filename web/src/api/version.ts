@@ -43,6 +43,10 @@
  *   `SYNC_EVENT_VERSION` bumped 3 → 4 in lockstep). Older frontends'
  *   zod schemas don't know the new discriminator and would silently
  *   drop gate-result invalidation frames, so bump here.
+ *   This bundle also adds workspace lease lifecycle events (issue #760
+ *   slice 1): `workspace.leased` and `workspace.released` join the WS
+ *   event union with backend `SYNC_EVENT_VERSION` bumped 4 → 5 in
+ *   lockstep, so v4 tabs drop those frames without advancing replay.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */

@@ -98,6 +98,10 @@ pub const API_VERSION: &str = "1";
 ///   zod `WireEvent` union doesn't know the new discriminator, so its
 ///   gate-result invalidation would silently drop. The compat modal
 ///   forces a hard refresh.
+///   This bundle also adds workspace lease lifecycle events (issue #760
+///   slice 1): `workspace.leased` and `workspace.released` join the WS
+///   event union with `SYNC_EVENT_VERSION` bumped 4 → 5 in lockstep, so
+///   v4 tabs drop those frames without advancing replay.
 pub const WEB_COMPAT_VERSION: u32 = 5;
 
 /// Kernel compatibility values sourced from live constants. Kept in

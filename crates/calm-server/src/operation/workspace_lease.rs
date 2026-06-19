@@ -8,10 +8,10 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::{new_id, now_ms};
-use crate::proc_identity::{read_boot_id, read_proc_start_time};
+use crate::proc_identity::{read_boot_id, verify_owned_pid};
 use calm_truth::decision_gate::PermissiveGate;
 
-use super::{TimestampMs, Tx};
+use super::{SpawnArtifacts, TimestampMs, Tx};
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceLease {
@@ -19,6 +19,7 @@ pub(crate) struct WorkspaceLease {
     pub card_id: String,
     pub wave_id: String,
     pub path: String,
+    pub state: String,
 }
 
 pub(crate) async fn acquire_workspace_lease_tx(
@@ -29,6 +30,8 @@ pub(crate) async fn acquire_workspace_lease_tx(
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     let lease_id = new_id();
     let path = workspace_lease_path_for(wave_id, card_id)?;
+    // TODO(#760 slices 3/6): decide repo-root anchoring when git worktree
+    // layering lands; slice 1 paths are relative to the server process cwd.
     let now = now_ms();
     let boot_id = read_boot_id();
     sqlx::query(
@@ -75,6 +78,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
         card_id: card_id.to_string(),
         wave_id: wave_id.to_string(),
         path,
+        state: "held".into(),
     };
     Ok((
         lease,
@@ -119,28 +123,30 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
     pool: &SqlitePool,
     events: &EventBus,
 ) -> Result<usize> {
-    let leases = held_workspace_leases(pool).await?;
+    let leases = active_workspace_leases(pool).await?;
     let mut reclaimed = 0;
     for lease in leases {
-        if workspace_lease_owner_alive(pool, &lease).await? {
-            continue;
-        }
-        let mut tx = begin_immediate_tx(pool).await?;
-        let rows = sqlx::query(
-            r#"UPDATE workspace_leases
-               SET state = 'releasing',
-                   updated_at_ms = ?1
-               WHERE lease_id = ?2
-                 AND state = 'held'"#,
-        )
-        .bind(now_ms())
-        .bind(&lease.lease_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        tx.commit().await?;
-        if rows == 0 {
-            continue;
+        if lease.state == "held" {
+            if workspace_lease_owner_alive(pool, &lease).await? {
+                continue;
+            }
+            let mut tx = begin_immediate_tx(pool).await?;
+            let rows = sqlx::query(
+                r#"UPDATE workspace_leases
+                   SET state = 'releasing',
+                       updated_at_ms = ?1
+                   WHERE lease_id = ?2
+                     AND state = 'held'"#,
+            )
+            .bind(now_ms())
+            .bind(&lease.lease_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            tx.commit().await?;
+            if rows == 0 {
+                continue;
+            }
         }
         if release_workspace_lease_by_id(pool, events, &lease.lease_id).await? {
             reclaimed += 1;
@@ -315,7 +321,7 @@ async fn workspace_lease_by_id(
     lease_id: &str,
 ) -> Result<Option<WorkspaceLease>> {
     let row = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path
+        r#"SELECT lease_id, card_id, wave_id, path, state
            FROM workspace_leases
            WHERE lease_id = ?1
              AND state IN ('held','releasing')"#,
@@ -326,11 +332,11 @@ async fn workspace_lease_by_id(
     row.map(row_to_workspace_lease).transpose()
 }
 
-async fn held_workspace_leases(pool: &SqlitePool) -> Result<Vec<WorkspaceLease>> {
+async fn active_workspace_leases(pool: &SqlitePool) -> Result<Vec<WorkspaceLease>> {
     let rows = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path
+        r#"SELECT lease_id, card_id, wave_id, path, state
            FROM workspace_leases
-           WHERE state = 'held'
+           WHERE state IN ('held','releasing')
            ORDER BY created_at_ms ASC, lease_id ASC"#,
     )
     .fetch_all(pool)
@@ -344,14 +350,16 @@ fn row_to_workspace_lease(row: sqlx::sqlite::SqliteRow) -> Result<WorkspaceLease
         card_id: row.try_get("card_id")?,
         wave_id: row.try_get("wave_id")?,
         path: row.try_get("path")?,
+        state: row.try_get("state")?,
     })
 }
 
 async fn workspace_lease_owner_alive(pool: &SqlitePool, lease: &WorkspaceLease) -> Result<bool> {
     let row = sqlx::query(
-        r#"SELECT wl.boot_id, t.pid
+        r#"SELECT o.phase AS owner_phase,
+                  o.spawn_artifacts_json AS spawn_artifacts_json
            FROM workspace_leases wl
-           LEFT JOIN terminals t ON t.card_id = wl.card_id
+           LEFT JOIN operations o ON o.id = wl.lease_owner
            WHERE wl.lease_id = ?1
              AND wl.state = 'held'"#,
     )
@@ -361,20 +369,50 @@ async fn workspace_lease_owner_alive(pool: &SqlitePool, lease: &WorkspaceLease) 
     let Some(row) = row else {
         return Ok(false);
     };
-    let lease_boot_id: Option<String> = row.try_get("boot_id")?;
-    let terminal_pid: Option<i64> = row.try_get("pid")?;
-    // Lease recovery is a resource-liveness check, not an operation-phase
-    // check: boot mode reclaims held dirs whose recorded worker process is
-    // gone even if the owning operation row would otherwise be recoverable.
-    if let (Some(lease_boot_id), Some(current_boot_id)) = (lease_boot_id, read_boot_id())
-        && lease_boot_id != current_boot_id
+    let owner_phase: Option<String> = row.try_get("owner_phase")?;
+    if owner_phase
+        .as_deref()
+        .is_some_and(operation_phase_is_recoverable)
     {
-        return Ok(false);
+        // A dead in-boot worker with a non-terminal operation is handled by
+        // the operation/reaper path (#741), which drives TaskFailed and then
+        // releases through the normal decision sink.
+        return Ok(true);
     }
-    let Some(pid) = terminal_pid.and_then(|pid| i32::try_from(pid).ok()) else {
+    let spawn_artifacts_text: Option<String> = row.try_get("spawn_artifacts_json")?;
+    let Some(spawn_artifacts) = spawn_artifacts_text.as_deref().and_then(|text| {
+        match serde_json::from_str::<SpawnArtifacts>(text) {
+            Ok(artifacts) => Some(artifacts),
+            Err(e) => {
+                tracing::warn!(
+                    lease_id = %lease.lease_id,
+                    error = %e,
+                    "workspace lease owner has invalid spawn_artifacts_json"
+                );
+                None
+            }
+        }
+    }) else {
         return Ok(false);
     };
-    Ok(read_proc_start_time(pid).is_some())
+    Ok(verify_owned_pid(
+        spawn_artifacts.pid,
+        spawn_artifacts.start_time,
+        &spawn_artifacts.boot_id,
+    ))
+}
+
+fn operation_phase_is_recoverable(phase: &str) -> bool {
+    matches!(
+        phase,
+        "pending"
+            | "tx_committed"
+            | "app_server_interact"
+            | "spawn_started"
+            | "spawn_succeeded"
+            | "parked"
+            | "compensating"
+    )
 }
 
 fn remove_workspace_dir_if_exists(path: &str) -> Result<()> {

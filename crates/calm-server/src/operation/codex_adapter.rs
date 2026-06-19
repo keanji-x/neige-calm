@@ -172,6 +172,8 @@ pub struct CodexWorkerOperationPayload {
     pub wave_id: String,
     pub idempotency_key: String,
     pub goal: String,
+    /// Preserved from the task row for payload-hash determinism; the
+    /// workspace lease path created in `prepare_tx` is the worker cwd.
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -743,6 +745,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());
+        // `payload.cwd` exists for hash parity with the frozen task row; the
+        // isolated lease path is authoritative for codex-worker execution.
         let cwd = workspace_lease_path_for(wave_id.as_str(), &card_id)?;
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_worker_prompt(
