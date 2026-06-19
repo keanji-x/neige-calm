@@ -279,6 +279,24 @@ printf '%s\n' '{"oid":"action-merge","headRefOid":"action-head"}'
     );
 }
 
+fn write_missing_oid_counter_action(path: &Path) {
+    write_script(
+        path,
+        r#"#!/bin/sh
+counter=$1
+sentinel=$2
+finish=$3
+n=0
+if [ -f "$counter" ]; then n=$(cat "$counter"); fi
+n=$((n + 1))
+printf '%s\n' "$n" > "$counter"
+: > "$sentinel"
+while [ ! -f "$finish" ]; do sleep 0.02; done
+printf '%s\n' '{"headRefOid":"action-head-without-merge"}'
+"#,
+    );
+}
+
 async fn spawn_live_counter_action(
     action: &Path,
     counter: &Path,
@@ -336,6 +354,24 @@ printf '%s\n' '{}'
 exit {verdict}
 "#,
             stdout.replace('\'', "'\\''")
+        ),
+    );
+}
+
+fn write_counting_probe(path: &Path, oid: &str, head: &str, verdict: i32) {
+    write_script(
+        path,
+        &format!(
+            r#"#!/bin/sh
+counter=$1
+n=0
+if [ -f "$counter" ]; then n=$(cat "$counter"); fi
+printf '%s\n' "$((n + 1))" > "$counter"
+if [ "${{2:-}}" = "--json" ]; then
+  printf '%s\n' '{{"oid":"{oid}","headRefOid":"{head}"}}'
+fi
+exit {verdict}
+"#,
         ),
     );
 }
@@ -686,6 +722,115 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
 }
 
 #[tokio::test]
+async fn forge_action_rejects_malformed_json_pointer_before_spawn_for_any_field() -> CalmResult<()>
+{
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("malformed-pointer-required-action.sh");
+    let counter = boot.temp_path("malformed-pointer-required-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
+"#,
+    );
+    let idem = "forge-malformed-pointer-required";
+    let mut required_payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("malformed-pointer-required-result.json"),
+    );
+    required_payload["event_spec"]["fields"]["merge_sha"] =
+        serde_json::to_value(FieldSource::JsonField { path: "oid".into() })?;
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), required_payload)
+        .await
+        .expect_err("malformed required JsonField pointer must be rejected");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action event_spec field `merge_sha` JsonField path `oid` must be a valid JSON Pointer (empty string or starting with `/`)"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("malformed-pointer-extra-action.sh");
+    let counter = boot.temp_path("malformed-pointer-extra-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
+"#,
+    );
+    let idem = "forge-malformed-pointer-extra";
+    let mut extra_payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("malformed-pointer-extra-result.json"),
+    );
+    extra_payload["event_spec"]["fields"]["extra"] =
+        serde_json::to_value(FieldSource::JsonField {
+            path: "extra".into(),
+        })?;
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), extra_payload)
+        .await
+        .expect_err("malformed non-required JsonField pointer must be rejected");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action event_spec field `extra` JsonField path `extra` must be a valid JSON Pointer (empty string or starting with `/`)"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_accepts_valid_json_pointer_syntax() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let adapter = ForgeActionAdapter::new();
+    let idem = "forge-valid-pointer-slash";
+    let slash_payload = payload(
+        &boot,
+        idem,
+        vec!["/bin/true".into()],
+        boot.temp_path("valid-pointer-slash-result.json"),
+    );
+    adapter.validate(&slash_payload).await?;
+
+    let idem = "forge-valid-pointer-root";
+    let mut root_payload = payload(
+        &boot,
+        idem,
+        vec!["/bin/true".into()],
+        boot.temp_path("valid-pointer-root-result.json"),
+    );
+    root_payload["event_spec"]["fields"]["merge_sha"] =
+        serde_json::to_value(FieldSource::JsonField {
+            path: String::new(),
+        })?;
+    adapter.validate(&root_payload).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn forge_action_idempotency_on_resubmit_collapses_to_one_operation() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("instant-action.sh");
@@ -863,6 +1008,173 @@ async fn forge_action_observer_unreadable_result_resolves_via_probe() -> CalmRes
     assert_eq!(event["merge_sha"], json!("unreadable-probe-merge"));
     assert_eq!(event["head_sha"], json!("unreadable-probe-head"));
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_live_extraction_failure_recovers_via_probe_without_rerun() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("live-extraction-failure-action.sh");
+    let counter = boot.temp_path("live-extraction-failure-counter");
+    let sentinel = boot.temp_path("live-extraction-failure-sentinel");
+    let finish = boot.temp_path("live-extraction-failure-finish");
+    let probe = boot.temp_path("live-extraction-failure-probe.sh");
+    write_missing_oid_counter_action(&action);
+    write_probe(&probe, "probe-recovered-merge", "probe-recovered-head", 0);
+
+    let idem = "forge-live-extraction-failure-probe";
+    let (op_id, observer) = spawn_parked_observer(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("live-extraction-failure-result.json"),
+            Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
+        ),
+    )
+    .await?;
+    wait_for_file(&sentinel).await;
+    fs::write(&finish, "").expect("release fake action");
+    observer.await.expect("observer joins");
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+    assert_eq!(
+        read_counter(&counter),
+        1,
+        "live extraction recovery must not re-run argv"
+    );
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("probe-recovered-merge"));
+    assert_eq!(event["head_sha"], json!("probe-recovered-head"));
+    assert_eq!(forge_event_count(&boot.repo).await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_live_extraction_failure_without_probe_fails_gate_infra() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("live-extraction-no-probe-action.sh");
+    let counter = boot.temp_path("live-extraction-no-probe-counter");
+    let sentinel = boot.temp_path("live-extraction-no-probe-sentinel");
+    let finish = boot.temp_path("live-extraction-no-probe-finish");
+    write_missing_oid_counter_action(&action);
+
+    let idem = "forge-live-extraction-failure-no-probe";
+    let (op_id, observer) = spawn_parked_observer(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("live-extraction-no-probe-result.json"),
+        ),
+    )
+    .await?;
+    wait_for_file(&sentinel).await;
+    fs::write(&finish, "").expect("release fake action");
+    observer.await.expect("observer joins");
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error.contains("extraction failed")
+                && last_error.contains("no probe to resolve outcome")
+                && class == "gate-infra"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(
+        read_counter(&counter),
+        1,
+        "live extraction failure must not re-run argv"
+    );
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_nonzero_exit_fails_action_failed_without_probe() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("nonzero-action.sh");
+    let action_counter = boot.temp_path("nonzero-action-counter");
+    let probe = boot.temp_path("nonzero-probe.sh");
+    let probe_counter = boot.temp_path("nonzero-probe-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"oid":"ignored-merge","headRefOid":"ignored-head"}'
+exit 42
+"#,
+    );
+    write_counting_probe(&probe, "probe-must-not-run", "probe-must-not-run-head", 0);
+
+    let idem = "forge-nonzero-no-probe-consult";
+    let (op_id, observer) = spawn_parked_observer(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                action_counter.display().to_string(),
+            ],
+            boot.temp_path("nonzero-result.json"),
+            Some(vec![
+                probe.display().to_string(),
+                probe_counter.display().to_string(),
+            ]),
+            Some(vec![
+                probe.display().to_string(),
+                probe_counter.display().to_string(),
+                "--json".into(),
+            ]),
+        ),
+    )
+    .await?;
+    observer.await.expect("observer joins");
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error == "forge action exited with code 42" && class == "action-failed"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(read_counter(&action_counter), 1);
+    assert_eq!(
+        read_counter(&probe_counter),
+        0,
+        "nonzero action exit must not consult probe"
+    );
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
     Ok(())
 }
 

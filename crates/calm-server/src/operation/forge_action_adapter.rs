@@ -134,6 +134,12 @@ enum ProbeVerdict {
     Unknown,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ForgeEventBuildError {
+    ActionFailed { reason: String },
+    ExtractionFailed { reason: String },
+}
+
 /// POSIX single-quote escaping: `'` -> `'\''`.
 fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -319,6 +325,16 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             payload.event_spec.event_kind
         )));
     }
+    for (field, source) in &payload.event_spec.fields {
+        if let FieldSource::JsonField { path } = source
+            && !path.is_empty()
+            && !path.starts_with('/')
+        {
+            return Err(CalmError::BadRequest(format!(
+                "forge-action event_spec field `{field}` JsonField path `{path}` must be a valid JSON Pointer (empty string or starting with `/`)"
+            )));
+        }
+    }
     for (field, is_string) in required_output_fields(&payload.event_spec.event_kind) {
         let Some(source) = payload.event_spec.fields.get(*field) else {
             return Err(CalmError::BadRequest(format!(
@@ -385,28 +401,47 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
     Ok(())
 }
 
-fn build_forge_event(frozen: &FrozenForge, exit_code: i32, stdout: &str) -> Result<(Event, Value)> {
+fn build_forge_event(
+    frozen: &FrozenForge,
+    exit_code: i32,
+    stdout: &str,
+) -> std::result::Result<(Event, Value), ForgeEventBuildError> {
     if exit_code != 0 {
-        return Err(CalmError::Internal(format!(
-            "forge action exited with code {exit_code}"
-        )));
+        return Err(ForgeEventBuildError::ActionFailed {
+            reason: format!("forge action exited with code {exit_code}"),
+        });
     }
-    let json_stdout = parse_json_stdout_if_needed(&frozen.event_spec, stdout)?;
+    let json_stdout = parse_json_stdout_if_needed(&frozen.event_spec, stdout).map_err(|e| {
+        ForgeEventBuildError::ExtractionFailed {
+            reason: e.to_string(),
+        }
+    })?;
     let mut payload = frozen
         .event_spec
         .extract_payload(exit_code, json_stdout.as_ref())
-        .map_err(|e| {
-            CalmError::Internal(format!("gate-infra: forge event extraction failed: {e}"))
+        .map_err(|e| ForgeEventBuildError::ExtractionFailed {
+            reason: format!("gate-infra: forge event extraction failed: {e}"),
         })?;
     payload.insert(
         "wave_id".into(),
-        serde_json::to_value(WaveId::from(frozen.wave_id.clone()))?,
+        serde_json::to_value(WaveId::from(frozen.wave_id.clone())).map_err(|e| {
+            ForgeEventBuildError::ExtractionFailed {
+                reason: format!("gate-infra: forge event context serialize failed: {e}"),
+            }
+        })?,
     );
-    payload.insert("subject".into(), serde_json::to_value(&frozen.subject)?);
+    payload.insert(
+        "subject".into(),
+        serde_json::to_value(&frozen.subject).map_err(|e| {
+            ForgeEventBuildError::ExtractionFailed {
+                reason: format!("gate-infra: forge event subject serialize failed: {e}"),
+            }
+        })?,
+    );
     let payload_value = Value::Object(payload);
     let event = Event::from_kind_and_payload(&frozen.event_spec.event_kind, payload_value.clone())
-        .map_err(|e| {
-            CalmError::Internal(format!("gate-infra: forge event deserialize failed: {e}"))
+        .map_err(|e| ForgeEventBuildError::ExtractionFailed {
+            reason: format!("gate-infra: forge event deserialize failed: {e}"),
         })?;
     let result = json!({
         "exit_code": exit_code,
@@ -484,24 +519,78 @@ pub(crate) async fn complete_forge_op_with_result(
 ) -> Result<()> {
     let (event, result) = match build_forge_event(frozen, exit_code, stdout) {
         Ok(ok) => ok,
-        Err(e) => {
-            let reason = e.to_string();
-            let class = if reason.contains("gate-infra") {
-                "gate-infra"
-            } else {
-                "action-failed"
-            };
+        Err(ForgeEventBuildError::ActionFailed { reason }) => {
             return complete_forge_op_failed(
                 pool,
                 completion,
                 op_id,
                 reason,
-                Some(class.to_string()),
+                Some("action-failed".into()),
+            )
+            .await;
+        }
+        Err(ForgeEventBuildError::ExtractionFailed { reason }) => {
+            return complete_forge_op_failed(
+                pool,
+                completion,
+                op_id,
+                reason,
+                Some("gate-infra".into()),
             )
             .await;
         }
     };
 
+    complete_forge_op_succeeded(pool, completion, events, op_id, frozen, event, result).await
+}
+
+async fn complete_forge_op_from_live_result(
+    pool: &sqlx::SqlitePool,
+    completion: &OperationCompletionBus,
+    events: &EventBus,
+    op_id: &str,
+    frozen: &FrozenForge,
+    exit_code: i32,
+    stdout: &str,
+) -> Result<()> {
+    let (event, result) = match build_forge_event(frozen, exit_code, stdout) {
+        Ok(ok) => ok,
+        Err(ForgeEventBuildError::ActionFailed { reason }) => {
+            return complete_forge_op_failed(
+                pool,
+                completion,
+                op_id,
+                reason,
+                Some("action-failed".into()),
+            )
+            .await;
+        }
+        Err(ForgeEventBuildError::ExtractionFailed { reason }) => {
+            resolve_post_release_via_probe(
+                pool,
+                completion,
+                events,
+                op_id,
+                frozen,
+                &format!("extraction failed: {reason}"),
+            )
+            .await;
+            return Ok(());
+        }
+    };
+
+    complete_forge_op_succeeded(pool, completion, events, op_id, frozen, event, result).await
+}
+
+async fn complete_forge_op_succeeded(
+    pool: &sqlx::SqlitePool,
+    completion: &OperationCompletionBus,
+    events: &EventBus,
+    op_id: &str,
+    frozen: &FrozenForge,
+    event: Event,
+    result: Value,
+) -> Result<()> {
     let outcome = ParkedOutcome::Succeeded { result };
     let scope = frozen.event_scope();
     let mut tx = begin_immediate_tx(pool).await?;
@@ -861,7 +950,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                 Ok(status) if status.code().is_some() => {
                     match read_result_file(&observer_frozen.result_path).await {
                         Ok(result) => {
-                            if let Err(e) = complete_forge_op_with_result(
+                            if let Err(e) = complete_forge_op_from_live_result(
                                 &pool,
                                 &completion,
                                 &events,
