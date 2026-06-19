@@ -10,7 +10,7 @@ use std::time::Duration;
 use calm_server::db::RouteRepo;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::error::Result as CalmResult;
+use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{EventBus, FieldSource, ForgeEventSpec, ForgeMergeSubject};
 use calm_server::model::{NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::ProviderAdapter;
@@ -107,6 +107,10 @@ impl TestBoot {
     fn temp_path(&self, name: &str) -> PathBuf {
         self._tmp.path().join(name)
     }
+
+    fn cwd_lease(&self) -> PathBuf {
+        self._tmp.path().to_path_buf()
+    }
 }
 
 fn event_spec() -> ForgeEventSpec {
@@ -156,6 +160,7 @@ fn payload_with_probe(
         idem_key: idem_key.into(),
         event_spec: event_spec(),
         probe: probe_argv.map(|probe_argv| ProbeSpec { probe_argv }),
+        cwd_lease: boot.cwd_lease(),
         result_path,
         deadline_ms: now_ms() + 30_000,
     })
@@ -175,16 +180,6 @@ fn write_script(path: &Path, body: &str) {
     let mut perms = fs::metadata(path).expect("script metadata").permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms).expect("chmod fake action");
-}
-
-async fn cleanup_workspace_lease_dirs(repo: &SqlxRepo) {
-    let paths: Vec<String> = sqlx::query_scalar("SELECT path FROM workspace_leases")
-        .fetch_all(repo.pool())
-        .await
-        .unwrap_or_default();
-    for path in paths {
-        let _ = fs::remove_dir_all(path);
-    }
 }
 
 async fn phase(repo: &SqlxRepo, op_id: &str) -> String {
@@ -373,6 +368,33 @@ async fn spawn_observer_after_parking(
 }
 
 #[tokio::test]
+async fn forge_action_rejects_relative_result_path() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let adapter = ForgeActionAdapter::new();
+    let idem = "forge-relative-result-path";
+    let payload = payload(
+        &boot,
+        idem,
+        vec!["/bin/true".into()],
+        PathBuf::from("relative-result.json"),
+    );
+
+    let err = adapter
+        .validate(&payload)
+        .await
+        .expect_err("relative result_path must be rejected");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action result_path must be absolute"
+        ),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn forge_action_idempotency_on_resubmit_collapses_to_one_operation() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("instant-action.sh");
@@ -405,7 +427,6 @@ async fn forge_action_idempotency_on_resubmit_collapses_to_one_operation() -> Ca
         .fetch_one(boot.repo.pool())
         .await?;
     assert_eq!(count, 1);
-    cleanup_workspace_lease_dirs(&boot.repo).await;
     Ok(())
 }
 
@@ -473,7 +494,6 @@ while [ ! -f "$2" ]; do sleep 0.02; done
     assert_eq!(event_payload["subject"]["slice_id"], json!("slice-6"));
     assert_eq!(event_payload["subject"]["pr_number"], json!(760));
 
-    cleanup_workspace_lease_dirs(&boot.repo).await;
     Ok(())
 }
 
@@ -542,7 +562,6 @@ async fn forge_action_pre_park_dropped_observer_leaves_action_unrun_then_redrive
     assert_eq!(read_counter(&counter), 1);
     assert_eq!(forge_event_count(&boot.repo).await, 1);
 
-    cleanup_workspace_lease_dirs(&boot.repo).await;
     Ok(())
 }
 
@@ -615,7 +634,6 @@ async fn forge_action_boot_recovery_redrives_non_terminal_phases_and_probes_park
         let result = boot.runtime.wait(&op_id).await?;
         assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
         assert_eq!(forge_event_count(&boot.repo).await, 1);
-        cleanup_workspace_lease_dirs(&boot.repo).await;
     }
 
     let boot = TestBoot::new().await;
@@ -666,8 +684,6 @@ async fn forge_action_boot_recovery_redrives_non_terminal_phases_and_probes_park
     let event = latest_forge_event_payload(&boot.repo).await;
     assert_eq!(event["merge_sha"], json!("probe123"));
     assert_eq!(event["head_sha"], json!("probehead"));
-    cleanup_workspace_lease_dirs(&boot.repo).await;
-
     let boot = TestBoot::new().await;
     let action = boot.temp_path("parked-no-probe-action.sh");
     let counter = boot.temp_path("parked-no-probe-counter");
@@ -718,8 +734,6 @@ async fn forge_action_boot_recovery_redrives_non_terminal_phases_and_probes_park
     );
     assert!(!sentinel.exists());
     assert_eq!(forge_event_count(&boot.repo).await, 0);
-    cleanup_workspace_lease_dirs(&boot.repo).await;
-
     Ok(())
 }
 
@@ -735,10 +749,15 @@ async fn forge_action_crash_then_probe_reextracts_same_typed_output_fields() -> 
     write_counter_action(&action);
     write_probe(&probe, "abc123", "def456", 0);
     fs::write(
-        &result_path,
-        r#"{"exit_code":0,"stdout":"{\"oid\":\"abc123\",\"headRefOid\":\"def456\"}\n"}"#,
+        PathBuf::from(format!("{}.code", result_path.display())),
+        "0",
     )
-    .expect("prewrite landed action result");
+    .expect("prewrite landed action result code");
+    fs::write(
+        PathBuf::from(format!("{}.stdout", result_path.display())),
+        "{\"oid\":\"abc123\",\"headRefOid\":\"def456\"}\n",
+    )
+    .expect("prewrite landed action result stdout");
 
     let idem = "forge-probe-reextract";
     let op_id = seed_parked_forge_op(
@@ -781,6 +800,5 @@ async fn forge_action_crash_then_probe_reextracts_same_typed_output_fields() -> 
     );
     assert!(!sentinel.exists());
 
-    cleanup_workspace_lease_dirs(&boot.repo).await;
     Ok(())
 }

@@ -21,9 +21,6 @@ use crate::event::{
     SYNC_EVENT_VERSION,
 };
 use crate::ids::{ActorId, CoveId, WaveId};
-use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, release_workspace_lease_by_id,
-};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
@@ -60,6 +57,7 @@ pub struct ForgeActionPayload {
     pub event_spec: ForgeEventSpec,
     #[serde(default)]
     pub probe: Option<ProbeSpec>,
+    pub cwd_lease: PathBuf,
     pub result_path: PathBuf,
     pub deadline_ms: i64,
 }
@@ -80,10 +78,9 @@ pub(crate) struct FrozenForge {
     pub event_spec: ForgeEventSpec,
     #[serde(default)]
     pub probe: Option<ProbeSpec>,
+    pub cwd_lease: PathBuf,
     pub result_path: PathBuf,
     pub deadline_ms: i64,
-    pub lease_id: String,
-    pub lease_path: String,
 }
 
 impl FrozenForge {
@@ -151,53 +148,72 @@ fn render_forge_wrapper(argv: &[String]) -> Result<String> {
     script.push_str("read -r _go || exit 75\n");
     script.push_str("neige_forge_result_path=$NEIGE_FORGE_RESULT_PATH\n");
     script.push_str("unset NEIGE_FORGE_RESULT_PATH\n");
-    script.push_str("neige_forge_stdout_path=\"${neige_forge_result_path}.stdout.$$\"\n");
-    script.push_str("neige_forge_tmp_path=\"${neige_forge_result_path}.tmp.$$\"\n");
+    script.push_str("neige_forge_code_path=\"${neige_forge_result_path}.code\"\n");
+    script.push_str("neige_forge_stdout_path=\"${neige_forge_result_path}.stdout\"\n");
+    script.push_str("neige_forge_code_tmp_path=\"${neige_forge_code_path}.tmp.$$\"\n");
+    script.push_str("neige_forge_stdout_tmp_path=\"${neige_forge_stdout_path}.tmp.$$\"\n");
     script.push_str("neige_forge_finish() {\n");
     script.push_str("  neige_forge_rc=\"$1\"\n");
+    script.push_str("  mv -f -- \"$neige_forge_stdout_tmp_path\" \"$neige_forge_stdout_path\"\n");
+    script.push_str("  neige_forge_stdout_mv_rc=$?\n");
     script.push_str(
-        "  python3 - \"$neige_forge_rc\" \"$neige_forge_stdout_path\" \
-         \"$neige_forge_tmp_path\" <<'PY'\n",
+        "  if [ \"$neige_forge_stdout_mv_rc\" -ne 0 ]; then \
+         exit \"$neige_forge_stdout_mv_rc\"; fi\n",
     );
-    script.push_str("import json, sys\n");
-    script.push_str("rc = int(sys.argv[1])\n");
-    script.push_str("stdout_path = sys.argv[2]\n");
-    script.push_str("tmp_path = sys.argv[3]\n");
-    script.push_str("with open(stdout_path, 'rb') as f:\n");
-    script.push_str("    out = f.read().decode('utf-8', 'replace')\n");
-    script.push_str("with open(tmp_path, 'w', encoding='utf-8') as f:\n");
-    script.push_str("    json.dump({'exit_code': rc, 'stdout': out}, f, ensure_ascii=False)\n");
-    script.push_str("    f.write('\\n')\n");
-    script.push_str("PY\n");
-    script.push_str("  neige_forge_py_rc=$?\n");
-    script.push_str("  rm -f -- \"$neige_forge_stdout_path\"\n");
-    script
-        .push_str("  if [ \"$neige_forge_py_rc\" -ne 0 ]; then exit \"$neige_forge_py_rc\"; fi\n");
-    script.push_str("  mv -f -- \"$neige_forge_tmp_path\" \"$neige_forge_result_path\"\n");
+    script.push_str(
+        "  printf '%s' \"$neige_forge_rc\" > \"$neige_forge_code_tmp_path\" && \
+         mv -f -- \"$neige_forge_code_tmp_path\" \"$neige_forge_code_path\"\n",
+    );
+    script.push_str("  neige_forge_code_write_rc=$?\n");
+    script.push_str(
+        "  if [ \"$neige_forge_code_write_rc\" -ne 0 ]; then \
+         exit \"$neige_forge_code_write_rc\"; fi\n",
+    );
     script.push_str("  exit \"$neige_forge_rc\"\n");
     script.push_str("}\n");
     script.push_str("(\n");
     script.push_str("  exec ");
     script.push_str(&rendered_argv);
     script.push('\n');
-    script.push_str(") > \"$neige_forge_stdout_path\"\n");
+    script.push_str(") > \"$neige_forge_stdout_tmp_path\"\n");
     script.push_str("neige_forge_rc=$?\n");
     script.push_str("neige_forge_finish \"$neige_forge_rc\"\n");
     Ok(script)
 }
 
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut path = path.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+fn result_code_path(result_path: &Path) -> PathBuf {
+    path_with_suffix(result_path, ".code")
+}
+
+fn result_stdout_path(result_path: &Path) -> PathBuf {
+    path_with_suffix(result_path, ".stdout")
+}
+
 fn result_tmp_prefixes(result_path: &Path) -> Vec<PathBuf> {
     vec![
-        PathBuf::from(format!("{}.tmp", result_path.display())),
-        PathBuf::from(format!("{}.stdout", result_path.display())),
+        path_with_suffix(result_path, ".tmp"),
+        path_with_suffix(result_path, ".code.tmp."),
+        path_with_suffix(result_path, ".stdout."),
     ]
 }
 
 async fn remove_stale_result_files(result_path: &Path) -> Result<()> {
-    match tokio::fs::remove_file(result_path).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
+    for stale_path in [
+        result_path.to_path_buf(),
+        result_code_path(result_path),
+        result_stdout_path(result_path),
+    ] {
+        match tokio::fs::remove_file(stale_path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     for prefix in result_tmp_prefixes(result_path) {
         if let Some(parent) = prefix.parent() {
@@ -249,6 +265,67 @@ fn parse_json_stdout_if_needed(spec: &ForgeEventSpec, stdout: &str) -> Result<Op
         })
 }
 
+fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
+    if payload.wave_id.trim().is_empty() {
+        return Err(CalmError::BadRequest(
+            "forge-action wave_id must not be empty".into(),
+        ));
+    }
+    if payload.card_id.trim().is_empty() {
+        return Err(CalmError::BadRequest(
+            "forge-action card_id must not be empty".into(),
+        ));
+    }
+    if payload.argv.is_empty() {
+        return Err(CalmError::BadRequest(
+            "forge-action argv must not be empty".into(),
+        ));
+    }
+    if payload.idem_key.trim().is_empty() {
+        return Err(CalmError::BadRequest(
+            "forge-action idem_key must not be empty".into(),
+        ));
+    }
+    if payload.event_spec.event_kind.trim().is_empty() {
+        return Err(CalmError::BadRequest(
+            "forge-action event_spec.event_kind must not be empty".into(),
+        ));
+    }
+    if payload.cwd_lease.as_os_str().is_empty() {
+        return Err(CalmError::BadRequest(
+            "forge-action cwd_lease must not be empty".into(),
+        ));
+    }
+    if !payload.cwd_lease.is_absolute() {
+        return Err(CalmError::BadRequest(
+            "forge-action cwd_lease must be absolute".into(),
+        ));
+    }
+    if payload.result_path.as_os_str().is_empty() {
+        return Err(CalmError::BadRequest(
+            "forge-action result_path must not be empty".into(),
+        ));
+    }
+    if !payload.result_path.is_absolute() {
+        return Err(CalmError::BadRequest(
+            "forge-action result_path must be absolute".into(),
+        ));
+    }
+    if payload.deadline_ms <= 0 {
+        return Err(CalmError::BadRequest(
+            "forge-action deadline_ms must be positive".into(),
+        ));
+    }
+    if let Some(probe) = payload.probe.as_ref()
+        && probe.probe_argv.is_empty()
+    {
+        return Err(CalmError::BadRequest(
+            "forge-action probe.probe_argv must not be empty".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn build_forge_event(frozen: &FrozenForge, exit_code: i32, stdout: &str) -> Result<(Event, Value)> {
     if exit_code != 0 {
         return Err(CalmError::Internal(format!(
@@ -281,18 +358,31 @@ fn build_forge_event(frozen: &FrozenForge, exit_code: i32, stdout: &str) -> Resu
 }
 
 async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {
-    let text = tokio::fs::read_to_string(result_path).await.map_err(|e| {
+    let code_path = result_code_path(result_path);
+    let stdout_path = result_stdout_path(result_path);
+    let code_text = tokio::fs::read_to_string(&code_path).await.map_err(|e| {
         CalmError::Internal(format!(
-            "gate-infra: forge action result {} unreadable: {e}",
-            result_path.display()
+            "gate-infra: forge action result code {} unreadable: {e}",
+            code_path.display()
         ))
     })?;
-    serde_json::from_str::<ForgeActionResultFile>(&text).map_err(|e| {
+    let exit_code = code_text.trim().parse::<i32>().map_err(|e| {
         CalmError::Internal(format!(
-            "gate-infra: forge action result {} unparseable: {e}",
-            result_path.display()
+            "gate-infra: forge action result code {} unparseable: {e}",
+            code_path.display()
         ))
-    })
+    })?;
+    let stdout = match tokio::fs::read(&stdout_path).await {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(CalmError::Internal(format!(
+                "gate-infra: forge action result stdout {} unreadable: {e}",
+                stdout_path.display()
+            )));
+        }
+    };
+    Ok(ForgeActionResultFile { exit_code, stdout })
 }
 
 async fn complete_forge_op_failed(
@@ -405,7 +495,7 @@ fn probe_argv_with_json(probe: &ProbeSpec) -> Vec<String> {
     argv
 }
 
-async fn run_probe(argv: &[String], cwd: &str) -> Result<(Option<i32>, String)> {
+async fn run_probe(argv: &[String], cwd: &Path) -> Result<(Option<i32>, String)> {
     if argv.is_empty() {
         return Err(CalmError::Internal(
             "forge-action probe argv must not be empty".into(),
@@ -434,7 +524,7 @@ async fn complete_from_probe(
     frozen: &FrozenForge,
     probe: &ProbeSpec,
 ) -> Result<ParkedRecovery> {
-    let (exit_code, _) = match run_probe(&probe.probe_argv, &frozen.lease_path).await {
+    let (exit_code, _) = match run_probe(&probe.probe_argv, &frozen.cwd_lease).await {
         Ok(result) => result,
         Err(e) => {
             return Ok(ParkedRecovery::Fail {
@@ -445,7 +535,7 @@ async fn complete_from_probe(
     match verdict_from_exit_code(exit_code) {
         ProbeVerdict::Landed => {
             let stdout = if forge_spec_needs_json(&frozen.event_spec) {
-                match run_probe(&probe_argv_with_json(probe), &frozen.lease_path).await {
+                match run_probe(&probe_argv_with_json(probe), &frozen.cwd_lease).await {
                     Ok((_, stdout)) => stdout,
                     Err(e) => {
                         return Ok(ParkedRecovery::Fail {
@@ -481,49 +571,7 @@ impl ProviderAdapter for ForgeActionAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: ForgeActionPayload = serde_json::from_value(input.clone())?;
-        if payload.wave_id.trim().is_empty() {
-            return Err(CalmError::BadRequest(
-                "forge-action wave_id must not be empty".into(),
-            ));
-        }
-        if payload.card_id.trim().is_empty() {
-            return Err(CalmError::BadRequest(
-                "forge-action card_id must not be empty".into(),
-            ));
-        }
-        if payload.argv.is_empty() {
-            return Err(CalmError::BadRequest(
-                "forge-action argv must not be empty".into(),
-            ));
-        }
-        if payload.idem_key.trim().is_empty() {
-            return Err(CalmError::BadRequest(
-                "forge-action idem_key must not be empty".into(),
-            ));
-        }
-        if payload.event_spec.event_kind.trim().is_empty() {
-            return Err(CalmError::BadRequest(
-                "forge-action event_spec.event_kind must not be empty".into(),
-            ));
-        }
-        if payload.result_path.as_os_str().is_empty() {
-            return Err(CalmError::BadRequest(
-                "forge-action result_path must not be empty".into(),
-            ));
-        }
-        if payload.deadline_ms <= 0 {
-            return Err(CalmError::BadRequest(
-                "forge-action deadline_ms must be positive".into(),
-            ));
-        }
-        if let Some(probe) = payload.probe.as_ref()
-            && probe.probe_argv.is_empty()
-        {
-            return Err(CalmError::BadRequest(
-                "forge-action probe.probe_argv must not be empty".into(),
-            ));
-        }
-        Ok(())
+        validate_payload(&payload)
     }
 
     async fn prepare_tx<'tx>(
@@ -533,6 +581,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: ForgeActionPayload = serde_json::from_value(input.clone())?;
+        validate_payload(&payload)?;
         if op.idempotency_key.as_deref() != Some(payload.idem_key.as_str()) {
             return Err(CalmError::BadRequest(
                 "forge-action idempotency key does not match payload idem_key".into(),
@@ -545,8 +594,6 @@ impl ProviderAdapter for ForgeActionAdapter {
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("wave {}", payload.wave_id)))?;
 
-        let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &payload.card_id, &payload.wave_id, &op.id).await?;
         let frozen = FrozenForge {
             wave_id: payload.wave_id,
             cove_id,
@@ -556,14 +603,12 @@ impl ProviderAdapter for ForgeActionAdapter {
             idem_key: payload.idem_key,
             event_spec: payload.event_spec,
             probe: payload.probe,
+            cwd_lease: payload.cwd_lease,
             result_path: payload.result_path,
             deadline_ms: payload.deadline_ms,
-            lease_id: lease.lease_id,
-            lease_path: lease.path,
         };
         let mut output = TxOutput::new("wave", Some(frozen.wave_id.clone()), json!({}));
         output.data = serde_json::to_value(&frozen)?;
-        output.post_commit_events.push(lease_event);
         Ok(output)
     }
 
@@ -593,10 +638,10 @@ impl ProviderAdapter for ForgeActionAdapter {
             tokio::fs::create_dir_all(parent).await?;
         }
         remove_stale_result_files(&frozen.result_path).await?;
-        if !Path::new(&frozen.lease_path).is_dir() {
+        if !frozen.cwd_lease.is_dir() {
             return Err(CalmError::Internal(format!(
-                "forge-action lease path {} does not exist",
-                frozen.lease_path
+                "forge-action cwd_lease {} does not exist",
+                frozen.cwd_lease.display()
             )));
         }
 
@@ -604,7 +649,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         let mut cmd = tokio::process::Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(wrapper)
-            .current_dir(&frozen.lease_path)
+            .current_dir(&frozen.cwd_lease)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -848,10 +893,9 @@ impl ProviderAdapter for ForgeActionAdapter {
         &self,
         from_phase: PhaseTag,
         reason: &str,
-        output: &TxOutput,
+        _output: &TxOutput,
         op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        let frozen = FrozenForge::from_output(output)?;
         let artifacts = op
             .spawn_artifacts
             .as_ref()
@@ -862,13 +906,10 @@ impl ProviderAdapter for ForgeActionAdapter {
             version: 1,
             from_phase,
             reason: reason.to_string(),
-            steps: vec![
-                CompensationStep::new("kill_forge_action_group", json!({ "artifacts": artifacts })),
-                CompensationStep::new(
-                    "release_workspace_lease",
-                    json!({ "lease_id": frozen.lease_id }),
-                ),
-            ],
+            steps: vec![CompensationStep::new(
+                "kill_forge_action_group",
+                json!({ "artifacts": artifacts }),
+            )],
         })
     }
 
@@ -877,7 +918,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         step: &CompensationStep,
         _output: &TxOutput,
         _op: &Operation,
-        ctx: &SpawnCtx,
+        _ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
@@ -888,12 +929,6 @@ impl ProviderAdapter for ForgeActionAdapter {
                     let artifacts: SpawnArtifacts = serde_json::from_value(artifacts.clone())?;
                     kill_artifacts_group(&artifacts);
                 }
-                Ok(())
-            }
-            "release_workspace_lease" => {
-                let lease_id = step.arg_string("lease_id", "forge-action")?;
-                let pool = ctx.operation_repo.sqlite_pool();
-                release_workspace_lease_by_id(&pool, &ctx.events, &lease_id).await?;
                 Ok(())
             }
             other => Err(CalmError::Internal(format!(
