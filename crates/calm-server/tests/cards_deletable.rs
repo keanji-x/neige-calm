@@ -431,6 +431,64 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
 }
 
 #[tokio::test]
+async fn wave_delete_releases_active_workspace_leases_before_cascade() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-760-wave-delete-lease", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
+    let wave_id = body["id"].as_str().unwrap().to_string();
+    let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
+    let card_id = cards[0].id.as_str().to_string();
+    let lease_id = format!("lease-{card_id}");
+    let lease_path = format!(".claude/worktrees/{wave_id}/{card_id}");
+    std::fs::create_dir_all(&lease_path).unwrap();
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query(
+        r#"INSERT INTO workspace_leases (
+               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
+    )
+    .bind(&lease_id)
+    .bind(&card_id)
+    .bind(&wave_id)
+    .bind(&lease_path)
+    .bind("wave-delete-test-owner")
+    .bind(60_000_i64)
+    .bind(1_i64)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(std::path::Path::new(&lease_path).is_dir());
+
+    let status = delete(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(
+        !std::path::Path::new(&lease_path).exists(),
+        "wave delete removes active lease directory before cascade"
+    );
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE wave_id = ?1")
+            .bind(&wave_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, 0, "wave cascade removes released lease rows");
+    let released_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(released_events, 1);
+}
+
+#[tokio::test]
 async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
     let boot = boot().await;
     let (status, body) = post(

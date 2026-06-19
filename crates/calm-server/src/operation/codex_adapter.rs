@@ -172,8 +172,9 @@ pub struct CodexWorkerOperationPayload {
     pub wave_id: String,
     pub idempotency_key: String,
     pub goal: String,
-    /// Preserved from the task row for payload-hash determinism; the
-    /// workspace lease path created in `prepare_tx` is the worker cwd.
+    /// Forward-compatible only. Scheduler-created Codex worker payloads keep
+    /// this absent because the workspace lease path created in `prepare_tx`
+    /// is the worker cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -745,8 +746,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());
-        // `payload.cwd` exists for hash parity with the frozen task row; the
-        // isolated lease path is authoritative for codex-worker execution.
+        // `payload.cwd` is forward-compatible only; the isolated lease path is
+        // authoritative for codex-worker execution.
         let cwd = workspace_lease_path_for(wave_id.as_str(), &card_id)?;
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_worker_prompt(
@@ -1799,6 +1800,41 @@ mod tests {
         });
         assert_eq!(
             crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
+            crate::routes::terminal_cards::stable_payload_hash(&legacy_without_cwd).unwrap()
+        );
+
+        let task_with_cwd = crate::model::Task {
+            id: "wave-hash:task-a".into(),
+            wave_id: "wave-hash".into(),
+            key: "task-a".into(),
+            kind: crate::model::TaskKind::Codex,
+            goal: "do task-a".into(),
+            context_json: json!({ "from": "legacy" }).to_string(),
+            acceptance_criteria: None,
+            cwd: Some("/repo/from-plan-upsert".into()),
+            depends_on_json: "[]".into(),
+            priority: 0,
+            gate_json: None,
+            status: crate::model::TaskStatus::Pending,
+            status_detail: None,
+            worker_card_id: None,
+            gate_result_json: None,
+            gate_attempt: 0,
+            gate_pid: None,
+            gate_pid_starttime: None,
+            gate_pid_boot_id: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            finished_at_ms: None,
+        };
+        let (kind, built) = crate::scheduler::build_worker_payload(&task_with_cwd).unwrap();
+        assert_eq!(kind, "codex-worker");
+        assert!(
+            !built.as_object().unwrap().contains_key("cwd"),
+            "build_worker_payload must not leak task.cwd into codex op identity"
+        );
+        assert_eq!(
+            crate::routes::terminal_cards::stable_payload_hash(&built).unwrap(),
             crate::routes::terminal_cards::stable_payload_hash(&legacy_without_cwd).unwrap()
         );
     }

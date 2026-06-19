@@ -162,7 +162,14 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 wave_id: task.wave_id.clone(),
                 idempotency_key: task.id.clone(),
                 goal: task.goal.clone(),
-                cwd: task.cwd.clone(),
+                // The workspace lease path created in
+                // `CodexWorkerAdapter::prepare_tx` is the authoritative
+                // worker cwd. `task.cwd` is intentionally not serialized:
+                // prepare_tx would ignore it anyway, and including it would
+                // change `stable_payload_hash` for in-flight Codex tasks
+                // created by older builds when `plan.upsert` supplied a cwd,
+                // causing a foreign-operation conflict after upgrade.
+                cwd: None,
                 context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
                 acceptance_criteria: task.acceptance_criteria.clone(),
             })?;
@@ -1727,10 +1734,9 @@ mod tests {
             p1["actor"],
             serde_json::to_value(ActorId::KernelDispatcher).unwrap()
         );
-        assert_eq!(
-            p1["cwd"],
-            Value::Null,
-            "codex cwd None stays None instead of materializing default_cwd()"
+        assert!(
+            !p1.as_object().unwrap().contains_key("cwd"),
+            "codex cwd stays absent; prepare_tx supplies the lease cwd"
         );
 
         let mut terminal = task("t", TaskStatus::Pending, &[], 0);
@@ -1744,25 +1750,35 @@ mod tests {
     }
 
     #[test]
-    fn codex_payload_preserves_optional_cwd_from_task_row() {
+    fn codex_payload_ignores_task_cwd_for_hash_stability() {
         let mut codex = task("a", TaskStatus::Pending, &[], 0);
         codex.cwd = Some("/repo".into());
         let (kind, p) = build_worker_payload(&codex).unwrap();
         assert_eq!(kind, "codex-worker");
-        assert_eq!(p["cwd"], json!("/repo"));
+        assert!(
+            !p.as_object().unwrap().contains_key("cwd"),
+            "task.cwd must not affect codex worker payload identity"
+        );
+
+        let legacy_without_cwd = json!({
+            "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
+            "wave_id": "w",
+            "idempotency_key": "w:a",
+            "goal": "do",
+            "context": null,
+        });
+        assert_eq!(
+            stable_payload_hash(&p).unwrap(),
+            stable_payload_hash(&legacy_without_cwd).unwrap(),
+            "non-null task.cwd must hash like the pre-upgrade no-cwd payload"
+        );
 
         codex.cwd = None;
         let (_, p1) = build_worker_payload(&codex).unwrap();
+        assert_eq!(p, p1);
         assert_eq!(
-            p1["cwd"],
-            Value::Null,
-            "None is preserved and resolved only by the worker lease"
-        );
-        let (_, p2) = build_worker_payload(&codex).unwrap();
-        assert_eq!(p1, p2);
-        assert_eq!(
-            stable_payload_hash(&p1).unwrap(),
-            stable_payload_hash(&p2).unwrap()
+            stable_payload_hash(&p).unwrap(),
+            stable_payload_hash(&p1).unwrap()
         );
     }
 

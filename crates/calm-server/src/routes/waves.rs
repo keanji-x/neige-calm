@@ -35,7 +35,7 @@ use crate::db::sqlite::{
     overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx, terminal_delete_tx, wave_create_tx,
     wave_delete_tx, wave_update_tx,
 };
-use crate::db::{write_with_event_typed, write_with_events_typed};
+use crate::db::{write_with_actor_events_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
 use crate::ids::{ActorId, CardId};
@@ -44,6 +44,7 @@ use crate::model::{
     WaveDetail, WavePatch, new_id,
 };
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::workspace_lease::release_workspace_leases_for_wave_tx;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
@@ -872,15 +873,10 @@ pub(crate) async fn delete_wave(
         wave: wave_id.clone(),
         cove: cove_id.clone(),
     };
+    let delete_actor = actor.to_actor_id();
     let write_for_tx = s.write.clone();
-    let (_unit, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor.to_actor_id(),
-        scope,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
+    let (_unit, _ids) =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first so the RESTRICT FK lets the
                 // wave delete cascade through cards cleanly.
@@ -896,18 +892,20 @@ pub(crate) async fn delete_wave(
                 overlay_delete_card_overlays_by_wave_tx(tx, wave_id.as_str()).await?;
                 overlay_delete_by_entity_tx(tx, "wave", wave_id.as_str()).await?;
                 overlay_delete_by_entity_tx(tx, "view", wave_id.as_str()).await?;
+                let mut events = release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?;
                 wave_delete_tx(tx, wave_id.as_ref(), write_for_tx.cove_cache()).await?;
-                Ok((
-                    (),
+                events.push((
+                    delete_actor,
+                    scope,
                     Event::WaveDeleted {
                         id: wave_id,
                         cove_id,
                     },
-                ))
+                ));
+                Ok(((), events))
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

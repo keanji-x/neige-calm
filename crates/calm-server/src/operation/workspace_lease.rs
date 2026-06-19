@@ -133,8 +133,9 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
             // Codex workers are daemon-resident threads, so operation
             // spawn_artifacts are not a liveness oracle. Boot reclaim only
             // takes leases from older machine boots; same-boot dead workers
-            // flow through the reaper -> TaskFailed -> decision-sink release
-            // path, while recoverable operations keep their cwd for recovery.
+            // are released by the reaper calling the lease helper directly.
+            // The decision sink covers self-reported completion/failure, and
+            // recoverable operations keep their cwd for recovery.
             if !workspace_lease_should_reclaim_on_boot(pool, &lease, current_boot_id.as_deref())
                 .await?
             {
@@ -260,6 +261,58 @@ async fn mark_workspace_lease_releasing_for_card_repo(
         })
     })
     .await
+}
+
+pub(crate) async fn release_workspace_leases_for_wave_tx(
+    tx: &mut Tx<'_>,
+    wave_id: &str,
+) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    let rows = sqlx::query(
+        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+           FROM workspace_leases
+           WHERE wave_id = ?1
+             AND state IN ('held','releasing')
+           ORDER BY created_at_ms ASC, lease_id ASC"#,
+    )
+    .bind(wave_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let leases: Vec<WorkspaceLease> = rows
+        .into_iter()
+        .map(row_to_workspace_lease)
+        .collect::<Result<Vec<_>>>()?;
+    let mut events = Vec::new();
+    for lease in leases {
+        remove_workspace_dir_if_exists(&lease.path)?;
+        let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
+        let now = now_ms();
+        let rows = sqlx::query(
+            r#"UPDATE workspace_leases
+               SET state = 'released',
+                   updated_at_ms = ?1,
+                   released_at_ms = COALESCE(released_at_ms, ?1)
+               WHERE lease_id = ?2
+                 AND state IN ('held','releasing')"#,
+        )
+        .bind(now)
+        .bind(&lease.lease_id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        if rows == 0 {
+            continue;
+        }
+        events.push((
+            ActorId::KernelDispatcher,
+            scope,
+            Event::WorkspaceReleased {
+                wave_id: WaveId::from(lease.wave_id),
+                card_id: CardId::from(lease.card_id),
+                lease_id: lease.lease_id,
+            },
+        ));
+    }
+    Ok(events)
 }
 
 async fn complete_workspace_lease_release_repo(

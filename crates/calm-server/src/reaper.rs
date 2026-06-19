@@ -14,6 +14,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::WaveLifecycle;
 use crate::model::now_ms;
+use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::scheduler::{is_race_lost, race_lost_err};
 use crate::state::WriteContext;
@@ -594,10 +595,27 @@ pub(crate) async fn converge_dead_worker(
     })
     .await;
     match result {
-        Ok(_) => Ok(()),
-        Err(e) if is_race_lost(&e) => Ok(()),
+        Ok(_) => {
+            release_reaped_worker_workspace_lease(repo, events, session).await?;
+            Ok(())
+        }
+        Err(e) if is_race_lost(&e) => {
+            release_reaped_worker_workspace_lease(repo, events, session).await?;
+            Ok(())
+        }
         Err(e) => Err(e),
     }
+}
+
+async fn release_reaped_worker_workspace_lease(
+    repo: &dyn Repo,
+    events: &EventBus,
+    session: &WorkerSession,
+) -> Result<()> {
+    if let Some(card_id) = session.card_id.as_ref() {
+        release_workspace_lease_for_card_repo(repo, events, card_id.as_str()).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -829,6 +847,25 @@ mod tests {
             .expect("stamp operation target");
         }
         op_id
+    }
+
+    async fn acquire_test_workspace_lease(
+        repo: &SqlxRepo,
+        card_id: &str,
+        wave_id: &WaveId,
+        lease_owner: &str,
+    ) -> (String, String) {
+        let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+        let (lease, _event) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
+            &mut tx,
+            card_id,
+            wave_id.as_str(),
+            lease_owner,
+        )
+        .await
+        .expect("acquire workspace lease");
+        tx.commit().await.expect("commit lease");
+        (lease.lease_id, lease.path)
     }
 
     async fn task_failed_events(repo: &SqlxRepo, task_id: &str) -> Vec<Event> {
@@ -1545,6 +1582,66 @@ mod tests {
             .expect("wave get")
             .expect("wave exists");
         assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+
+        reset_reaper_boot_gate_for_test();
+    }
+
+    #[tokio::test]
+    async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() {
+        let _guard = REAPER_TEST_LOCK.lock().await;
+        reset_reaper_boot_gate_for_test();
+
+        let (repo, wave_id) = seeded_repo().await;
+        set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Working).await;
+        let task = insert_task(&repo, &wave_id, "codex-lease-dead", TaskStatus::Running).await;
+        let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
+        let mut worker = session("ws-codex-lease-dead", wave_id.clone(), 1);
+        worker.provider = WorkerProviderKind::Codex;
+        worker.mode = SessionMode::Resumable;
+        worker.thread_id = Some("t-codex-lease-dead".into());
+        worker.spawn_op_id = Some(op_id.clone());
+        let card = insert_session(&repo, worker).await;
+        let (lease_id, lease_path) =
+            acquire_test_workspace_lease(&repo, card.id.as_str(), &wave_id, &op_id).await;
+        assert!(
+            std::path::Path::new(&lease_path).is_dir(),
+            "leased cwd exists before reaping"
+        );
+
+        let fake = Arc::new(
+            FakeProvider::new()
+                .with_session_mode(SessionMode::Resumable)
+                .with_death_verdict(DeathVerdict::Dead)
+                .with_probe_script([exited_liveness()]),
+        );
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let reaper = Reaper::new(
+            repo_dyn,
+            registry_for(WorkerProviderKind::Codex, fake),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+
+        reaper_on_boot();
+        reaper.sweep_all().await;
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                .bind(&lease_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("lease state");
+        assert_eq!(state, "released");
+        assert!(
+            !std::path::Path::new(&lease_path).exists(),
+            "reaper release removes leased cwd"
+        );
+        let released_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
+                .fetch_one(repo.pool())
+                .await
+                .expect("released event count");
+        assert_eq!(released_events, 1);
 
         reset_reaper_boot_gate_for_test();
     }
