@@ -64,6 +64,17 @@ pub enum Observation {
         log_tail: String,
         attempt: i64,
     },
+    WorkspaceLeased {
+        wave_id: WaveId,
+        card_id: CardId,
+        lease_id: String,
+        path: String,
+    },
+    WorkspaceReleased {
+        wave_id: WaveId,
+        card_id: CardId,
+        lease_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +153,12 @@ impl Observation {
                 format!(
                     "Task {key} gate {verdict} (attempt {attempt}). Log tail:\n{log_tail}\nRead the full log at plan/{key}/gate.log; read the worker output at runs/{idempotency_key}.md."
                 )
+            }
+            Observation::WorkspaceLeased { path, .. } => {
+                format!("A worker workspace was provisioned at {path}. Re-read the wave state.")
+            }
+            Observation::WorkspaceReleased { .. } => {
+                "A worker workspace lease was released. Re-read the wave state.".to_string()
             }
         }
     }
