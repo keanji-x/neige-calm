@@ -1727,6 +1727,30 @@ mod tests {
             &write
         ));
 
+        // Issue #760 slice ⑦ — workspace lease lifecycle events always warrant a
+        // push (kernel-emitted; no author/role gate).
+        let leased = Event::WorkspaceLeased {
+            wave_id: wave.clone(),
+            card_id: worker.clone(),
+            lease_id: "lease".into(),
+            path: "/tmp/ws".into(),
+        };
+        assert!(event_warrants_spec_push(
+            &leased,
+            &ActorId::KernelDispatcher,
+            &write
+        ));
+        let released = Event::WorkspaceReleased {
+            wave_id: wave.clone(),
+            card_id: worker.clone(),
+            lease_id: "lease".into(),
+        };
+        assert!(event_warrants_spec_push(
+            &released,
+            &ActorId::KernelDispatcher,
+            &write
+        ));
+
         let codex_hook = |card_id: CardId, kind: &str| Event::CodexHook {
             card_id,
             kind: kind.into(),
