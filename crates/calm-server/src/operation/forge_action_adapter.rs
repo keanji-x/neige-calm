@@ -260,10 +260,17 @@ fn forge_spec_needs_json(spec: &ForgeEventSpec) -> bool {
         .any(|source| matches!(source, FieldSource::JsonField { .. }))
 }
 
-fn required_output_fields(event_kind: &str) -> &'static [&'static str] {
+fn required_output_fields(event_kind: &str) -> &'static [(&'static str, bool)] {
     match event_kind {
-        "forge.pr.merged" => &["head_sha", "merge_sha"],
+        "forge.pr.merged" => &[("head_sha", true), ("merge_sha", true)],
         _ => &[],
+    }
+}
+
+fn field_source_type_name(source: &FieldSource) -> &'static str {
+    match source {
+        FieldSource::ExitCode => "exit_code",
+        FieldSource::JsonField { .. } => "json_field",
     }
 }
 
@@ -312,11 +319,19 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             payload.event_spec.event_kind
         )));
     }
-    for field in required_output_fields(&payload.event_spec.event_kind) {
-        if !payload.event_spec.fields.contains_key(*field) {
+    for (field, is_string) in required_output_fields(&payload.event_spec.event_kind) {
+        let Some(source) = payload.event_spec.fields.get(*field) else {
             return Err(CalmError::BadRequest(format!(
                 "forge-action event_spec for `{}` must populate field `{}`",
                 payload.event_spec.event_kind, field
+            )));
+        };
+        if *is_string && !matches!(source, FieldSource::JsonField { .. }) {
+            return Err(CalmError::BadRequest(format!(
+                "forge-action `{}` field `{}` must be a JSON string source, not {}",
+                payload.event_spec.event_kind,
+                field,
+                field_source_type_name(source)
             )));
         }
     }

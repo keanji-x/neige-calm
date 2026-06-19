@@ -646,6 +646,46 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
 }
 
 #[tokio::test]
+async fn forge_action_rejects_exit_code_for_required_string_field_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("exit-code-string-field-action.sh");
+    let counter = boot.temp_path("exit-code-string-field-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
+"#,
+    );
+    let idem = "forge-exit-code-string-field";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("exit-code-string-field-result.json"),
+    );
+    payload["event_spec"]["fields"]["merge_sha"] = json!("exit_code");
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("exit_code source for a required string field must be rejected");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action `forge.pr.merged` field `merge_sha` must be a JSON string source, not exit_code"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
 async fn forge_action_idempotency_on_resubmit_collapses_to_one_operation() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("instant-action.sh");
