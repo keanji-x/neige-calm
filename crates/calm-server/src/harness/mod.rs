@@ -104,6 +104,8 @@ async fn replay_harness_events_since(
                 // pushes.
                 "task.gate_result",
                 "wave.report_edited",
+                "workspace.leased",
+                "workspace.released",
                 "codex.hook",
                 "claude.hook",
             ],
@@ -219,4 +221,216 @@ pub fn initial_snapshot_with_goal(goal: Option<String>) -> HarnessSnapshot {
         .map(|text| vec![Observation::WaveGoal { text }])
         .unwrap_or_default();
     HarnessSnapshot::initial(0, pending_queue)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::{
+        SqlxRepo, append_decision_event_in_tx, card_create_with_id_tx, session_start_runtime_tx,
+    };
+    use crate::event::EventScope;
+    use crate::ids::ActorId;
+    use crate::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+    use crate::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    use crate::shared_codex_appserver::SharedCodexAppServer;
+    use crate::wave_cove_cache::WaveCoveCache;
+    use calm_truth::decision_gate::PermissiveGate;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn workspace_leased_replays_into_recovered_harness_and_issues_turn() {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let role_cache = CardRoleCache::new();
+        let wave_cove_cache = WaveCoveCache::new();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "workspace replay".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "workspace replay".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        wave_cove_cache.insert(wave.id.clone(), cove.id.clone());
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let spec_card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "spec_harness": true}),
+            },
+            CardRole::Spec,
+            false,
+            &role_cache,
+        )
+        .await
+        .unwrap();
+        let worker_card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1}),
+            },
+            CardRole::Worker,
+            true,
+            &role_cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let lease_id = "lease-replay".to_string();
+        let workspace_path = "/tmp/workspace-replay".to_string();
+        let workspace_event = Event::WorkspaceLeased {
+            wave_id: wave.id.clone(),
+            card_id: worker_card.id.clone(),
+            lease_id: lease_id.clone(),
+            path: workspace_path.clone(),
+        };
+        let scope = EventScope::Card {
+            card: worker_card.id.clone(),
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        };
+        let mut tx = repo.pool().begin().await.unwrap();
+        let event_id = append_decision_event_in_tx(
+            &mut tx,
+            &PermissiveGate,
+            &ActorId::KernelDispatcher,
+            &scope,
+            None,
+            &workspace_event,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let runtime_id = new_id();
+        let thread_id = "thread-workspace-recovered".to_string();
+        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+        snapshot.phase = HarnessPhaseTag::Idle;
+        snapshot.last_thread_id = Some(thread_id.clone());
+        let mut tx = repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: runtime_id.clone(),
+                card_id: spec_card.id.to_string(),
+                kind: WorkerSessionKind::SharedSpec,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.clone()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        replay_harness_events_since(
+            repo.clone(),
+            spec_card.id.as_str(),
+            &wave.id,
+            0,
+            &mut snapshot,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            snapshot.pending_queue,
+            vec![Observation::WorkspaceLeased {
+                wave_id: wave.id.clone(),
+                card_id: worker_card.id.clone(),
+                lease_id: lease_id.clone(),
+                path: workspace_path.clone(),
+            }]
+        );
+        assert_eq!(snapshot.pending_envelope_ids, vec![Some(event_id)]);
+        assert_eq!(snapshot.push_watermark, event_id);
+        assert!(
+            !snapshot.pending_queue[0].is_hard_fire(),
+            "workspace observations must remain soft-fire"
+        );
+
+        let runtime = repo
+            .session_projection_by_id(&runtime_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let stored: HarnessSnapshot =
+            serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
+        assert_eq!(stored.pending_queue, snapshot.pending_queue);
+        assert_eq!(stored.pending_envelope_ids, vec![Some(event_id)]);
+        assert_eq!(stored.push_watermark, event_id);
+
+        let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+        let registry = HarnessRegistry::new();
+        let handle = spawn_recovered_harness(
+            repo.clone(),
+            EventBus::new(),
+            role_cache,
+            wave_cove_cache,
+            daemon.clone(),
+            &registry,
+            runtime,
+        )
+        .await
+        .unwrap()
+        .expect("recovered harness");
+        assert!(registry.get(&runtime_id).is_some());
+
+        tokio::time::timeout(Duration::from_millis(750), async {
+            loop {
+                if daemon.turn_start_count_for_test() > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("recovered workspace lease backlog should issue a turn");
+        assert_eq!(daemon.turn_start_count_for_test(), 1);
+
+        let after_issue = handle.snapshot().await;
+        assert!(after_issue.pending_queue.is_empty());
+        assert!(after_issue.pending_envelope_ids.is_empty());
+        assert_eq!(after_issue.push_watermark, event_id);
+        assert_eq!(
+            after_issue.last_thread_id.as_deref(),
+            Some(thread_id.as_str())
+        );
+
+        handle.shutdown().await.unwrap();
+    }
 }
