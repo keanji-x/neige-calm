@@ -23,7 +23,7 @@ use calm_server::operation::{
     OperationResult, OperationRuntime, ParkedRecovery, Phase, RecoveryItem, RecoveryMode,
     SpawnArtifacts, SpawnCtx, SpawnOutcome, SqlxOperationRepo, TxOutput,
 };
-use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
+use calm_server::proc_identity::{read_boot_id, read_proc_start_time, signal_process_group};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::DaemonClient;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -258,6 +258,27 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
     );
 }
 
+fn write_killable_action(path: &Path) {
+    write_script(
+        path,
+        r#"#!/bin/sh
+: > "$1"
+while true; do sleep 0.02; done
+"#,
+    );
+}
+
+fn write_finish_action(path: &Path) {
+    write_script(
+        path,
+        r#"#!/bin/sh
+: > "$1"
+while [ ! -f "$2" ]; do sleep 0.02; done
+printf '%s\n' '{"oid":"action-merge","headRefOid":"action-head"}'
+"#,
+    );
+}
+
 async fn spawn_live_counter_action(
     action: &Path,
     counter: &Path,
@@ -449,6 +470,26 @@ async fn spawn_observer_after_parking(
     Ok(tokio::spawn(observer))
 }
 
+async fn spawn_parked_observer(
+    boot: &TestBoot,
+    idem: &str,
+    payload: Value,
+) -> CalmResult<(String, tokio::task::JoinHandle<()>)> {
+    let (op_id, op, output) = claimed_spawn_started_forge_op(boot, idem, payload).await?;
+    let adapter = ForgeActionAdapter::new();
+    let SpawnOutcome::Parked {
+        deadline_ms,
+        observer,
+    } = adapter
+        .spawn_side_effect(&output, &op, &boot.spawn_ctx)
+        .await?
+    else {
+        panic!("forge action must park");
+    };
+    let observer = spawn_observer_after_parking(boot, &op, deadline_ms, observer).await?;
+    Ok((op_id, observer))
+}
+
 #[tokio::test]
 async fn forge_action_rejects_relative_result_path() -> CalmResult<()> {
     let boot = TestBoot::new().await;
@@ -562,6 +603,49 @@ async fn forge_action_rejects_unsupported_forge_event_kind() -> CalmResult<()> {
 }
 
 #[tokio::test]
+async fn forge_action_rejects_missing_required_event_output_field_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("missing-required-field-action.sh");
+    let counter = boot.temp_path("missing-required-field-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
+"#,
+    );
+    let idem = "forge-missing-required-output-field";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("missing-required-field-result.json"),
+    );
+    payload["event_spec"]["fields"]
+        .as_object_mut()
+        .expect("event_spec.fields object")
+        .remove("merge_sha");
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("missing required output field must be rejected");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action event_spec for `forge.pr.merged` must populate field `merge_sha`"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
 async fn forge_action_idempotency_on_resubmit_collapses_to_one_operation() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("instant-action.sh");
@@ -594,6 +678,151 @@ async fn forge_action_idempotency_on_resubmit_collapses_to_one_operation() -> Ca
         .fetch_one(boot.repo.pool())
         .await?;
     assert_eq!(count, 1);
+    Ok(())
+}
+
+async fn assert_killed_observer_resolution(
+    idem: &str,
+    probe_verdict: Option<i32>,
+) -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path(&format!("{idem}-action.sh"));
+    let started = boot.temp_path(&format!("{idem}-started"));
+    let probe = boot.temp_path(&format!("{idem}-probe.sh"));
+    write_killable_action(&action);
+    let payload = if let Some(verdict) = probe_verdict {
+        write_probe(&probe, "killed-probe-merge", "killed-probe-head", verdict);
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![action.display().to_string(), started.display().to_string()],
+            boot.temp_path(&format!("{idem}-result.json")),
+            Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
+        )
+    } else {
+        payload(
+            &boot,
+            idem,
+            vec![action.display().to_string(), started.display().to_string()],
+            boot.temp_path(&format!("{idem}-result.json")),
+        )
+    };
+    let (op_id, observer) = spawn_parked_observer(&boot, idem, payload).await?;
+    wait_for_file(&started).await;
+    let parked = boot
+        .operation_repo
+        .get_operation(&op_id)
+        .await?
+        .expect("parked op exists");
+    let artifacts = parked.spawn_artifacts.expect("spawn artifacts recorded");
+    assert!(signal_process_group(artifacts.pgid, libc::SIGKILL));
+    observer.await.expect("observer joins");
+    let result = wait_for_operation_result(&boot, &op_id).await;
+
+    match probe_verdict {
+        Some(0) => {
+            assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+            let event = latest_forge_event_payload(&boot.repo).await;
+            assert_eq!(event["merge_sha"], json!("killed-probe-merge"));
+            assert_eq!(event["head_sha"], json!("killed-probe-head"));
+        }
+        Some(1) => {
+            assert!(
+                matches!(
+                    result.outcome,
+                    OperationOutcome::Failed {
+                        ref last_error,
+                        from_phase: calm_server::operation::PhaseTag::Parked,
+                        last_error_class: Some(ref class),
+                    } if last_error == "forge action process dead and probe reports not landed"
+                        && class == "action-not-landed"
+                ),
+                "{:?}",
+                result.outcome
+            );
+            assert_eq!(forge_event_count(&boot.repo).await, 0);
+        }
+        None => {
+            assert!(
+                matches!(
+                    result.outcome,
+                    OperationOutcome::Failed {
+                        ref last_error,
+                        from_phase: calm_server::operation::PhaseTag::Parked,
+                        last_error_class: Some(ref class),
+                    } if last_error
+                        == "gate-infra: forge wrapper killed by signal; no probe to resolve outcome"
+                        && class == "gate-infra"
+                ),
+                "{:?}",
+                result.outcome
+            );
+            assert_eq!(forge_event_count(&boot.repo).await, 0);
+        }
+        other => panic!("unexpected probe verdict {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_observer_killed_by_signal_resolves_via_probe() -> CalmResult<()> {
+    assert_killed_observer_resolution("forge-killed-probe-landed", Some(0)).await?;
+    assert_killed_observer_resolution("forge-killed-probe-not-landed", Some(1)).await?;
+    assert_killed_observer_resolution("forge-killed-no-probe", None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_observer_unreadable_result_resolves_via_probe() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("unreadable-result-action.sh");
+    let started = boot.temp_path("unreadable-result-started");
+    let finish = boot.temp_path("unreadable-result-finish");
+    let result_dir = boot.temp_path("unreadable-result-dir");
+    let result_path = result_dir.join("result.json");
+    let probe = boot.temp_path("unreadable-result-probe.sh");
+    write_finish_action(&action);
+    write_probe(&probe, "unreadable-probe-merge", "unreadable-probe-head", 0);
+
+    let idem = "forge-unreadable-result-probe";
+    let (op_id, observer) = spawn_parked_observer(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                started.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path,
+            Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
+        ),
+    )
+    .await?;
+    wait_for_file(&started).await;
+    let mut perms = fs::metadata(&result_dir)
+        .expect("result dir metadata")
+        .permissions();
+    perms.set_mode(0o500);
+    fs::set_permissions(&result_dir, perms).expect("make result dir unwritable");
+    fs::write(&finish, "").expect("release fake action");
+    observer.await.expect("observer joins");
+    let mut perms = fs::metadata(&result_dir)
+        .expect("result dir metadata")
+        .permissions();
+    perms.set_mode(0o700);
+    fs::set_permissions(&result_dir, perms).expect("restore result dir permissions");
+
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("unreadable-probe-merge"));
+    assert_eq!(event["head_sha"], json!("unreadable-probe-head"));
+
     Ok(())
 }
 
@@ -1093,7 +1322,7 @@ async fn forge_action_boot_live_reattach_completes_via_probe_and_no_probe_fails(
                 ref last_error,
                 from_phase: calm_server::operation::PhaseTag::Parked,
                 last_error_class: Some(ref class),
-            } if last_error == "forge action process dead with no probe; gate-infra"
+            } if last_error == "gate-infra: forge action process dead; no probe to resolve outcome"
                 && class == "gate-infra"
         ),
         "{:?}",

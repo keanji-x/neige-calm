@@ -260,6 +260,13 @@ fn forge_spec_needs_json(spec: &ForgeEventSpec) -> bool {
         .any(|source| matches!(source, FieldSource::JsonField { .. }))
 }
 
+fn required_output_fields(event_kind: &str) -> &'static [&'static str] {
+    match event_kind {
+        "forge.pr.merged" => &["head_sha", "merge_sha"],
+        _ => &[],
+    }
+}
+
 fn parse_json_stdout_if_needed(spec: &ForgeEventSpec, stdout: &str) -> Result<Option<Value>> {
     if !forge_spec_needs_json(spec) {
         return Ok(None);
@@ -304,6 +311,14 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             "forge-action event_kind `{}` is not a supported forge event kind",
             payload.event_spec.event_kind
         )));
+    }
+    for field in required_output_fields(&payload.event_spec.event_kind) {
+        if !payload.event_spec.fields.contains_key(*field) {
+            return Err(CalmError::BadRequest(format!(
+                "forge-action event_spec for `{}` must populate field `{}`",
+                payload.event_spec.event_kind, field
+            )));
+        }
     }
     if payload.cwd_lease.as_os_str().is_empty() {
         return Err(CalmError::BadRequest(
@@ -594,6 +609,60 @@ async fn complete_from_probe(
     }
 }
 
+/// Resolve an ambiguous post-release outcome. Once the go-token has been
+/// released, the probe is authoritative for whether the irreversible action
+/// landed; gate-infra is only terminal when no probe exists or the probe cannot
+/// produce a landed/not-landed verdict.
+async fn resolve_post_release_via_probe(
+    pool: &sqlx::SqlitePool,
+    completion: &OperationCompletionBus,
+    events: &EventBus,
+    op_id: &str,
+    frozen: &FrozenForge,
+    ambiguous_reason: &str,
+) {
+    let Some(probe) = frozen.probe.as_ref() else {
+        let _ = complete_forge_op_failed(
+            pool,
+            completion,
+            op_id,
+            format!("gate-infra: {ambiguous_reason}; no probe to resolve outcome"),
+            Some("gate-infra".into()),
+        )
+        .await;
+        return;
+    };
+
+    match complete_from_probe(pool, completion, events, op_id, frozen, probe).await {
+        Ok(ParkedRecovery::Fail { reason }) => {
+            let last_error_class = if reason.contains("gate-infra") {
+                "gate-infra"
+            } else {
+                "action-not-landed"
+            };
+            let _ = complete_forge_op_failed(
+                pool,
+                completion,
+                op_id,
+                reason,
+                Some(last_error_class.into()),
+            )
+            .await;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            let _ = complete_forge_op_failed(
+                pool,
+                completion,
+                op_id,
+                e.to_string(),
+                Some("gate-infra".into()),
+            )
+            .await;
+        }
+    }
+}
+
 #[async_trait]
 impl ProviderAdapter for ForgeActionAdapter {
     fn kind(&self) -> &'static str {
@@ -796,34 +865,47 @@ impl ProviderAdapter for ForgeActionAdapter {
                             }
                         }
                         Err(e) => {
-                            let _ = complete_forge_op_failed(
+                            tracing::warn!(
+                                op_id = %op_id,
+                                error = %e,
+                                "forge observer: result file unreadable after post-release wait"
+                            );
+                            resolve_post_release_via_probe(
                                 &pool,
                                 &completion,
+                                &events,
                                 &op_id,
-                                e.to_string(),
-                                Some("gate-infra".into()),
+                                &observer_frozen,
+                                "result file unreadable",
                             )
                             .await;
                         }
                     }
                 }
                 Ok(_) => {
-                    let _ = complete_forge_op_failed(
+                    resolve_post_release_via_probe(
                         &pool,
                         &completion,
+                        &events,
                         &op_id,
-                        "gate-infra: forge wrapper killed by signal".into(),
-                        Some("gate-infra".into()),
+                        &observer_frozen,
+                        "forge wrapper killed by signal",
                     )
                     .await;
                 }
                 Err(e) => {
-                    let _ = complete_forge_op_failed(
+                    tracing::warn!(
+                        op_id = %op_id,
+                        error = %e,
+                        "forge observer: wrapper wait failed"
+                    );
+                    resolve_post_release_via_probe(
                         &pool,
                         &completion,
+                        &events,
                         &op_id,
-                        format!("gate-infra: forge wrapper wait failed: {e}"),
-                        Some("gate-infra".into()),
+                        &observer_frozen,
+                        "wrapper wait failed",
                     )
                     .await;
                 }
@@ -857,7 +939,6 @@ impl ProviderAdapter for ForgeActionAdapter {
                     let events = ctx.events.clone();
                     let op_id = op.id.clone();
                     let artifacts = artifacts.clone();
-                    let probe = frozen.probe.clone();
                     tokio::spawn(async move {
                         loop {
                             if !verify_owned_pid(
@@ -869,54 +950,15 @@ impl ProviderAdapter for ForgeActionAdapter {
                             }
                             tokio::time::sleep(REATTACH_POLL).await;
                         }
-                        let Some(probe) = probe.as_ref() else {
-                            let _ = complete_forge_op_failed(
-                                &pool,
-                                &completion,
-                                &op_id,
-                                "forge action process dead with no probe; gate-infra".into(),
-                                Some("gate-infra".into()),
-                            )
-                            .await;
-                            return;
-                        };
-                        match complete_from_probe(
+                        resolve_post_release_via_probe(
                             &pool,
                             &completion,
                             &events,
                             &op_id,
                             &frozen,
-                            probe,
+                            "forge action process dead",
                         )
-                        .await
-                        {
-                            Ok(ParkedRecovery::Fail { reason }) => {
-                                let last_error_class = if reason.contains("gate-infra") {
-                                    "gate-infra"
-                                } else {
-                                    "action-not-landed"
-                                };
-                                let _ = complete_forge_op_failed(
-                                    &pool,
-                                    &completion,
-                                    &op_id,
-                                    reason,
-                                    Some(last_error_class.into()),
-                                )
-                                .await;
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                let _ = complete_forge_op_failed(
-                                    &pool,
-                                    &completion,
-                                    &op_id,
-                                    e.to_string(),
-                                    Some("gate-infra".into()),
-                                )
-                                .await;
-                            }
-                        }
+                        .await;
                     });
                     Ok(ParkedRecovery::LeaveParked)
                 }

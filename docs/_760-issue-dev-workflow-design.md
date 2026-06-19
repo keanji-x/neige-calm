@@ -564,7 +564,9 @@ spawn/park/recover skeleton, but with the forge-specific contract — NOT a line
    probe is truth for did-it-land, while `action-timeout` is for a still-ALIVE wedged action or a
    DEAD action with no probe configured. This
    is what makes "did my merge happen, and with what `merge_sha`?" answerable after a crash via a
-   side-effect-free probe.
+   side-effect-free probe. **Systemic invariant:** every ambiguous post-release outcome (killed
+   wrapper, unreadable result, wait error, deadline recovery) is resolved by the configured probe;
+   terminal gate-infra failure is only for no probe or an Unknown/inconclusive probe verdict.
 6. **`complete_forge_op_with_result` — CUSTOM atomic completion helper for ALL oracle actions (R4-2 +
    R4-3, C2 fix).** Modeled on `complete_gate_op_with_result` (`task_verify_adapter.rs:263`): ONE tx
    combining (a) `complete_parked_tx` (op `Parked→Succeeded/Failed`, `task_verify_adapter.rs:275`),
