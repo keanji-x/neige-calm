@@ -144,7 +144,7 @@ fn subject() -> ForgeMergeSubject {
 }
 
 fn payload(boot: &TestBoot, idem_key: &str, argv: Vec<String>, result_path: PathBuf) -> Value {
-    payload_with_probe(boot, idem_key, argv, result_path, None)
+    payload_with_probe(boot, idem_key, argv, result_path, None, None)
 }
 
 fn payload_with_probe(
@@ -153,6 +153,7 @@ fn payload_with_probe(
     argv: Vec<String>,
     result_path: PathBuf,
     probe_argv: Option<Vec<String>>,
+    output_probe_argv: Option<Vec<String>>,
 ) -> Value {
     serde_json::to_value(ForgeActionPayload {
         wave_id: boot.wave_id.clone(),
@@ -161,7 +162,10 @@ fn payload_with_probe(
         argv,
         idem_key: idem_key.into(),
         event_spec: event_spec(),
-        probe: probe_argv.map(|probe_argv| ProbeSpec { probe_argv }),
+        probe: probe_argv.map(|probe_argv| ProbeSpec {
+            probe_argv,
+            output_probe_argv,
+        }),
         cwd_lease: boot.cwd_lease(),
         result_path,
         deadline_ms: now_ms() + 30_000,
@@ -300,6 +304,23 @@ exit {verdict}
 "#,
         ),
     );
+}
+
+fn write_verdict_probe(path: &Path, verdict: i32, stdout: &str) {
+    write_script(
+        path,
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' '{}'
+exit {verdict}
+"#,
+            stdout.replace('\'', "'\\''")
+        ),
+    );
+}
+
+fn output_probe_argv(probe: &Path) -> Vec<String> {
+    vec![probe.display().to_string(), "--json".into()]
 }
 
 fn dead_artifacts() -> SpawnArtifacts {
@@ -449,6 +470,63 @@ async fn forge_action_rejects_relative_result_path() -> CalmResult<()> {
             err,
             CalmError::BadRequest(ref message)
                 if message == "forge-action result_path must be absolute"
+        ),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_json_probe_without_output_probe() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let adapter = ForgeActionAdapter::new();
+    let idem = "forge-missing-output-probe";
+    let payload = payload_with_probe(
+        &boot,
+        idem,
+        vec!["/bin/true".into()],
+        boot.temp_path("missing-output-probe-result.json"),
+        Some(vec!["/bin/true".into()]),
+        None,
+    );
+
+    let err = adapter
+        .validate(&payload)
+        .await
+        .expect_err("JsonField recovery probe must declare output_probe_argv");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action probe.output_probe_argv must be present when event_spec uses JsonField"
+        ),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_non_forge_event_kind() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let adapter = ForgeActionAdapter::new();
+    let idem = "forge-non-forge-event-kind";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec!["/bin/true".into()],
+        boot.temp_path("non-forge-event-kind-result.json"),
+    );
+    payload["event_spec"]["event_kind"] = json!("wave.deleted");
+
+    let err = adapter
+        .validate(&payload)
+        .await
+        .expect_err("non-forge event kind must be rejected");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action event_kind must be a forge.* kind"
         ),
         "{err:?}"
     );
@@ -720,6 +798,7 @@ async fn forge_action_boot_recovery_redrives_non_terminal_phases_and_probes_park
             ],
             boot.temp_path("parked-probe-result.json"),
             Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
         ),
         dead_artifacts(),
     )
@@ -829,6 +908,7 @@ async fn forge_action_boot_live_reattach_completes_via_probe_and_no_probe_fails(
             ],
             boot.temp_path("live-reattach-result.json"),
             Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
         ),
         artifacts,
     )
@@ -953,6 +1033,7 @@ async fn assert_dead_probe_failure(verdict: i32, expected_error: &str) -> CalmRe
             ],
             boot.temp_path(&format!("probe-fail-{verdict}-result.json")),
             Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
         ),
         dead_artifacts(),
     )
@@ -1005,9 +1086,11 @@ async fn forge_action_crash_then_probe_reextracts_probe_typed_output_fields() ->
     let sentinel = boot.temp_path("probe-reextract-sentinel");
     let finish = boot.temp_path("probe-reextract-finish");
     let result_path = boot.temp_path("probe-reextract-result.json");
-    let probe = boot.temp_path("probe-reextract.sh");
+    let verdict_probe = boot.temp_path("probe-reextract-verdict.sh");
+    let output_probe = boot.temp_path("probe-reextract-output.sh");
     write_counter_action(&action);
-    write_probe(&probe, "probe-sha", "probe-head", 0);
+    write_verdict_probe(&verdict_probe, 0, "true");
+    write_probe(&output_probe, "output-probe-sha", "output-probe-head", 0);
 
     let idem = "forge-probe-reextract";
     let op_id = seed_parked_forge_op(
@@ -1023,7 +1106,14 @@ async fn forge_action_crash_then_probe_reextracts_probe_typed_output_fields() ->
                 finish.display().to_string(),
             ],
             result_path,
-            Some(vec![probe.display().to_string()]),
+            Some(vec![
+                verdict_probe.display().to_string(),
+                "--json".into(),
+                "state".into(),
+                "-q".into(),
+                ".state==\"MERGED\"".into(),
+            ]),
+            Some(output_probe_argv(&output_probe)),
         ),
         dead_artifacts(),
     )
@@ -1039,8 +1129,8 @@ async fn forge_action_crash_then_probe_reextracts_probe_typed_output_fields() ->
     assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
 
     let event = latest_forge_event_payload(&boot.repo).await;
-    assert_eq!(event["merge_sha"], json!("probe-sha"));
-    assert_eq!(event["head_sha"], json!("probe-head"));
+    assert_eq!(event["merge_sha"], json!("output-probe-sha"));
+    assert_eq!(event["head_sha"], json!("output-probe-head"));
     assert_eq!(event["wave_id"], json!(boot.wave_id));
     assert_eq!(event["subject"], serde_json::to_value(subject())?);
     assert_eq!(
@@ -1079,6 +1169,7 @@ async fn forge_action_dead_past_deadline_uses_probe_and_no_probe_times_out() -> 
             ],
             boot.temp_path("past-deadline-probe-result.json"),
             Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
         ),
         dead_artifacts(),
         now_ms() - 1,

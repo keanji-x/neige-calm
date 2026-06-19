@@ -65,6 +65,8 @@ pub struct ForgeActionPayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProbeSpec {
     pub probe_argv: Vec<String>,
+    #[serde(default)]
+    pub output_probe_argv: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -291,6 +293,11 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             "forge-action event_spec.event_kind must not be empty".into(),
         ));
     }
+    if !payload.event_spec.event_kind.starts_with("forge.") {
+        return Err(CalmError::BadRequest(
+            "forge-action event_kind must be a forge.* kind".into(),
+        ));
+    }
     if payload.cwd_lease.as_os_str().is_empty() {
         return Err(CalmError::BadRequest(
             "forge-action cwd_lease must not be empty".into(),
@@ -322,6 +329,21 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
         return Err(CalmError::BadRequest(
             "forge-action probe.probe_argv must not be empty".into(),
         ));
+    }
+    if let Some(probe) = payload.probe.as_ref() {
+        if let Some(output_probe_argv) = probe.output_probe_argv.as_ref()
+            && output_probe_argv.is_empty()
+        {
+            return Err(CalmError::BadRequest(
+                "forge-action probe.output_probe_argv must not be empty".into(),
+            ));
+        }
+        if forge_spec_needs_json(&payload.event_spec) && probe.output_probe_argv.is_none() {
+            return Err(CalmError::BadRequest(
+                "forge-action probe.output_probe_argv must be present when event_spec uses JsonField"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -487,14 +509,6 @@ fn verdict_from_exit_code(exit_code: Option<i32>) -> ProbeVerdict {
     }
 }
 
-fn probe_argv_with_json(probe: &ProbeSpec) -> Vec<String> {
-    let mut argv = probe.probe_argv.clone();
-    if !argv.iter().any(|arg| arg == "--json") {
-        argv.push("--json".into());
-    }
-    argv
-}
-
 async fn run_probe(argv: &[String], cwd: &Path) -> Result<(Option<i32>, String)> {
     if argv.is_empty() {
         return Err(CalmError::Internal(
@@ -535,11 +549,25 @@ async fn complete_from_probe(
     match verdict_from_exit_code(exit_code) {
         ProbeVerdict::Landed => {
             let stdout = if forge_spec_needs_json(&frozen.event_spec) {
-                match run_probe(&probe_argv_with_json(probe), &frozen.cwd_lease).await {
-                    Ok((_, stdout)) => stdout,
+                let Some(output_probe_argv) = probe.output_probe_argv.as_ref() else {
+                    return Ok(ParkedRecovery::Fail {
+                        reason:
+                            "forge action output probe missing for JSON re-extraction; gate-infra"
+                                .into(),
+                    });
+                };
+                match run_probe(output_probe_argv, &frozen.cwd_lease).await {
+                    Ok((Some(0), stdout)) => stdout,
+                    Ok((exit_code, _)) => {
+                        return Ok(ParkedRecovery::Fail {
+                            reason: format!(
+                                "forge action output probe failed with exit code {exit_code:?}; gate-infra"
+                            ),
+                        });
+                    }
                     Err(e) => {
                         return Ok(ParkedRecovery::Fail {
-                            reason: format!("forge action probe --json failed; gate-infra: {e}"),
+                            reason: format!("forge action output probe failed; gate-infra: {e}"),
                         });
                     }
                 }
