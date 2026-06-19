@@ -32,6 +32,8 @@ const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
 const EXPOSED_NAME: &str = "plugin.dev.echo.do.thing";
 const SECRET_NAME: &str = "plugin.dev.echo.secret";
+const STOPPED_COLLIDING_PLUGIN_ID: &str = "dev";
+const STOPPED_COLLIDING_TOOL_NAME: &str = "echo.do.thing";
 
 struct Fixture {
     _server: Arc<McpServer>,
@@ -56,9 +58,26 @@ async fn worker_mcp_discovers_and_routes_declared_dotted_plugin_tools_only() {
         names.iter().any(|name| name == EXPOSED_NAME),
         "declared plugin tool missing from tools/list: {names:?}"
     );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.as_str() == EXPOSED_NAME)
+            .count(),
+        1,
+        "stopped prefix-colliding manifest must not duplicate tools/list entries: {names:?}"
+    );
     assert!(
         !names.iter().any(|name| name == SECRET_NAME),
         "undeclared plugin tool leaked into tools/list: {names:?}"
+    );
+    let running_ids = fx.plugin_host.running_plugin_ids().await;
+    assert!(
+        running_ids.contains(PLUGIN_ID),
+        "fixture must have the dotted plugin running: {running_ids:?}"
+    );
+    assert!(
+        !running_ids.contains(STOPPED_COLLIDING_PLUGIN_ID),
+        "fixture must leave the prefix-colliding plugin stopped: {running_ids:?}"
     );
 
     send_frame(
@@ -285,6 +304,23 @@ async fn boot_plugin_host(
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
     let registry = PluginRegistry::empty();
     registry.insert(manifest, Some(install_dir.clone()));
+    let stopped_colliding_manifest_json = json!({
+        "manifest_version": 1,
+        "id": STOPPED_COLLIDING_PLUGIN_ID,
+        "version": "0.1.0",
+        "min_kernel_version": "0.0.1",
+        "display_name": "Stopped prefix collision",
+        "entrypoint": {
+            "command": "bin/stub"
+        },
+        "exposes_tools": [
+            { "name": STOPPED_COLLIDING_TOOL_NAME, "description": "would collide if routable" }
+        ],
+        "permissions": {}
+    });
+    let stopped_colliding_manifest: Manifest =
+        Manifest::parse(&stopped_colliding_manifest_json.to_string()).expect("manifest parses");
+    registry.insert(stopped_colliding_manifest, None);
 
     repo.plugin_install(NewPlugin {
         id: PLUGIN_ID.into(),

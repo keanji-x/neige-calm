@@ -47,6 +47,7 @@ use crate::state::WriteContext;
 use calm_truth::wave_vcs_repo::SqlxWaveVcsRepo;
 use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -594,7 +595,11 @@ async fn dispatch_plugin_tools_call(
     arguments: Value,
     connection_identity: &ConnectionIdentity,
 ) -> Result<Value, RpcError> {
-    let Some((plugin_host, plugin_id, tool_name)) = plugin_tool_route(ctx, name)? else {
+    let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
+        return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
+    };
+    let running_ids = plugin_host.running_plugin_ids().await;
+    let Some((plugin_id, tool_name)) = plugin_tool_route(&plugin_host, name, &running_ids)? else {
         return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
     };
 
@@ -610,12 +615,10 @@ async fn dispatch_plugin_tools_call(
 }
 
 fn plugin_tool_route(
-    ctx: &Arc<AppContext>,
+    plugin_host: &Arc<crate::plugin_host::PluginHost>,
     name: &str,
-) -> Result<Option<(Arc<crate::plugin_host::PluginHost>, String, String)>, RpcError> {
-    let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
-        return Ok(None);
-    };
+    running_ids: &BTreeSet<String>,
+) -> Result<Option<(String, String)>, RpcError> {
     let Some(rest) = name.strip_prefix("plugin.") else {
         return Ok(None);
     };
@@ -623,6 +626,9 @@ fn plugin_tool_route(
     let mut candidates = Vec::new();
     for manifest in plugin_host.registry().list() {
         let plugin_id = manifest.id;
+        if !running_ids.contains(&plugin_id) {
+            continue;
+        }
         let prefix = format!("{plugin_id}.");
         if let Some(tool_name) = rest.strip_prefix(&prefix)
             && manifest
@@ -638,7 +644,7 @@ fn plugin_tool_route(
         0 => Ok(None),
         1 => {
             let (plugin_id, tool_name) = candidates.remove(0);
-            Ok(Some((plugin_host, plugin_id, tool_name)))
+            Ok(Some((plugin_id, tool_name)))
         }
         _ => {
             let mut matches = candidates
