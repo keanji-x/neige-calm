@@ -605,16 +605,18 @@ fn plugin_tool_route(
     name: &str,
 ) -> Option<(Arc<crate::plugin_host::PluginHost>, String, String)> {
     let plugin_host = ctx.plugin_host.get()?.clone();
-    let (plugin_id, tool_name) = name.strip_prefix("plugin.")?.rsplit_once('.')?;
-    let manifest = plugin_host.registry().get(plugin_id)?;
-    if !manifest
-        .exposes_tools
-        .iter()
-        .any(|entry| entry.name == tool_name)
-    {
-        return None;
+    let rest = name.strip_prefix("plugin.")?;
+    for manifest in plugin_host.registry().list() {
+        if let Some(tool_name) = rest.strip_prefix(&format!("{}.", manifest.id))
+            && manifest
+                .exposes_tools
+                .iter()
+                .any(|entry| entry.name == tool_name)
+        {
+            return Some((plugin_host, manifest.id, tool_name.to_string()));
+        }
     }
-    Some((plugin_host, plugin_id.to_string(), tool_name.to_string()))
+    None
 }
 
 async fn card_bound_tool_identity(
