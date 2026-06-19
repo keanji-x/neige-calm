@@ -2191,6 +2191,10 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         // They are persisted and replayable, but they do not change the
         // wave filesystem projection in this slice.
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => {}
+        // Issue #760 slice 6: forge merge completion is operational
+        // history for the action adapter. No wave-fs projection consumes it
+        // in this pass.
+        Event::ForgePrMerged { .. } => {}
     }
     delta
 }
