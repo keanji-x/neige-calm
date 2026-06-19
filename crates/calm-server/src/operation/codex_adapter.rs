@@ -174,7 +174,7 @@ pub struct CodexWorkerOperationPayload {
     pub goal: String,
     /// Preserved from the task row for payload-hash determinism; the
     /// workspace lease path created in `prepare_tx` is the worker cwd.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default)]
     pub context: Value,
@@ -1771,6 +1771,36 @@ mod tests {
             acceptance_criteria: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
+        let payload = CodexWorkerOperationPayload {
+            actor: ActorId::KernelDispatcher,
+            wave_id: "wave-hash".into(),
+            idempotency_key: "wave-hash:task-a".into(),
+            goal: "do task-a".into(),
+            cwd: None,
+            context: json!({ "from": "legacy" }),
+            acceptance_criteria: None,
+        };
+        let serialized = serde_json::to_value(&payload).unwrap();
+        assert!(
+            !serialized.as_object().unwrap().contains_key("cwd"),
+            "None cwd must serialize as absent for pre-upgrade hash parity"
+        );
+
+        let legacy_without_cwd = json!({
+            "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
+            "wave_id": "wave-hash",
+            "idempotency_key": "wave-hash:task-a",
+            "goal": "do task-a",
+            "context": { "from": "legacy" },
+        });
+        assert_eq!(
+            crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
+            crate::routes::terminal_cards::stable_payload_hash(&legacy_without_cwd).unwrap()
+        );
     }
 
     fn worker_op(id: &str, payload: Value) -> Operation {

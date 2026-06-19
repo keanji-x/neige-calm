@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{io, path::Path};
 
 use sqlx::{Row, SqlitePool};
 
@@ -8,10 +8,10 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::{new_id, now_ms};
-use crate::proc_identity::{read_boot_id, verify_owned_pid};
+use crate::proc_identity::read_boot_id;
 use calm_truth::decision_gate::PermissiveGate;
 
-use super::{SpawnArtifacts, TimestampMs, Tx};
+use super::{TimestampMs, Tx};
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceLease {
@@ -20,6 +20,7 @@ pub(crate) struct WorkspaceLease {
     pub wave_id: String,
     pub path: String,
     pub state: String,
+    pub boot_id: Option<String>,
 }
 
 pub(crate) async fn acquire_workspace_lease_tx(
@@ -79,6 +80,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
         wave_id: wave_id.to_string(),
         path,
         state: "held".into(),
+        boot_id,
     };
     Ok((
         lease,
@@ -124,10 +126,18 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
     events: &EventBus,
 ) -> Result<usize> {
     let leases = active_workspace_leases(pool).await?;
+    let current_boot_id = read_boot_id();
     let mut reclaimed = 0;
     for lease in leases {
         if lease.state == "held" {
-            if workspace_lease_owner_alive(pool, &lease).await? {
+            // Codex workers are daemon-resident threads, so operation
+            // spawn_artifacts are not a liveness oracle. Boot reclaim only
+            // takes leases from older machine boots; same-boot dead workers
+            // flow through the reaper -> TaskFailed -> decision-sink release
+            // path, while recoverable operations keep their cwd for recovery.
+            if !workspace_lease_should_reclaim_on_boot(pool, &lease, current_boot_id.as_deref())
+                .await?
+            {
                 continue;
             }
             let mut tx = begin_immediate_tx(pool).await?;
@@ -218,7 +228,7 @@ async fn mark_workspace_lease_releasing_for_card_repo(
         let card_id = card_id.clone();
         Box::pin(async move {
             let row = sqlx::query(
-                r#"SELECT lease_id, card_id, wave_id, path, state
+                r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
                    FROM workspace_leases
                    WHERE card_id = ?1
                      AND state IN ('held','releasing')
@@ -321,7 +331,7 @@ async fn workspace_lease_by_id(
     lease_id: &str,
 ) -> Result<Option<WorkspaceLease>> {
     let row = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path, state
+        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
            FROM workspace_leases
            WHERE lease_id = ?1
              AND state IN ('held','releasing')"#,
@@ -334,7 +344,7 @@ async fn workspace_lease_by_id(
 
 async fn active_workspace_leases(pool: &SqlitePool) -> Result<Vec<WorkspaceLease>> {
     let rows = sqlx::query(
-        r#"SELECT lease_id, card_id, wave_id, path, state
+        r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
            FROM workspace_leases
            WHERE state IN ('held','releasing')
            ORDER BY created_at_ms ASC, lease_id ASC"#,
@@ -351,13 +361,17 @@ fn row_to_workspace_lease(row: sqlx::sqlite::SqliteRow) -> Result<WorkspaceLease
         wave_id: row.try_get("wave_id")?,
         path: row.try_get("path")?,
         state: row.try_get("state")?,
+        boot_id: row.try_get("boot_id")?,
     })
 }
 
-async fn workspace_lease_owner_alive(pool: &SqlitePool, lease: &WorkspaceLease) -> Result<bool> {
+async fn workspace_lease_should_reclaim_on_boot(
+    pool: &SqlitePool,
+    lease: &WorkspaceLease,
+    current_boot_id: Option<&str>,
+) -> Result<bool> {
     let row = sqlx::query(
-        r#"SELECT o.phase AS owner_phase,
-                  o.spawn_artifacts_json AS spawn_artifacts_json
+        r#"SELECT o.phase AS owner_phase
            FROM workspace_leases wl
            LEFT JOIN operations o ON o.id = wl.lease_owner
            WHERE wl.lease_id = ?1
@@ -374,31 +388,11 @@ async fn workspace_lease_owner_alive(pool: &SqlitePool, lease: &WorkspaceLease) 
         .as_deref()
         .is_some_and(operation_phase_is_recoverable)
     {
-        // A dead in-boot worker with a non-terminal operation is handled by
-        // the operation/reaper path (#741), which drives TaskFailed and then
-        // releases through the normal decision sink.
-        return Ok(true);
-    }
-    let spawn_artifacts_text: Option<String> = row.try_get("spawn_artifacts_json")?;
-    let Some(spawn_artifacts) = spawn_artifacts_text.as_deref().and_then(|text| {
-        match serde_json::from_str::<SpawnArtifacts>(text) {
-            Ok(artifacts) => Some(artifacts),
-            Err(e) => {
-                tracing::warn!(
-                    lease_id = %lease.lease_id,
-                    error = %e,
-                    "workspace lease owner has invalid spawn_artifacts_json"
-                );
-                None
-            }
-        }
-    }) else {
         return Ok(false);
-    };
-    Ok(verify_owned_pid(
-        spawn_artifacts.pid,
-        spawn_artifacts.start_time,
-        &spawn_artifacts.boot_id,
+    }
+    Ok(matches!(
+        (lease.boot_id.as_deref(), current_boot_id),
+        (Some(lease_boot), Some(current_boot)) if lease_boot != current_boot
     ))
 }
 
@@ -417,15 +411,14 @@ fn operation_phase_is_recoverable(phase: &str) -> bool {
 
 fn remove_workspace_dir_if_exists(path: &str) -> Result<()> {
     let path = Path::new(path);
-    if !path.exists() {
-        return Ok(());
-    }
-    std::fs::remove_dir_all(path).map_err(|e| {
-        CalmError::Internal(format!(
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(CalmError::Internal(format!(
             "remove workspace lease directory {}: {e}",
             path.display()
-        ))
-    })
+        ))),
+    }
 }
 
 pub(crate) fn workspace_lease_path_for(wave_id: &str, card_id: &str) -> Result<String> {
@@ -449,3 +442,18 @@ fn validate_path_segment(label: &str, value: &str) -> Result<()> {
 }
 
 const WORKSPACE_LEASE_MS: TimestampMs = 60_000;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_workspace_dir_if_exists_treats_missing_as_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("already-gone");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::remove_dir_all(&path).unwrap();
+
+        remove_workspace_dir_if_exists(path.to_str().unwrap()).unwrap();
+    }
+}
