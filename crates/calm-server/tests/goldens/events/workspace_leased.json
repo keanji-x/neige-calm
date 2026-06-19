@@ -1,0 +1,12 @@
+{
+  "description": "workspace.leased carries the durable lease id, card/wave routing ids, and the leased cwd path",
+  "wire": {
+    "ev": "workspace.leased",
+    "data": {
+      "wave_id": "wave-01",
+      "card_id": "card-01",
+      "lease_id": "lease-01",
+      "path": ".claude/worktrees/wave-01/card-01"
+    }
+  }
+}

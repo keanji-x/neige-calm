@@ -528,6 +528,14 @@ pub async fn commit_events_with_author_in_tx(
     {
         return Ok(None);
     }
+    if events.iter().all(|event| {
+        matches!(
+            event,
+            Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. }
+        )
+    }) {
+        return Ok(None);
+    }
 
     let now = now_ms();
     let mut delta = PathDelta::default();
@@ -2179,6 +2187,10 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         // tracked bytes today. Re-add a run-key dirty arm here when the
         // runs projection starts consuming `task.gate_result`.
         Event::TaskGateResult { .. } => {}
+        // Issue #760 slice 1: workspace leases are operational history.
+        // They are persisted and replayable, but they do not change the
+        // wave filesystem projection in this slice.
+        Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => {}
     }
     delta
 }

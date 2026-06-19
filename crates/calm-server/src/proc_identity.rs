@@ -95,6 +95,7 @@ pub fn read_boot_id() -> Option<String> {
 }
 
 /// Non-Linux stub for [`read_boot_id`].
+/// Acceptable for the current Linux deployment target; off-Linux cross-boot reclaim is a no-op.
 #[cfg(not(target_os = "linux"))]
 pub fn read_boot_id() -> Option<String> {
     None

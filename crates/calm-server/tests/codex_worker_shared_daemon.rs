@@ -470,6 +470,7 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
                 wave_id: wave_id.to_string(),
                 idempotency_key: idem.to_string(),
                 goal: "recover without duplicate worker".into(),
+                cwd: None,
                 context: json!({"from": "spawn-started-recovery"}),
                 acceptance_criteria: None,
             })
@@ -590,6 +591,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         wave_id: wave_id.to_string(),
         idempotency_key: idem.to_string(),
         goal: "recover and compensate with persisted turn".into(),
+        cwd: None,
         context: json!({"from": "spawn-started-compensation-recovery"}),
         acceptance_criteria: None,
     })
@@ -698,18 +700,24 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         )
         .await
         .unwrap();
-    assert_eq!(compensation.steps.len(), 1);
+    assert_eq!(compensation.steps.len(), 2);
+    assert_eq!(compensation.steps[0].op, "release_workspace_lease");
+    assert_eq!(compensation.steps[1].op, "cleanup_codex_worker");
     assert_eq!(
-        compensation.steps[0].args["card_id"].as_str(),
+        compensation.steps[1].args["card_id"].as_str(),
         Some(card_id.as_str())
     );
     assert_eq!(
-        compensation.steps[0].args["terminal_id"].as_str(),
+        compensation.steps[1].args["terminal_id"].as_str(),
         Some(terminal_id.as_str())
     );
 
     recovered_adapter
         .compensate_step(&compensation.steps[0], &output, &op, &spawn_ctx)
+        .await
+        .unwrap();
+    recovered_adapter
+        .compensate_step(&compensation.steps[1], &output, &op, &spawn_ctx)
         .await
         .unwrap();
     assert!(

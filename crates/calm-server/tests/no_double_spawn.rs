@@ -2844,6 +2844,7 @@ fn codex_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {
         wave_id: wave_id.to_string(),
         idempotency_key: idempotency_key.to_string(),
         goal: "recover completed codex worker".into(),
+        cwd: None,
         context: json!({ "from": "no-double-spawn" }),
         acceptance_criteria: None,
     })
