@@ -482,6 +482,8 @@ spawn/park/recover skeleton, but with the forge-specific contract — NOT a line
      bounded extractor grammar is slice ⑥'s deliverable, reviewed at impl** (a design doc converges
      on the contract; the grammar's precise shape — field-path syntax, missing-field handling, type
      coercion — is implementation+review scope).
+     A positional RFC-6901 pointer such as `/commits/0/oid` is an intentional in-grammar named-path
+     read, not "array logic".
    - **`ProbeSpec` is `{ probe_argv: Vec<String> }`** — its **exit code** is the did-it-land signal
      (probe exits 0 ⇒ landed); where the typed event needs OUTPUTS after a crash, the probe's
      `--json` output is re-run through the SAME bounded extractor. **There is NO predicate-over-JSON
@@ -558,9 +560,13 @@ spawn/park/recover skeleton, but with the forge-specific contract — NOT a line
    typed event the live path would have. `recover_parked` receives a `SpawnCtx`
    (`operation/mod.rs:596-611`), so shelling the probe during recovery is contract-legal. Boot mode
    spawns a reattach observer that polls until dead then re-reads the probe (borrowing
-   `task_verify_adapter.rs:1077-1099`); `PastDeadline` returns `Fail{reason: action-timeout}`. This
+   `task_verify_adapter.rs:1077-1099`); past deadline, a DEAD action is still probed because the
+   probe is truth for did-it-land, while `action-timeout` is for a still-ALIVE wedged action or a
+   DEAD action with no probe configured. This
    is what makes "did my merge happen, and with what `merge_sha`?" answerable after a crash via a
-   side-effect-free probe.
+   side-effect-free probe. **Systemic invariant:** every ambiguous post-release outcome (killed
+   wrapper, unreadable result, wait error, deadline recovery) is resolved by the configured probe;
+   terminal gate-infra failure is only for no probe or an Unknown/inconclusive probe verdict.
 6. **`complete_forge_op_with_result` — CUSTOM atomic completion helper for ALL oracle actions (R4-2 +
    R4-3, C2 fix).** Modeled on `complete_gate_op_with_result` (`task_verify_adapter.rs:263`): ONE tx
    combining (a) `complete_parked_tx` (op `Parked→Succeeded/Failed`, `task_verify_adapter.rs:275`),
@@ -654,9 +660,12 @@ liveness judgment, which is the kernel, not the plugin.
   `tx: Option<&mut Tx>` to `compensate_step` (touches all adapters) so the lease row flip + fs
   removal commit together; **(ii)** make the fs removal idempotent ("remove if exists") and flip the
   lease row in a follow-up `complete`-style tx. v2 picks **(i)** for worktrees specifically because
-  a half-removed worktree with a still-`held` lease would block budget>1 re-claims — the tx bundle
-  is worth the cross-adapter signature change, and it is scoped into the
-  forge-actions-as-operations slice (§4 slice ⑥).
+  a half-removed worktree with a still-`held` lease would block budget>1 re-claims — but the
+  tx-param extension is **DEFERRED to slice ③**, where `git worktree remove` needs the fs+lease
+  bundle. **Resolved slice ⑥ design:** the forge action **runs in a provided `cwd_lease`** owned by
+  the worker card; it does **not** self-acquire a lease, so there is no forge-owned lease to release
+  (no leak and no unique-path collision with the worker's lease). No cross-adapter signature change
+  was needed in ⑥.
 - **Orphan reclaim on restart.** `recover_on_boot()` (`operation/driver.rs:240`, N-5) already
   reattaches abandoned ops; the lease recovery hook (using `recover_parked(.., Boot)` semantics,
   which **ignores lease TTL** to reattach crashed-process leases — `claim_parked_for_boot` at
@@ -1091,10 +1100,9 @@ check** (a test of its own deliverable), and the rows it unblocks are listed sep
   (round-4 R4-1/2/3 — NOT a naive `TaskVerifyAdapter` copy): idempotency key from frozen domain rows,
   `prepare_tx` freezing argv + `event_spec` + `probe_argv`, **held-handshake `spawn_side_effect` with
   POST-PARK go-token release** (R4-1 — nothing irreversible runs until durably parked), the
-  **R4-1 FRAMEWORK ADDITION** that lets the post-park owner release the held go-token (the
-  stdin-into-observer handoff OR a new `SpawnOutcome::ParkedDeferredRelease` variant — pick + review
-  the mechanism at impl; this is a small, workflow-agnostic operation-framework change, bigger than a
-  copy), **`complete_forge_op_with_result` atomic completion helper for EVERY oracle action** emitting
+  **R4-1 adapter-local variant (a)** stdin-into-observer handoff that lets the observer release the
+  held go-token as its first post-park step, **`complete_forge_op_with_result` atomic completion
+  helper for EVERY oracle action** emitting
   the bounded-extractor-built typed forge event in the op-flip tx (R4-2 — no `SpawnOutcome::Ready`
   shortcut for any oracle-visible action; R4-3 — the bounded `ForgeEventSpec` extractor:
   exit-code | named `--json` field paths), **probe `recover_parked`** via `verdict_from_exit_code` +
@@ -1102,19 +1110,23 @@ check** (a test of its own deliverable), and the rows it unblocks are listed sep
   registration in `dispatcher_operation_runtime`. This is the durable spine ③ rides on (NOT bare
   tools+events). **The exact stdin-handoff mechanism (R4-1) and the exact bounded extractor grammar
   (R4-3) are this slice's implementation+review deliverables** — the design doc fixes the contract;
-  the precise shapes are reviewed at impl. Also lands the `compensate_step` tx-param extension (§2.5-B
-  (i)) if ① deferred it.
+  the precise shapes are reviewed at impl. **Implementation note:** R4-1 shipped as adapter-local
+  variant (a): the observer owns the child stdin and writes `go\n` first post-park; this needed no
+  operation-framework change and no `SpawnOutcome::ParkedDeferredRelease`. The `compensate_step`
+  tx-param extension (§2.5-B (i)) is **DEFERRED to slice ③**; ⑥ runs in the worker card's provided
+  `cwd_lease` and does **not** self-acquire a forge-owned lease, so there is no forge lease to
+  release and no cross-adapter signature change was needed in ⑥.
 - **Files touched.** New `crates/calm-server/src/operation/forge_action_adapter.rs` (modeled on
   `task_verify_adapter.rs`'s spawn/park/recover skeleton, with the forge-specific contract:
   post-park-release `spawn_side_effect`, `complete_forge_op_with_result` atomic helper, probe +
-  bounded-extractor `recover_parked`), `operation/mod.rs` (the **R4-1 framework addition** — observer
-  receives the child stdin, or the new `SpawnOutcome::ParkedDeferredRelease` variant + its driver
-  wiring; no NEW phases — reuses Pending/TxCommitted/SpawnStarted/Parked/Succeeded/Compensating),
-  `operation/driver.rs:456-457` (release-after-park wiring if variant (b) is chosen),
+  bounded-extractor `recover_parked`), `operation/mod.rs` (no NEW phases — reuses
+  Pending/TxCommitted/SpawnStarted/Parked/Succeeded/Compensating),
   `dispatcher.rs:160` (`fn dispatcher_operation_runtime`) + adapter vec `:244-255` (register one
   line — round-3 N-2: `:158` is a brace, not the register site).
-- **New events/tools.** No oracle events of its own — it is the mechanism ③'s `forge.*` events
-  ride. `forge-action` op kind constant; the bounded `ForgeEventSpec` extractor type.
+- **New events/tools.** Defines the `forge.pr.merged` Event variant as the mechanism-test vehicle
+  for the exactly-once completion contract; slice ③ still flips oracle row 15 by wiring the real
+  `gh pr merge` verb to emit it and owns the other forge events. ⑥ still FLIPS no oracle row.
+  `forge-action` op kind constant; the bounded `ForgeEventSpec` extractor type.
 - **Acceptance (substrate — FLIPS no row).** Direct self-contained check: a `forge-action`
   op for a fake/echo action is idempotent under resubmit (same key ⇒ one op), parks + completes
   via observer (the typed event committed atomically in `complete_forge_op_with_result`), and
@@ -1128,10 +1140,10 @@ check** (a test of its own deliverable), and the rows it unblocks are listed sep
   fields were filled by the bounded extractor from the action's `--json` output; and a crash-then-probe
   recovery re-extracts the same OUTPUT fields. *Unblocks (not acceptance): the durable correctness of
   rows 3/9/14/15/16.*
-- **Size.** **M→L** (the R4-1 framework addition + the bounded extractor + the parked-completion-for-
+- **Size.** **M→L** (the R4-1 post-park release + the bounded extractor + the parked-completion-for-
   all-oracle-actions contract enlarge it beyond the v4 "copy").
-- **Dependencies.** ① (lease primitive, for the `compensate_step` tx param + workspace
-  interplay).
+- **Dependencies.** ① (lease primitive for workspace interplay; the `compensate_step` tx param is
+  deferred to ③).
 
 ### ⑦ Observation/recovery plumbing for new spec-facing events (B3 / §2.5-C)
 - **Scope.** Own the **observation/recovery PATTERN + the shared 6-stage plumbing** so `forge.*`,
@@ -1701,4 +1713,3 @@ vs. a `SpawnOutcome::ParkedDeferredRelease` variant) and the bounded `ForgeEvent
 grammar — **not design gaps.** 0 regressions of any v1/v2/v3/v4/v5 fold.
 
 <!-- Populate across dual-channel review rounds (fresh subagent + codex read-only) to convergence. -->
-

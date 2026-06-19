@@ -26,7 +26,7 @@
 //!   3. asserts `canonical` is a serde fixed point (deserialize → serialize
 //!      returns it unchanged).
 
-use calm_server::event::{ArtifactRef, EditAuthor, Event, WaveUpdatedPayload};
+use calm_server::event::{ArtifactRef, EditAuthor, Event, ForgeMergeSubject, WaveUpdatedPayload};
 use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
@@ -709,6 +709,21 @@ golden_test!(
 );
 
 golden_test!(
+    forge_pr_merged,
+    "forge_pr_merged.json",
+    Event::ForgePrMerged {
+        wave_id: WaveId::from("wave-01"),
+        subject: ForgeMergeSubject {
+            phase: "impl".into(),
+            slice_id: "6".into(),
+            pr_number: 760,
+        },
+        head_sha: "head-sha".into(),
+        merge_sha: "merge-sha".into(),
+    }
+);
+
+golden_test!(
     task_gate_result_full,
     "task_gate_result.full.json",
     Event::TaskGateResult {
@@ -774,7 +789,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 32] = [
+const ALL_KIND_TAGS: [&str; 33] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -806,6 +821,7 @@ const ALL_KIND_TAGS: [&str; 32] = [
     "task.dispatched",
     "workspace.leased",
     "workspace.released",
+    "forge.pr.merged",
     "task.gate_result",
 ];
 
@@ -841,7 +857,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 51,
+        files, 52,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -893,6 +909,7 @@ fn kind_tag_list_matches_enum() {
             Event::TaskDispatched { .. } => "task.dispatched",
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
+            Event::ForgePrMerged { .. } => "forge.pr.merged",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
@@ -902,7 +919,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        32,
+        33,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

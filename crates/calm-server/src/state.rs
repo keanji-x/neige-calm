@@ -16,6 +16,7 @@ use crate::mcp_server::McpServer;
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
+use crate::operation::forge_action_adapter::ForgeActionAdapter;
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
@@ -427,6 +428,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
     );
     let task_verify_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
+    let forge_action_adapter: Arc<dyn ProviderAdapter> = Arc::new(ForgeActionAdapter::new());
 
     vec![
         terminal_adapter,
@@ -439,6 +441,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         spec_harness_interrupt_adapter,
         spec_harness_shutdown_adapter,
         task_verify_adapter,
+        forge_action_adapter,
     ]
 }
 

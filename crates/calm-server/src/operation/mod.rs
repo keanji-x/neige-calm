@@ -8,6 +8,7 @@ pub(crate) mod workspace_lease;
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
+pub mod forge_action_adapter;
 pub mod spec_harness_interrupt_adapter;
 pub mod spec_harness_shutdown_adapter;
 pub mod spec_harness_start_adapter;

@@ -241,6 +241,9 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'workspace.released': noop(
     'Workspace lease lifecycle is card-scoped; no React Query cache consumes lease rows yet.',
   ),
+  'forge.pr.merged': noop(
+    'Forge merge lifecycle is card/wave-scoped; no React Query cache consumes forge merge rows yet.',
+  ),
   'task.gate_result': {
     requiresContext: waveFilesDerivedEventKeys,
     reason:

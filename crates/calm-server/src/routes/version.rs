@@ -110,7 +110,13 @@ pub const API_VERSION: &str = "1";
 ///   `WireEvent` union doesn't know the new discriminator, so plugin-tool
 ///   registration frames would silently drop. The compat modal forces a
 ///   hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 7;
+/// * `8` — forge PR merge events (issue #760 slice 6):
+///   `forge.pr.merged` joins the WS event union with
+///   `SYNC_EVENT_VERSION` bumped 6 → 7 in lockstep. A v7 frontend's
+///   zod `WireEvent` union doesn't know the new discriminator, so its
+///   forge invalidation would silently drop. The compat modal forces a
+///   hard refresh.
+pub const WEB_COMPAT_VERSION: u32 = 8;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,

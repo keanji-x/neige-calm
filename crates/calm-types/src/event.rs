@@ -329,7 +329,19 @@ impl EventScope {
 ///   A v4 tab would otherwise advance past those rows and fail zod on
 ///   replay before refreshing onto a bundle that understands them.
 /// * `6` — plugin tool registration wire kind (#760 slice 2). Adds `plugin.tool.registered`.
-pub const SYNC_EVENT_VERSION: u32 = 6;
+/// * `7` — forge PR merge wire kind (issue #760 slice 6). Adds
+///   `forge.pr.merged` to the event union. A v6 tab would otherwise
+///   advance past those rows and fail zod before refreshing.
+pub const SYNC_EVENT_VERSION: u32 = 7;
+
+/// Phase/slice PR identity carried by `forge.pr.merged`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct ForgeMergeSubject {
+    pub phase: String,
+    pub slice_id: String,
+    pub pr_number: u64,
+}
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
@@ -746,6 +758,18 @@ pub enum Event {
         lease_id: String,
     },
 
+    /// Issue #760 slice 6 — a forge adapter merged the authoritative
+    /// phase/slice PR for a wave. `wave_id` and `subject` identify the
+    /// C6/R4-4 target; `head_sha` and `merge_sha` are the forge output
+    /// values extracted from the action result.
+    #[serde(rename = "forge.pr.merged")]
+    ForgePrMerged {
+        wave_id: WaveId,
+        subject: ForgeMergeSubject,
+        head_sha: String,
+        merge_sha: String,
+    },
+
     /// Issue #644 PR-C (§6.5) — the kernel `task-verify` runner completed a
     /// `task-verify` attempt and recorded its verdict. Appended in the
     /// SAME tx as the `verifying → done|failed` tasks-row flip (the
@@ -782,6 +806,74 @@ pub enum Event {
         #[ts(optional)]
         agent_message: Option<String>,
     },
+}
+
+/// Bounded typed result-extraction contract (R4-3). NOT a predicate DSL:
+/// no booleans, no expressions, no array logic — only a target event kind
+/// + named field reads (exit-code | JSON-pointer over the action's --json).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgeEventSpec {
+    pub event_kind: String,
+    pub fields: std::collections::BTreeMap<String, FieldSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldSource {
+    ExitCode,
+    JsonField { path: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ForgeExtractError {
+    #[error("forge event spec requires JSON stdout but none was provided")]
+    MissingJsonStdout,
+    #[error("forge event spec field `{field}` pointer `{path}` did not resolve")]
+    PointerUnresolved { field: String, path: String },
+}
+
+impl ForgeEventSpec {
+    /// Build the event `data` payload map from the action's exit code and
+    /// optional --json stdout.
+    ///
+    /// STRICT-FAIL: a JsonField whose pointer does not resolve, or
+    /// json_stdout=None while any JsonField is declared, is an Err. Values
+    /// are taken AS-IS from the pointer (no coercion); the final
+    /// typed-deserialize happens later via Event::from_kind_and_payload, so
+    /// a type mismatch surfaces there. ExitCode -> JSON number.
+    pub fn extract_payload(
+        &self,
+        exit_code: i32,
+        json_stdout: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, ForgeExtractError> {
+        let needs_json = self
+            .fields
+            .values()
+            .any(|source| matches!(source, FieldSource::JsonField { .. }));
+        if needs_json && json_stdout.is_none() {
+            return Err(ForgeExtractError::MissingJsonStdout);
+        }
+
+        let mut payload = serde_json::Map::new();
+        for (field, source) in &self.fields {
+            match source {
+                FieldSource::ExitCode => {
+                    payload.insert(field.clone(), serde_json::json!(exit_code));
+                }
+                FieldSource::JsonField { path } => {
+                    let value =
+                        json_stdout
+                            .and_then(|json| json.pointer(path))
+                            .ok_or_else(|| ForgeExtractError::PointerUnresolved {
+                                field: field.clone(),
+                                path: path.clone(),
+                            })?;
+                    payload.insert(field.clone(), value.clone());
+                }
+            }
+        }
+        Ok(payload)
+    }
 }
 
 /// Central event-classifier result for the kernel's event surfaces.
@@ -989,6 +1081,12 @@ impl Event {
                     entity_id: Some(card_id.to_string()),
                 }
             }
+            Event::ForgePrMerged { wave_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("wave".into()),
+                entity_id: Some(wave_id.to_string()),
+            },
             // Issue #644 PR-C — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via
             // the events kind clause + the envelope's wave scope.
@@ -1038,6 +1136,7 @@ impl Event {
             Event::TaskDispatched { .. } => "task.dispatched",
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
+            Event::ForgePrMerged { .. } => "forge.pr.merged",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
@@ -1212,6 +1311,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
             format!("wave:{}", wave_id),
             "*".into(),
         ],
+
+        Event::ForgePrMerged { wave_id, .. } => vec![format!("wave:{}", wave_id), "*".into()],
 
         // Issue #644 — plan revisions are wave-scoped on the payload, so
         // wave subscribers (future UI task list) can filter without the
@@ -1465,6 +1566,18 @@ mod scope_tests {
             lease_id: "lease-1".into(),
         };
         assert_eq!(workspace_released.kind_tag(), "workspace.released");
+
+        let forge_pr_merged = Event::ForgePrMerged {
+            wave_id: WaveId::from("wave-1"),
+            subject: ForgeMergeSubject {
+                phase: "impl".into(),
+                slice_id: "6".into(),
+                pr_number: 760,
+            },
+            head_sha: "head-sha".into(),
+            merge_sha: "merge-sha".into(),
+        };
+        assert_eq!(forge_pr_merged.kind_tag(), "forge.pr.merged");
 
         let claude_hook = Event::ClaudeHook {
             card_id: CardId::from("card-1"),
@@ -1917,6 +2030,143 @@ mod scope_tests {
         );
     }
 
+    #[test]
+    fn forge_pr_merged_serde_round_trip_metadata_and_topics() {
+        let merged = Event::ForgePrMerged {
+            wave_id: WaveId::from("wave-1"),
+            subject: ForgeMergeSubject {
+                phase: "impl".into(),
+                slice_id: "6".into(),
+                pr_number: 760,
+            },
+            head_sha: "head-sha".into(),
+            merge_sha: "merge-sha".into(),
+        };
+        let json = serde_json::to_value(&merged).unwrap();
+        assert_eq!(json["ev"], "forge.pr.merged");
+        assert_eq!(json["data"]["wave_id"], "wave-1");
+        assert_eq!(json["data"]["subject"]["phase"], "impl");
+        assert_eq!(json["data"]["subject"]["slice_id"], "6");
+        assert_eq!(json["data"]["subject"]["pr_number"], 760);
+        assert_eq!(json["data"]["head_sha"], "head-sha");
+        assert_eq!(json["data"]["merge_sha"], "merge-sha");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "forge.pr.merged");
+        assert_eq!(
+            topics(&back),
+            vec!["wave:wave-1", "*"],
+            "forge PR merge events route by wave"
+        );
+        let meta = back.metadata();
+        assert_eq!(meta.plugin_id, None);
+        assert_eq!(meta.entity_kind.as_deref(), Some("wave"));
+        assert_eq!(meta.entity_id.as_deref(), Some("wave-1"));
+    }
+
+    #[test]
+    fn forge_event_spec_extracts_json_fields_with_nested_array_pointer() {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "head_sha".into(),
+            FieldSource::JsonField {
+                path: "/oid".into(),
+            },
+        );
+        fields.insert(
+            "merge_sha".into(),
+            FieldSource::JsonField {
+                path: "/commits/0/oid".into(),
+            },
+        );
+        let spec = ForgeEventSpec {
+            event_kind: "forge.pr.merged".into(),
+            fields,
+        };
+        let stdout = serde_json::json!({
+            "oid": "head-sha",
+            "commits": [{ "oid": "merge-sha" }],
+        });
+
+        let payload = spec.extract_payload(0, Some(&stdout)).unwrap();
+        assert_eq!(
+            payload.get("head_sha"),
+            Some(&serde_json::json!("head-sha"))
+        );
+        assert_eq!(
+            payload.get("merge_sha"),
+            Some(&serde_json::json!("merge-sha"))
+        );
+    }
+
+    #[test]
+    fn forge_event_spec_missing_pointer_is_strict_error() {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "merge_sha".into(),
+            FieldSource::JsonField {
+                path: "/missing".into(),
+            },
+        );
+        let spec = ForgeEventSpec {
+            event_kind: "forge.pr.merged".into(),
+            fields,
+        };
+
+        let err = spec
+            .extract_payload(0, Some(&serde_json::json!({})))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ForgeExtractError::PointerUnresolved {
+                field: "merge_sha".into(),
+                path: "/missing".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn forge_event_spec_missing_json_stdout_is_strict_error() {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "head_sha".into(),
+            FieldSource::JsonField {
+                path: "/oid".into(),
+            },
+        );
+        let spec = ForgeEventSpec {
+            event_kind: "forge.pr.merged".into(),
+            fields,
+        };
+
+        let err = spec.extract_payload(0, None).unwrap_err();
+        assert_eq!(err, ForgeExtractError::MissingJsonStdout);
+    }
+
+    #[test]
+    fn forge_event_spec_exit_code_yields_json_number() {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("exit_code".into(), FieldSource::ExitCode);
+        let spec = ForgeEventSpec {
+            event_kind: "forge.pr.merged".into(),
+            fields,
+        };
+
+        let payload = spec.extract_payload(37, None).unwrap();
+        assert_eq!(payload.get("exit_code"), Some(&serde_json::json!(37)));
+    }
+
+    #[test]
+    fn forge_event_spec_empty_fields_yields_empty_object() {
+        let spec = ForgeEventSpec {
+            event_kind: "forge.pr.merged".into(),
+            fields: std::collections::BTreeMap::new(),
+        };
+
+        let payload = spec.extract_payload(0, None).unwrap();
+        assert!(payload.is_empty());
+    }
+
     // ----- PR2 of #247: EditAuthor + WaveReportEdited -------------------
     //
     // Pin the wire shape of the structured edit-log variant + its
@@ -2250,6 +2500,16 @@ mod scope_tests {
                 card_id: CardId::from("card-workspace"),
                 lease_id: "lease-1".into(),
             },
+            Event::ForgePrMerged {
+                wave_id: WaveId::from("wave-1"),
+                subject: ForgeMergeSubject {
+                    phase: "impl".into(),
+                    slice_id: "6".into(),
+                    pr_number: 760,
+                },
+                head_sha: "head-sha".into(),
+                merge_sha: "merge-sha".into(),
+            },
         ]
     }
 
@@ -2412,6 +2672,20 @@ mod scope_tests {
                     "wave_id": "wave-1",
                     "card_id": "card-1",
                     "lease_id": "lease-1",
+                }),
+            ),
+            (
+                "forge.pr.merged",
+                "forge.pr.merged",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "subject": {
+                        "phase": "impl",
+                        "slice_id": "6",
+                        "pr_number": 760,
+                    },
+                    "head_sha": "head-sha",
+                    "merge_sha": "merge-sha",
                 }),
             ),
         ] {

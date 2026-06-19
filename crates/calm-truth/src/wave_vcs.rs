@@ -531,7 +531,9 @@ pub async fn commit_events_with_author_in_tx(
     if events.iter().all(|event| {
         matches!(
             event,
-            Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. }
+            Event::WorkspaceLeased { .. }
+                | Event::WorkspaceReleased { .. }
+                | Event::ForgePrMerged { .. }
         )
     }) {
         return Ok(None);
@@ -2192,6 +2194,10 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         // They are persisted and replayable, but they do not change the
         // wave filesystem projection in this slice.
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => {}
+        // Issue #760 slice 6: forge merge completion is operational
+        // history for the action adapter. No wave-fs projection consumes it
+        // in this pass.
+        Event::ForgePrMerged { .. } => {}
     }
     delta
 }
@@ -3340,6 +3346,10 @@ fn markdown_code_fence_for(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+    use crate::event::ForgeMergeSubject;
+    use crate::model::{NewCove, NewWave, RequestTheme};
 
     #[test]
     fn commit_hash_ignores_author_metadata() {
@@ -3361,6 +3371,69 @@ mod tests {
             commit_hash_for_tree(&wave_id, "tree-1", "draft", &base).unwrap(),
             commit_hash_for_tree(&wave_id, "tree-1", "draft", &other_author).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn forge_pr_merged_only_batch_does_not_advance_head() {
+        let repo = SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open sqlite repo");
+        let cove = repo
+            .cove_create(NewCove {
+                name: "cove".into(),
+                color: "#336699".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "wave".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let before = head(repo.pool(), &wave.id).await.expect("head before");
+
+        let event = Event::ForgePrMerged {
+            wave_id: wave.id.clone(),
+            subject: ForgeMergeSubject {
+                phase: "impl".into(),
+                slice_id: "6".into(),
+                pr_number: 760,
+            },
+            head_sha: "head-sha".into(),
+            merge_sha: "merge-sha".into(),
+        };
+        let mut tx = begin_immediate_tx(repo.pool())
+            .await
+            .expect("begin transaction");
+        let committed = commit_events_with_author_in_tx(
+            &mut tx,
+            &wave.id,
+            Some(&ActorId::KernelDispatcher),
+            42,
+            &[event],
+            MANIFEST_SCHEMA_VERSION,
+        )
+        .await
+        .expect("commit forge.pr.merged batch");
+        tx.commit().await.expect("commit transaction");
+
+        let after = head(repo.pool(), &wave.id).await.expect("head after");
+        let commit_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM wave_vcs_commits WHERE wave_id = ?1")
+                .bind(wave.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .expect("commit count");
+        assert_eq!(committed, None);
+        assert_eq!(after, before);
+        assert_eq!(commit_count, 0);
     }
 
     #[test]

@@ -5,6 +5,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{NewCove, NewWave};
+use calm_server::operation::OperationKey;
+use calm_server::operation::forge_action_adapter::FORGE_ACTION_KIND;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -102,5 +104,29 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     assert!(
         err.to_string().contains("worker_sessions.card_id"),
         "unexpected boot assertion error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn production_operation_runtime_recognizes_forge_action_kind() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let state = app_state(repo).await;
+    let err = state
+        .operation_runtime
+        .submit(
+            FORGE_ACTION_KIND,
+            OperationKey {
+                operation_key: "forge-action-production-runtime".into(),
+                idempotency_key: Some("forge-action-production-runtime".into()),
+                payload_hash: "forge-action-production-runtime:null".into(),
+            },
+            serde_json::Value::Null,
+        )
+        .await
+        .expect_err("null forge-action payload should be rejected by the adapter");
+    assert!(
+        !err.to_string()
+            .contains("unknown operation kind forge-action"),
+        "forge-action must be registered in build_operation_adapters: {err}"
     );
 }

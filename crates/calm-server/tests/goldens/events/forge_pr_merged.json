@@ -1,0 +1,16 @@
+{
+  "description": "forge.pr.merged carries the wave routing id, phase/slice PR subject, and forge head/merge shas",
+  "wire": {
+    "ev": "forge.pr.merged",
+    "data": {
+      "wave_id": "wave-01",
+      "subject": {
+        "phase": "impl",
+        "slice_id": "6",
+        "pr_number": 760
+      },
+      "head_sha": "head-sha",
+      "merge_sha": "merge-sha"
+    }
+  }
+}
