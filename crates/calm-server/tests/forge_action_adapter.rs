@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,9 +20,10 @@ use calm_server::operation::forge_action_adapter::{
 };
 use calm_server::operation::{
     Operation, OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo,
-    OperationRuntime, Phase, RecoveryItem, SpawnArtifacts, SpawnCtx, SpawnOutcome,
+    OperationResult, OperationRuntime, Phase, RecoveryItem, SpawnArtifacts, SpawnCtx, SpawnOutcome,
     SqlxOperationRepo, TxOutput,
 };
+use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::DaemonClient;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -211,6 +213,21 @@ async fn assert_absent_briefly(path: &Path) {
     }
 }
 
+async fn wait_for_operation_result(boot: &TestBoot, op_id: &str) -> OperationResult {
+    for _ in 0..400 {
+        if let Some(result) = boot
+            .operation_repo
+            .operation_result(op_id)
+            .await
+            .expect("operation result query")
+        {
+            return result;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for operation {op_id} to finish");
+}
+
 fn read_counter(path: &Path) -> i64 {
     match fs::read_to_string(path) {
         Ok(text) => text.trim().parse().expect("counter parses"),
@@ -235,6 +252,40 @@ while [ ! -f "$finish" ]; do sleep 0.02; done
 printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
 "#,
     );
+}
+
+async fn spawn_live_counter_action(
+    action: &Path,
+    counter: &Path,
+    sentinel: &Path,
+    finish: &Path,
+) -> (tokio::process::Child, SpawnArtifacts) {
+    let mut cmd = tokio::process::Command::new(action);
+    cmd.arg(counter)
+        .arg(sentinel)
+        .arg(finish)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().expect("spawn live fake action");
+    let pid = child.id().expect("child pid") as i32;
+    let artifacts = SpawnArtifacts {
+        pid,
+        pgid: pid,
+        start_time: read_proc_start_time(pid).expect("child start time"),
+        boot_id: read_boot_id().expect("current boot id"),
+        log_path: None,
+        extra: json!({ "test": "live-forge-reattach" }),
+    };
+    (child, artifacts)
 }
 
 fn write_probe(path: &Path, oid: &str, head: &str, verdict: i32) {
@@ -738,7 +789,206 @@ async fn forge_action_boot_recovery_redrives_non_terminal_phases_and_probes_park
 }
 
 #[tokio::test]
-async fn forge_action_crash_then_probe_reextracts_same_typed_output_fields() -> CalmResult<()> {
+async fn forge_action_boot_live_reattach_completes_via_probe_and_no_probe_fails() -> CalmResult<()>
+{
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("live-reattach-action.sh");
+    let counter = boot.temp_path("live-reattach-counter");
+    let sentinel = boot.temp_path("live-reattach-sentinel");
+    let finish = boot.temp_path("live-reattach-finish");
+    let probe = boot.temp_path("live-reattach-probe.sh");
+    write_counter_action(&action);
+    write_probe(&probe, "live-probe-merge", "live-probe-head", 0);
+    let (mut child, artifacts) =
+        spawn_live_counter_action(&action, &counter, &sentinel, &finish).await;
+    wait_for_file(&sentinel).await;
+    assert_eq!(read_counter(&counter), 1);
+
+    let idem = "forge-live-reattach-probe";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("live-reattach-result.json"),
+            Some(vec![probe.display().to_string()]),
+        ),
+        artifacts,
+    )
+    .await?;
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(
+        matches!(
+            plan.items.as_slice(),
+            [RecoveryItem::VerifyParked { op_id: item_op_id }] if item_op_id == &op_id
+        ),
+        "live parked op should use recover_parked: {:?}",
+        plan.items
+    );
+    boot.runtime.apply_recovery(plan).await?;
+    assert_eq!(phase(&boot.repo, &op_id).await, "parked");
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+
+    fs::write(&finish, "").expect("release live fake action");
+    let status = child.wait().await.expect("wait live fake action");
+    assert!(status.success());
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+    assert_eq!(
+        read_counter(&counter),
+        1,
+        "live reattach must not re-run argv"
+    );
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("live-probe-merge"));
+    assert_eq!(event["head_sha"], json!("live-probe-head"));
+
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("live-no-probe-action.sh");
+    let counter = boot.temp_path("live-no-probe-counter");
+    let sentinel = boot.temp_path("live-no-probe-sentinel");
+    let finish = boot.temp_path("live-no-probe-finish");
+    write_counter_action(&action);
+    let (mut child, artifacts) =
+        spawn_live_counter_action(&action, &counter, &sentinel, &finish).await;
+    wait_for_file(&sentinel).await;
+    assert_eq!(read_counter(&counter), 1);
+
+    let idem = "forge-live-reattach-no-probe";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("live-no-probe-result.json"),
+        ),
+        artifacts,
+    )
+    .await?;
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(
+        matches!(
+            plan.items.as_slice(),
+            [RecoveryItem::VerifyParked { op_id: item_op_id }] if item_op_id == &op_id
+        ),
+        "live no-probe parked op should use recover_parked: {:?}",
+        plan.items
+    );
+    boot.runtime.apply_recovery(plan).await?;
+    assert_eq!(phase(&boot.repo, &op_id).await, "parked");
+    fs::write(&finish, "").expect("release live no-probe fake action");
+    let status = child.wait().await.expect("wait live no-probe fake action");
+    assert!(status.success());
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error == "forge action process dead with no probe; gate-infra"
+                && class == "gate-infra"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(
+        read_counter(&counter),
+        1,
+        "live no-probe reattach must not re-run argv"
+    );
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+
+    Ok(())
+}
+
+async fn assert_dead_probe_failure(verdict: i32, expected_error: &str) -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path(&format!("probe-fail-{verdict}-action.sh"));
+    let counter = boot.temp_path(&format!("probe-fail-{verdict}-counter"));
+    let sentinel = boot.temp_path(&format!("probe-fail-{verdict}-sentinel"));
+    let finish = boot.temp_path(&format!("probe-fail-{verdict}-finish"));
+    let probe = boot.temp_path(&format!("probe-fail-{verdict}.sh"));
+    write_counter_action(&action);
+    write_probe(&probe, "ignored-merge", "ignored-head", verdict);
+    let idem = format!("forge-probe-fail-{verdict}");
+    let op_id = seed_parked_forge_op(
+        &boot,
+        &idem,
+        payload_with_probe(
+            &boot,
+            &idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path(&format!("probe-fail-{verdict}-result.json")),
+            Some(vec![probe.display().to_string()]),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(matches!(
+        plan.items.as_slice(),
+        [RecoveryItem::VerifyParked { .. }]
+    ));
+    boot.runtime.apply_recovery(plan).await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error == expected_error && class == "parked_dead"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(
+        read_counter(&counter),
+        0,
+        "dead parked probe failure must not re-run argv"
+    );
+    assert!(!sentinel.exists());
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_probe_not_landed_fails_dead_parked_without_rerun() -> CalmResult<()> {
+    assert_dead_probe_failure(1, "forge action process dead and probe reports not landed").await
+}
+
+#[tokio::test]
+async fn forge_action_probe_unknown_fails_dead_parked_without_rerun() -> CalmResult<()> {
+    assert_dead_probe_failure(2, "forge action probe verdict unknown; gate-infra").await
+}
+
+#[tokio::test]
+async fn forge_action_crash_then_probe_reextracts_probe_typed_output_fields() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("probe-reextract-action.sh");
     let counter = boot.temp_path("probe-reextract-counter");
@@ -747,17 +997,7 @@ async fn forge_action_crash_then_probe_reextracts_same_typed_output_fields() -> 
     let result_path = boot.temp_path("probe-reextract-result.json");
     let probe = boot.temp_path("probe-reextract.sh");
     write_counter_action(&action);
-    write_probe(&probe, "abc123", "def456", 0);
-    fs::write(
-        PathBuf::from(format!("{}.code", result_path.display())),
-        "0",
-    )
-    .expect("prewrite landed action result code");
-    fs::write(
-        PathBuf::from(format!("{}.stdout", result_path.display())),
-        "{\"oid\":\"abc123\",\"headRefOid\":\"def456\"}\n",
-    )
-    .expect("prewrite landed action result stdout");
+    write_probe(&probe, "probe-sha", "probe-head", 0);
 
     let idem = "forge-probe-reextract";
     let op_id = seed_parked_forge_op(
@@ -789,8 +1029,8 @@ async fn forge_action_crash_then_probe_reextracts_same_typed_output_fields() -> 
     assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
 
     let event = latest_forge_event_payload(&boot.repo).await;
-    assert_eq!(event["merge_sha"], json!("abc123"));
-    assert_eq!(event["head_sha"], json!("def456"));
+    assert_eq!(event["merge_sha"], json!("probe-sha"));
+    assert_eq!(event["head_sha"], json!("probe-head"));
     assert_eq!(event["wave_id"], json!(boot.wave_id));
     assert_eq!(event["subject"], serde_json::to_value(subject())?);
     assert_eq!(

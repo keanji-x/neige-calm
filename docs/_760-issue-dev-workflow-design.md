@@ -482,6 +482,8 @@ spawn/park/recover skeleton, but with the forge-specific contract — NOT a line
      bounded extractor grammar is slice ⑥'s deliverable, reviewed at impl** (a design doc converges
      on the contract; the grammar's precise shape — field-path syntax, missing-field handling, type
      coercion — is implementation+review scope).
+     A positional RFC-6901 pointer such as `/commits/0/oid` is an intentional in-grammar named-path
+     read, not "array logic".
    - **`ProbeSpec` is `{ probe_argv: Vec<String> }`** — its **exit code** is the did-it-land signal
      (probe exits 0 ⇒ landed); where the typed event needs OUTPUTS after a crash, the probe's
      `--json` output is re-run through the SAME bounded extractor. **There is NO predicate-over-JSON
@@ -656,9 +658,10 @@ liveness judgment, which is the kernel, not the plugin.
   lease row in a follow-up `complete`-style tx. v2 picks **(i)** for worktrees specifically because
   a half-removed worktree with a still-`held` lease would block budget>1 re-claims — but the
   tx-param extension is **DEFERRED to slice ③**, where `git worktree remove` needs the fs+lease
-  bundle. Slice ⑥'s forge compensation releases the workspace lease pool-based via
-  `release_workspace_lease_by_id`, exactly as slice ①'s Codex compensation already does, so no
-  cross-adapter signature change was needed in ⑥.
+  bundle. **Resolved slice ⑥ design:** the forge action **runs in a provided `cwd_lease`** owned by
+  the worker card; it does **not** self-acquire a lease, so there is no forge-owned lease to release
+  (no leak and no unique-path collision with the worker's lease). No cross-adapter signature change
+  was needed in ⑥.
 - **Orphan reclaim on restart.** `recover_on_boot()` (`operation/driver.rs:240`, N-5) already
   reattaches abandoned ops; the lease recovery hook (using `recover_parked(.., Boot)` semantics,
   which **ignores lease TTL** to reattach crashed-process leases — `claim_parked_for_boot` at
@@ -1106,9 +1109,9 @@ check** (a test of its own deliverable), and the rows it unblocks are listed sep
   the precise shapes are reviewed at impl. **Implementation note:** R4-1 shipped as adapter-local
   variant (a): the observer owns the child stdin and writes `go\n` first post-park; this needed no
   operation-framework change and no `SpawnOutcome::ParkedDeferredRelease`. The `compensate_step`
-  tx-param extension (§2.5-B (i)) is **DEFERRED to slice ③**; ⑥ releases the workspace lease
-  pool-based via `release_workspace_lease_by_id`, matching slice ①'s Codex compensation and avoiding
-  a cross-adapter signature change in ⑥.
+  tx-param extension (§2.5-B (i)) is **DEFERRED to slice ③**; ⑥ runs in the worker card's provided
+  `cwd_lease` and does **not** self-acquire a forge-owned lease, so there is no forge lease to
+  release and no cross-adapter signature change was needed in ⑥.
 - **Files touched.** New `crates/calm-server/src/operation/forge_action_adapter.rs` (modeled on
   `task_verify_adapter.rs`'s spawn/park/recover skeleton, with the forge-specific contract:
   post-park-release `spawn_side_effect`, `complete_forge_op_with_result` atomic helper, probe +

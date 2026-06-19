@@ -736,6 +736,8 @@ impl ProviderAdapter for ForgeActionAdapter {
                 }
             }
 
+            // The parked-deadline sweep owns timeouts; the parked-phase
+            // first-committer-wins guard makes any late observer completion roll back.
             match child.wait().await {
                 Ok(status) if status.code().is_some() => {
                     match read_result_file(&observer_frozen.result_path).await {

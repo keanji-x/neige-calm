@@ -568,6 +568,26 @@ export const workspaceReleasedSchema = z.object({
   }),
 });
 
+export const forgeMergeSubjectSchema = z.object({
+  phase: z.string(),
+  slice_id: z.string(),
+  pr_number: z.number(),
+});
+
+/**
+ * `Event::ForgePrMerged` — issue #760 slice 6: the forge action adapter
+ * observed a PR merge and atomically completed the parked operation.
+ */
+export const forgePrMergedSchema = z.object({
+  ev: z.literal('forge.pr.merged'),
+  data: z.object({
+    wave_id: z.string(),
+    subject: forgeMergeSubjectSchema,
+    head_sha: z.string(),
+    merge_sha: z.string(),
+  }),
+});
+
 /**
  * `Event::TaskGateResult` — issue #644 PR-C: the kernel gate runner
  * finished one `task-verify` attempt; appended in the same tx as the
@@ -658,6 +678,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskDispatchedSchema,
   workspaceLeasedSchema,
   workspaceReleasedSchema,
+  forgePrMergedSchema,
   taskGateResultSchema,
 ]);
 
@@ -705,6 +726,7 @@ export type PlanUpdatedEvent = z.infer<typeof planUpdatedSchema>;
 export type TaskDispatchedEvent = z.infer<typeof taskDispatchedSchema>;
 export type WorkspaceLeasedEvent = z.infer<typeof workspaceLeasedSchema>;
 export type WorkspaceReleasedEvent = z.infer<typeof workspaceReleasedSchema>;
+export type ForgePrMergedEvent = z.infer<typeof forgePrMergedSchema>;
 export type TaskGateResultEvent = z.infer<typeof taskGateResultSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;
