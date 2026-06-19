@@ -41,6 +41,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use calm_types::worker::WorkerSessionId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
@@ -696,7 +697,19 @@ pub(crate) async fn send_spec_input(
         wave: wave.id.clone(),
         cove: wave.cove_id.clone(),
     };
-    let audit_actor = spec_input_audit_actor(&actor, &card.id);
+    // Migrate ONLY the AI-header path (empty placeholder card) to the live spec
+    // session actor; the human web-UI path (`actor` == User) and any other actor
+    // MUST stay unchanged so the audit log keeps distinguishing human input from
+    // agent actions. Falls back to the existing card-shaped rebind when the
+    // runtime is not in an active-authority state.
+    let audit_actor = match actor.to_actor_id() {
+        ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiSpec(c)
+            if c.as_str().is_empty() && runtime.status.is_active_authority() =>
+        {
+            ActorId::AiSpecSession(WorkerSessionId::from(runtime.id.clone()))
+        }
+        _ => spec_input_audit_actor(&actor, &card.id),
+    };
 
     let text = body.text;
     harness.observe(Observation::UserMessage { text })?;

@@ -97,10 +97,10 @@ impl Actor {
         }
         if self.0 == "ai:codex" {
             // No card context at REST entry — leave the carried CardId
-            // empty. PR3 introduces the proper enforce_role gate that
-            // either looks up the card from the request path or refuses
-            // the write outright. Until then, the empty CardId is an
-            // honest "we know it's codex but don't know which card" tag.
+            // empty. This legacy bridge header intentionally stays
+            // card-shaped: middleware has no session context, and the live
+            // REST write sites reattribute downstream once they have a card
+            // and, where resolvable, an active worker session.
             return ActorId::AiCodex(CardId::from(""));
         }
         // Defensive default: the middleware should have already rejected
