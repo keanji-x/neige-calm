@@ -44,6 +44,17 @@ const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &["forge.pr.merged"];
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
+const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_HOST",
+    "GH_ENTERPRISE_TOKEN",
+    "SSH_AUTH_SOCK",
+    "GIT_SSH_COMMAND",
+    "NO_PROXY",
+    "no_proxy",
+];
 
 const FORGE_ACTION_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -258,6 +269,27 @@ fn kill_artifacts_group(artifacts: &SpawnArtifacts) {
     if verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
         signal_process_group(artifacts.pgid, libc::SIGKILL);
     }
+}
+
+fn forge_passthrough_env_from<F>(mut lookup: F) -> Vec<(&'static str, std::ffi::OsString)>
+where
+    F: FnMut(&str) -> Option<std::ffi::OsString>,
+{
+    FORGE_PASSTHROUGH_ENV_KEYS
+        .iter()
+        .filter_map(|&key| lookup(key).map(|value| (key, value)))
+        .collect()
+}
+
+#[cfg(any(test, feature = "fixtures"))]
+pub fn forge_passthrough_env_for_test<F>(lookup: F) -> Vec<(&'static str, String)>
+where
+    F: FnMut(&str) -> Option<std::ffi::OsString>,
+{
+    forge_passthrough_env_from(lookup)
+        .into_iter()
+        .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
+        .collect()
 }
 
 fn forge_spec_needs_json(spec: &ForgeEventSpec) -> bool {
@@ -767,6 +799,42 @@ async fn resolve_post_release_via_probe(
     }
 }
 
+/// Resolve a dead forge process post-release: prefer the durable result files
+/// (authoritative — written by the wrapper via tmp+rename only after the
+/// action completed); fall back to the plugin probe; fail only if neither can
+/// answer. Self-completes the op via the parked first-committer-wins fence.
+async fn resolve_dead_outcome(
+    pool: &sqlx::SqlitePool,
+    completion: &OperationCompletionBus,
+    events: &EventBus,
+    op_id: &str,
+    frozen: &FrozenForge,
+    ambiguous_reason: &str,
+) {
+    if let Ok(result) = read_result_file(&frozen.result_path).await {
+        if let Err(e) = complete_forge_op_from_live_result(
+            pool,
+            completion,
+            events,
+            op_id,
+            frozen,
+            result.exit_code,
+            &result.stdout,
+        )
+        .await
+        {
+            tracing::error!(
+                op_id,
+                error = %e,
+                "forge: result-file completion tx failed; falling back to probe"
+            );
+        } else {
+            return;
+        }
+    }
+    resolve_post_release_via_probe(pool, completion, events, op_id, frozen, ambiguous_reason).await;
+}
+
 #[async_trait]
 impl ProviderAdapter for ForgeActionAdapter {
     fn kind(&self) -> &'static str {
@@ -863,10 +931,30 @@ impl ProviderAdapter for ForgeActionAdapter {
             .stderr(Stdio::null())
             .env_clear()
             .env("NEIGE_FORGE_RESULT_PATH", &frozen.result_path);
-        for key in ["PATH", "HOME", "LANG", "LC_ALL", "TERM"] {
+        // Forge action env is an allowlist, never blanket inheritance. The
+        // plugin-supplied argv runs as the host's configured GitHub identity:
+        // runtime-only auth/proxy env can reach `gh`, while no secret feeds
+        // the frozen idem_key or any persisted payload. HOME gives the
+        // zero-config `~/.config/gh/hosts.yml` credential fallback when
+        // GH_TOKEN is unset; bare `git push` credential-helper setup is
+        // deferred to slice ③.
+        for key in FORGE_BASE_ENV_KEYS {
             if let Some(v) = std::env::var_os(key) {
                 cmd.env(key, v);
             }
+        }
+        if let Value::Object(env) = super::terminal_adapter::terminal_worker_env(ctx.repo.as_ref())
+            .await
+            .unwrap_or(Value::Null)
+        {
+            for (k, v) in env {
+                if let Value::String(v) = v {
+                    cmd.env(k, v);
+                }
+            }
+        }
+        for (key, value) in forge_passthrough_env_from(|key| std::env::var_os(key)) {
+            cmd.env(key, value);
         }
         unsafe {
             cmd.pre_exec(|| {
@@ -1054,7 +1142,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                             }
                             tokio::time::sleep(REATTACH_POLL).await;
                         }
-                        resolve_post_release_via_probe(
+                        resolve_dead_outcome(
                             &pool,
                             &completion,
                             &events,
@@ -1071,6 +1159,25 @@ impl ProviderAdapter for ForgeActionAdapter {
                     reason: "action-timeout".into(),
                 }),
             };
+        }
+
+        // P2-1: the durable result files are authoritative — the wrapper writes
+        // <result_path>.code (tmp+rename) only after the action ran to completion.
+        // A landed-but-dead action whose observer never committed is recovered from
+        // them, even with probe:None. read failure (missing/torn .code) falls through
+        // to the existing probe / no-probe path.
+        if let Ok(result) = read_result_file(&frozen.result_path).await {
+            complete_forge_op_from_live_result(
+                &ctx.operation_repo.sqlite_pool(),
+                &ctx.completion,
+                &ctx.events,
+                &op.id,
+                &frozen,
+                result.exit_code,
+                &result.stdout,
+            )
+            .await?;
+            return Ok(ParkedRecovery::LeaveParked);
         }
 
         // Dead process: the action's process is gone; the plugin probe is the ONLY
