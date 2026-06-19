@@ -98,13 +98,19 @@ pub const API_VERSION: &str = "1";
 ///   zod `WireEvent` union doesn't know the new discriminator, so its
 ///   gate-result invalidation would silently drop. The compat modal
 ///   forces a hard refresh.
-/// * `6` — plugin-tool registration wire kind (issue #760 slice 2). Adds
+/// * `6` — workspace lease lifecycle events (issue #760 slice 1):
+///   `workspace.leased` and `workspace.released` join the WS event union
+///   with `SYNC_EVENT_VERSION` bumped 4 → 5 in lockstep. A v5 frontend's
+///   zod `WireEvent` union doesn't know the new discriminators, so its
+///   workspace invalidation would silently drop. The compat modal forces
+///   a hard refresh.
+/// * `7` — plugin-tool registration wire kind (issue #760 slice 2). Adds
 ///   `plugin.tool.registered` to the WS event union (with
-///   `SYNC_EVENT_VERSION` bumped 4 → 5 in lockstep). A v5 frontend's zod
+///   `SYNC_EVENT_VERSION` bumped 5 → 6 in lockstep). A v6 frontend's zod
 ///   `WireEvent` union doesn't know the new discriminator, so plugin-tool
 ///   registration frames would silently drop. The compat modal forces a
 ///   hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 6;
+pub const WEB_COMPAT_VERSION: u32 = 7;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,

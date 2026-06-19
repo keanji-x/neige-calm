@@ -1,0 +1,11 @@
+{
+  "description": "workspace.released carries the durable lease id and card/wave routing ids after cleanup",
+  "wire": {
+    "ev": "workspace.released",
+    "data": {
+      "wave_id": "wave-01",
+      "card_id": "card-01",
+      "lease_id": "lease-01"
+    }
+  }
+}

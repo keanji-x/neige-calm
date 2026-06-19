@@ -115,6 +115,12 @@ pub fn lifecycle_allows_scheduling(lifecycle: WaveLifecycle) -> bool {
 /// `verifying` before PR-C). Deps are satisfied **only** by `done`
 /// siblings: `canceled`/`failed` never satisfy a dependency (§3.1), so
 /// successors sit `pending` until the spec revises the plan.
+///
+/// Issue #760 slice 1: resource disjointness for `budget > 1` is not a
+/// second scheduler predicate. Codex tasks acquire a durable workspace
+/// lease at operation claim time, and the lease path is
+/// `.claude/worktrees/<wave>/<card>`, so concurrent claims are disjoint by
+/// construction. This function intentionally remains budget arithmetic.
 pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
     let done_keys: BTreeSet<&str> = tasks
         .iter()
@@ -156,6 +162,14 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 wave_id: task.wave_id.clone(),
                 idempotency_key: task.id.clone(),
                 goal: task.goal.clone(),
+                // The workspace lease path created in
+                // `CodexWorkerAdapter::prepare_tx` is the authoritative
+                // worker cwd. `task.cwd` is intentionally not serialized:
+                // prepare_tx would ignore it anyway, and including it would
+                // change `stable_payload_hash` for in-flight Codex tasks
+                // created by older builds when `plan.upsert` supplied a cwd,
+                // causing a foreign-operation conflict after upgrade.
+                cwd: None,
                 context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
                 acceptance_criteria: task.acceptance_criteria.clone(),
             })?;
@@ -1720,6 +1734,10 @@ mod tests {
             p1["actor"],
             serde_json::to_value(ActorId::KernelDispatcher).unwrap()
         );
+        assert!(
+            !p1.as_object().unwrap().contains_key("cwd"),
+            "codex cwd stays absent; prepare_tx supplies the lease cwd"
+        );
 
         let mut terminal = task("t", TaskStatus::Pending, &[], 0);
         terminal.kind = TaskKind::Terminal;
@@ -1729,6 +1747,52 @@ mod tests {
         assert_eq!(kind, "terminal-worker");
         assert_eq!(p["cmd"], json!("make test"));
         assert_eq!(p["cwd"], json!("/repo"));
+    }
+
+    #[test]
+    fn codex_payload_ignores_task_cwd_for_hash_stability() {
+        let mut codex = task("a", TaskStatus::Pending, &[], 0);
+        codex.cwd = Some("/repo".into());
+        let (kind, p) = build_worker_payload(&codex).unwrap();
+        assert_eq!(kind, "codex-worker");
+        assert!(
+            !p.as_object().unwrap().contains_key("cwd"),
+            "task.cwd must not affect codex worker payload identity"
+        );
+
+        let legacy_without_cwd = json!({
+            "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
+            "wave_id": "w",
+            "idempotency_key": "w:a",
+            "goal": "do",
+            "context": null,
+        });
+        assert_eq!(
+            stable_payload_hash(&p).unwrap(),
+            stable_payload_hash(&legacy_without_cwd).unwrap(),
+            "non-null task.cwd must hash like the pre-upgrade no-cwd payload"
+        );
+
+        codex.cwd = None;
+        let (_, p1) = build_worker_payload(&codex).unwrap();
+        assert_eq!(p, p1);
+        assert_eq!(
+            stable_payload_hash(&p).unwrap(),
+            stable_payload_hash(&p1).unwrap()
+        );
+    }
+
+    #[test]
+    fn budget_greater_than_one_relies_on_claim_time_workspace_leases() {
+        let tasks = vec![
+            task("a", TaskStatus::Pending, &[], 0),
+            task("b", TaskStatus::Pending, &[], 0),
+        ];
+        let ready = compute_ready(&tasks, 2);
+        assert_eq!(keys(&ready), vec!["a", "b"]);
+        // There is intentionally no cwd/resource collision check here:
+        // Codex claims acquire `.claude/worktrees/<wave>/<card>` leases,
+        // and card ids make those paths structurally disjoint.
     }
 
     #[test]

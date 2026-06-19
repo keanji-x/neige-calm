@@ -85,6 +85,7 @@ pub(crate) fn event_warrants_spec_push_with_role(
         // `is_gated_self_report`).
         Event::TaskGateResult { .. } => true,
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
+        Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
@@ -642,6 +643,8 @@ impl Dispatcher {
             // satisfiable).
             "task.gate_result".into(),
             "wave.report_edited".into(),
+            "workspace.leased".into(),
+            "workspace.released".into(),
             "codex.hook".into(),
             "claude.hook".into(),
             // Issue #644 PR-B — scheduler triggers (§5.1). These
@@ -893,6 +896,12 @@ impl Inner {
                         ?author,
                         "dispatcher push: ignoring non-user wave.report_edited"
                     );
+                }
+            }
+            Event::WorkspaceLeased { wave_id, .. } | Event::WorkspaceReleased { wave_id, .. } => {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
+                    self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
+                        .await;
                 }
             }
             Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
@@ -1156,6 +1165,24 @@ pub(crate) fn harness_observation_from_event(
             body_sha256: sha256_hex(body_after),
             body: body_after.clone(),
         }),
+        Event::WorkspaceLeased {
+            card_id,
+            lease_id,
+            path,
+            ..
+        } => Some(HarnessObservation::WorkspaceLeased {
+            wave_id: wave_id.clone(),
+            card_id: card_id.clone(),
+            lease_id: lease_id.clone(),
+            path: path.clone(),
+        }),
+        Event::WorkspaceReleased {
+            card_id, lease_id, ..
+        } => Some(HarnessObservation::WorkspaceReleased {
+            wave_id: wave_id.clone(),
+            card_id: card_id.clone(),
+            lease_id: lease_id.clone(),
+        }),
         Event::CodexHook {
             card_id,
             kind,
@@ -1264,6 +1291,8 @@ mod tests {
                 "task.failed".into(),
                 "task.gate_result".into(),
                 "wave.report_edited".into(),
+                "workspace.leased".into(),
+                "workspace.released".into(),
                 "codex.hook".into(),
                 "claude.hook".into(),
                 "plan.updated".into(),
@@ -1332,6 +1361,17 @@ mod tests {
             body_before: String::new(),
             body_after: String::new(),
             agent_message: None,
+        })));
+        assert!(filter.matches(&env(Event::WorkspaceLeased {
+            wave_id: wave.clone(),
+            card_id: CardId::from("worker"),
+            lease_id: "lease-1".into(),
+            path: "/tmp/workspace".into(),
+        })));
+        assert!(filter.matches(&env(Event::WorkspaceReleased {
+            wave_id: wave.clone(),
+            card_id: CardId::from("worker"),
+            lease_id: "lease-1".into(),
         })));
         assert!(filter.matches(&env(Event::CodexHook {
             card_id: CardId::from("worker-codex"),
@@ -1687,6 +1727,30 @@ mod tests {
             &write
         ));
 
+        // Issue #760 slice ⑦ — workspace lease lifecycle events always warrant a
+        // push (kernel-emitted; no author/role gate).
+        let leased = Event::WorkspaceLeased {
+            wave_id: wave.clone(),
+            card_id: worker.clone(),
+            lease_id: "lease".into(),
+            path: "/tmp/ws".into(),
+        };
+        assert!(event_warrants_spec_push(
+            &leased,
+            &ActorId::KernelDispatcher,
+            &write
+        ));
+        let released = Event::WorkspaceReleased {
+            wave_id: wave.clone(),
+            card_id: worker.clone(),
+            lease_id: "lease".into(),
+        };
+        assert!(event_warrants_spec_push(
+            &released,
+            &ActorId::KernelDispatcher,
+            &write
+        ));
+
         let codex_hook = |card_id: CardId, kind: &str| Event::CodexHook {
             card_id,
             kind: kind.into(),
@@ -1908,6 +1972,41 @@ mod tests {
                 body_sha256: "09b37878497ec46015d1913ba0dff1cd051ca244859c80f4a3fc14d88a4a9465"
                     .into(),
                 body: "loop-pin-body".into(),
+            })
+        );
+
+        // workspace.* — lifecycle carrier events map through the payload
+        // fields and use the caller-provided wave id like wave.report_edited.
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::WorkspaceLeased {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    card_id: worker.clone(),
+                    lease_id: "lease-map".into(),
+                    path: "/tmp/workspace-map".into(),
+                }
+            ),
+            Some(HarnessObservation::WorkspaceLeased {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                lease_id: "lease-map".into(),
+                path: "/tmp/workspace-map".into(),
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::WorkspaceReleased {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    card_id: worker.clone(),
+                    lease_id: "lease-map".into(),
+                }
+            ),
+            Some(HarnessObservation::WorkspaceReleased {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                lease_id: "lease-map".into(),
             })
         );
 

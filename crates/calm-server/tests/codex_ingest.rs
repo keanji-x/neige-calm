@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, session_supersede_active_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{Card, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -25,9 +25,9 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
+    let runtime = session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
             id: new_id(),
@@ -47,6 +47,35 @@ async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    runtime.id
+}
+
+async fn bind_superseded_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let runtime = session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: new_id(),
+            card_id: card_id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Running,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.to_string()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    session_supersede_active_tx(&mut tx, &runtime.id, now_ms())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    runtime.id
 }
 
 #[tokio::test]
@@ -155,26 +184,93 @@ async fn codex_hook_rejects_session_id_that_maps_to_different_card() {
 async fn codex_hook_accepts_session_id_that_maps_to_query_card() {
     let (app, repo, events, card_id) = test_app().await;
     let mut rx = events.subscribe();
-    bind_runtime_thread(repo.as_ref(), card_id.as_str(), "session-match").await;
+    let runtime_id = bind_runtime_thread(repo.as_ref(), card_id.as_str(), "session-match").await;
 
     let payload = json!({
         "hook_event_name": "Stop",
         "session_id": "session-match",
     });
 
-    post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+    let event_id =
+        post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+    assert_eq!(
+        stored_actor(repo.as_ref(), event_id).await,
+        json!({ "kind": "AiCodexSession", "id": runtime_id })
+    );
 }
 
 #[tokio::test]
 async fn codex_hook_accepts_missing_session_id_fallback() {
-    let (app, _repo, events, card_id) = test_app().await;
+    let (app, repo, events, card_id) = test_app().await;
     let mut rx = events.subscribe();
 
     let payload = json!({
         "hook_event_name": "Stop",
     });
 
-    post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+    let event_id =
+        post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+    assert_eq!(
+        stored_actor(repo.as_ref(), event_id).await,
+        json!({ "kind": "AiCodex", "id": card_id })
+    );
+}
+
+#[tokio::test]
+async fn codex_hook_unresolvable_session_id_falls_back_to_card_actor() {
+    let (app, repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "missing-session",
+    });
+
+    let event_id =
+        post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+    assert_eq!(
+        stored_actor(repo.as_ref(), event_id).await,
+        json!({ "kind": "AiCodex", "id": card_id })
+    );
+}
+
+#[tokio::test]
+async fn codex_hook_empty_session_id_falls_back_to_card_actor() {
+    let (app, repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+
+    let payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "",
+    });
+
+    let event_id =
+        post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+    assert_eq!(
+        stored_actor(repo.as_ref(), event_id).await,
+        json!({ "kind": "AiCodex", "id": card_id })
+    );
+}
+
+#[tokio::test]
+async fn codex_hook_superseded_session_id_falls_back_and_succeeds() {
+    let (app, repo, events, card_id) = test_app().await;
+    let mut rx = events.subscribe();
+    let superseded_runtime_id =
+        bind_superseded_runtime_thread(repo.as_ref(), card_id.as_str(), "session-superseded").await;
+    assert!(!superseded_runtime_id.is_empty());
+
+    let payload = json!({
+        "hook_event_name": "Stop",
+        "session_id": "session-superseded",
+    });
+
+    let event_id =
+        post_and_assert(&app, &mut rx, card_id.as_str(), payload, "hook.codex.stop").await;
+    assert_eq!(
+        stored_actor(repo.as_ref(), event_id).await,
+        json!({ "kind": "AiCodex", "id": card_id })
+    );
 }
 
 #[tokio::test]
@@ -280,12 +376,14 @@ async fn post_and_assert(
     card_id: &str,
     payload: Value,
     expected_kind: &str,
-) {
+) -> i64 {
     let resp = post_hook(app, card_id, payload.clone()).await;
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let env = rx.recv().await.expect("event emitted");
-    assert!(env.id > 0, "expected real events.id, got {}", env.id);
+    let event_id = env.id;
+    assert!(event_id > 0, "expected real events.id, got {event_id}");
     match env.event {
         Event::CodexHook {
             card_id: event_card_id,
@@ -300,6 +398,16 @@ async fn post_and_assert(
         }
         other => panic!("expected CodexHook, got {other:?}"),
     }
+    event_id
+}
+
+async fn stored_actor(repo: &SqlxRepo, event_id: i64) -> Value {
+    let actor: String = sqlx::query_scalar("SELECT actor FROM events WHERE id = ?1")
+        .bind(event_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    serde_json::from_str(&actor).expect("events.actor is JSON")
 }
 
 async fn post_hook(app: &axum::Router, card_id: &str, payload: Value) -> axum::response::Response {

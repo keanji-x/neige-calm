@@ -235,6 +235,12 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     reason:
       'Scheduler claim record (#644 PR-B) — the runs views derive their requested-record from it; same surface task.completed/failed refresh.',
   },
+  'workspace.leased': noop(
+    'Workspace lease lifecycle is card-scoped; no React Query cache consumes lease rows yet.',
+  ),
+  'workspace.released': noop(
+    'Workspace lease lifecycle is card-scoped; no React Query cache consumes lease rows yet.',
+  ),
   'task.gate_result': {
     requiresContext: waveFilesDerivedEventKeys,
     reason:

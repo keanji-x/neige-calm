@@ -555,6 +555,33 @@ export const taskDispatchedSchema = z.object({
 });
 
 /**
+ * `Event::WorkspaceLeased` — issue #760 slice 1: the kernel created an
+ * isolated workspace directory for a Codex worker card.
+ */
+export const workspaceLeasedSchema = z.object({
+  ev: z.literal('workspace.leased'),
+  data: z.object({
+    wave_id: z.string(),
+    card_id: z.string(),
+    lease_id: z.string(),
+    path: z.string(),
+  }),
+});
+
+/**
+ * `Event::WorkspaceReleased` — issue #760 slice 1: the kernel released the
+ * durable workspace lease after completion, compensation, or boot reclaim.
+ */
+export const workspaceReleasedSchema = z.object({
+  ev: z.literal('workspace.released'),
+  data: z.object({
+    wave_id: z.string(),
+    card_id: z.string(),
+    lease_id: z.string(),
+  }),
+});
+
+/**
  * `Event::TaskGateResult` — issue #644 PR-C: the kernel gate runner
  * finished one `task-verify` attempt; appended in the same tx as the
  * `verifying → done|failed` tasks-row flip. `task_id` and
@@ -643,6 +670,8 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskFailedSchema,
   planUpdatedSchema,
   taskDispatchedSchema,
+  workspaceLeasedSchema,
+  workspaceReleasedSchema,
   taskGateResultSchema,
 ]);
 
@@ -689,6 +718,8 @@ export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
 export type PlanUpdatedEvent = z.infer<typeof planUpdatedSchema>;
 export type TaskDispatchedEvent = z.infer<typeof taskDispatchedSchema>;
+export type WorkspaceLeasedEvent = z.infer<typeof workspaceLeasedSchema>;
+export type WorkspaceReleasedEvent = z.infer<typeof workspaceReleasedSchema>;
 export type TaskGateResultEvent = z.infer<typeof taskGateResultSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;

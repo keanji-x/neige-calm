@@ -10,6 +10,7 @@ use crate::session_projection_repo::{
     AgentProvider, Result as WorkerSessionProjectionResult, WorkerSessionKind,
     WorkerSessionProjection, WorkerSessionProjectionRepo, WorkerSessionState,
 };
+use crate::worker::WorkerSessionId;
 use serde_json::Value;
 
 /// Resolve an active codex thread for a card. Worker sessions are the source of
@@ -34,6 +35,18 @@ pub async fn resolve_card_for_thread(
     provider: AgentProvider,
     thread_id: &str,
 ) -> Result<Option<String>> {
+    Ok(resolve_session_for_thread(repo, provider, thread_id)
+        .await?
+        .map(|(_session_id, card_id)| card_id))
+}
+
+/// Resolve the active worker session and owning card for a provider thread id.
+/// Worker sessions are the source of truth.
+pub async fn resolve_session_for_thread(
+    repo: &dyn RouteRepo,
+    provider: AgentProvider,
+    thread_id: &str,
+) -> Result<Option<(WorkerSessionId, String)>> {
     let active = match &provider {
         AgentProvider::Codex => {
             repo.session_projection_active_by_thread(AgentProvider::Codex, thread_id)
@@ -44,7 +57,7 @@ pub async fn resolve_card_for_thread(
                 .await?
         }
     };
-    Ok(active.map(|runtime| runtime.card_id))
+    Ok(active.map(|runtime| (WorkerSessionId::from(runtime.id), runtime.card_id)))
 }
 
 /// Resolve a Claude session for a card. Worker sessions are the source of truth;

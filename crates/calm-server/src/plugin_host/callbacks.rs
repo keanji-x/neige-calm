@@ -25,10 +25,11 @@ use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
     terminal_delete_tx,
 };
-use crate::db::{RepoRead, RouteRepo, write_with_event_typed};
+use crate::db::{RepoRead, RouteRepo, write_with_actor_events_typed, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
+use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -603,10 +604,8 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     }
     let terminal_id = term.map(|t| t.id);
 
-    let _ = write_with_event_typed(
+    let _ = write_with_actor_events_typed(
         ctx.repo.as_ref(),
-        actor,
-        scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         &ctx.write,
@@ -622,14 +621,17 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                         Err(e) => return Err(e),
                     }
                 }
+                let mut events = release_workspace_lease_for_card_tx(tx, &card_id).await?;
                 card_delete_tx(tx, &card_id, write_for_tx.role_cache()).await?;
-                Ok((
-                    (),
+                events.push((
+                    actor,
+                    scope,
                     Event::CardDeleted {
                         id: card_id.into(),
                         wave_id,
                     },
-                ))
+                ));
+                Ok(((), events))
             })
         },
     )

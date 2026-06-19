@@ -688,6 +688,27 @@ golden_test!(
 );
 
 golden_test!(
+    workspace_leased,
+    "workspace_leased.json",
+    Event::WorkspaceLeased {
+        wave_id: WaveId::from("wave-01"),
+        card_id: CardId::from("card-01"),
+        lease_id: "lease-01".into(),
+        path: ".claude/worktrees/wave-01/card-01".into(),
+    }
+);
+
+golden_test!(
+    workspace_released,
+    "workspace_released.json",
+    Event::WorkspaceReleased {
+        wave_id: WaveId::from("wave-01"),
+        card_id: CardId::from("card-01"),
+        lease_id: "lease-01".into(),
+    }
+);
+
+golden_test!(
     task_gate_result_full,
     "task_gate_result.full.json",
     Event::TaskGateResult {
@@ -753,7 +774,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 30] = [
+const ALL_KIND_TAGS: [&str; 32] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -783,6 +804,8 @@ const ALL_KIND_TAGS: [&str; 30] = [
     "task.failed",
     "plan.updated",
     "task.dispatched",
+    "workspace.leased",
+    "workspace.released",
     "task.gate_result",
 ];
 
@@ -818,7 +841,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 49,
+        files, 51,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -868,6 +891,8 @@ fn kind_tag_list_matches_enum() {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
+            Event::WorkspaceLeased { .. } => "workspace.leased",
+            Event::WorkspaceReleased { .. } => "workspace.released",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
@@ -877,7 +902,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        30,
+        32,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

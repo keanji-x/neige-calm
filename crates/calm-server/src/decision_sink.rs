@@ -12,6 +12,7 @@ use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, Wave, WaveLifecycle};
+use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
@@ -86,6 +87,11 @@ impl CardDecisionSink {
             cove: wave.cove_id.clone(),
         };
         let wave_id = wave.id.clone();
+        let release_workspace = matches!(
+            event,
+            Event::TaskCompleted { .. } | Event::TaskFailed { .. }
+        );
+        let worker_card_id_for_tx = card_id_str.clone();
 
         write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
@@ -98,7 +104,7 @@ impl CardDecisionSink {
                 let scope = scope.clone();
                 let wave_scope = wave_scope.clone();
                 let wave_id = wave_id.clone();
-                let worker_card_id = card_id_str.clone();
+                let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
                     // Issue #644 PR-B — flip the matching plan-task row INSIDE
                     // the same tx that persists the worker's report event
@@ -263,6 +269,11 @@ impl CardDecisionSink {
             },
         )
         .await?;
+
+        if release_workspace {
+            release_workspace_lease_for_card_repo(self.repo.as_ref(), &self.events, &card_id_str)
+                .await?;
+        }
 
         Ok(())
     }
