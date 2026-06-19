@@ -39,6 +39,7 @@ use crate::mcp_server::framing::{
 use crate::mcp_server::handshake::{TOKEN_NOT_RECOGNIZED_CODE, handle_initialize};
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolDescriptor, ToolRegistry,
+    require_role_any,
 };
 use crate::model::CardRole;
 use crate::session_projection_repo::AgentProvider;
@@ -404,13 +405,14 @@ async fn dispatch_request(
                                 ctx,
                                 &mut descriptors,
                                 identity.role,
-                            );
+                            )
+                            .await;
                             descriptors
                         }
                         None => {
                             let mut descriptors =
                                 registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
-                            descriptors.extend(plugin_tool_descriptors(ctx));
+                            descriptors.extend(plugin_tool_descriptors(ctx).await);
                             descriptors
                         }
                     },
@@ -421,7 +423,7 @@ async fn dispatch_request(
                     None => {
                         let mut descriptors =
                             registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
-                        descriptors.extend(plugin_tool_descriptors(ctx));
+                        descriptors.extend(plugin_tool_descriptors(ctx).await);
                         descriptors
                     }
                 },
@@ -436,7 +438,8 @@ async fn dispatch_request(
                                 ctx,
                                 &mut descriptors,
                                 identity.role,
-                            );
+                            )
+                            .await;
                             descriptors
                         }
                         Some(identity) => {
@@ -448,7 +451,8 @@ async fn dispatch_request(
                     None => {
                         ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
                         let mut descriptors = registry.descriptors_for_role(bound.role);
-                        extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, bound.role);
+                        extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, bound.role)
+                            .await;
                         descriptors
                     }
                 },
@@ -480,24 +484,28 @@ async fn dispatch_request(
     }
 }
 
-fn extend_plugin_tool_descriptors_for_role(
+async fn extend_plugin_tool_descriptors_for_role(
     ctx: &Arc<AppContext>,
     descriptors: &mut Vec<ToolDescriptor>,
     role: CardRole,
 ) {
     if PLUGIN_TOOL_ROLES.contains(&role) {
-        descriptors.extend(plugin_tool_descriptors(ctx));
+        descriptors.extend(plugin_tool_descriptors(ctx).await);
     }
 }
 
-fn plugin_tool_descriptors(ctx: &Arc<AppContext>) -> Vec<ToolDescriptor> {
-    let Some(plugin_host) = ctx.plugin_host.get() else {
+async fn plugin_tool_descriptors(ctx: &Arc<AppContext>) -> Vec<ToolDescriptor> {
+    let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
         return Vec::new();
     };
 
+    let running_ids = plugin_host.running_plugin_ids().await;
     let mut descriptors = Vec::new();
     for manifest in plugin_host.registry().list() {
         let plugin_id = manifest.id;
+        if !running_ids.contains(&plugin_id) {
+            continue;
+        }
         for entry in manifest.exposes_tools {
             descriptors.push(ToolDescriptor {
                 name: format!("plugin.{}.{}", plugin_id, entry.name),
@@ -586,11 +594,12 @@ async fn dispatch_plugin_tools_call(
     arguments: Value,
     connection_identity: &ConnectionIdentity,
 ) -> Result<Value, RpcError> {
-    let Some((plugin_host, plugin_id, tool_name)) = plugin_tool_route(ctx, name) else {
+    let Some((plugin_host, plugin_id, tool_name)) = plugin_tool_route(ctx, name)? else {
         return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
     };
 
-    let _identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
     let client = plugin_host
         .mcp_client(&plugin_id)
         .await
@@ -603,20 +612,49 @@ async fn dispatch_plugin_tools_call(
 fn plugin_tool_route(
     ctx: &Arc<AppContext>,
     name: &str,
-) -> Option<(Arc<crate::plugin_host::PluginHost>, String, String)> {
-    let plugin_host = ctx.plugin_host.get()?.clone();
-    let rest = name.strip_prefix("plugin.")?;
+) -> Result<Option<(Arc<crate::plugin_host::PluginHost>, String, String)>, RpcError> {
+    let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
+        return Ok(None);
+    };
+    let Some(rest) = name.strip_prefix("plugin.") else {
+        return Ok(None);
+    };
+
+    let mut candidates = Vec::new();
     for manifest in plugin_host.registry().list() {
-        if let Some(tool_name) = rest.strip_prefix(&format!("{}.", manifest.id))
+        let plugin_id = manifest.id;
+        let prefix = format!("{plugin_id}.");
+        if let Some(tool_name) = rest.strip_prefix(&prefix)
             && manifest
                 .exposes_tools
                 .iter()
                 .any(|entry| entry.name == tool_name)
         {
-            return Some((plugin_host, manifest.id, tool_name.to_string()));
+            candidates.push((plugin_id, tool_name.to_string()));
         }
     }
-    None
+
+    match candidates.len() {
+        0 => Ok(None),
+        1 => {
+            let (plugin_id, tool_name) = candidates.remove(0);
+            Ok(Some((plugin_host, plugin_id, tool_name)))
+        }
+        _ => {
+            let mut matches = candidates
+                .into_iter()
+                .map(|(plugin_id, tool_name)| format!("plugin.{plugin_id}.{tool_name}"))
+                .collect::<Vec<_>>();
+            matches.sort();
+            Err(RpcError::custom(
+                RpcError::INVALID_PARAMS,
+                format!(
+                    "ambiguous plugin tool `{name}` matches {}",
+                    matches.join(", ")
+                ),
+            ))
+        }
+    }
 }
 
 async fn card_bound_tool_identity(

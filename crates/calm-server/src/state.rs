@@ -959,8 +959,17 @@ impl AppState {
         ));
         let _ = plugin_host_cell.set(plugin.clone());
 
+        // Auto-spawn every enabled plugin row. Per-plugin errors are logged
+        // inside `autospawn_enabled`; we never let one broken plugin block
+        // the rest of the boot path.
+        plugin.autospawn_enabled().await;
+
+        let running_plugin_ids = plugin.running_plugin_ids().await;
         for manifest in plugin.registry().list() {
             let plugin_id = manifest.id;
+            if !running_plugin_ids.contains(&plugin_id) {
+                continue;
+            }
             for entry in manifest.exposes_tools {
                 let tool_name = entry.name;
                 if let Err(e) = repo
@@ -987,11 +996,6 @@ impl AppState {
                 }
             }
         }
-
-        // Auto-spawn every enabled plugin row. Per-plugin errors are logged
-        // inside `autospawn_enabled`; we never let one broken plugin block
-        // the rest of the boot path.
-        plugin.autospawn_enabled().await;
 
         let worker_flow = WorkerFlowDriver::from_state_parts(
             repo.clone(),

@@ -106,6 +106,10 @@ async fn worker_mcp_discovers_and_routes_declared_dotted_plugin_tools_only() {
         routed["result"]["_meta"]["ui"]["resourceUri"],
         "ui://stub/status"
     );
+    assert_eq!(
+        routed["result"]["_meta"]["requested_name"], TOOL_NAME,
+        "kernel must forward the stripped inner tool name to the plugin"
+    );
 
     fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
 }

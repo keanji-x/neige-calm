@@ -1140,7 +1140,11 @@ pub fn topics(ev: &Event) -> Vec<String> {
             vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]
         }
         Event::PluginToolRegistered { plugin_id, .. } => {
-            vec![format!("plugin:{}", plugin_id)]
+            vec![
+                format!("plugin:{}", plugin_id),
+                "plugin:*".into(),
+                "*".into(),
+            ]
         }
 
         Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {

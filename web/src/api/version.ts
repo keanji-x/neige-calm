@@ -43,10 +43,15 @@
  *   `SYNC_EVENT_VERSION` bumped 3 → 4 in lockstep). Older frontends'
  *   zod schemas don't know the new discriminator and would silently
  *   drop gate-result invalidation frames, so bump here.
+ * * `6` — plugin-tool registration wire kind (issue #760 slice 2).
+ *   Adds `plugin.tool.registered` to the WS event union (backend
+ *   `SYNC_EVENT_VERSION` bumped 4 → 5 in lockstep). Older frontends'
+ *   zod schemas don't know the new discriminator and would silently
+ *   drop plugin-tool registration frames, so bump here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 5;
+export const WEB_COMPAT_VERSION = 6;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here
