@@ -1,0 +1,10 @@
+{
+  "description": "plugin.tool.registered boot discovery signal for one manifest-declared exposed tool.",
+  "wire": {
+    "ev": "plugin.tool.registered",
+    "data": {
+      "plugin_id": "plugin-x",
+      "tool_name": "make_status_card"
+    }
+  }
+}

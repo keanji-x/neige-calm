@@ -9,8 +9,9 @@ use crate::card_role_cache::CardRoleCache;
 use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
-use crate::event::EventBus;
+use crate::event::{Event, EventBus, EventScope};
 use crate::harness::HarnessRegistry;
+use crate::ids::ActorId;
 use crate::mcp_server::McpServer;
 use crate::operation::claude_adapter::ClaudeAdapter;
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
@@ -836,6 +837,7 @@ impl AppState {
         let daemon_mcp_token =
             crate::mcp_server::auth::get_or_generate_daemon_token(&cfg.data_dir_resolved())?;
         let daemon_mcp_token_hash = crate::mcp_server::auth::hash_token(&daemon_mcp_token);
+        let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
         // Issue #644 PR-C (PR #685 F3) — ONE resolution of the gate-logs
         // dir, shared by the gate runner (TaskVerifyAdapter below) and
         // the MCP `plan/<key>/gate.log` view, so a `--data-dir` CLI flag
@@ -849,6 +851,7 @@ impl AppState {
             mcp_shim_bin,
             mcp_registry,
             Some(daemon_mcp_token_hash),
+            plugin_host_cell.clone(),
             gate_logs_dir.clone(),
         )
         .await?;
@@ -954,6 +957,36 @@ impl AppState {
             events.clone(),
             write.clone(),
         ));
+        let _ = plugin_host_cell.set(plugin.clone());
+
+        for manifest in plugin.registry().list() {
+            let plugin_id = manifest.id;
+            for entry in manifest.exposes_tools {
+                let tool_name = entry.name;
+                if let Err(e) = repo
+                    .log_pure_event(
+                        ActorId::Kernel,
+                        EventScope::System,
+                        None,
+                        &events,
+                        &card_role_cache,
+                        &wave_cove_cache,
+                        Event::PluginToolRegistered {
+                            plugin_id: plugin_id.clone(),
+                            tool_name: tool_name.clone(),
+                        },
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        plugin_id = %plugin_id,
+                        tool_name = %tool_name,
+                        error = %e,
+                        "plugin_tool_registered event log failed"
+                    );
+                }
+            }
+        }
 
         // Auto-spawn every enabled plugin row. Per-plugin errors are logged
         // inside `autospawn_enabled`; we never let one broken plugin block

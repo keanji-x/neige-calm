@@ -38,7 +38,7 @@ use crate::mcp_server::framing::{
 };
 use crate::mcp_server::handshake::{TOKEN_NOT_RECOGNIZED_CODE, handle_initialize};
 use crate::mcp_server::registry::{
-    AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
+    AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolDescriptor, ToolRegistry,
 };
 use crate::model::CardRole;
 use crate::session_projection_repo::AgentProvider;
@@ -71,6 +71,7 @@ const SOCKET_MODE: u32 = 0o600;
 /// stalls a connect attempt. A timeout falls through to the stale-file
 /// reclaim path, same as `ECONNREFUSED`.
 const LIVE_LISTENER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const PLUGIN_TOOL_ROLES: &[CardRole] = &[CardRole::Spec, CardRole::Worker];
 
 /// Configuration the codex daemon needs to know about the kernel's MCP
 /// server, including the shim binary and Unix socket path.
@@ -120,6 +121,7 @@ impl McpServer {
         shim_bin: PathBuf,
         registry: Arc<ToolRegistry>,
         daemon_token_hash: Option<String>,
+        plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
         gate_logs_dir: PathBuf,
     ) -> anyhow::Result<Arc<Self>> {
         if let Some(parent) = socket_path.parent()
@@ -174,6 +176,7 @@ impl McpServer {
             write,
             daemon_token_hash,
             gate_logs_dir,
+            plugin_host,
         });
 
         let socket_for_handle = socket_path.clone();
@@ -391,22 +394,36 @@ async fn dispatch_request(
             let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
             let descriptors = match connection_identity {
                 ConnectionIdentity::DaemonTrust => match thread_id {
-                    Some(tid) => resolve_thread_identity(ctx, Some(tid), "tools/list")
+                    Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
                         .await
                         .ok()
-                        .map(|identity| registry.descriptors_for_role(identity.role))
-                        .unwrap_or_else(|| {
-                            registry.descriptors_visible_to_any_role(&[
-                                CardRole::Spec,
-                                CardRole::Worker,
-                            ])
-                        }),
+                    {
+                        Some(identity) => {
+                            let mut descriptors = registry.descriptors_for_role(identity.role);
+                            extend_plugin_tool_descriptors_for_role(
+                                ctx,
+                                &mut descriptors,
+                                identity.role,
+                            );
+                            descriptors
+                        }
+                        None => {
+                            let mut descriptors =
+                                registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
+                            descriptors.extend(plugin_tool_descriptors(ctx));
+                            descriptors
+                        }
+                    },
                     // Shared-daemon Codex sessions may send tools/list before
                     // a thread is attributed. Discovery can safely return the
                     // role-visible union because tools/call still resolves and
                     // enforces the exact per-thread identity.
-                    None => registry
-                        .descriptors_visible_to_any_role(&[CardRole::Spec, CardRole::Worker]),
+                    None => {
+                        let mut descriptors =
+                            registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
+                        descriptors.extend(plugin_tool_descriptors(ctx));
+                        descriptors
+                    }
                 },
                 ConnectionIdentity::CardBound(bound) => match thread_id {
                     Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
@@ -414,7 +431,13 @@ async fn dispatch_request(
                         .ok()
                     {
                         Some(identity) if same_bound_session(&identity, bound) => {
-                            registry.descriptors_for_role(identity.role)
+                            let mut descriptors = registry.descriptors_for_role(identity.role);
+                            extend_plugin_tool_descriptors_for_role(
+                                ctx,
+                                &mut descriptors,
+                                identity.role,
+                            );
+                            descriptors
                         }
                         Some(identity) => {
                             warn_cross_session_reject(tid, &identity, bound);
@@ -424,7 +447,9 @@ async fn dispatch_request(
                     },
                     None => {
                         ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
-                        registry.descriptors_for_role(bound.role)
+                        let mut descriptors = registry.descriptors_for_role(bound.role);
+                        extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, bound.role);
+                        descriptors
                     }
                 },
             };
@@ -455,6 +480,37 @@ async fn dispatch_request(
     }
 }
 
+fn extend_plugin_tool_descriptors_for_role(
+    ctx: &Arc<AppContext>,
+    descriptors: &mut Vec<ToolDescriptor>,
+    role: CardRole,
+) {
+    if PLUGIN_TOOL_ROLES.contains(&role) {
+        descriptors.extend(plugin_tool_descriptors(ctx));
+    }
+}
+
+fn plugin_tool_descriptors(ctx: &Arc<AppContext>) -> Vec<ToolDescriptor> {
+    let Some(plugin_host) = ctx.plugin_host.get() else {
+        return Vec::new();
+    };
+
+    let mut descriptors = Vec::new();
+    for manifest in plugin_host.registry().list() {
+        let plugin_id = manifest.id;
+        for entry in manifest.exposes_tools {
+            descriptors.push(ToolDescriptor {
+                name: format!("plugin.{}.{}", plugin_id, entry.name),
+                description: entry.description.unwrap_or_default(),
+                input_schema: json!({ "type": "object" }),
+                annotations: None,
+                visible_to_roles: PLUGIN_TOOL_ROLES,
+            });
+        }
+    }
+    descriptors
+}
+
 async fn dispatch_tools_call(
     ctx: &Arc<AppContext>,
     request_meta: Option<Value>,
@@ -478,12 +534,37 @@ async fn dispatch_tools_call(
         .get("arguments")
         .cloned()
         .unwrap_or(Value::Object(Default::default()));
-    let handler: ToolHandler = registry
-        .lookup(name)
-        .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
 
-    let identity = match connection_identity {
-        ConnectionIdentity::DaemonTrust => resolve_thread_identity(ctx, thread_id, name).await?,
+    if let Some(handler) = registry.lookup(name) {
+        let identity =
+            resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+        let fut = handler(ctx.clone(), identity, arguments);
+        let raw = fut.await?;
+        // Wrap the handler's raw payload in the MCP `CallToolResult`
+        // envelope so codex's MCP client parses it. The kernel's
+        // tools today return a JSON object; we surface it as a
+        // single `text` content block + `structuredContent` field
+        // so downstream agents can either parse the structured form
+        // or read the text representation.
+        let text = serde_json::to_string(&raw).unwrap_or_else(|_| "{}".to_string());
+        return Ok(json!({
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": raw,
+            "isError": false,
+        }));
+    }
+
+    dispatch_plugin_tools_call(ctx, thread_id, name, arguments, connection_identity).await
+}
+
+async fn resolve_tools_call_identity(
+    ctx: &Arc<AppContext>,
+    thread_id: Option<&str>,
+    name: &str,
+    connection_identity: &ConnectionIdentity,
+) -> Result<ToolCallIdentity, RpcError> {
+    match connection_identity {
+        ConnectionIdentity::DaemonTrust => resolve_thread_identity(ctx, thread_id, name).await,
         ConnectionIdentity::CardBound(bound) => match thread_id {
             Some(tid) => {
                 let identity = resolve_thread_identity(ctx, Some(tid), name).await?;
@@ -491,26 +572,49 @@ async fn dispatch_tools_call(
                     warn_cross_session_reject(tid, &identity, bound);
                     return Err(cross_session_thread_error(tid, bound));
                 }
-                identity
+                Ok(identity)
             }
-            None => card_bound_tool_identity(ctx, bound).await?,
+            None => card_bound_tool_identity(ctx, bound).await,
         },
+    }
+}
+
+async fn dispatch_plugin_tools_call(
+    ctx: &Arc<AppContext>,
+    thread_id: Option<&str>,
+    name: &str,
+    arguments: Value,
+    connection_identity: &ConnectionIdentity,
+) -> Result<Value, RpcError> {
+    let Some((plugin_host, plugin_id, tool_name)) = plugin_tool_route(ctx, name) else {
+        return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
     };
 
-    let fut = handler(ctx.clone(), identity, arguments);
-    let raw = fut.await?;
-    // Wrap the handler's raw payload in the MCP `CallToolResult`
-    // envelope so codex's MCP client parses it. The kernel's
-    // tools today return a JSON object; we surface it as a
-    // single `text` content block + `structuredContent` field
-    // so downstream agents can either parse the structured form
-    // or read the text representation.
-    let text = serde_json::to_string(&raw).unwrap_or_else(|_| "{}".to_string());
-    Ok(json!({
-        "content": [{ "type": "text", "text": text }],
-        "structuredContent": raw,
-        "isError": false,
-    }))
+    let _identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    let client = plugin_host
+        .mcp_client(&plugin_id)
+        .await
+        .ok_or_else(|| RpcError::custom(-32002, format!("plugin `{plugin_id}` not running")))?;
+    let result = client.tools_call(&tool_name, arguments).await?;
+    serde_json::to_value(result)
+        .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))
+}
+
+fn plugin_tool_route(
+    ctx: &Arc<AppContext>,
+    name: &str,
+) -> Option<(Arc<crate::plugin_host::PluginHost>, String, String)> {
+    let plugin_host = ctx.plugin_host.get()?.clone();
+    let (plugin_id, tool_name) = name.strip_prefix("plugin.")?.rsplit_once('.')?;
+    let manifest = plugin_host.registry().get(plugin_id)?;
+    if !manifest
+        .exposes_tools
+        .iter()
+        .any(|entry| entry.name == tool_name)
+    {
+        return None;
+    }
+    Some((plugin_host, plugin_id.to_string(), tool_name.to_string()))
 }
 
 async fn card_bound_tool_identity(

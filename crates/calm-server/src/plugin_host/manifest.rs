@@ -69,7 +69,9 @@ pub struct Manifest {
     #[serde(default)]
     pub views: Vec<View>,
 
-    /// Documentation-only; the kernel rediscovers via MCP `tools/list`.
+    /// Worker-facing outbound tool allowlist (#760 slice 2). The kernel reads
+    /// and enforces this for MCP `tools/list` discovery and `tools/call`
+    /// routing; unrelated to iframe→kernel `permissions.tools`.
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
 
