@@ -268,6 +268,7 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
         locate_shim_bin(),
         build_default_registry(),
         None,
+        std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await

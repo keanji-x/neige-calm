@@ -123,6 +123,7 @@ async fn boot() -> Boot {
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
         None,
+        std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await

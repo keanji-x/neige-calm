@@ -202,6 +202,7 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
       "cards/<id>/runtime.json projects terminal runtime status; reaping a terminal invalidates that projection.",
   },
   'plugin.state': noop('No plugin list query exists yet.'),
+  'plugin.tool.registered': noop('No plugin-tool catalog query exists yet.'),
   'codex.hook': {
     requiresContext: waveFilesDerivedEventKeys,
     reason: 'Codex card topic consumers handle codex hook payloads directly.',

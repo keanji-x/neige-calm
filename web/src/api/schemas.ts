@@ -393,6 +393,19 @@ export const pluginStateSchema = z.object({
 });
 
 /**
+ * `Event::PluginToolRegistered` — boot-time announcement for one
+ * manifest-declared plugin MCP tool that is currently running and exposed
+ * through the kernel MCP server as `plugin.<plugin_id>.<tool_name>`.
+ */
+export const pluginToolRegisteredSchema = z.object({
+  ev: z.literal('plugin.tool.registered'),
+  data: z.object({
+    plugin_id: z.string(),
+    tool_name: z.string(),
+  }),
+});
+
+/**
  * `Event::CodexHook` — passthrough of one codex-CLI hook firing
  * (PreToolUse / PostToolUse / Stop / ...). `kind` carries a snake-case
  * discriminator (`hook.codex.<event>`) so callers can pattern-match
@@ -648,6 +661,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   overlayDeletedSchema,
   terminalDeletedSchema,
   pluginStateSchema,
+  pluginToolRegisteredSchema,
   codexHookSchema,
   claudeHookSchema,
   codexWorkerRequestedSchema,
@@ -695,6 +709,7 @@ export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
+export type PluginToolRegisteredEvent = z.infer<typeof pluginToolRegisteredSchema>;
 export type CodexHookEvent = z.infer<typeof codexHookSchema>;
 export type ClaudeHookEvent = z.infer<typeof claudeHookSchema>;
 export type CodexWorkerRequestedEvent = z.infer<typeof codexWorkerRequestedSchema>;

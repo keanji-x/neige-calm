@@ -328,7 +328,8 @@ impl EventScope {
 ///   `workspace.leased` and `workspace.released` to the event union.
 ///   A v4 tab would otherwise advance past those rows and fail zod on
 ///   replay before refreshing onto a bundle that understands them.
-pub const SYNC_EVENT_VERSION: u32 = 5;
+/// * `6` — plugin tool registration wire kind (#760 slice 2). Adds `plugin.tool.registered`.
+pub const SYNC_EVENT_VERSION: u32 = 6;
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
@@ -545,6 +546,11 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_error: Option<String>,
+    },
+    #[serde(rename = "plugin.tool.registered")]
+    PluginToolRegistered {
+        plugin_id: String,
+        tool_name: String,
     },
 
     /// Codex CLI hook passthrough. The `neige-codex-bridge` subprocess POSTs
@@ -788,10 +794,11 @@ pub enum Event {
 /// decision instead of silently inheriting `None`.
 ///
 /// `plugin_id` is set only for `Event::OverlaySet`,
-/// `Event::OverlayDeleted`, and `Event::PluginState`; every other variant
-/// has no plugin attribution. `entity_kind` / `entity_id` are set only for
-/// events with a filterable entity surface. The PR4 dispatcher/task-lifecycle
-/// variants (`Event::CodexWorkerRequested`, `Event::TerminalWorkerRequested`,
+/// `Event::OverlayDeleted`, `Event::PluginState`, and
+/// `Event::PluginToolRegistered`; every other variant has no plugin
+/// attribution. `entity_kind` / `entity_id` are set only for events with a
+/// filterable entity surface. The PR4 dispatcher/task-lifecycle variants
+/// (`Event::CodexWorkerRequested`, `Event::TerminalWorkerRequested`,
 /// `Event::TaskCompleted`, `Event::TaskFailed`) carry no plugin id, entity
 /// kind, or entity id; plugins that want those signals must filter via the
 /// events glob clause and omit the classifier clauses.
@@ -917,6 +924,12 @@ impl Event {
                 entity_kind: None,
                 entity_id: Some(id.clone()),
             },
+            Event::PluginToolRegistered { plugin_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: Some(plugin_id.clone()),
+                entity_kind: None,
+                entity_id: Some(plugin_id.clone()),
+            },
             Event::CodexHook { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1014,6 +1027,7 @@ impl Event {
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",
             Event::PluginState { .. } => "plugin.state",
+            Event::PluginToolRegistered { .. } => "plugin.tool.registered",
             Event::CodexHook { .. } => "codex.hook",
             Event::ClaudeHook { .. } => "claude.hook",
             Event::CodexWorkerRequested { .. } => "codex.worker_requested",
@@ -1163,6 +1177,13 @@ pub fn topics(ev: &Event) -> Vec<String> {
 
         Event::PluginState { id, .. } => {
             vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]
+        }
+        Event::PluginToolRegistered { plugin_id, .. } => {
+            vec![
+                format!("plugin:{}", plugin_id),
+                "plugin:*".into(),
+                "*".into(),
+            ]
         }
 
         Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {
@@ -2167,6 +2188,10 @@ mod scope_tests {
                 id: "plugin-1".into(),
                 state: "running".into(),
                 last_error: None,
+            },
+            Event::PluginToolRegistered {
+                plugin_id: "plugin-1".into(),
+                tool_name: "calm.plugin.echo".into(),
             },
             Event::CodexHook {
                 card_id: CardId::from("card-codex"),

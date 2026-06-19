@@ -436,6 +436,31 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('parses a valid plugin.tool.registered (#760 slice 2)', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'plugin.tool.registered',
+      data: {
+        plugin_id: 'dev.echo',
+        tool_name: 'do.thing',
+      },
+    });
+    expect(parsed.ev).toBe('plugin.tool.registered');
+    if (parsed.ev === 'plugin.tool.registered') {
+      expect(parsed.data.plugin_id).toBe('dev.echo');
+      expect(parsed.data.tool_name).toBe('do.thing');
+    }
+  });
+
+  it('rejects plugin.tool.registered missing tool_name', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'plugin.tool.registered',
+      data: {
+        plugin_id: 'dev.echo',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 // ---- PR2 of #247: wave.report_edited ----------------------------------
