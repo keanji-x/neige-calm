@@ -54,6 +54,7 @@ struct Fixture {
     card_id: String,
     wave_id: String,
     lease_abs: Option<PathBuf>,
+    tool_call_marker: PathBuf,
     _runtime: Arc<OperationRuntime>,
     _lease_tmp: Option<TempDir>,
     _tmp: TempDir,
@@ -369,6 +370,10 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
             0,
             "untrusted forge plugin must not persist a forge event"
         );
+        assert!(
+            !untrusted.tool_call_marker.exists(),
+            "untrusted forge plugin's tools/call handler must not be invoked"
+        );
         untrusted
             .plugin_host
             .stop(PLUGIN_ID)
@@ -626,6 +631,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
+    let tool_call_marker = plugins_data_dir.join(PLUGIN_ID).join("tools-call-count");
     let wave_cwd = tmp.path().join("wave-cwd");
     std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
 
@@ -671,6 +677,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
         events.clone(),
         calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         mode,
+        tool_call_marker.clone(),
     )
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
@@ -732,6 +739,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
         card_id: caller.card_id,
         wave_id: caller.wave_id,
         lease_abs: caller.lease_abs,
+        tool_call_marker,
         _runtime: runtime,
         _lease_tmp: caller._lease_tmp,
         _tmp: tmp,
@@ -848,6 +856,7 @@ async fn boot_plugin_host(
     events: EventBus,
     write: calm_server::state::WriteContext,
     mode: StubMode,
+    tool_call_marker: PathBuf,
 ) -> Arc<PluginHost> {
     let install_dir = plugins_dir.join(PLUGIN_ID);
     let bin_dir = install_dir.join("bin");
@@ -865,6 +874,10 @@ async fn boot_plugin_host(
     );
     env.insert("STUB_FORGE_CONTEXT_JSON".into(), json!(mode.context_json()));
     env.insert("STUB_FORGE_ARGV_JSON".into(), json!(mode.argv_json()));
+    env.insert(
+        "STUB_FORGE_CALL_MARKER".into(),
+        json!(tool_call_marker.display().to_string()),
+    );
     if let Some(stub_mode) = mode.stub_mode() {
         env.insert("STUB_FORGE_MODE".into(), json!(stub_mode));
     }

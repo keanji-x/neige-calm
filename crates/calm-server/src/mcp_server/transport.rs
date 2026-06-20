@@ -620,17 +620,24 @@ async fn dispatch_plugin_tools_call(
 
     let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
-    let client = plugin_host
-        .mcp_client(&plugin_id)
-        .await
-        .ok_or_else(|| RpcError::custom(-32002, format!("plugin `{plugin_id}` not running")))?;
     match kind {
         None => {
+            let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
+                RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+            })?;
             let result = client.tools_call(&tool_name, arguments).await?;
             serde_json::to_value(result)
                 .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))
         }
         Some(ToolKind::ForgeAction) => {
+            if !trusted_forge_plugin(&plugin_id) {
+                return Err(RpcError::invalid_params(
+                    "plugin not trusted to submit forge actions",
+                ));
+            }
+            let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
+                RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+            })?;
             dispatch_forge_action_plugin_tool(
                 ctx, client, &plugin_id, &tool_name, arguments, identity,
             )
@@ -738,11 +745,6 @@ async fn dispatch_forge_action_plugin_tool(
         serde_json::from_value(structured).map_err(|_| malformed_forge_payload())?;
 
     validate_plugin_forge_payload(&payload)?;
-    if !trusted_forge_plugin(plugin_id) {
-        return Err(RpcError::invalid_params(
-            "plugin not trusted to submit forge actions",
-        ));
-    }
 
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
         return Err(RpcError::internal("operation runtime not bound"));

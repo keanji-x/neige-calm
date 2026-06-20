@@ -90,6 +90,16 @@ fn initialize_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_j
 }
 
 fn tools_call_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
+    if let Ok(path) = std::env::var("STUB_FORGE_CALL_MARKER")
+        && let Err(e) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut file| writeln!(file, "tools/call"))
+    {
+        eprintln!("stub-forge-action: failed to write call marker: {e}");
+    }
+
     let mode = std::env::var("STUB_FORGE_MODE").unwrap_or_else(|_| "ok".to_string());
     let structured = if mode == "malformed" {
         serde_json::json!({
