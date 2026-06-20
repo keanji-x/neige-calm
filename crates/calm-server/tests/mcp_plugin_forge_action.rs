@@ -415,13 +415,15 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
 
     let fx = boot_fixture(StubMode::Scoped).await;
+    let probe_a = json!({ "probe_argv": ["/bin/true"] });
+    let probe_b = json!({ "probe_argv": ["/bin/sh", "-c", "exit 1"] });
     let first_key = scoped_idem_key(
         PLUGIN_ID,
         &fx.wave_id,
         &fx.card_id,
         StubMode::Scoped.idem_key(),
     );
-    let first_resp = call_forge_tool(&fx, 20).await;
+    let first_resp = call_forge_tool_with_args(&fx, 20, json!({ "probe": probe_a.clone() })).await;
     assert!(
         first_resp.get("error").is_none(),
         "first scoped forge tool errored: {first_resp:#?}"
@@ -438,7 +440,7 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         .expect("first result_path")
         .to_string();
 
-    let retry_resp = call_forge_tool(&fx, 21).await;
+    let retry_resp = call_forge_tool_with_args(&fx, 21, json!({ "probe": probe_a })).await;
     assert!(
         retry_resp.get("error").is_none(),
         "retry scoped forge tool errored: {retry_resp:#?}"
@@ -471,8 +473,40 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         "same wave/card/key retry must reuse the scoped result_path"
     );
 
+    let probe_conflict_resp = call_forge_tool_with_args(&fx, 22, json!({ "probe": probe_b })).await;
+    assert!(
+        probe_conflict_resp.get("error").is_none(),
+        "changed-probe scoped forge tool should return an MCP tool result: {probe_conflict_resp:#?}"
+    );
+    assert_eq!(probe_conflict_resp["result"]["isError"], true);
+    assert!(
+        probe_conflict_resp["result"]["structuredContent"]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already used with different payload"),
+        "changed probe must be an idempotency payload conflict: {probe_conflict_resp:#?}"
+    );
+    assert_eq!(
+        operation_count(&fx.repo).await,
+        1,
+        "changed probe with the same scoped key must not replace the first operation"
+    );
+    assert_eq!(
+        event_count(&fx.repo, "worktree.provisioned").await,
+        1,
+        "changed probe conflict must not replay the event"
+    );
+    let after_conflict_payload = operation_payload_by_idem(&fx.repo, &first_key)
+        .await
+        .expect("first scoped op payload after changed-probe conflict");
+    assert_eq!(
+        after_conflict_payload["probe"]["probe_argv"],
+        json!(["/bin/true"]),
+        "changed probe conflict must leave the frozen recovery probe unchanged"
+    );
+
     let second = create_wave_caller(&fx, CardRole::Spec).await;
-    let second_resp = call_forge_tool_for_caller(&fx, &second, 22).await;
+    let second_resp = call_forge_tool_for_caller(&fx, &second, 23).await;
     assert!(
         second_resp.get("error").is_none(),
         "second scoped forge tool errored: {second_resp:#?}"
@@ -989,18 +1023,28 @@ async fn call_forge_tool(fx: &Fixture, id: i64) -> Value {
     call_forge_tool_as(fx, &fx.raw_token, &fx.thread_id, id).await
 }
 
+async fn call_forge_tool_with_args(fx: &Fixture, id: i64, args: Value) -> Value {
+    call_forge_tool_as_with_args(fx, &fx.raw_token, &fx.thread_id, id, args).await
+}
+
 async fn call_forge_tool_for_caller(fx: &Fixture, caller: &Caller, id: i64) -> Value {
     call_forge_tool_as(fx, &caller.raw_token, &caller.thread_id, id).await
 }
 
 async fn call_forge_tool_as(fx: &Fixture, raw_token: &str, thread_id: &str, id: i64) -> Value {
+    call_forge_tool_as_with_args(fx, raw_token, thread_id, id, json!({ "from": "test" })).await
+}
+
+async fn call_forge_tool_as_with_args(
+    fx: &Fixture,
+    raw_token: &str,
+    thread_id: &str,
+    id: i64,
+    args: Value,
+) -> Value {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, raw_token).await;
-    send_frame(
-        &mut wr,
-        tools_call_frame(id, EXPOSED_NAME, thread_id, json!({ "from": "test" })),
-    )
-    .await;
+    send_frame(&mut wr, tools_call_frame(id, EXPOSED_NAME, thread_id, args)).await;
     recv_frame(&mut rd).await
 }
 

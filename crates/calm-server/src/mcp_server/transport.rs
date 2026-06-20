@@ -714,6 +714,7 @@ struct SemanticForgePayload<'a> {
     event_spec: Option<&'a ForgeEventSpec>,
     subject: Option<&'a ForgeMergeSubject>,
     context: &'a serde_json::Map<String, Value>,
+    probe: Option<&'a ProbeSpec>,
 }
 
 async fn dispatch_forge_action_plugin_tool(
@@ -908,6 +909,7 @@ fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, RpcErro
         event_spec: payload.event_spec.as_ref(),
         subject: payload.subject.as_ref(),
         context: &payload.context,
+        probe: payload.probe.as_ref(),
     };
     let bytes = serde_json::to_vec(&semantic)
         .map_err(|e| RpcError::internal(format!("forge-action hash serialization: {e}")))?;

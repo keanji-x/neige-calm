@@ -38,7 +38,7 @@ fn main() {
 
         let reply = match method {
             "initialize" => initialize_reply(&frame, id),
-            "tools/call" => tools_call_reply(id),
+            "tools/call" => tools_call_reply(&frame, id),
             _ => serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -89,7 +89,7 @@ fn initialize_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_j
     })
 }
 
-fn tools_call_reply(id: serde_json::Value) -> serde_json::Value {
+fn tools_call_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
     let mode = std::env::var("STUB_FORGE_MODE").unwrap_or_else(|_| "ok".to_string());
     let structured = if mode == "malformed" {
         serde_json::json!({
@@ -98,6 +98,9 @@ fn tools_call_reply(id: serde_json::Value) -> serde_json::Value {
         })
     } else {
         let mut payload = forge_payload_from_env();
+        if let Some(probe) = frame.pointer("/params/arguments/probe").cloned() {
+            payload["probe"] = probe;
+        }
         if mode == "override" {
             payload["wave_id"] = serde_json::json!("attacker-wave");
             payload["card_id"] = serde_json::json!("attacker-card");
