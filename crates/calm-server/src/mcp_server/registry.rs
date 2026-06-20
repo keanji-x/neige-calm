@@ -23,6 +23,7 @@ use crate::event::EventBus;
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
+use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use calm_truth::wave_vcs_repo::WaveVcsRepo;
 use calm_types::worker::{Principal, WorkerSessionId};
@@ -41,6 +42,7 @@ use std::sync::Arc;
 pub struct CardIdentity {
     pub card_id: CardId,
     pub role: CardRole,
+    pub provider: AgentProvider,
     pub session_id: String,
     pub wave_id: Option<String>,
     pub cove_id: String,
@@ -52,18 +54,20 @@ impl CardIdentity {
     /// keyed by worker session, not card id. Mapping:
     ///
     /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
-    /// * `CardRole::Worker`     → [`ActorId::AiCodexSession`]
+    /// * `CardRole::Worker`     → provider-specific AI session actor
     /// * `CardRole::ReportCard` → unreachable here too (report cards are
     ///   read-only kernel-projected payload and don't get an MCP token).
-    ///   Mapped to `AiCodexSession` for the same total-function reason — the
-    ///   role gate refuses report-card actors as soon as they try to
-    ///   emit `WaveUpdated`, so a token-row leak surfaces as a clear
-    ///   `Forbidden` rather than a panic.
+    ///   Mapped by provider for the same total-function reason — the role
+    ///   gate refuses report-card actors as soon as they try to emit
+    ///   `WaveUpdated`, so a token-row leak surfaces as a clear `Forbidden`
+    ///   rather than a panic.
     pub fn to_actor_id(&self) -> ActorId {
         let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
             CardRole::Spec => ActorId::AiSpecSession(session_id),
-            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodexSession(session_id),
+            CardRole::Worker | CardRole::ReportCard => {
+                provider_session_actor(&self.provider, session_id)
+            }
         }
     }
 
@@ -98,6 +102,7 @@ pub enum ConnectionIdentity {
 pub struct ToolCallIdentity {
     pub card_id: String,
     pub role: CardRole,
+    pub provider: AgentProvider,
     pub session_id: String,
     pub wave_id: Option<String>,
     pub cove_id: String,
@@ -109,14 +114,16 @@ impl ToolCallIdentity {
     /// call. MCP writes are keyed by worker session, not card id. Mapping:
     ///
     /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
-    /// * `CardRole::Worker`     → [`ActorId::AiCodexSession`]
-    /// * `CardRole::ReportCard` → `AiCodexSession` as a total-function
-    ///   fallback; write gates still reject report-card writes.
+    /// * `CardRole::Worker`     → provider-specific AI session actor
+    /// * `CardRole::ReportCard` → provider-specific total-function fallback;
+    ///   write gates still reject report-card writes.
     pub fn to_actor_id(&self) -> ActorId {
         let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
             CardRole::Spec => ActorId::AiSpecSession(session_id),
-            CardRole::Worker | CardRole::ReportCard => ActorId::AiCodexSession(session_id),
+            CardRole::Worker | CardRole::ReportCard => {
+                provider_session_actor(&self.provider, session_id)
+            }
         }
     }
 
@@ -127,6 +134,13 @@ impl ToolCallIdentity {
             wave_id: WaveId::from(wave_id.clone()),
             cove_id: CoveId::from(self.cove_id.clone()),
         })
+    }
+}
+
+fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId) -> ActorId {
+    match provider {
+        AgentProvider::Codex => ActorId::AiCodexSession(session_id),
+        AgentProvider::Claude => ActorId::AiClaudeSession(session_id),
     }
 }
 
@@ -378,10 +392,14 @@ mod tests {
     use crate::state::WriteContext;
     use crate::wave_cove_cache::WaveCoveCache;
 
-    fn identity_with_role(role: CardRole) -> ToolCallIdentity {
+    fn identity_with_role_and_provider(
+        role: CardRole,
+        provider: AgentProvider,
+    ) -> ToolCallIdentity {
         ToolCallIdentity {
             card_id: "card-1".to_string(),
             role,
+            provider,
             session_id: "session-1".to_string(),
             wave_id: Some("wave-1".to_string()),
             cove_id: "cove-1".to_string(),
@@ -389,14 +407,26 @@ mod tests {
         }
     }
 
-    fn card_identity_with_role(role: CardRole) -> CardIdentity {
+    fn identity_with_role(role: CardRole) -> ToolCallIdentity {
+        identity_with_role_and_provider(role, AgentProvider::Codex)
+    }
+
+    fn card_identity_with_role_and_provider(
+        role: CardRole,
+        provider: AgentProvider,
+    ) -> CardIdentity {
         CardIdentity {
             card_id: CardId::from("card-1"),
             role,
+            provider,
             session_id: "session-1".to_string(),
             wave_id: Some("wave-1".to_string()),
             cove_id: "cove-1".to_string(),
         }
+    }
+
+    fn card_identity_with_role(role: CardRole) -> CardIdentity {
+        card_identity_with_role_and_provider(role, AgentProvider::Codex)
     }
 
     #[test]
@@ -410,8 +440,18 @@ mod tests {
             ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
         );
         assert_eq!(
+            card_identity_with_role_and_provider(CardRole::Worker, AgentProvider::Claude)
+                .to_actor_id(),
+            ActorId::AiClaudeSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
             card_identity_with_role(CardRole::ReportCard).to_actor_id(),
             ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
+            card_identity_with_role_and_provider(CardRole::ReportCard, AgentProvider::Claude)
+                .to_actor_id(),
+            ActorId::AiClaudeSession(WorkerSessionId::from("session-1"))
         );
     }
 
@@ -426,8 +466,17 @@ mod tests {
             ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
         );
         assert_eq!(
+            identity_with_role_and_provider(CardRole::Worker, AgentProvider::Claude).to_actor_id(),
+            ActorId::AiClaudeSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
             identity_with_role(CardRole::ReportCard).to_actor_id(),
             ActorId::AiCodexSession(WorkerSessionId::from("session-1"))
+        );
+        assert_eq!(
+            identity_with_role_and_provider(CardRole::ReportCard, AgentProvider::Claude)
+                .to_actor_id(),
+            ActorId::AiClaudeSession(WorkerSessionId::from("session-1"))
         );
     }
 

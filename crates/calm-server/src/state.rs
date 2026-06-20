@@ -13,7 +13,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::harness::HarnessRegistry;
 use crate::ids::ActorId;
 use crate::mcp_server::McpServer;
-use crate::operation::claude_adapter::ClaudeAdapter;
+use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::forge_action_adapter::ForgeActionAdapter;
@@ -403,6 +403,13 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.card_role_cache.clone(),
         input.wave_cove_cache.clone(),
     ));
+    let claude_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
+        input.route_repo.clone(),
+        input.codex.clone(),
+        input.mcp_server.clone(),
+        input.card_role_cache.clone(),
+        input.wave_cove_cache.clone(),
+    ));
     let claude_restart_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeRestartAdapter::new(
         input.route_repo.clone(),
         input.codex.clone(),
@@ -436,6 +443,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         codex_adapter,
         codex_worker_adapter,
         claude_adapter,
+        claude_worker_adapter,
         claude_restart_adapter,
         spec_harness_start_adapter,
         spec_harness_interrupt_adapter,

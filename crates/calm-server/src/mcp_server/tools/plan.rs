@@ -27,14 +27,12 @@
 //!   DELETED — the task-verify runner enforces declared gates now.
 //!   Gates are stored canonically in `gate_json` (rule-7 shape).
 //! * Rule 6 is enforced in the upsert tx: when
-//!   `waves.require_task_gates = 1`, a created/updated **codex** task
+//!   `waves.require_task_gates = 1`, a created/updated **agent** task
 //!   must declare a `gate` or record a `no_gate_reason` (terminal
 //!   tasks are exempt; `unchanged` rows pass through so idempotent
 //!   retries of pre-flag plans keep working). `no_gate_reason` must be
 //!   a trimmed-non-empty reason (round-3 review F2) and is recorded
 //!   trimmed into `context_json` for auditability, as before.
-//! * `kind = "claude"` is rejected ("not yet supported") — no claude
-//!   worker adapter exists and the column CHECK omits the value.
 //!
 //! ## Scope construction
 //!
@@ -210,20 +208,15 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
         ));
     }
 
-    // Rule 2 — kind vocabulary. `claude` gets the explicit forward-
-    // looking refusal; anything else is a typo.
+    // Rule 2 — kind vocabulary. Anything outside the supported worker
+    // kinds is a typo.
     let kind = match input.kind.as_str() {
         "codex" => TaskKind::Codex,
+        "claude" => TaskKind::Claude,
         "terminal" => TaskKind::Terminal,
-        "claude" => {
-            return Err(format!(
-                "task {key}: kind `claude` is not yet supported (no claude worker \
-                 dispatch adapter exists); use `codex` or `terminal`"
-            ));
-        }
         other => {
             return Err(format!(
-                "task {key}: unknown kind `{other}` (expected `codex` or `terminal`)"
+                "task {key}: unknown kind `{other}` (expected `codex`, `claude`, or `terminal`)"
             ));
         }
     };
@@ -607,10 +600,10 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
              Batch is whole-batch atomic: every task validates or nothing lands. \
              Tasks are editable while `pending`; re-sending an identical task is an \
              idempotent `unchanged`. `depends_on` names sibling task keys; the kernel \
-             schedules ready tasks itself. Declare a `gate` on every codex task: the \
+             schedules ready tasks itself. Declare a `gate` on every agent task: the \
              kernel runs its steps after the worker finishes and the verdict \
              (`task.gate_result`) is a machine fact, not a worker claim. Waves with \
-             `require_task_gates` (the default for new waves) reject an ungated codex \
+             `require_task_gates` (the default for new waves) reject an ungated agent \
              task unless it carries `no_gate_reason`; terminal tasks are exempt. \
              Gates may run more than once (kernel restarts re-run them) — declare \
              only re-runnable commands. `message` is required and persisted as \
@@ -633,8 +626,8 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                                 "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
                                 "description": "Stable per-wave task key; also the completion correlation id."
                             },
-                            "kind": { "type": "string", "enum": ["codex", "terminal"] },
-                            "goal": { "type": "string", "minLength": 1, "description": "codex: goal text; terminal: the command" },
+                            "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
+                            "goal": { "type": "string", "minLength": 1, "description": "codex/claude: goal text; terminal: the command" },
                             "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
                             "acceptance_criteria": { "type": ["string", "null"] },
                             "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },
@@ -643,7 +636,7 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                             "gate": {
                                 "type": "object",
                                 "required": ["steps"],
-                                "description": "Verification the kernel runs after the worker reports done; declare one for every codex task. Steps run in order, first non-zero exit fails the gate, and steps must be re-runnable (kernel restarts re-run the gate).",
+                                "description": "Verification the kernel runs after the worker reports done; declare one for every agent task. Steps run in order, first non-zero exit fails the gate, and steps must be re-runnable (kernel restarts re-run the gate).",
                                 "properties": {
                                     "steps": {
                                         "type": "array",
@@ -661,7 +654,7 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": GATE_TIMEOUT_MAX_SECS, "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate." }
                                 }
                             },
-                            "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated codex task on a wave with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
+                            "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated agent task on a wave with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
                         }
                     }
                 },
@@ -764,7 +757,7 @@ async fn plan_upsert(
                     resolve_plan_batch(&existing, &batch).map_err(CalmError::BadRequest)?;
 
                 // Rule 6 (§4.1/§6.6, PR-C): when the wave requires
-                // gates, every codex task this batch actually WRITES
+                // gates, every agent task this batch actually WRITES
                 // must declare one or record `no_gate_reason`.
                 // Terminal tasks are exempt (their exit code is the
                 // verdict); `unchanged` rows pass through so an
@@ -774,12 +767,12 @@ async fn plan_upsert(
                 if wave_require_task_gates_tx(tx, &wave_id_str).await? {
                     for (t, outcome) in batch.iter().zip(&outcomes) {
                         if matches!(outcome, PlanOutcome::Created | PlanOutcome::Updated)
-                            && t.kind == TaskKind::Codex
+                            && matches!(t.kind, TaskKind::Codex | TaskKind::Claude)
                             && t.gate_json.is_none()
                             && !t.has_no_gate_reason
                         {
                             return Err(CalmError::BadRequest(format!(
-                                "task {}: this wave requires verification gates for codex \
+                                "task {}: this wave requires verification gates for agent \
                                  tasks (rule 6); declare `gate` or record `no_gate_reason`",
                                 t.key
                             )));
@@ -1308,11 +1301,44 @@ mod tests {
     // -------------------------------------------------------- rule 2: kind
 
     #[test]
-    fn kind_claude_rejected_with_not_yet_supported() {
+    fn kind_claude_normalizes_to_taskkind_claude() {
         let mut t = raw_task("a");
         t.kind = "claude".into();
-        let err = normalize_task_input(t).expect_err("claude rejected");
-        assert!(err.contains("not yet supported"), "err = {err}");
+        let normalized = normalize_task_input(t).expect("claude accepted");
+        assert_eq!(normalized.kind, TaskKind::Claude);
+    }
+
+    #[test]
+    fn upsert_schema_kind_enum_includes_claude() {
+        let descriptor = plan_upsert_descriptor();
+        let enum_values = descriptor
+            .input_schema
+            .pointer("/properties/tasks/items/properties/kind/enum")
+            .and_then(Value::as_array)
+            .expect("kind enum");
+
+        assert!(
+            enum_values
+                .iter()
+                .any(|value| value.as_str() == Some("claude")),
+            "calm.plan.upsert kind enum must advertise claude: {enum_values:?}"
+        );
+    }
+
+    #[test]
+    fn upsert_schema_goal_description_documents_claude_goal_text() {
+        let descriptor = plan_upsert_descriptor();
+        let description = descriptor
+            .input_schema
+            .pointer("/properties/tasks/items/properties/goal/description")
+            .and_then(Value::as_str)
+            .expect("goal description");
+
+        assert!(
+            description.contains("codex/claude: goal text")
+                && description.contains("terminal: the command"),
+            "calm.plan.upsert goal description must document claude and terminal semantics: {description}"
+        );
     }
 
     #[test]
@@ -1321,6 +1347,10 @@ mod tests {
         t.kind = "banana".into();
         let err = normalize_task_input(t).expect_err("unknown kind");
         assert!(err.contains("unknown kind `banana`"), "err = {err}");
+        assert!(
+            err.contains("codex") && err.contains("claude") && err.contains("terminal"),
+            "err = {err}"
+        );
     }
 
     // -------------------------------------------------------- rule 3: deps

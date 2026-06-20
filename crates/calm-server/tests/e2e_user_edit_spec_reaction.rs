@@ -272,6 +272,7 @@ fn spec_identity(b: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: b.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(b.wave_id.as_str().to_string()),
         cove_id: b.cove_id.as_str().to_string(),

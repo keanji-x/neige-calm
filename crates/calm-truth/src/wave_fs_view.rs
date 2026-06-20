@@ -740,6 +740,7 @@ fn project_runs(
 pub(crate) fn run_kind_static(kind: &str) -> &'static str {
     match kind {
         "codex" => "codex",
+        "claude" => "claude",
         "terminal" => "terminal",
         _ => "unknown",
     }
@@ -841,6 +842,7 @@ fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
 fn run_kind_from_card(card: &Card) -> Option<&'static str> {
     match card.kind.as_str() {
         "codex" => Some("codex"),
+        "claude" => Some("claude"),
         "terminal" => Some("terminal"),
         _ => card
             .payload
@@ -848,6 +850,7 @@ fn run_kind_from_card(card: &Card) -> Option<&'static str> {
             .and_then(Value::as_str)
             .and_then(|kind| match kind {
                 "codex" => Some("codex"),
+                "claude" => Some("claude"),
                 "terminal" => Some("terminal"),
                 _ => None,
             }),
@@ -1913,7 +1916,7 @@ mod tests {
     fn run_kind_static_vocabulary() {
         assert_eq!(run_kind_static("codex"), "codex");
         assert_eq!(run_kind_static("terminal"), "terminal");
-        assert_eq!(run_kind_static("claude"), "unknown");
+        assert_eq!(run_kind_static("claude"), "claude");
     }
 
     #[test]

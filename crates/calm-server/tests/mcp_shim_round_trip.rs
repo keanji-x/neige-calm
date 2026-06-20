@@ -38,6 +38,23 @@ fn shim_bin() -> std::path::PathBuf {
     p.pop(); // .../deps/
     p.pop(); // .../debug/ or .../release/
     p.push("neige-mcp-stdio-shim");
+    if !p.exists() {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = std::process::Command::new(cargo)
+            .args([
+                "build",
+                "-p",
+                "neige-mcp-stdio-shim",
+                "--bin",
+                "neige-mcp-stdio-shim",
+            ])
+            .status()
+            .expect("spawn cargo build for neige-mcp-stdio-shim");
+        assert!(
+            status.success(),
+            "`cargo build -p neige-mcp-stdio-shim --bin neige-mcp-stdio-shim` failed with {status}"
+        );
+    }
     assert!(
         p.exists(),
         "neige-mcp-stdio-shim not found at {p:?}; ensure `cargo test -p calm-server` triggers a workspace build of the shim crate"

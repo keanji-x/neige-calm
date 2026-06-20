@@ -80,6 +80,18 @@ fn retired_dispatch_payload() -> serde_json::Value {
     })
 }
 
+fn tools_call_frame_no_thread(id: i64, name: &str, args: serde_json::Value) -> serde_json::Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": name,
+            "arguments": args,
+        }
+    })
+}
+
 #[tokio::test]
 async fn dispatch_request_returns_retired_refusal_without_emitting() {
     let b = boot_with_role(CardRole::Spec).await;
@@ -223,6 +235,55 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
     match &env.scope {
         EventScope::Card { card, .. } => assert_eq!(card.as_str(), b.card_id.as_str()),
         other => panic!("expected Card scope; got {other:?}"),
+    }
+    let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn task_completed_from_claude_worker_persists_claude_session_actor() {
+    let b = boot_with_role(CardRole::Worker).await;
+    let pool = b.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query("UPDATE worker_sessions SET provider = 'claude' WHERE id = ?1")
+        .bind(&b.session_id)
+        .execute(&pool)
+        .await
+        .expect("flip test session provider to claude");
+    let mut rx = b.events.subscribe_filtered();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame_no_thread(
+            23,
+            "calm.task.complete",
+            json!({"idempotency_key": "tc-claude", "result": {"ok": true}}),
+        ),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+
+    let env = wait_for_kind(&mut rx, "task.completed").await;
+    match &env.actor {
+        ActorId::AiClaudeSession(sid) => assert_eq!(sid.as_str(), b.session_id.as_str()),
+        other => panic!("expected AiClaudeSession actor; got {other:?}"),
+    }
+    let actor_text: String = sqlx::query_scalar(
+        r#"SELECT actor
+             FROM events
+            WHERE kind = 'task.completed'
+              AND json_extract(payload, '$.idempotency_key') = 'tc-claude'
+            ORDER BY id DESC
+            LIMIT 1"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("persisted task.completed actor");
+    let actor: ActorId = serde_json::from_str(&actor_text).expect("events.actor is ActorId JSON");
+    match actor {
+        ActorId::AiClaudeSession(sid) => assert_eq!(sid.as_str(), b.session_id.as_str()),
+        other => panic!("persisted actor must be AiClaudeSession; got {other:?}"),
     }
     let _ = (&b.server, &b.repo);
 }

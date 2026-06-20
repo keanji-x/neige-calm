@@ -60,6 +60,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::{Task, TaskKind, TaskStatus, Wave, WaveLifecycle, new_id, now_ms};
+use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
 use crate::operation::task_verify_adapter::{
     GateResultCtx, GateVerdict, TASK_VERIFY_KIND, TaskVerifyOperationPayload,
@@ -214,6 +215,22 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
             })?;
             Ok(("codex-worker", payload))
         }
+        TaskKind::Claude => {
+            let payload = serde_json::to_value(ClaudeWorkerOperationPayload {
+                actor: ActorId::KernelDispatcher,
+                wave_id: task.wave_id.clone(),
+                idempotency_key: task.id.clone(),
+                goal: task.goal.clone(),
+                // The workspace lease path created in
+                // `ClaudeWorkerAdapter::prepare_tx` is the authoritative
+                // worker cwd. Keep task.cwd out of the payload hash just
+                // like codex-worker.
+                cwd: None,
+                context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
+                acceptance_criteria: task.acceptance_criteria.clone(),
+            })?;
+            Ok(("claude-worker", payload))
+        }
         TaskKind::Terminal => {
             let payload = serde_json::to_value(TerminalWorkerOperationPayload {
                 actor: ActorId::KernelDispatcher,
@@ -239,8 +256,13 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
 fn task_kind_str(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::Codex => "codex",
+        TaskKind::Claude => "claude",
         TaskKind::Terminal => "terminal",
     }
+}
+
+fn task_kind_has_running_liveness_deadline(kind: TaskKind) -> bool {
+    matches!(kind, TaskKind::Codex | TaskKind::Claude)
 }
 
 fn duration_ms_i64(duration: Duration) -> i64 {
@@ -1047,7 +1069,7 @@ impl Scheduler {
                 TaskStatus::Running if task.kind == TaskKind::Terminal => {
                     self.reconcile_running_terminal(task).await;
                 }
-                TaskStatus::Running if task.kind == TaskKind::Codex => {
+                TaskStatus::Running if task_kind_has_running_liveness_deadline(task.kind) => {
                     let stamped = match self
                         .stamp_missing_running_liveness_deadline(&mut task)
                         .await
@@ -1066,7 +1088,7 @@ impl Scheduler {
                         continue;
                     }
                     if task.status == TaskStatus::Running
-                        && task.kind == TaskKind::Codex
+                        && task_kind_has_running_liveness_deadline(task.kind)
                         && task
                             .running_deadline_ms
                             .is_some_and(|deadline| now_ms() > deadline)
@@ -1095,7 +1117,7 @@ impl Scheduler {
     }
 
     async fn stamp_missing_running_liveness_deadline(&self, task: &mut Task) -> Result<bool> {
-        if task.kind != TaskKind::Codex
+        if !task_kind_has_running_liveness_deadline(task.kind)
             || task.status != TaskStatus::Running
             || task.running_deadline_ms.is_some()
         {
@@ -1257,7 +1279,7 @@ impl Scheduler {
         let worker_rows = match sqlx::query_as::<_, (String, String)>(
             r#"SELECT id, card_id
                FROM worker_sessions
-               WHERE provider = 'codex'
+               WHERE provider IN ('codex', 'claude')
                  AND card_id IS NOT NULL
                  AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms')
                      IS NOT NULL
@@ -1353,9 +1375,14 @@ impl Scheduler {
         if let Some(card_id) = task.worker_card_id.as_ref() {
             return Some(card_id.clone());
         }
+        let operation_kind = match task.kind {
+            TaskKind::Codex => "codex-worker",
+            TaskKind::Claude => "claude-worker",
+            TaskKind::Terminal => return None,
+        };
         self.operation_runtime
             .upgrade()?
-            .find_by_kind_and_idempotency("codex-worker", &task.id)
+            .find_by_kind_and_idempotency(operation_kind, &task.id)
             .await
             .ok()
             .flatten()
@@ -2187,6 +2214,21 @@ mod tests {
             "codex cwd stays absent; prepare_tx supplies the lease cwd"
         );
 
+        let mut claude = task("cl", TaskStatus::Pending, &[], 0);
+        claude.kind = TaskKind::Claude;
+        claude.cwd = Some("/repo/from-plan".into());
+        let (kind, p) = build_worker_payload(&claude).unwrap();
+        assert_eq!(kind, "claude-worker");
+        assert_eq!(p["idempotency_key"], json!("w:cl"));
+        assert_eq!(
+            p["actor"],
+            serde_json::to_value(ActorId::KernelDispatcher).unwrap()
+        );
+        assert!(
+            !p.as_object().unwrap().contains_key("cwd"),
+            "claude cwd stays absent; prepare_tx supplies the lease cwd"
+        );
+
         let mut terminal = task("t", TaskStatus::Pending, &[], 0);
         terminal.kind = TaskKind::Terminal;
         terminal.goal = "make test".into();
@@ -2228,6 +2270,47 @@ mod tests {
             stable_payload_hash(&p).unwrap(),
             stable_payload_hash(&p1).unwrap()
         );
+    }
+
+    #[test]
+    fn claude_payload_ignores_task_cwd_for_hash_stability() {
+        let mut claude = task("a", TaskStatus::Pending, &[], 0);
+        claude.kind = TaskKind::Claude;
+        claude.cwd = Some("/repo".into());
+        let (kind, p) = build_worker_payload(&claude).unwrap();
+        assert_eq!(kind, "claude-worker");
+        assert!(
+            !p.as_object().unwrap().contains_key("cwd"),
+            "task.cwd must not affect claude worker payload identity"
+        );
+
+        let legacy_without_cwd = json!({
+            "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
+            "wave_id": "w",
+            "idempotency_key": "w:a",
+            "goal": "do",
+            "context": null,
+        });
+        assert_eq!(
+            stable_payload_hash(&p).unwrap(),
+            stable_payload_hash(&legacy_without_cwd).unwrap(),
+            "non-null task.cwd must hash like the no-cwd payload"
+        );
+
+        claude.cwd = None;
+        let (_, p1) = build_worker_payload(&claude).unwrap();
+        assert_eq!(p, p1);
+        assert_eq!(
+            stable_payload_hash(&p).unwrap(),
+            stable_payload_hash(&p1).unwrap()
+        );
+    }
+
+    #[test]
+    fn task_kind_str_includes_claude() {
+        assert_eq!(task_kind_str(TaskKind::Codex), "codex");
+        assert_eq!(task_kind_str(TaskKind::Claude), "claude");
+        assert_eq!(task_kind_str(TaskKind::Terminal), "terminal");
     }
 
     #[test]
@@ -2290,6 +2373,166 @@ mod tests {
             InflightGuard::acquire(&map, "w:a").is_some(),
             "slot frees on drop"
         );
+    }
+
+    #[tokio::test]
+    async fn sweep_running_claude_past_liveness_deadline_fails_and_tears_down() {
+        let concrete = Arc::new(
+            crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open repo"),
+        );
+        let repo: Arc<dyn Repo> = concrete.clone();
+        let route_repo: Arc<dyn crate::db::RouteRepo> = concrete.clone();
+        let cove = repo
+            .cove_create(crate::model::NewCove {
+                name: "claude-timeout".into(),
+                color: "#101010".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(crate::model::NewWave {
+                cove_id: cove.id,
+                title: "claude-timeout".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+
+        let pool = concrete.pool().clone();
+        let now = now_ms();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .expect("begin seed tx");
+        let (card, _term) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
+            &mut tx,
+            "card-claude-timeout".into(),
+            "runtime-claude-timeout",
+            None,
+            wave.id.clone(),
+            None,
+            "claude".into(),
+            "/tmp".into(),
+            json!({}),
+            Some("do".into()),
+            None,
+            None,
+            "/tmp/neige-claude-timeout-settings.json".into(),
+            "claude-session-timeout".into(),
+            concrete.card_role_cache(),
+            crate::routes::theme::RequestTheme::default_dark(),
+        )
+        .await
+        .expect("create claude worker card");
+        let mut running = task("claude-timeout", TaskStatus::Running, &[], 0);
+        running.id = format!("{}:claude-timeout", wave.id.as_str());
+        running.wave_id = wave.id.as_str().to_string();
+        running.kind = TaskKind::Claude;
+        running.worker_card_id = Some(card.id.to_string());
+        running.running_deadline_ms = Some(now - 1);
+        running.created_at_ms = now;
+        running.updated_at_ms = now;
+        let task_id = running.id.clone();
+        calm_truth::db::sqlite::task_insert_tx(&mut tx, &running)
+            .await
+            .expect("insert running claude task");
+        tx.commit().await.expect("commit seed tx");
+
+        sqlx::query(
+            r#"UPDATE worker_sessions
+               SET state = 'running',
+                   updated_at_ms = ?1
+               WHERE id = 'runtime-claude-timeout'"#,
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("mark claude session running");
+        sqlx::query(
+            r#"INSERT INTO workspace_leases (
+                   lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
+                   boot_id, created_at_ms, updated_at_ms
+               )
+               VALUES ('lease-claude-timeout', ?1, ?2, '/tmp/neige-claude-timeout-lease',
+                       'held', 'test-owner', ?3, NULL, ?4, ?4)"#,
+        )
+        .bind(card.id.as_ref())
+        .bind(wave.id.as_str())
+        .bind(now + 60_000)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert held lease");
+
+        let events = EventBus::new();
+        let write = WriteContext::new(
+            concrete.card_role_cache().clone(),
+            concrete.wave_cove_cache().clone(),
+        );
+        let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(pool.clone()));
+        let completion = crate::operation::OperationCompletionBus::new();
+        let runtime = Arc::new(OperationRuntime::new_unchecked(
+            operation_repo.clone(),
+            Vec::new(),
+            events.clone(),
+            completion.clone(),
+            crate::operation::SpawnCtx::new(
+                route_repo.clone(),
+                operation_repo,
+                Arc::new(crate::state::DaemonClient::new_stub()),
+                crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(route_repo),
+                events.clone(),
+                completion,
+            ),
+        ));
+        let scheduler = Scheduler::new(
+            repo.clone(),
+            events,
+            write,
+            Arc::downgrade(&runtime),
+            Arc::new(Semaphore::new(1)),
+        );
+        scheduler.mark_boot_sweep_complete();
+
+        scheduler.sweep_all().await;
+
+        let failed = repo
+            .task_get(&task_id)
+            .await
+            .expect("read task")
+            .expect("task row");
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(failed.status_detail.as_deref(), Some("worker-timeout"));
+        let lease_state: String = sqlx::query_scalar(
+            "SELECT state FROM workspace_leases WHERE lease_id = 'lease-claude-timeout'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("lease state");
+        assert_eq!(lease_state, "released");
+        let session_state: String = sqlx::query_scalar(
+            "SELECT state FROM worker_sessions WHERE id = 'runtime-claude-timeout'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("session state");
+        assert_eq!(session_state, "failed");
+        let cleanup_markers: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)
+               FROM worker_sessions
+               WHERE id = 'runtime-claude-timeout'
+                 AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms')
+                     IS NOT NULL"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("cleanup marker count");
+        assert_eq!(cleanup_markers, 0, "cleanup marker must be cleared");
     }
 
     #[tokio::test]

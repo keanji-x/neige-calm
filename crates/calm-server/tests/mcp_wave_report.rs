@@ -46,6 +46,7 @@ use calm_server::mcp_server::tools::wave_report::{
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch};
 use calm_server::plugin_host::mcp::RpcError;
+use calm_server::session_projection_repo::AgentProvider;
 use calm_server::wave_report::WaveReportPayload;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
@@ -251,6 +252,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -262,6 +264,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        provider: AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -1596,6 +1599,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
     let spec2_identity = ToolCallIdentity {
         card_id: spec2.id.as_str().to_string(),
         role: CardRole::Spec,
+        provider: AgentProvider::Codex,
         session_id: "spec2-session".to_string(),
         wave_id: Some(wave2.id.as_str().to_string()),
         cove_id: cove2.id.as_str().to_string(),

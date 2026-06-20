@@ -342,7 +342,7 @@ fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task
         key: key.into(),
         kind,
         goal: match kind {
-            TaskKind::Codex => format!("do {key}"),
+            TaskKind::Codex | TaskKind::Claude => format!("do {key}"),
             TaskKind::Terminal => "true".into(),
         },
         context_json: "null".into(),
@@ -611,6 +611,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        provider: AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -622,6 +623,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -967,6 +969,50 @@ async fn plan_to_done_end_to_end() {
     assert_eq!(operation_count(&boot, "codex-worker").await, 2);
 }
 
+#[tokio::test]
+async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "claude-live", TaskKind::Claude, &[]),
+    )
+    .await;
+    let terminal = boot
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: boot.worker_card_id.clone(),
+            program: "claude".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("terminal row");
+    boot.repo
+        .terminal_set_exit(&terminal.id, Some(0), false)
+        .await
+        .expect("pre-record terminal exit");
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "claude-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    let row = task_row(&boot, "claude-live").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str())
+    );
+    assert!(event_rows(&boot, "task.completed").await.is_empty());
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // §5.2 — budget + lifecycle gating
 // ---------------------------------------------------------------------------
@@ -1238,6 +1284,40 @@ async fn worker_report_flips_row_inside_emit_tx() {
         row.worker_card_id.as_deref(),
         Some(boot.worker_card_id.as_str()),
         "report tx stamps worker_card_id (COALESCE)"
+    );
+}
+
+#[tokio::test]
+async fn claude_worker_op_target_proves_unstamped_ownership() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "claude-owned", TaskKind::Claude, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    bind_worker_card_payload(&boot, &task_id).await;
+    seed_worker_op_target(
+        &boot,
+        "claude-worker",
+        &task_id,
+        boot.worker_card_id.as_str(),
+    )
+    .await;
+
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("claude-worker target proves ownership");
+
+    let row = task_row(&boot, "claude-owned").await;
+    assert_eq!(row.status, TaskStatus::Done);
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str())
     );
 }
 
@@ -1926,6 +2006,40 @@ async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
     assert_eq!(terminal_running.running_deadline_ms, None);
 }
 
+#[tokio::test]
+async fn sweep_running_claude_ignores_recorded_pty_exit() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "claude-swept", TaskKind::Claude, &[]);
+    task.status = TaskStatus::Running;
+    let task_id = task.id.clone();
+    let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    task.worker_card_id = Some(card_id.as_str().to_string());
+    seed_task(&boot, task).await;
+    boot.repo
+        .terminal_set_exit(&terminal_id, Some(0), false)
+        .await
+        .expect("persist synthetic exit");
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "claude-worker",
+            card_id: card_id.as_str().to_string(),
+        })],
+    );
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "claude-swept").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Running,
+        "running claude tasks ignore terminal-row exit evidence"
+    );
+    assert!(event_rows(&boot, "task.completed").await.is_empty());
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // §8 — sweep `dispatched` arm: crash between claim and operation insert
 // ---------------------------------------------------------------------------
@@ -2002,6 +2116,36 @@ async fn codex_task_pty_exit_does_not_complete_task() {
     // Non-zero exits are equally not the hook's business for codex.
     hook.on_terminal_exit(&terminal_id, Some(2), false).await;
     assert_eq!(task_row(&boot, "cx").await.status, TaskStatus::Running);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
+#[tokio::test]
+async fn claude_task_pty_exit_does_not_complete_task() {
+    // Claude worker cards are PTY-backed like terminal tasks, but a PTY
+    // exit is not a task verdict. Completion must come from
+    // `calm.task.complete`.
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "claude-exit", TaskKind::Claude, &[]);
+    task.status = TaskStatus::Running;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let (_card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+
+    let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+    assert_eq!(
+        task_row(&boot, "claude-exit").await.status,
+        TaskStatus::Running,
+        "claude task must stay running after its backing PTY exits 0"
+    );
+    assert!(event_rows(&boot, "task.completed").await.is_empty());
+
+    hook.on_terminal_exit(&terminal_id, Some(2), false).await;
+    assert_eq!(
+        task_row(&boot, "claude-exit").await.status,
+        TaskStatus::Running
+    );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
@@ -2115,6 +2259,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
+        provider: AgentProvider::Codex,
         session_id: "sibling-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -2808,6 +2953,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
+        provider: AgentProvider::Codex,
         session_id: "sibling-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -2934,6 +3080,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
     let sibling_identity = ToolCallIdentity {
         card_id: sibling.id.as_str().to_string(),
         role: CardRole::Worker,
+        provider: AgentProvider::Codex,
         session_id: "forged-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
