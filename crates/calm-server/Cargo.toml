@@ -33,6 +33,10 @@ codex-e2e = ["calm-provider/codex-e2e"]
 name = "calm-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "git-forge"
+path = "../../plugins/git-forge/main.rs"
+
 # Issue #682 — the replay binary's `POST /dev/force-spec-phase` reaches the
 # fixtures-gated `SpecHarness::force_phase_for_dev` seam via
 # `replay::force_spec_phase`, so the whole (dev/CI-only) binary requires the

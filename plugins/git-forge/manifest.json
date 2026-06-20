@@ -1,0 +1,28 @@
+{
+  "manifest_version": 1,
+  "id": "dev.neige.git-forge",
+  "version": "0.1.0",
+  "min_kernel_version": "0.0.1",
+  "display_name": "Git/Forge actions",
+  "entrypoint": {
+    "command": "bin/git-forge"
+  },
+  "exposes_tools": [
+    {
+      "name": "git.worktree.add",
+      "description": "Lower git worktree add into a forge action",
+      "kind": "forge-action"
+    },
+    {
+      "name": "git.commit",
+      "description": "Lower git commit into a forge action",
+      "kind": "forge-action"
+    },
+    {
+      "name": "gh.pr.create",
+      "description": "Lower GitHub pull request creation into a forge action",
+      "kind": "forge-action"
+    }
+  ],
+  "permissions": {}
+}
