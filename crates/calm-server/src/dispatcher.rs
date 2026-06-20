@@ -112,8 +112,8 @@ pub(crate) fn event_warrants_spec_push_with_role(
 ///
 /// Round-3 review F1 — a `task.failed` for a GATED row is suppressed
 /// too UNLESS the failure actually landed on the row pre-gate
-/// (`failed` + `worker-reported`/`spawn-failed`, the two details the
-/// worker/kernel failure flip writes — design §6.5's "worker
+/// (`failed` + `worker-reported`/`spawn-failed`/`worker-timeout`, the
+/// details the worker/kernel failure flip writes — design §6.5's "worker
 /// `task.failed` pushes as today; no gate runs on failure"). Any
 /// other row state means the gate already owns the task: a stale or
 /// retried `calm.task.fail` against a `verifying` row (or one the
@@ -145,7 +145,7 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
             let failure_landed_pre_gate = task.status == crate::model::TaskStatus::Failed
                 && matches!(
                     task.status_detail.as_deref(),
-                    Some("worker-reported") | Some("spawn-failed")
+                    Some("worker-reported") | Some("spawn-failed") | Some("worker-timeout")
                 );
             !failure_landed_pre_gate
         }
@@ -237,7 +237,7 @@ fn dispatcher_operation_runtime(
         Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
     let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
         harness,
-        shared_codex_appserver,
+        shared_codex_appserver.clone(),
         repo,
     ));
     let task_verify_adapter = Arc::new(
@@ -272,7 +272,8 @@ fn dispatcher_operation_runtime(
             terminal_renderer,
             events,
             completion,
-        ),
+        )
+        .with_shared_codex_appserver(shared_codex_appserver.clone()),
     ))
 }
 
@@ -1565,7 +1566,8 @@ mod tests {
     /// gated row that did NOT land a pre-gate failure on the row
     /// (stale/retried report while the gate is in flight or decided).
     /// Ungated rows, legacy keys (no row), genuine pre-gate failures
-    /// (`failed` + `worker-reported`/`spawn-failed`), and the gate
+    /// (`failed` + `worker-reported`/`spawn-failed`/`worker-timeout`),
+    /// and the gate
     /// result itself all push.
     #[tokio::test]
     async fn gated_self_report_predicate() {
@@ -1592,6 +1594,7 @@ mod tests {
             gate_pid: None,
             gate_pid_starttime: None,
             gate_pid_boot_id: None,
+            running_deadline_ms: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             finished_at_ms: None,
@@ -1606,6 +1609,9 @@ mod tests {
         let mut gated_spawn_failed = mk_task("gated-spawn-failed", gate_json());
         gated_spawn_failed.status = crate::model::TaskStatus::Failed;
         gated_spawn_failed.status_detail = Some("spawn-failed".into());
+        let mut gated_worker_timeout = mk_task("gated-worker-timeout", gate_json());
+        gated_worker_timeout.status = crate::model::TaskStatus::Failed;
+        gated_worker_timeout.status_detail = Some("worker-timeout".into());
         // Gated row the gate already failed — a late worker
         // `task.failed` retry must not re-wake the spec.
         let mut gated_gate_failed = mk_task("gated-gate-failed", gate_json());
@@ -1625,6 +1631,7 @@ mod tests {
                     &ungated,
                     &gated_worker_failed,
                     &gated_spawn_failed,
+                    &gated_worker_timeout,
                     &gated_gate_failed,
                     &gated_done,
                     &ungated_failed,
@@ -1674,6 +1681,10 @@ mod tests {
         assert!(
             !is_gated_self_report(&repo, &failed("gated-spawn-failed")).await,
             "a spawn failure pushes as today (no gate runs on failure)"
+        );
+        assert!(
+            !is_gated_self_report(&repo, &failed("gated-worker-timeout")).await,
+            "a worker liveness timeout pushes as a pre-gate failure"
         );
         assert!(
             !is_gated_self_report(&repo, &failed("ungated-failed")).await,

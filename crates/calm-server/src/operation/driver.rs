@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
@@ -9,6 +10,10 @@ use crate::error::{CalmError, Result};
 use crate::event::EventBus;
 use crate::model::now_ms;
 use crate::proc_identity::signal_process_group;
+use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
+use crate::terminal_sweeper::{
+    WaitForPidExit, reap_terminal_artifacts_with_renderer, wait_for_pid_exit,
+};
 
 use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
@@ -147,6 +152,100 @@ impl OperationRuntime {
                 },
             )
             .await
+    }
+
+    pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
+        self.interrupt_running_codex_turn_for_card(card_id).await?;
+        if let Some(term) = self.spawn_ctx.repo.terminal_get_by_card(card_id).await? {
+            reap_terminal_artifacts_with_renderer(
+                Some(self.spawn_ctx.terminal_renderer.as_ref()),
+                &term,
+            )
+            .await;
+            if let Some(pid) = term.pid {
+                let verdict = wait_for_pid_exit(pid, Duration::from_secs(2)).await;
+                match verdict {
+                    WaitForPidExit::Exited | WaitForPidExit::InvalidPid => {}
+                    WaitForPidExit::StillAliveAfterSigkill | WaitForPidExit::Unsupported => {
+                        return Err(CalmError::Internal(format!(
+                            "timed-out worker terminal {} did not exit after reap ({verdict:?})",
+                            term.id
+                        )));
+                    }
+                }
+            }
+        } else {
+            tracing::debug!(
+                card_id,
+                "timed-out worker terminal row already missing; treating cleanup as reaped"
+            );
+        }
+        self.spawn_ctx
+            .repo
+            .session_projection_complete_for_card(card_id, WorkerSessionState::Failed)
+            .await?;
+        Ok(())
+    }
+
+    async fn interrupt_running_codex_turn_for_card(&self, card_id: &str) -> Result<()> {
+        let Some(runtime) = self
+            .spawn_ctx
+            .repo
+            .session_projection_active_for_card(&card_id.to_string())
+            .await?
+        else {
+            return Ok(());
+        };
+        if runtime.agent_provider != Some(AgentProvider::Codex) {
+            return Ok(());
+        }
+        let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) else {
+            return Ok(());
+        };
+        let persisted_turn = TxOutput::non_empty_string(runtime.active_turn_id.as_deref());
+        let Some(shared_codex_appserver) = self.spawn_ctx.shared_codex_appserver.as_ref() else {
+            tracing::warn!(
+                runtime_id = %runtime.id,
+                card_id = %card_id,
+                thread_id = %thread_id,
+                "timed-out codex worker has no shared appserver handle; cannot interrupt active turn"
+            );
+            return Ok(());
+        };
+        let cached_turn = shared_codex_appserver.active_turn_id_for_thread(&thread_id);
+        if let Err(e) = shared_codex_appserver
+            .interrupt_active_turn(&thread_id)
+            .await
+        {
+            let turn_id = cached_turn
+                .as_deref()
+                .or(persisted_turn.as_deref())
+                .unwrap_or("");
+            tracing::warn!(
+                runtime_id = %runtime.id,
+                card_id = %card_id,
+                thread_id = %thread_id,
+                turn_id = %turn_id,
+                error = %e,
+                "timed-out codex worker turn interrupt failed"
+            );
+        }
+        if cached_turn.is_none()
+            && let Some(persisted_turn) = persisted_turn.as_deref()
+            && let Err(e) = shared_codex_appserver
+                .turn_interrupt(&thread_id, persisted_turn)
+                .await
+        {
+            tracing::warn!(
+                runtime_id = %runtime.id,
+                card_id = %card_id,
+                thread_id = %thread_id,
+                turn_id = persisted_turn,
+                error = %e,
+                "timed-out codex worker persisted-turn interrupt failed"
+            );
+        }
+        Ok(())
     }
 
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {

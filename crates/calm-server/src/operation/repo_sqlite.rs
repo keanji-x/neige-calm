@@ -198,10 +198,10 @@ impl OperationRepo for SqlxOperationRepo {
                        'pending',
                        'tx_committed',
                        'app_server_interact',
-                       'spawn_started',
-                       'spawn_succeeded',
-                       'compensating'
-                     )
+                     'spawn_started',
+                     'spawn_succeeded',
+                     'compensating'
+                   )
                      AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
             )
             .bind(&lease_owner)

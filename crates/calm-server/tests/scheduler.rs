@@ -27,7 +27,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, task_insert_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, task_insert_tx,
+};
 use calm_server::error::Result as CalmResult;
 use calm_server::event::EventBus;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
@@ -37,8 +39,8 @@ use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewTerminal, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
-    WavePatch, new_id, now_ms,
+    CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, Task, TaskKind, TaskStatus,
+    WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -51,6 +53,7 @@ use calm_server::scheduler::{Scheduler, TerminalTaskHook, build_worker_payload};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -69,6 +72,7 @@ struct Boot {
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
+    shared_codex_appserver: Arc<SharedCodexAppServer>,
 }
 
 async fn boot() -> Boot {
@@ -131,6 +135,8 @@ async fn boot() -> Boot {
     .expect("boot wave opts out of rule 6");
 
     let events = EventBus::new();
+    let shared_codex_appserver =
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
@@ -179,6 +185,7 @@ async fn boot() -> Boot {
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
+        shared_codex_appserver,
     }
 }
 
@@ -242,6 +249,24 @@ fn build_scheduler_with_semaphore(
     (runtime, scheduler)
 }
 
+fn build_scheduler_with_timeouts(
+    boot: &Boot,
+    adapters: Vec<Arc<dyn ProviderAdapter>>,
+    task_run_timeout: std::time::Duration,
+) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
+    let (runtime, scheduler) = build_scheduler_unbooted_with_timeouts(
+        boot,
+        adapters,
+        Arc::new(tokio::sync::Semaphore::new(8)),
+        Some(task_run_timeout),
+    );
+    // Production opens the boot gate via the `scheduler_sweep_on_boot`
+    // funnel; these tests model the post-boot steady state so backstop
+    // sweeps run for real (round-3 review F2).
+    scheduler.mark_boot_sweep_complete();
+    (runtime, scheduler)
+}
+
 /// `build_scheduler_with_semaphore` WITHOUT opening the boot gate —
 /// the dispatcher-built scheduler's state before `main` runs
 /// `recover_operations_on_boot` → `scheduler_sweep_on_boot` (round-3
@@ -250,6 +275,15 @@ fn build_scheduler_unbooted(
     boot: &Boot,
     adapters: Vec<Arc<dyn ProviderAdapter>>,
     semaphore: Arc<tokio::sync::Semaphore>,
+) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
+    build_scheduler_unbooted_with_timeouts(boot, adapters, semaphore, None)
+}
+
+fn build_scheduler_unbooted_with_timeouts(
+    boot: &Boot,
+    adapters: Vec<Arc<dyn ProviderAdapter>>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    task_run_timeout: Option<std::time::Duration>,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         boot.repo
@@ -270,7 +304,8 @@ fn build_scheduler_unbooted(
         TerminalRendererRegistry::new(),
         boot.events.clone(),
         completion.clone(),
-    );
+    )
+    .with_shared_codex_appserver(boot.shared_codex_appserver.clone());
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
         adapters,
@@ -278,13 +313,24 @@ fn build_scheduler_unbooted(
         completion,
         spawn_ctx,
     ));
-    let scheduler = Scheduler::new(
-        boot.repo.clone(),
-        boot.events.clone(),
-        boot.write.clone(),
-        Arc::downgrade(&runtime),
-        semaphore,
-    );
+    let scheduler = if let Some(task_run_timeout) = task_run_timeout {
+        Scheduler::new_with_timeouts_for_test(
+            boot.repo.clone(),
+            boot.events.clone(),
+            boot.write.clone(),
+            Arc::downgrade(&runtime),
+            semaphore,
+            task_run_timeout,
+        )
+    } else {
+        Scheduler::new(
+            boot.repo.clone(),
+            boot.events.clone(),
+            boot.write.clone(),
+            Arc::downgrade(&runtime),
+            semaphore,
+        )
+    };
     (runtime, scheduler)
 }
 
@@ -313,6 +359,7 @@ fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task
         gate_pid: None,
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
+        running_deadline_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -349,6 +396,123 @@ async fn task_row(boot: &Boot, key: &str) -> Task {
         .await
         .expect("task_get")
         .expect("task row exists")
+}
+
+async fn seed_codex_worker_card_with_terminal(
+    boot: &Boot,
+    label: &str,
+) -> (String, String, String) {
+    let card_id = format!("card-timeout-{label}-{}", new_id());
+    let runtime_id = format!("runtime-timeout-{label}-{}", new_id());
+    let wave_id = boot.wave_id.clone();
+    let card_role_cache = boot.card_role_cache.clone();
+    let result = calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
+        let card_id = card_id.clone();
+        let runtime_id = runtime_id.clone();
+        move |tx| {
+            Box::pin(async move {
+                let (_card, term, _mcp_token) = card_with_codex_create_tx(
+                    tx,
+                    card_id,
+                    &runtime_id,
+                    None,
+                    wave_id,
+                    None,
+                    "/tmp".to_string(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    &card_role_cache,
+                    RequestTheme::default_dark(),
+                )
+                .await?;
+                Ok(term.id)
+            })
+        }
+    })
+    .await
+    .expect("seed codex worker card");
+    boot.repo
+        .session_projection_set_status_for_card(&card_id, WorkerSessionState::Running)
+        .await
+        .expect("mark seeded worker runtime running");
+    (card_id, runtime_id, result)
+}
+
+async fn seed_held_workspace_lease(boot: &Boot, card_id: &str, label: &str) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let lease_id = format!("lease-timeout-{label}-{}", new_id());
+    let path = std::env::temp_dir().join(format!("neige-timeout-lease-{label}-{}", new_id()));
+    std::fs::create_dir_all(&path).expect("create lease dir");
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO workspace_leases (
+               lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
+               boot_id, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)"#,
+    )
+    .bind(&lease_id)
+    .bind(card_id)
+    .bind(boot.wave_id.as_str())
+    .bind(path.display().to_string())
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("insert held workspace lease");
+    lease_id
+}
+
+async fn seed_active_codex_turn(boot: &Boot, runtime_id: &str, thread_id: &str, turn_id: &str) {
+    sqlx::query(
+        "UPDATE worker_sessions \
+         SET thread_id = ?1, active_turn_id = ?2, updated_at_ms = ?3 \
+         WHERE id = ?4",
+    )
+    .bind(thread_id)
+    .bind(turn_id)
+    .bind(now_ms())
+    .bind(runtime_id)
+    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("seed active codex turn");
+    boot.shared_codex_appserver
+        .set_active_turn_for_test(thread_id, turn_id);
+}
+
+async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
+    sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+        .bind(lease_id)
+        .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .await
+        .expect("workspace lease state")
+}
+
+async fn workspace_lease_path(boot: &Boot, lease_id: &str) -> String {
+    sqlx::query_scalar("SELECT path FROM workspace_leases WHERE lease_id = ?1")
+        .bind(lease_id)
+        .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .await
+        .expect("workspace lease path")
+}
+
+async fn timeout_cleanup_marker_exists(boot: &Boot, card_id: &str) -> bool {
+    let count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+           FROM worker_sessions
+           WHERE card_id = ?1
+             AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms')
+                 IS NOT NULL"#,
+    )
+    .bind(card_id)
+    .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("timeout cleanup marker query");
+    count > 0
 }
 
 async fn call_tool(
@@ -1349,8 +1513,15 @@ async fn terminal_exit_beats_running_stamp() {
         let task_id = task_id.clone();
         move |tx| {
             Box::pin(async move {
-                calm_server::db::sqlite::task_mark_running_tx(tx, &task_id, Some("late"), now_ms())
-                    .await
+                let now = now_ms();
+                calm_server::db::sqlite::task_mark_running_tx(
+                    tx,
+                    &task_id,
+                    Some("late"),
+                    now,
+                    now + 7_200_000,
+                )
+                .await
             })
         }
     })
@@ -1433,6 +1604,326 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
     // Sweeping again is a no-op (guarded completion, first writer won).
     scheduler.sweep_all().await;
     assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
+}
+
+#[tokio::test]
+async fn sweep_running_codex_past_liveness_deadline_fails_and_tears_down() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired").await;
+
+    let mut task = plan_task(&boot.wave_id, "expired", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(
+        workspace_lease_state(&boot, &lease_id).await,
+        "released",
+        "CAS-success timeout releases the workspace lease"
+    );
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].1["reason"],
+        json!("worker exceeded the running liveness deadline")
+    );
+}
+
+#[tokio::test]
+async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired-turn").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-turn").await;
+    let thread_id = "thread-expired-turn";
+    let turn_id = "turn-expired-turn";
+    seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
+
+    let mut task = plan_task(&boot.wave_id, "expired-turn", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired-turn").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert!(
+        boot.shared_codex_appserver
+            .interrupted_turns_for_test()
+            .contains(&(thread_id.to_string(), turn_id.to_string())),
+        "running timeout must interrupt the active shared codex turn"
+    );
+    assert_eq!(
+        boot.shared_codex_appserver
+            .active_turn_id_for_thread(thread_id),
+        None
+    );
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+}
+
+#[tokio::test]
+async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired-retry").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-retry").await;
+    let thread_id = "thread-expired-retry";
+    let turn_id = "turn-expired-retry";
+    seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
+
+    let mut task = plan_task(&boot.wave_id, "expired-retry", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let lease_path = workspace_lease_path(&boot, &lease_id).await;
+    std::fs::remove_dir_all(&lease_path).expect("remove lease dir before failure fixture");
+    std::fs::write(&lease_path, "not a directory").expect("lease path file fixture");
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired-retry").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert!(
+        boot.shared_codex_appserver
+            .interrupted_turns_for_test()
+            .contains(&(thread_id.to_string(), turn_id.to_string())),
+        "first attempt interrupts the active shared codex turn"
+    );
+    assert_eq!(
+        boot.shared_codex_appserver
+            .active_turn_id_for_thread(thread_id),
+        None
+    );
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    assert_eq!(
+        workspace_lease_state(&boot, &lease_id).await,
+        "releasing",
+        "failed release attempt must not mark the lease released"
+    );
+    assert!(
+        timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker survives the failed first attempt"
+    );
+    assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
+
+    std::fs::remove_file(&lease_path).expect("clear failed lease path fixture");
+    scheduler.sweep_all().await;
+
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    assert!(
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker clears only after lease release succeeds"
+    );
+    assert_eq!(
+        event_rows(&boot, "task.failed").await.len(),
+        1,
+        "cleanup retry must not emit another task.failed"
+    );
+}
+
+#[tokio::test]
+async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_reaped() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired-missing-terminal").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-missing-terminal").await;
+
+    let mut task = plan_task(
+        &boot.wave_id,
+        "expired-missing-terminal",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let lease_path = workspace_lease_path(&boot, &lease_id).await;
+    std::fs::remove_dir_all(&lease_path).expect("remove lease dir before failure fixture");
+    std::fs::write(&lease_path, "not a directory").expect("lease path file fixture");
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired-missing-terminal").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "releasing");
+    assert!(
+        timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker survives the failed first release"
+    );
+
+    boot.repo
+        .terminal_delete(&terminal_id)
+        .await
+        .expect("delete terminal row before retry");
+    assert!(
+        boot.repo
+            .terminal_get_by_card(&card_id)
+            .await
+            .expect("terminal lookup")
+            .is_none(),
+        "retry fixture starts with the terminal row already gone"
+    );
+    std::fs::remove_file(&lease_path).expect("clear failed lease path fixture");
+
+    scheduler.sweep_all().await;
+
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    assert!(
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "missing terminal row is treated as already reaped so the marker clears"
+    );
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    assert_eq!(
+        event_rows(&boot, "task.failed").await.len(),
+        1,
+        "cleanup retry must not emit another task.failed"
+    );
+}
+
+#[tokio::test]
+async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "fresh").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "fresh").await;
+
+    let mut task = plan_task(&boot.wave_id, "fresh", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() + 60_000);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "fresh").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.status_detail, None);
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "held");
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Running);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
+#[tokio::test]
+async fn sweep_running_terminal_past_liveness_deadline_is_not_timed_out() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "terminal-timeout", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Running;
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "terminal-timeout").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.status_detail, None);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
+#[tokio::test]
+async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+
+    let mut running = plan_task(&boot.wave_id, "upgrade-running", TaskKind::Codex, &[]);
+    running.status = TaskStatus::Running;
+    seed_task(&boot, running).await;
+
+    let mut terminal_running =
+        plan_task(&boot.wave_id, "terminal-running", TaskKind::Terminal, &[]);
+    terminal_running.status = TaskStatus::Running;
+    seed_task(&boot, terminal_running).await;
+
+    let (_runtime, scheduler) =
+        build_scheduler_with_timeouts(&boot, vec![], std::time::Duration::from_millis(70));
+
+    let before = now_ms();
+    scheduler.sweep_all().await;
+    let after = now_ms();
+
+    let running = task_row(&boot, "upgrade-running").await;
+    let running_deadline = running
+        .running_deadline_ms
+        .expect("running sweep stamps missing deadline");
+    assert_eq!(running.status, TaskStatus::Running);
+    assert!(
+        (before + 70..=after + 70).contains(&running_deadline),
+        "running deadline {running_deadline} must use the configured timeout"
+    );
+
+    let terminal_running = task_row(&boot, "terminal-running").await;
+    assert_eq!(terminal_running.status, TaskStatus::Running);
+    assert_eq!(terminal_running.running_deadline_ms, None);
+
+    tokio::time::sleep(std::time::Duration::from_millis(90)).await;
+    scheduler.sweep_all().await;
+
+    let running = task_row(&boot, "upgrade-running").await;
+    assert_eq!(running.status, TaskStatus::Failed);
+    assert_eq!(running.status_detail.as_deref(), Some("worker-timeout"));
+
+    let terminal_running = task_row(&boot, "terminal-running").await;
+    assert_eq!(terminal_running.status, TaskStatus::Running);
+    assert_eq!(terminal_running.running_deadline_ms, None);
 }
 
 // ---------------------------------------------------------------------------

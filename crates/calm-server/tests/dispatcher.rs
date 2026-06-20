@@ -548,6 +548,7 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
         gate_pid: None,
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
+        running_deadline_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

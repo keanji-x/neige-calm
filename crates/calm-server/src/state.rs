@@ -596,7 +596,8 @@ impl AppState {
                 terminal_renderer.clone(),
                 events.clone(),
                 completion,
-            ),
+            )
+            .with_shared_codex_appserver(shared_codex_appserver.clone()),
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
@@ -721,7 +722,8 @@ impl AppState {
                 self.terminal_renderer.clone(),
                 self.events.clone(),
                 completion,
-            ),
+            )
+            .with_shared_codex_appserver(self.shared_codex_appserver.clone()),
         ));
         self.operation_runtime = runtime.clone();
         self.route.operation_runtime = runtime;
@@ -921,7 +923,8 @@ impl AppState {
                     terminal_renderer.clone(),
                     events.clone(),
                     completion,
-                ),
+                )
+                .with_shared_codex_appserver(shared_codex_appserver.clone()),
             )
             .await?,
         );
