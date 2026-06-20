@@ -22,7 +22,7 @@ use crate::model::{Card, CardRole, new_id};
 use crate::operation::codex_adapter::render_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, release_workspace_lease_by_id, workspace_lease_path_for,
+    acquire_plain_workspace_lease_tx, plain_workspace_lease_path_for, release_workspace_lease_by_id,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -767,7 +767,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let runtime_id = new_id();
         let claude_session_id = uuid::Uuid::new_v4().to_string();
         let wave_id = WaveId::from(payload.wave_id.clone());
-        let cwd = workspace_lease_path_for(wave_id.as_str(), &card_id)?;
+        let cwd_path = plain_workspace_lease_path_for(wave_id.as_str(), &card_id)?;
+        let cwd = cwd_path.to_string_lossy().to_string();
         let settings_path = self
             .codex
             .claude_settings_dir
@@ -814,8 +815,14 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &card_id, card.wave_id.as_str(), &op.id).await?;
+        let (lease, lease_event) = acquire_plain_workspace_lease_tx(
+            tx,
+            &card_id,
+            card.wave_id.as_str(),
+            &op.id,
+            &cwd_path,
+        )
+        .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -1506,7 +1513,16 @@ mod tests {
         let lease_id = output.output_string("lease_id", "test").unwrap();
         let cwd = output.output_string("cwd", "test").unwrap();
 
-        assert!(cwd.starts_with(".claude/worktrees/"));
+        let wave_cwd: String = sqlx::query_scalar("SELECT cwd FROM waves WHERE id = ?1")
+            .bind(&harness.wave_id)
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(wave_cwd, "", "regression guard: wave cwd is not a git repo");
+        assert_eq!(
+            cwd,
+            format!(".claude/worktrees/{}/{}", harness.wave_id, card_id)
+        );
         assert!(std::path::Path::new(&cwd).is_dir(), "leased cwd exists");
         let lease = sqlx::query(
             "SELECT state, path, card_id, wave_id FROM workspace_leases WHERE lease_id = ?1",
@@ -1521,6 +1537,17 @@ mod tests {
         assert_eq!(lease.get::<String, _>("wave_id"), harness.wave_id);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event, Event::WorkspaceLeased { .. }));
+        assert!(
+            events
+                .iter()
+                .all(|envelope| envelope.event.kind_tag() != "worktree.provisioned")
+        );
+        let provisioned_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.provisioned'")
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(provisioned_events, 0);
 
         let session =
             sqlx::query("SELECT provider, spawn_op_id FROM worker_sessions WHERE id = ?1")

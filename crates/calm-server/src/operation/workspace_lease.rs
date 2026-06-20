@@ -76,8 +76,51 @@ pub(crate) async fn acquire_workspace_lease_tx(
     lease_owner: &str,
     target: &WorkspaceLeaseTarget,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
+    acquire_workspace_lease_at_path_tx(
+        tx,
+        card_id,
+        wave_id,
+        lease_owner,
+        &target.path,
+        WorkspaceLeaseDirectoryMode::ParentOnly,
+    )
+    .await
+}
+
+pub(crate) async fn acquire_plain_workspace_lease_tx(
+    tx: &mut Tx<'_>,
+    card_id: &str,
+    wave_id: &str,
+    lease_owner: &str,
+    path: &Path,
+) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
+    acquire_workspace_lease_at_path_tx(
+        tx,
+        card_id,
+        wave_id,
+        lease_owner,
+        path,
+        WorkspaceLeaseDirectoryMode::Leaf,
+    )
+    .await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceLeaseDirectoryMode {
+    ParentOnly,
+    Leaf,
+}
+
+async fn acquire_workspace_lease_at_path_tx(
+    tx: &mut Tx<'_>,
+    card_id: &str,
+    wave_id: &str,
+    lease_owner: &str,
+    path: &Path,
+    directory_mode: WorkspaceLeaseDirectoryMode,
+) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     let lease_id = new_id();
-    let path = target.path_string();
+    let path_string = path.to_string_lossy().to_string();
     let now = now_ms();
     let boot_id = read_boot_id();
     sqlx::query(
@@ -90,7 +133,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
     .bind(&lease_id)
     .bind(card_id)
     .bind(wave_id)
-    .bind(&path)
+    .bind(&path_string)
     .bind(lease_owner)
     .bind(now + WORKSPACE_LEASE_MS)
     .bind(&boot_id)
@@ -98,25 +141,14 @@ pub(crate) async fn acquire_workspace_lease_tx(
     .execute(&mut **tx)
     .await?;
 
-    let parent = target.path.parent().ok_or_else(|| {
-        CalmError::Internal(format!(
-            "workspace lease path {} has no parent",
-            target.path.display()
-        ))
-    })?;
-    std::fs::create_dir_all(parent).map_err(|e| {
-        CalmError::Internal(format!(
-            "create workspace lease parent directory {}: {e}",
-            parent.display()
-        ))
-    })?;
+    create_workspace_lease_directory(path, directory_mode)?;
 
     let scope = workspace_scope_tx(tx, card_id, wave_id).await?;
     let event = Event::WorkspaceLeased {
         wave_id: WaveId::from(wave_id.to_string()),
         card_id: CardId::from(card_id.to_string()),
         lease_id: lease_id.clone(),
-        path: path.clone(),
+        path: path_string.clone(),
     };
     let event_id = append_decision_event_in_tx(
         tx,
@@ -132,7 +164,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
         lease_id,
         card_id: card_id.to_string(),
         wave_id: wave_id.to_string(),
-        path,
+        path: path_string,
         state: "held".into(),
         boot_id,
     };
@@ -146,6 +178,31 @@ pub(crate) async fn acquire_workspace_lease_tx(
             event,
         },
     ))
+}
+
+fn create_workspace_lease_directory(path: &Path, mode: WorkspaceLeaseDirectoryMode) -> Result<()> {
+    match mode {
+        WorkspaceLeaseDirectoryMode::ParentOnly => {
+            let parent = path.parent().ok_or_else(|| {
+                CalmError::Internal(format!(
+                    "workspace lease path {} has no parent",
+                    path.display()
+                ))
+            })?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CalmError::Internal(format!(
+                    "create workspace lease parent directory {}: {e}",
+                    parent.display()
+                ))
+            })
+        }
+        WorkspaceLeaseDirectoryMode::Leaf => std::fs::create_dir_all(path).map_err(|e| {
+            CalmError::Internal(format!(
+                "create workspace lease directory {}: {e}",
+                path.display()
+            ))
+        }),
+    }
 }
 
 pub(crate) async fn release_workspace_lease_by_id(
@@ -892,6 +949,15 @@ pub(crate) fn workspace_lease_path_for(
         .join(card_id))
 }
 
+pub(crate) fn plain_workspace_lease_path_for(wave_id: &str, card_id: &str) -> Result<PathBuf> {
+    validate_path_segment("wave_id", wave_id)?;
+    validate_path_segment("card_id", card_id)?;
+    Ok(PathBuf::from(".claude")
+        .join("worktrees")
+        .join(wave_id)
+        .join(card_id))
+}
+
 pub(crate) fn workspace_slice_branch_for(wave_id: &str, card_id: &str) -> Result<String> {
     validate_path_segment("wave_id", wave_id)?;
     validate_path_segment("card_id", card_id)?;
@@ -1139,6 +1205,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    #[tokio::test]
+    async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_wave_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+        let path = plain_workspace_lease_path_for(&wave_id, &card_id).unwrap();
+        assert!(
+            !path.is_absolute(),
+            "plain workspace lease path is legacy-relative"
+        );
+
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let (lease, _event) =
+            acquire_plain_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &path)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(lease.path, path.to_string_lossy().to_string());
+        assert!(path.is_dir(), "plain lease acquisition creates the leaf");
+
+        let events = EventBus::new();
+        assert!(
+            release_workspace_lease_for_card_repo(&repo, &events, &card_id)
+                .await
+                .unwrap()
+        );
+        assert!(!path.exists(), "plain lease release removes the leaf");
     }
 
     #[test]
