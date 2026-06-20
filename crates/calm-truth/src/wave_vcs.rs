@@ -534,6 +534,13 @@ pub async fn commit_events_with_author_in_tx(
             Event::WorkspaceLeased { .. }
                 | Event::WorkspaceReleased { .. }
                 | Event::ForgePrMerged { .. }
+                | Event::ForgeScanCompleted { .. }
+                | Event::ForgePrOpened { .. }
+                | Event::ForgePrDiffRead { .. }
+                | Event::ForgePrChecks { .. }
+                | Event::ForgeIssueClosed { .. }
+                | Event::WorktreeProvisioned { .. }
+                | Event::WorktreeRemoved { .. }
         )
     }) {
         return Ok(None);
@@ -2194,10 +2201,17 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         // They are persisted and replayable, but they do not change the
         // wave filesystem projection in this slice.
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => {}
-        // Issue #760 slice 6: forge merge completion is operational
-        // history for the action adapter. No wave-fs projection consumes it
-        // in this pass.
-        Event::ForgePrMerged { .. } => {}
+        // Issue #760 slice ③-a: forge/worktree events are operational
+        // history for the git/forge toolset substrate. No wave-fs
+        // projection consumes them in this pass.
+        Event::ForgePrMerged { .. }
+        | Event::ForgeScanCompleted { .. }
+        | Event::ForgePrOpened { .. }
+        | Event::ForgePrDiffRead { .. }
+        | Event::ForgePrChecks { .. }
+        | Event::ForgeIssueClosed { .. }
+        | Event::WorktreeProvisioned { .. }
+        | Event::WorktreeRemoved { .. } => {}
     }
     delta
 }

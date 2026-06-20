@@ -1,0 +1,11 @@
+{
+  "description": "forge.pr.opened carries the wave routing id, opened PR number, and head sha",
+  "wire": {
+    "ev": "forge.pr.opened",
+    "data": {
+      "wave_id": "wave-01",
+      "pr_number": 1,
+      "head_sha": "head-sha"
+    }
+  }
+}

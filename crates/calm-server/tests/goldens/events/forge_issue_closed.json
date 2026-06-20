@@ -1,0 +1,10 @@
+{
+  "description": "forge.issue.closed carries the wave routing id and closed issue number",
+  "wire": {
+    "ev": "forge.issue.closed",
+    "data": {
+      "wave_id": "wave-01",
+      "issue_number": 1
+    }
+  }
+}

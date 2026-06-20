@@ -86,6 +86,12 @@ pub(crate) fn event_warrants_spec_push_with_role(
         Event::TaskGateResult { .. } => true,
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
+        Event::ForgePrMerged { .. }
+        | Event::ForgeScanCompleted { .. }
+        | Event::ForgePrOpened { .. }
+        | Event::ForgePrChecks { .. }
+        | Event::ForgeIssueClosed { .. }
+        | Event::WorktreeProvisioned { .. } => true,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
@@ -648,6 +654,12 @@ impl Dispatcher {
             "wave.report_edited".into(),
             "workspace.leased".into(),
             "workspace.released".into(),
+            "forge.scan.completed".into(),
+            "forge.pr.opened".into(),
+            "forge.pr.checks".into(),
+            "forge.issue.closed".into(),
+            "worktree.provisioned".into(),
+            "forge.pr.merged".into(),
             "codex.hook".into(),
             "claude.hook".into(),
             // Issue #644 PR-B — scheduler triggers (§5.1). These
@@ -902,6 +914,17 @@ impl Inner {
                 }
             }
             Event::WorkspaceLeased { wave_id, .. } | Event::WorkspaceReleased { wave_id, .. } => {
+                if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
+                    self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
+                        .await;
+                }
+            }
+            Event::ForgePrMerged { wave_id, .. }
+            | Event::ForgeScanCompleted { wave_id, .. }
+            | Event::ForgePrOpened { wave_id, .. }
+            | Event::ForgePrChecks { wave_id, .. }
+            | Event::ForgeIssueClosed { wave_id, .. }
+            | Event::WorktreeProvisioned { wave_id, .. } => {
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
@@ -1186,6 +1209,42 @@ pub(crate) fn harness_observation_from_event(
             card_id: card_id.clone(),
             lease_id: lease_id.clone(),
         }),
+        Event::ForgePrMerged { subject, .. } => Some(HarnessObservation::ForgePrMerged {
+            wave_id: wave_id.clone(),
+            pr_number: subject.pr_number,
+        }),
+        Event::ForgeScanCompleted {
+            overlapping_prs, ..
+        } => Some(HarnessObservation::ForgeScanCompleted {
+            wave_id: wave_id.clone(),
+            overlapping_prs: overlapping_prs.clone(),
+        }),
+        Event::ForgePrOpened { pr_number, .. } => Some(HarnessObservation::ForgePrOpened {
+            wave_id: wave_id.clone(),
+            pr_number: *pr_number,
+        }),
+        Event::ForgePrChecks {
+            pr_number,
+            conclusion,
+            ..
+        } => Some(HarnessObservation::ForgePrChecks {
+            wave_id: wave_id.clone(),
+            pr_number: *pr_number,
+            conclusion: conclusion.clone(),
+        }),
+        Event::ForgeIssueClosed { issue_number, .. } => {
+            Some(HarnessObservation::ForgeIssueClosed {
+                wave_id: wave_id.clone(),
+                issue_number: *issue_number,
+            })
+        }
+        Event::WorktreeProvisioned { card_id, path, .. } => {
+            Some(HarnessObservation::WorktreeProvisioned {
+                wave_id: wave_id.clone(),
+                card_id: card_id.clone(),
+                path: path.clone(),
+            })
+        }
         Event::CodexHook {
             card_id,
             kind,
@@ -1296,6 +1355,12 @@ mod tests {
                 "wave.report_edited".into(),
                 "workspace.leased".into(),
                 "workspace.released".into(),
+                "forge.scan.completed".into(),
+                "forge.pr.opened".into(),
+                "forge.pr.checks".into(),
+                "forge.issue.closed".into(),
+                "worktree.provisioned".into(),
+                "forge.pr.merged".into(),
                 "codex.hook".into(),
                 "claude.hook".into(),
                 "plan.updated".into(),
@@ -1375,6 +1440,51 @@ mod tests {
             wave_id: wave.clone(),
             card_id: CardId::from("worker"),
             lease_id: "lease-1".into(),
+        })));
+        assert!(filter.matches(&env(Event::ForgeScanCompleted {
+            wave_id: wave.clone(),
+            overlapping_prs: vec![1, 2],
+        })));
+        assert!(filter.matches(&env(Event::ForgePrOpened {
+            wave_id: wave.clone(),
+            pr_number: 1,
+            head_sha: "head-sha".into(),
+        })));
+        assert!(filter.matches(&env(Event::ForgePrChecks {
+            wave_id: wave.clone(),
+            pr_number: 1,
+            conclusion: "success".into(),
+        })));
+        assert!(filter.matches(&env(Event::ForgeIssueClosed {
+            wave_id: wave.clone(),
+            issue_number: 1,
+        })));
+        assert!(filter.matches(&env(Event::WorktreeProvisioned {
+            wave_id: wave.clone(),
+            card_id: CardId::from("worker"),
+            path: "/tmp/worktree".into(),
+        })));
+        assert!(filter.matches(&env(Event::ForgePrMerged {
+            wave_id: wave.clone(),
+            subject: crate::event::ForgeMergeSubject {
+                phase: "impl".into(),
+                slice_id: "6".into(),
+                pr_number: 1,
+            },
+            head_sha: "head-sha".into(),
+            merge_sha: "merge-sha".into(),
+        })));
+        assert!(!filter.matches(&env(Event::ForgePrDiffRead {
+            wave_id: wave.clone(),
+            pr_number: 1,
+            base_sha: "base-sha".into(),
+            head_sha: "head-sha".into(),
+            artifact_path: "/tmp/diff.patch".into(),
+        })));
+        assert!(!filter.matches(&env(Event::WorktreeRemoved {
+            wave_id: wave.clone(),
+            card_id: CardId::from("worker"),
+            path: "/tmp/worktree".into(),
         })));
         assert!(filter.matches(&env(Event::CodexHook {
             card_id: CardId::from("worker-codex"),
@@ -1754,6 +1864,68 @@ mod tests {
             &write
         ));
 
+        for forge_event in [
+            Event::ForgePrMerged {
+                wave_id: wave.clone(),
+                subject: crate::event::ForgeMergeSubject {
+                    phase: "impl".into(),
+                    slice_id: "6".into(),
+                    pr_number: 1,
+                },
+                head_sha: "head-sha".into(),
+                merge_sha: "merge-sha".into(),
+            },
+            Event::ForgeScanCompleted {
+                wave_id: wave.clone(),
+                overlapping_prs: vec![1, 2],
+            },
+            Event::ForgePrOpened {
+                wave_id: wave.clone(),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+            },
+            Event::ForgePrChecks {
+                wave_id: wave.clone(),
+                pr_number: 1,
+                conclusion: "success".into(),
+            },
+            Event::ForgeIssueClosed {
+                wave_id: wave.clone(),
+                issue_number: 1,
+            },
+            Event::WorktreeProvisioned {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                path: "/tmp/worktree".into(),
+            },
+        ] {
+            assert!(event_warrants_spec_push(
+                &forge_event,
+                &ActorId::KernelDispatcher,
+                &write
+            ));
+        }
+        assert!(!event_warrants_spec_push(
+            &Event::ForgePrDiffRead {
+                wave_id: wave.clone(),
+                pr_number: 1,
+                base_sha: "base-sha".into(),
+                head_sha: "head-sha".into(),
+                artifact_path: "/tmp/diff.patch".into(),
+            },
+            &ActorId::KernelDispatcher,
+            &write
+        ));
+        assert!(!event_warrants_spec_push(
+            &Event::WorktreeRemoved {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                path: "/tmp/worktree".into(),
+            },
+            &ActorId::KernelDispatcher,
+            &write
+        ));
+
         let codex_hook = |card_id: CardId, kind: &str| Event::CodexHook {
             card_id,
             kind: kind.into(),
@@ -2011,6 +2183,120 @@ mod tests {
                 card_id: worker.clone(),
                 lease_id: "lease-map".into(),
             })
+        );
+
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ForgePrMerged {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    subject: crate::event::ForgeMergeSubject {
+                        phase: "impl".into(),
+                        slice_id: "6".into(),
+                        pr_number: 760,
+                    },
+                    head_sha: "head-sha".into(),
+                    merge_sha: "merge-sha".into(),
+                }
+            ),
+            Some(HarnessObservation::ForgePrMerged {
+                wave_id: wave.clone(),
+                pr_number: 760,
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ForgeScanCompleted {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    overlapping_prs: vec![1, 2],
+                }
+            ),
+            Some(HarnessObservation::ForgeScanCompleted {
+                wave_id: wave.clone(),
+                overlapping_prs: vec![1, 2],
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ForgePrOpened {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    pr_number: 1,
+                    head_sha: "head-sha".into(),
+                }
+            ),
+            Some(HarnessObservation::ForgePrOpened {
+                wave_id: wave.clone(),
+                pr_number: 1,
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ForgePrChecks {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    pr_number: 1,
+                    conclusion: "success".into(),
+                }
+            ),
+            Some(HarnessObservation::ForgePrChecks {
+                wave_id: wave.clone(),
+                pr_number: 1,
+                conclusion: "success".into(),
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ForgeIssueClosed {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    issue_number: 760,
+                }
+            ),
+            Some(HarnessObservation::ForgeIssueClosed {
+                wave_id: wave.clone(),
+                issue_number: 760,
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::WorktreeProvisioned {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    card_id: worker.clone(),
+                    path: "/tmp/worktree-map".into(),
+                }
+            ),
+            Some(HarnessObservation::WorktreeProvisioned {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                path: "/tmp/worktree-map".into(),
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ForgePrDiffRead {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    pr_number: 1,
+                    base_sha: "base-sha".into(),
+                    head_sha: "head-sha".into(),
+                    artifact_path: "/tmp/diff.patch".into(),
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::WorktreeRemoved {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    card_id: worker.clone(),
+                    path: "/tmp/worktree-map".into(),
+                }
+            ),
+            None
         );
 
         // Stop hooks — exact kind discriminators map to WorkerHookStop.

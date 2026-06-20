@@ -152,21 +152,27 @@ impl TestBoot {
 }
 
 fn event_spec() -> ForgeEventSpec {
+    event_spec_for("forge.pr.merged")
+}
+
+fn event_spec_for(kind: &str) -> ForgeEventSpec {
     let mut fields = BTreeMap::new();
-    fields.insert(
-        "merge_sha".into(),
-        FieldSource::JsonField {
-            path: "/oid".into(),
-        },
-    );
-    fields.insert(
-        "head_sha".into(),
-        FieldSource::JsonField {
-            path: "/headRefOid".into(),
-        },
-    );
+    if kind == "forge.pr.merged" {
+        fields.insert(
+            "merge_sha".into(),
+            FieldSource::JsonField {
+                path: "/oid".into(),
+            },
+        );
+        fields.insert(
+            "head_sha".into(),
+            FieldSource::JsonField {
+                path: "/headRefOid".into(),
+            },
+        );
+    }
     ForgeEventSpec {
-        event_kind: "forge.pr.merged".into(),
+        event_kind: kind.into(),
         fields,
     }
 }
@@ -194,10 +200,11 @@ fn payload_with_probe(
     serde_json::to_value(ForgeActionPayload {
         wave_id: boot.wave_id.clone(),
         card_id: new_id(),
-        subject: subject(),
+        subject: Some(subject()),
         argv,
         idem_key: idem_key.into(),
-        event_spec: event_spec(),
+        event_spec: Some(event_spec()),
+        context: Default::default(),
         probe: probe_argv.map(|probe_argv| ProbeSpec {
             probe_argv,
             output_probe_argv,
@@ -465,9 +472,48 @@ async fn latest_forge_event_payload(repo: &SqlxRepo) -> Value {
     serde_json::from_str(&payload_text).expect("event payload parses")
 }
 
+async fn latest_event_payload(repo: &SqlxRepo, kind: &str) -> Value {
+    let payload_text: String =
+        sqlx::query_scalar("SELECT payload FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1")
+            .bind(kind)
+            .fetch_one(repo.pool())
+            .await
+            .expect("event payload exists");
+    serde_json::from_str(&payload_text).expect("event payload parses")
+}
+
+async fn latest_event_scope(
+    repo: &SqlxRepo,
+    kind: &str,
+) -> (String, Option<String>, Option<String>, Option<String>) {
+    sqlx::query_as(
+        "SELECT scope_kind, scope_cove, scope_wave, scope_card \
+         FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(kind)
+    .fetch_one(repo.pool())
+    .await
+    .expect("event scope exists")
+}
+
 async fn forge_event_count(repo: &SqlxRepo) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
         .bind("forge.pr.merged")
+        .fetch_one(repo.pool())
+        .await
+        .expect("event count")
+}
+
+async fn event_count(repo: &SqlxRepo, kind: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
+        .bind(kind)
+        .fetch_one(repo.pool())
+        .await
+        .expect("event count")
+}
+
+async fn all_event_count(repo: &SqlxRepo) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events")
         .fetch_one(repo.pool())
         .await
         .expect("event count")
@@ -657,6 +703,7 @@ async fn forge_action_rejects_non_forge_event_kind() -> CalmResult<()> {
         vec!["/bin/true".into()],
         boot.temp_path("non-forge-event-kind-result.json"),
     );
+    payload["subject"] = Value::Null;
     payload["event_spec"]["event_kind"] = json!("wave.deleted");
 
     let err = adapter
@@ -685,6 +732,7 @@ async fn forge_action_rejects_unsupported_forge_event_kind() -> CalmResult<()> {
         vec!["/bin/true".into()],
         boot.temp_path("unsupported-event-kind-result.json"),
     );
+    payload["subject"] = Value::Null;
     payload["event_spec"]["event_kind"] = json!("forge.pr.merge");
 
     let err = adapter
@@ -738,6 +786,175 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
             err,
             CalmError::BadRequest(ref message)
                 if message == "forge-action event_spec for `forge.pr.merged` must populate field `merge_sha`"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_missing_required_new_kind_field_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("missing-issue-number-action.sh");
+    let counter = boot.temp_path("missing-issue-number-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' 'closed'
+"#,
+    );
+    let idem = "forge-issue-closed-missing-issue-number";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("missing-issue-number-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("forge.issue.closed"))?;
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("missing issue_number must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action event_spec/context for `forge.issue.closed` must provide field `issue_number`"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_exit_code_for_new_kind_head_sha_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("opened-head-sha-exit-code-action.sh");
+    let counter = boot.temp_path("opened-head-sha-exit-code-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"headRefOid":"abc123"}'
+"#,
+    );
+    let idem = "forge-opened-head-sha-exit-code";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("opened-head-sha-exit-code-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("forge.pr.opened"))?;
+    payload["event_spec"]["fields"]["head_sha"] = serde_json::to_value(FieldSource::ExitCode)?;
+    payload["context"] = json!({ "pr_number": 760 });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("head_sha from exit_code must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action `forge.pr.opened` field `head_sha` must be extracted via a JSON field source, not exit_code"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_exit_code_for_new_kind_pr_number_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("opened-pr-number-exit-code-action.sh");
+    let counter = boot.temp_path("opened-pr-number-exit-code-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"headRefOid":"abc123"}'
+"#,
+    );
+    let idem = "forge-opened-pr-number-exit-code";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("opened-pr-number-exit-code-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("forge.pr.opened"))?;
+    payload["event_spec"]["fields"]["pr_number"] = serde_json::to_value(FieldSource::ExitCode)?;
+    payload["context"] = json!({ "head_sha": "abc123" });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("pr_number from exit_code must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action `forge.pr.opened` field `pr_number` must be extracted via a JSON field source, not exit_code"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_wrong_typed_worktree_path_context_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("worktree-number-path-action.sh");
+    let counter = boot.temp_path("worktree-number-path-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' 'ok'
+"#,
+    );
+    let idem = "forge-worktree-number-path";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("worktree-number-path-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("worktree.provisioned"))?;
+    payload["context"] = json!({ "path": 42 });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("numeric worktree path context must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action `worktree.provisioned` context field `path` must be a string"
         ),
         "{err:?}"
     );
@@ -891,6 +1108,72 @@ async fn forge_action_accepts_valid_json_pointer_syntax() -> CalmResult<()> {
             path: String::new(),
         })?;
     adapter.validate(&root_payload).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_subject_shape_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let adapter = ForgeActionAdapter::new();
+
+    let mut missing_subject = payload(
+        &boot,
+        "forge-merge-missing-subject",
+        vec!["/bin/true".into()],
+        boot.temp_path("merge-missing-subject-result.json"),
+    );
+    missing_subject["subject"] = Value::Null;
+    let err = adapter
+        .validate(&missing_subject)
+        .await
+        .expect_err("forge.pr.merged requires subject");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message) if message == "forge.pr.merged requires subject"
+        ),
+        "{err:?}"
+    );
+
+    let mut non_merge_subject = payload(
+        &boot,
+        "forge-scan-with-subject",
+        vec!["/bin/true".into()],
+        boot.temp_path("scan-with-subject-result.json"),
+    );
+    non_merge_subject["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
+    let err = adapter
+        .validate(&non_merge_subject)
+        .await
+        .expect_err("non-merge events must not carry subject");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "subject is only valid for forge.pr.merged"
+        ),
+        "{err:?}"
+    );
+
+    let mut resultless_subject = payload(
+        &boot,
+        "forge-resultless-with-subject",
+        vec!["/bin/true".into()],
+        boot.temp_path("resultless-with-subject-result.json"),
+    );
+    resultless_subject["event_spec"] = Value::Null;
+    let err = adapter
+        .validate(&resultless_subject)
+        .await
+        .expect_err("resultless events must not carry subject");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "subject is only valid for forge.pr.merged"
+        ),
+        "{err:?}"
+    );
     Ok(())
 }
 
@@ -1239,6 +1522,287 @@ exit 42
         "nonzero action exit must not consult probe"
     );
     assert_eq!(forge_event_count(&boot.repo).await, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_persists_non_merge_event_from_context() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("scan-completed-action.sh");
+    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'scan complete'\n");
+
+    let idem = "forge-scan-completed-context";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string()],
+        boot.temp_path("scan-completed-result.json"),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
+    input["context"] = json!({ "overlapping_prs": [1, 2] });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+
+    let event = latest_event_payload(&boot.repo, "forge.scan.completed").await;
+    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["overlapping_prs"], json!([1, 2]));
+    assert!(event.get("subject").is_none());
+    assert_eq!(event_count(&boot.repo, "forge.scan.completed").await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("scoped-event-action.sh");
+    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'ok'\n");
+
+    let worktree_idem = "forge-worktree-provisioned-scope";
+    let mut worktree_input = payload(
+        &boot,
+        worktree_idem,
+        vec![action.display().to_string()],
+        boot.temp_path("worktree-provisioned-scope-result.json"),
+    );
+    worktree_input["subject"] = Value::Null;
+    worktree_input["event_spec"] = serde_json::to_value(event_spec_for("worktree.provisioned"))?;
+    let card_id = worktree_input["card_id"]
+        .as_str()
+        .expect("payload card_id")
+        .to_string();
+    worktree_input["context"] = json!({
+        "path": "/tmp/neige/worktrees/card-1"
+    });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(worktree_idem), worktree_input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+
+    let worktree_event = latest_event_payload(&boot.repo, "worktree.provisioned").await;
+    assert_eq!(worktree_event["wave_id"], json!(boot.wave_id));
+    assert_eq!(worktree_event["card_id"], json!(card_id));
+    assert_eq!(worktree_event["path"], json!("/tmp/neige/worktrees/card-1"));
+    let (scope_kind, scope_cove, scope_wave, scope_card) =
+        latest_event_scope(&boot.repo, "worktree.provisioned").await;
+    assert_eq!(scope_kind, "card");
+    assert_eq!(scope_card.as_deref(), Some(card_id.as_str()));
+    assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
+    assert!(scope_cove.is_some(), "card scope carries cove");
+
+    let forge_idem = "forge-scan-completed-wave-scope";
+    let mut forge_input = payload(
+        &boot,
+        forge_idem,
+        vec![action.display().to_string()],
+        boot.temp_path("scan-completed-wave-scope-result.json"),
+    );
+    forge_input["subject"] = Value::Null;
+    forge_input["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
+    forge_input["context"] = json!({ "overlapping_prs": [7] });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(forge_idem), forge_input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+
+    let (scope_kind, scope_cove, scope_wave, scope_card) =
+        latest_event_scope(&boot.repo, "forge.scan.completed").await;
+    assert_eq!(scope_kind, "wave");
+    assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
+    assert!(scope_cove.is_some(), "wave scope carries cove");
+    assert!(scope_card.is_none(), "forge.* events remain wave-scoped");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_resultless_succeeds_without_event_row() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("resultless-action.sh");
+    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'committed'\n");
+
+    let before = all_event_count(&boot.repo).await;
+    let idem = "forge-resultless";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string()],
+        boot.temp_path("resultless-result.json"),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = Value::Null;
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    match result.outcome {
+        OperationOutcome::Succeeded { result } => {
+            assert_eq!(result["exit_code"], json!(0));
+            assert_eq!(result["event_kind"], Value::Null);
+            assert_eq!(result["event"], Value::Null);
+        }
+        other => panic!("expected resultless success, got {other:?}"),
+    }
+    assert_eq!(
+        all_event_count(&boot.repo).await,
+        before,
+        "resultless success must not append an event"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_worktree_context_card_id_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("reserved-worktree-card-action.sh");
+    let counter = boot.temp_path("reserved-worktree-card-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' 'ok'
+"#,
+    );
+    let idem = "forge-worktree-reserved-card-id";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-worktree-card-result.json"),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = serde_json::to_value(event_spec_for("worktree.provisioned"))?;
+    input["context"] = json!({
+        "card_id": "plugin-card",
+        "path": "/tmp/neige/worktrees/plugin-card"
+    });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await
+        .expect_err("worktree context.card_id must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `card_id`"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_reserved_event_keys_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("reserved-context-action.sh");
+    let counter = boot.temp_path("reserved-context-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
+"#,
+    );
+
+    let mut context_wave = payload(
+        &boot,
+        "forge-reserved-context-wave",
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-context-wave-result.json"),
+    );
+    context_wave["context"] = json!({ "wave_id": "plugin-wave" });
+    let err = boot
+        .runtime
+        .submit(
+            FORGE_ACTION_KIND,
+            op_key("forge-reserved-context-wave"),
+            context_wave,
+        )
+        .await
+        .expect_err("context.wave_id must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `wave_id`"
+        ),
+        "{err:?}"
+    );
+
+    let mut context_subject = payload(
+        &boot,
+        "forge-reserved-context-subject",
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-context-subject-result.json"),
+    );
+    context_subject["context"] = json!({ "subject": { "phase": "impl" } });
+    let err = boot
+        .runtime
+        .submit(
+            FORGE_ACTION_KIND,
+            op_key("forge-reserved-context-subject"),
+            context_subject,
+        )
+        .await
+        .expect_err("context.subject must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `subject`"
+        ),
+        "{err:?}"
+    );
+
+    let mut field_wave = payload(
+        &boot,
+        "forge-reserved-field-wave",
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-field-wave-result.json"),
+    );
+    field_wave["event_spec"]["fields"]["wave_id"] = json!("exit_code");
+    let err = boot
+        .runtime
+        .submit(
+            FORGE_ACTION_KIND,
+            op_key("forge-reserved-field-wave"),
+            field_wave,
+        )
+        .await
+        .expect_err("event_spec.fields.wave_id must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `wave_id`"
+        ),
+        "{err:?}"
+    );
+
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
     Ok(())
 }
 

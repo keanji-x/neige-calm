@@ -134,7 +134,7 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 7);
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 8);
 
     // minWebCompatVersion must echo the in-process constant — the whole
     // point of the field is to bind frontend expectations to a value the
@@ -145,12 +145,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 8);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 9);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 8);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 9);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
