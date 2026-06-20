@@ -407,19 +407,49 @@ fn required_output_fields(event_kind: &str) -> &'static [(&'static str, bool)] {
     }
 }
 
-/// Payload fields each forge/worktree event kind requires from plugin
-/// `context` or `event_spec` extraction -- excluding kernel-authoritative
-/// fields (see `kernel_injected_fields`). Checked pre-spawn so the
-/// authoritative event is fully determined before the irreversible action.
-fn required_event_fields(event_kind: &str) -> &'static [&'static str] {
+#[derive(Clone, Copy)]
+enum ForgeFieldType {
+    Str,
+    U64,
+    VecU64,
+}
+
+impl ForgeFieldType {
+    fn matches_context_value(self, value: &Value) -> bool {
+        match self {
+            Self::Str => value.is_string(),
+            Self::U64 => value.is_u64(),
+            Self::VecU64 => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_u64)),
+        }
+    }
+
+    fn json_type_name(self) -> &'static str {
+        match self {
+            Self::Str => "string",
+            Self::U64 => "u64",
+            Self::VecU64 => "u64 array",
+        }
+    }
+}
+
+/// Required non-kernel payload fields for the new slice ③ event kinds and
+/// their JSON type. `forge.pr.merged` stays on `required_output_fields`.
+fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeFieldType)] {
+    use ForgeFieldType::*;
     match event_kind {
-        "forge.pr.merged" => &["head_sha", "merge_sha"],
-        "forge.scan.completed" => &["overlapping_prs"],
-        "forge.pr.opened" => &["pr_number", "head_sha"],
-        "forge.pr.diff.read" => &["pr_number", "base_sha", "head_sha", "artifact_path"],
-        "forge.pr.checks" => &["pr_number", "conclusion"],
-        "forge.issue.closed" => &["issue_number"],
-        "worktree.provisioned" | "worktree.removed" => &["path"],
+        "forge.scan.completed" => &[("overlapping_prs", VecU64)],
+        "forge.pr.opened" => &[("pr_number", U64), ("head_sha", Str)],
+        "forge.pr.diff.read" => &[
+            ("pr_number", U64),
+            ("base_sha", Str),
+            ("head_sha", Str),
+            ("artifact_path", Str),
+        ],
+        "forge.pr.checks" => &[("pr_number", U64), ("conclusion", Str)],
+        "forge.issue.closed" => &[("issue_number", U64)],
+        "worktree.provisioned" | "worktree.removed" => &[("path", Str)],
         _ => &[],
     }
 }
@@ -518,8 +548,23 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
                 )));
             }
         }
-        for field in required_event_fields(&spec.event_kind) {
-            if !payload.context.contains_key(*field) && !spec.fields.contains_key(*field) {
+        for (field, field_type) in new_kind_required_fields(&spec.event_kind) {
+            if let Some(source) = spec.fields.get(*field) {
+                if !matches!(source, FieldSource::JsonField { .. }) {
+                    return Err(CalmError::BadRequest(format!(
+                        "forge-action `{}` field `{field}` must be extracted via a JSON field source, not exit_code",
+                        spec.event_kind
+                    )));
+                }
+            } else if let Some(value) = payload.context.get(*field) {
+                if !field_type.matches_context_value(value) {
+                    return Err(CalmError::BadRequest(format!(
+                        "forge-action `{}` context field `{field}` must be a {}",
+                        spec.event_kind,
+                        field_type.json_type_name()
+                    )));
+                }
+            } else {
                 return Err(CalmError::BadRequest(format!(
                     "forge-action event_spec/context for `{}` must provide field `{field}`",
                     spec.event_kind

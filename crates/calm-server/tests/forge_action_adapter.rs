@@ -785,7 +785,7 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
         matches!(
             err,
             CalmError::BadRequest(ref message)
-                if message == "forge-action event_spec/context for `forge.pr.merged` must provide field `merge_sha`"
+                if message == "forge-action event_spec for `forge.pr.merged` must populate field `merge_sha`"
         ),
         "{err:?}"
     );
@@ -827,6 +827,134 @@ printf '%s\n' 'closed'
             err,
             CalmError::BadRequest(ref message)
                 if message == "forge-action event_spec/context for `forge.issue.closed` must provide field `issue_number`"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_exit_code_for_new_kind_head_sha_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("opened-head-sha-exit-code-action.sh");
+    let counter = boot.temp_path("opened-head-sha-exit-code-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"headRefOid":"abc123"}'
+"#,
+    );
+    let idem = "forge-opened-head-sha-exit-code";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("opened-head-sha-exit-code-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("forge.pr.opened"))?;
+    payload["event_spec"]["fields"]["head_sha"] = serde_json::to_value(FieldSource::ExitCode)?;
+    payload["context"] = json!({ "pr_number": 760 });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("head_sha from exit_code must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action `forge.pr.opened` field `head_sha` must be extracted via a JSON field source, not exit_code"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_exit_code_for_new_kind_pr_number_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("opened-pr-number-exit-code-action.sh");
+    let counter = boot.temp_path("opened-pr-number-exit-code-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"headRefOid":"abc123"}'
+"#,
+    );
+    let idem = "forge-opened-pr-number-exit-code";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("opened-pr-number-exit-code-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("forge.pr.opened"))?;
+    payload["event_spec"]["fields"]["pr_number"] = serde_json::to_value(FieldSource::ExitCode)?;
+    payload["context"] = json!({ "head_sha": "abc123" });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("pr_number from exit_code must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action `forge.pr.opened` field `pr_number` must be extracted via a JSON field source, not exit_code"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_wrong_typed_worktree_path_context_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("worktree-number-path-action.sh");
+    let counter = boot.temp_path("worktree-number-path-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' 'ok'
+"#,
+    );
+    let idem = "forge-worktree-number-path";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("worktree-number-path-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("worktree.provisioned"))?;
+    payload["context"] = json!({ "path": 42 });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("numeric worktree path context must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action `worktree.provisioned` context field `path` must be a string"
         ),
         "{err:?}"
     );
