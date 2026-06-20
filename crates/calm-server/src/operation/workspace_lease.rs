@@ -225,16 +225,20 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
         return Ok(false);
     };
     // Online reaper release is best-effort: warn and mark released rather than wedge the lease.
-    if let Err(error) = remove_workspace_worktree_for_lease(&lease) {
-        tracing::warn!(
-            lease_id = %lease.lease_id,
-            card_id = %lease.card_id,
-            path = %lease.path,
-            error = %error,
-            "online workspace lease release could not remove workspace worktree; marking lease released"
-        );
-    }
-    let envelopes = complete_workspace_lease_release_repo(repo, lease).await?;
+    let worktree_removed = match remove_workspace_worktree_for_lease(&lease) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(
+                lease_id = %lease.lease_id,
+                card_id = %lease.card_id,
+                path = %lease.path,
+                error = %error,
+                "online workspace lease release could not remove workspace worktree; marking lease released"
+            );
+            false
+        }
+    };
+    let envelopes = complete_workspace_lease_release_repo(repo, lease, worktree_removed).await?;
     if envelopes.is_empty() {
         return Ok(false);
     }
@@ -320,7 +324,7 @@ async fn release_workspace_lease(
 ) -> Result<bool> {
     // Spawn-failure compensation propagates removal failures rather than silently orphaning worktrees.
     remove_workspace_worktree_for_lease(&lease)?;
-    complete_workspace_lease_release(pool, events, lease).await
+    complete_workspace_lease_release(pool, events, lease, true).await
 }
 
 async fn release_workspace_lease_on_boot(
@@ -333,22 +337,27 @@ async fn release_workspace_lease_on_boot(
     };
 
     // Boot reclaim is best-effort (#792): warn and mark released so startup stays resilient.
-    if let Err(error) = remove_workspace_worktree_for_lease(&lease) {
-        tracing::warn!(
-            lease_id = %lease.lease_id,
-            path = %lease.path,
-            error = %error,
-            "boot workspace lease reclaim could not remove workspace directory; marking lease released"
-        );
-    }
+    let worktree_removed = match remove_workspace_worktree_for_lease(&lease) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(
+                lease_id = %lease.lease_id,
+                path = %lease.path,
+                error = %error,
+                "boot workspace lease reclaim could not remove workspace directory; marking lease released"
+            );
+            false
+        }
+    };
 
-    complete_workspace_lease_release(pool, events, lease).await
+    complete_workspace_lease_release(pool, events, lease, worktree_removed).await
 }
 
 async fn complete_workspace_lease_release(
     pool: &SqlitePool,
     events: &EventBus,
     lease: WorkspaceLease,
+    worktree_removed: bool,
 ) -> Result<bool> {
     let mut tx = begin_immediate_tx(pool).await?;
     let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.wave_id).await?;
@@ -371,20 +380,30 @@ async fn complete_workspace_lease_release(
         return Ok(false);
     }
 
-    let removed_event = Event::WorktreeRemoved {
-        wave_id: WaveId::from(lease.wave_id.clone()),
-        card_id: CardId::from(lease.card_id.clone()),
-        path: lease.path.clone(),
-    };
-    let removed_event_id = append_decision_event_in_tx(
-        &mut tx,
-        &PermissiveGate,
-        &ActorId::KernelDispatcher,
-        &scope,
-        None,
-        &removed_event,
-    )
-    .await?;
+    let mut envelopes = Vec::new();
+    if worktree_removed {
+        let removed_event = Event::WorktreeRemoved {
+            wave_id: WaveId::from(lease.wave_id.clone()),
+            card_id: CardId::from(lease.card_id.clone()),
+            path: lease.path.clone(),
+        };
+        let removed_event_id = append_decision_event_in_tx(
+            &mut tx,
+            &PermissiveGate,
+            &ActorId::KernelDispatcher,
+            &scope,
+            None,
+            &removed_event,
+        )
+        .await?;
+        envelopes.push(BroadcastEnvelope {
+            id: removed_event_id,
+            event_version: SYNC_EVENT_VERSION,
+            actor: ActorId::KernelDispatcher,
+            scope: scope.clone(),
+            event: removed_event,
+        });
+    }
     let event = Event::WorkspaceReleased {
         wave_id: WaveId::from(lease.wave_id.clone()),
         card_id: CardId::from(lease.card_id.clone()),
@@ -399,22 +418,18 @@ async fn complete_workspace_lease_release(
         &event,
     )
     .await?;
-    tx.commit().await?;
-
-    events.emit_envelope(BroadcastEnvelope {
-        id: removed_event_id,
-        event_version: SYNC_EVENT_VERSION,
-        actor: ActorId::KernelDispatcher,
-        scope: scope.clone(),
-        event: removed_event,
-    });
-    events.emit_envelope(BroadcastEnvelope {
+    envelopes.push(BroadcastEnvelope {
         id: event_id,
         event_version: SYNC_EVENT_VERSION,
         actor: ActorId::KernelDispatcher,
         scope,
         event,
     });
+    tx.commit().await?;
+
+    for envelope in envelopes {
+        events.emit_envelope(envelope);
+    }
     Ok(true)
 }
 
@@ -535,6 +550,7 @@ async fn release_workspace_lease_tx(
 async fn complete_workspace_lease_release_repo(
     repo: &dyn RepoEventWrite,
     lease: WorkspaceLease,
+    worktree_removed: bool,
 ) -> Result<Vec<BroadcastEnvelope>> {
     write_in_tx_typed(repo, move |tx| {
         let lease = lease.clone();
@@ -557,20 +573,30 @@ async fn complete_workspace_lease_release_repo(
             if rows == 0 {
                 return Ok(Vec::new());
             }
-            let removed_event = Event::WorktreeRemoved {
-                wave_id: WaveId::from(lease.wave_id.clone()),
-                card_id: CardId::from(lease.card_id.clone()),
-                path: lease.path.clone(),
-            };
-            let removed_event_id = append_decision_event_in_tx(
-                tx,
-                &PermissiveGate,
-                &ActorId::KernelDispatcher,
-                &scope,
-                None,
-                &removed_event,
-            )
-            .await?;
+            let mut envelopes = Vec::new();
+            if worktree_removed {
+                let removed_event = Event::WorktreeRemoved {
+                    wave_id: WaveId::from(lease.wave_id.clone()),
+                    card_id: CardId::from(lease.card_id.clone()),
+                    path: lease.path.clone(),
+                };
+                let removed_event_id = append_decision_event_in_tx(
+                    tx,
+                    &PermissiveGate,
+                    &ActorId::KernelDispatcher,
+                    &scope,
+                    None,
+                    &removed_event,
+                )
+                .await?;
+                envelopes.push(BroadcastEnvelope {
+                    id: removed_event_id,
+                    event_version: SYNC_EVENT_VERSION,
+                    actor: ActorId::KernelDispatcher,
+                    scope: scope.clone(),
+                    event: removed_event,
+                });
+            }
             let event = Event::WorkspaceReleased {
                 wave_id: WaveId::from(lease.wave_id.clone()),
                 card_id: CardId::from(lease.card_id.clone()),
@@ -585,22 +611,14 @@ async fn complete_workspace_lease_release_repo(
                 &event,
             )
             .await?;
-            Ok(vec![
-                BroadcastEnvelope {
-                    id: removed_event_id,
-                    event_version: SYNC_EVENT_VERSION,
-                    actor: ActorId::KernelDispatcher,
-                    scope: scope.clone(),
-                    event: removed_event,
-                },
-                BroadcastEnvelope {
-                    id: event_id,
-                    event_version: SYNC_EVENT_VERSION,
-                    actor: ActorId::KernelDispatcher,
-                    scope,
-                    event,
-                },
-            ])
+            envelopes.push(BroadcastEnvelope {
+                id: event_id,
+                event_version: SYNC_EVENT_VERSION,
+                actor: ActorId::KernelDispatcher,
+                scope,
+                event,
+            });
+            Ok(envelopes)
         })
     })
     .await
@@ -737,8 +755,12 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
         ))
     })?;
 
-    if git_worktree_registered(&target.repo_root, &target.path)? {
-        return Ok(());
+    match git_worktree_registration(&target.repo_root, &target.path)? {
+        GitWorktreeRegistration::Present if target.path.is_dir() => return Ok(()),
+        GitWorktreeRegistration::Present | GitWorktreeRegistration::Prunable => {
+            prune_stale_workspace_worktree_registration(target)?;
+        }
+        GitWorktreeRegistration::Absent => {}
     }
 
     let branch_ref = format!("refs/heads/{}", target.branch);
@@ -759,7 +781,16 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
             target.path.display()
         ))
     })?;
-    if output.status.success() || git_worktree_registered(&target.repo_root, &target.path)? {
+    if output.status.success() {
+        if target.path.is_dir() {
+            return Ok(());
+        }
+        return Err(CalmError::Internal(format!(
+            "git worktree add for {} succeeded but the worktree directory is missing",
+            target.path.display()
+        )));
+    }
+    if git_worktree_ready(&target.repo_root, &target.path)? {
         return Ok(());
     }
     Err(git_failed("git worktree add", &target.repo_root, &output))
@@ -1133,7 +1164,25 @@ fn git_ref_exists(repo_root: &Path, full_ref: &str) -> Result<bool> {
     Ok(status.success())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GitWorktreeRegistration {
+    Absent,
+    Present,
+    Prunable,
+}
+
 fn git_worktree_registered(repo_root: &Path, path: &Path) -> Result<bool> {
+    Ok(git_worktree_registration(repo_root, path)? != GitWorktreeRegistration::Absent)
+}
+
+fn git_worktree_ready(repo_root: &Path, path: &Path) -> Result<bool> {
+    Ok(
+        git_worktree_registration(repo_root, path)? == GitWorktreeRegistration::Present
+            && path.is_dir(),
+    )
+}
+
+fn git_worktree_registration(repo_root: &Path, path: &Path) -> Result<GitWorktreeRegistration> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -1149,11 +1198,70 @@ fn git_worktree_registered(repo_root: &Path, path: &Path) -> Result<bool> {
         return Err(git_failed("git worktree list", repo_root, &output));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().any(|line| {
-        line.strip_prefix("worktree ")
-            .map(|listed| Path::new(listed) == path)
-            .unwrap_or(false)
-    }))
+    let mut current_matches = false;
+    let mut current_prunable = false;
+    for line in stdout.lines() {
+        if let Some(listed) = line.strip_prefix("worktree ") {
+            if current_matches {
+                return Ok(if current_prunable {
+                    GitWorktreeRegistration::Prunable
+                } else {
+                    GitWorktreeRegistration::Present
+                });
+            }
+            current_matches = Path::new(listed) == path;
+            current_prunable = false;
+        } else if current_matches && (line == "prunable" || line.starts_with("prunable ")) {
+            current_prunable = true;
+        }
+    }
+    if current_matches {
+        return Ok(if current_prunable {
+            GitWorktreeRegistration::Prunable
+        } else {
+            GitWorktreeRegistration::Present
+        });
+    }
+    Ok(GitWorktreeRegistration::Absent)
+}
+
+fn prune_stale_workspace_worktree_registration(target: &WorkspaceLeaseTarget) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&target.repo_root)
+        .args(["worktree", "prune", "--expire", "now"])
+        .output()
+        .map_err(|e| {
+            CalmError::Internal(format!(
+                "spawn git worktree prune in {}: {e}",
+                target.repo_root.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(git_failed("git worktree prune", &target.repo_root, &output));
+    }
+    if git_worktree_registered(&target.repo_root, &target.path)? {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&target.repo_root)
+            .args(["worktree", "remove", "--force"])
+            .arg(&target.path)
+            .output()
+            .map_err(|e| {
+                CalmError::Internal(format!(
+                    "spawn git worktree remove for {}: {e}",
+                    target.path.display()
+                ))
+            })?;
+        if !output.status.success() && git_worktree_registered(&target.repo_root, &target.path)? {
+            return Err(git_failed(
+                "git worktree remove --force",
+                &target.repo_root,
+                &output,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn git_failed(action: &str, repo_root: &Path, output: &Output) -> CalmError {
@@ -1329,6 +1437,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn workspace_worktree_provision_recreates_stale_registered_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let target = WorkspaceLeaseTarget {
+            repo_root: tmp.path().to_path_buf(),
+            path: tmp.path().join(".claude/worktrees/wave-stale/card-stale"),
+            branch: workspace_slice_branch_for("wave-stale", "card-stale").unwrap(),
+        };
+
+        provision_workspace_worktree(&target).unwrap();
+        assert!(target.path.is_dir(), "initial worktree exists");
+        std::fs::remove_dir_all(&target.path).unwrap();
+        assert!(
+            !target.path.exists(),
+            "test setup leaves a registered but missing worktree path"
+        );
+        assert_ne!(
+            git_worktree_registration(&target.repo_root, &target.path).unwrap(),
+            GitWorktreeRegistration::Absent,
+            "git still has a stale worktree registration"
+        );
+
+        provision_workspace_worktree(&target).unwrap();
+
+        assert!(
+            target.path.is_dir(),
+            "stale registration is re-provisioned as a real worktree"
+        );
+        assert_eq!(
+            git_worktree_registration(&target.repo_root, &target.path).unwrap(),
+            GitWorktreeRegistration::Present
+        );
+        let top_level = git_stdout(&target.path, ["rev-parse", "--show-toplevel"]);
+        assert_eq!(
+            PathBuf::from(top_level.trim()).canonicalize().unwrap(),
+            target.path.canonicalize().unwrap(),
+            "re-provisioned path is a usable git worktree"
+        );
+    }
+
     #[tokio::test]
     async fn workspace_worktree_provision_resolves_exclude_for_linked_wave_worktree() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1427,6 +1576,51 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(state, "released");
+        assert!(
+            target.path.is_dir(),
+            "forced removal failure leaves the worktree on disk"
+        );
+        assert_eq!(event_kind_count(&repo, "workspace.released").await, 1);
+        assert_eq!(event_kind_count(&repo, "worktree.removed").await, 0);
+    }
+
+    #[tokio::test]
+    async fn card_release_emits_removed_event_when_worktree_remove_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
+            .await
+            .unwrap();
+        let (lease, _event) =
+            acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        provision_workspace_worktree(&target).unwrap();
+
+        let events = EventBus::new();
+        assert!(
+            release_workspace_lease_for_card_repo(&repo, &events, &card_id)
+                .await
+                .unwrap()
+        );
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                .bind(&lease.lease_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(state, "released");
+        assert!(
+            !target.path.exists(),
+            "successful release removes the worktree"
+        );
+        assert_eq!(event_kind_count(&repo, "workspace.released").await, 1);
+        assert_eq!(event_kind_count(&repo, "worktree.removed").await, 1);
     }
 
     async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String, String) {
@@ -1468,6 +1662,14 @@ mod tests {
         .await
         .unwrap();
         (repo, wave.id.to_string(), card.id.to_string())
+    }
+
+    async fn event_kind_count(repo: &crate::db::sqlite::SqlxRepo, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
+            .bind(kind)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap()
     }
 
     fn init_git_repo(path: &Path) {
