@@ -222,6 +222,43 @@ impl OperationRepo for SqlxOperationRepo {
         Ok(claimed)
     }
 
+    async fn claim_inflight_for_compensation(&self, op_id: &str) -> Result<Option<Operation>> {
+        let now = now_ms();
+        let lease_owner = new_id();
+        let lease_until = now + OPERATION_LEASE_MS;
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET lease_owner = ?1,
+                   lease_until_ms = ?2,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND phase IN (
+                   'pending',
+                   'tx_committed',
+                   'app_server_interact',
+                   'spawn_started',
+                   'spawn_succeeded',
+                   'compensating'
+                 )
+                 AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
+        )
+        .bind(&lease_owner)
+        .bind(lease_until)
+        .bind(now)
+        .bind(op_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        let row = sqlx::query("SELECT * FROM operations WHERE id = ?1 AND lease_owner = ?2")
+            .bind(op_id)
+            .bind(&lease_owner)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(operation_from_row).transpose()
+    }
+
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>> {
         let rows = sqlx::query(
             r#"SELECT *

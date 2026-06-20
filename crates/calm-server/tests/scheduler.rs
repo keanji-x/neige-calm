@@ -43,9 +43,10 @@ use calm_server::model::{
     WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
-    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
-    OperationKey, OperationOutcome, OperationRepo, OperationRuntime, PhaseTag, ProviderAdapter,
-    SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, Tx, TxOutput,
+    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
+    PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, Tx,
+    TxOutput,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::routes::terminal_cards::stable_payload_hash;
@@ -523,6 +524,58 @@ async fn seed_worker_op_target_with_payload(
     .expect("stamp op target card");
 }
 
+async fn seed_spawn_started_codex_op(
+    boot: &Boot,
+    task_id: &str,
+    card_id: &str,
+    lease_id: &str,
+) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let op_repo = SqlxOperationRepo::new(pool.clone());
+    let op_id = op_repo
+        .insert_operation(
+            "codex-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task_id.to_string()),
+                payload_hash: "timeout-spawn-started".into(),
+            },
+            json!({
+                "actor": ActorId::KernelDispatcher,
+                "wave_id": boot.wave_id.as_str(),
+                "idempotency_key": task_id,
+                "goal": "do timeout",
+                "context": null,
+            }),
+        )
+        .await
+        .expect("insert spawned op");
+    let mut output = TxOutput::new("card", Some(card_id.to_string()), json!({ "id": card_id }));
+    output.data = json!({
+        "card_id": card_id,
+        "lease_id": lease_id,
+    });
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'spawn_started',
+               tx_output_json = ?1,
+               target_type = 'card',
+               target_id = ?2,
+               target_json = ?3,
+               lease_owner = NULL,
+               lease_until_ms = NULL
+           WHERE id = ?4"#,
+    )
+    .bind(serde_json::to_string(&output).expect("tx output json"))
+    .bind(card_id)
+    .bind(json!({ "type": "card", "id": card_id }).to_string())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .expect("stamp spawn_started op output");
+    op_id
+}
+
 fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
@@ -800,6 +853,119 @@ impl ProviderAdapter for FailingSpawnAdapter {
         _ctx: &SpawnCtx,
     ) -> CalmResult<()> {
         Err(unexpected("compensate_step"))
+    }
+}
+
+struct TimeoutCompensationAdapter {
+    kind: &'static str,
+}
+
+#[async_trait]
+impl ProviderAdapter for TimeoutCompensationAdapter {
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        STUB_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        Err(unexpected("prepare_tx"))
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Err(unexpected("app_server_interact"))
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        Err(unexpected("spawn_side_effect"))
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Ok(CompensationStateVersioned {
+            version: 1,
+            from_phase,
+            reason: reason.to_string(),
+            steps: vec![CompensationStep {
+                op: "release_workspace_lease".to_string(),
+                args: json!({
+                    "lease_id": output
+                        .data
+                        .get("lease_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| calm_server::error::CalmError::Internal(
+                            "timeout-test tx_output missing lease_id".into()
+                        ))?,
+                }),
+                completed: false,
+                attempts: 0,
+                last_error: None,
+            }],
+        })
+    }
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        if step.completed {
+            return Ok(());
+        }
+        if step.op != "release_workspace_lease" {
+            return Err(unexpected("compensate_step"));
+        }
+        let lease_id = step
+            .args
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                calm_server::error::CalmError::Internal(
+                    "timeout-test compensation step missing lease_id".into(),
+                )
+            })?;
+        let now = now_ms();
+        sqlx::query(
+            r#"UPDATE workspace_leases
+               SET state = 'released',
+                   released_at_ms = COALESCE(released_at_ms, ?1),
+                   updated_at_ms = ?1
+               WHERE lease_id = ?2
+                 AND state IN ('held','releasing')"#,
+        )
+        .bind(now)
+        .bind(lease_id)
+        .execute(&ctx.operation_repo.sqlite_pool())
+        .await?;
+        Ok(())
     }
 }
 
@@ -1435,7 +1601,7 @@ async fn terminal_exit_beats_running_stamp() {
                     &task_id,
                     Some("late"),
                     now,
-                    now + 7200_000,
+                    now + 7_200_000,
                 )
                 .await
             })
@@ -1653,6 +1819,72 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
 
     // Idempotency: another sweep dedupes on (kind, idempotency_key).
     scheduler.sweep_all().await;
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+}
+
+#[tokio::test]
+async fn sweep_expired_dispatched_codex_compensates_op_and_fails_task() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, _runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "dispatch-expired").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "dispatch-expired").await;
+    let mut task = plan_task(&boot.wave_id, "dispatch-expired", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() - 1);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let op_id = seed_spawn_started_codex_op(&boot, &task_id, &card_id, &lease_id).await;
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(TimeoutCompensationAdapter {
+            kind: "codex-worker",
+        })],
+    );
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "dispatch-expired").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.id, op_id);
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].1["reason"],
+        json!("worker exceeded the dispatched liveness deadline")
+    );
+}
+
+#[tokio::test]
+async fn sweep_dispatched_codex_within_deadline_uses_normal_drive_spawn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "dispatch-fresh", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() + 60_000);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "dispatch-fresh").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.dispatched_deadline_ms, None);
+    assert!(row.running_deadline_ms.is_some());
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 }
 

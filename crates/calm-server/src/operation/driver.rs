@@ -215,6 +215,55 @@ impl OperationRuntime {
         Ok(true)
     }
 
+    pub async fn cancel_inflight_to_compensation(
+        &self,
+        op_id: &OperationId,
+        reason: &str,
+    ) -> Result<bool> {
+        let Some(op) = self.repo.claim_inflight_for_compensation(op_id).await? else {
+            return Ok(false);
+        };
+        let adapter = self.adapter(&op.kind)?;
+        let from_phase = op.phase.tag();
+        if matches!(op.phase, Phase::Compensating) {
+            if let Some(result) = self.resume_compensation(adapter.as_ref(), op).await? {
+                self.completion.complete(result);
+            }
+            return Ok(true);
+        }
+        let output = match required_output(&op) {
+            Ok(output) => output.clone(),
+            Err(_e) if matches!(op.phase, Phase::Pending) => {
+                if let Some(result) = self
+                    .repo
+                    .mark_failed(&op, reason.to_string(), from_phase, Some("internal".into()))
+                    .await?
+                {
+                    self.completion.complete(result);
+                } else {
+                    log_lost_lease(&op, PhaseTag::Failed);
+                    return Ok(false);
+                }
+                return Ok(true);
+            }
+            Err(e) => return Err(e),
+        };
+        let state = adapter
+            .plan_compensation(from_phase, reason, &output, &op)
+            .await?;
+        if self
+            .repo
+            .set_compensating(&op, &state, &output)
+            .await?
+            .is_none()
+        {
+            log_lost_lease(&op, PhaseTag::Compensating);
+            return Ok(false);
+        }
+        self.drive().await?;
+        Ok(true)
+    }
+
     pub async fn sweep_parked(&self) -> Result<()> {
         self.sweep_parked_with_claim(ParkedClaimMode::SteadyState)
             .await

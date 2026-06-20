@@ -1036,12 +1036,44 @@ impl Scheduler {
             }
         };
 
+        match self
+            .fail_task_liveness_timeout(
+                &task,
+                &wave,
+                "worker exceeded the running liveness deadline",
+                "[auto] worker liveness timeout",
+            )
+            .await
+        {
+            Ok(true) => {
+                self.teardown_timed_out_running_worker(&task).await;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "scheduler sweep: running timeout fail tx failed"
+                );
+            }
+        }
+    }
+
+    async fn fail_task_liveness_timeout(
+        &self,
+        task: &Task,
+        wave: &Wave,
+        reason: &str,
+        auto_message: &str,
+    ) -> Result<bool> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
             cove: wave.cove_id.clone(),
         };
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
+        let reason = reason.to_string();
+        let auto_message = auto_message.to_string();
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
@@ -1066,7 +1098,7 @@ impl Scheduler {
                         scope.clone(),
                         Event::TaskFailed {
                             idempotency_key: task_id.clone(),
-                            reason: "worker exceeded the running liveness deadline".to_string(),
+                            reason,
                             agent_message: None,
                         },
                     )];
@@ -1076,7 +1108,7 @@ impl Scheduler {
                         WaveLifecycle::Working,
                         WaveLifecycle::Reviewing,
                         &ActorId::KernelDispatcher,
-                        Some("[auto] worker liveness timeout".to_string()),
+                        Some(auto_message),
                     )
                     .await?
                     {
@@ -1093,17 +1125,9 @@ impl Scheduler {
         .await;
 
         match result {
-            Ok(_) => {
-                self.teardown_timed_out_running_worker(&task).await;
-            }
-            Err(e) if is_race_lost(&e) => {}
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    error = %e,
-                    "scheduler sweep: running timeout fail tx failed"
-                );
-            }
+            Ok(_) => Ok(true),
+            Err(e) if is_race_lost(&e) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
@@ -1176,6 +1200,14 @@ impl Scheduler {
                 return;
             }
         };
+        if task.kind == TaskKind::Codex
+            && task
+                .dispatched_deadline_ms
+                .is_some_and(|deadline| now_ms() > deadline)
+        {
+            self.fail_dispatched_liveness_timeout(task, &wave).await;
+            return;
+        }
         let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
             Ok(p) => p,
             Err(_) => return,
@@ -1185,6 +1217,77 @@ impl Scheduler {
                 task_id = %task.id,
                 error = %e,
                 "scheduler sweep: dispatched-arm drive failed; next sweep retries"
+            );
+        }
+    }
+
+    async fn fail_dispatched_liveness_timeout(self: &Arc<Self>, task: Task, wave: &Wave) {
+        let Some(runtime) = self.operation_runtime.upgrade() else {
+            tracing::warn!(
+                task_id = %task.id,
+                "scheduler sweep: operation runtime dropped; cannot cancel expired dispatched task"
+            );
+            return;
+        };
+        match runtime
+            .find_by_kind_and_idempotency("codex-worker", &task.id)
+            .await
+        {
+            Ok(Some(op)) => match runtime
+                .cancel_inflight_to_compensation(
+                    &op.id,
+                    "worker exceeded the dispatched liveness deadline",
+                )
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(
+                        task_id = %task.id,
+                        op_id = %op.id,
+                        "scheduler sweep: expired dispatched op not claimable; next sweep retries"
+                    );
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        task_id = %task.id,
+                        op_id = %op.id,
+                        error = %e,
+                        "scheduler sweep: expired dispatched op compensation failed"
+                    );
+                    return;
+                }
+            },
+            Ok(None) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    "scheduler sweep: expired dispatched task has no worker operation; failing row"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "scheduler sweep: expired dispatched op lookup failed"
+                );
+                return;
+            }
+        }
+
+        if let Err(e) = self
+            .fail_task_liveness_timeout(
+                &task,
+                wave,
+                "worker exceeded the dispatched liveness deadline",
+                "[auto] worker dispatch liveness timeout",
+            )
+            .await
+        {
+            tracing::warn!(
+                task_id = %task.id,
+                error = %e,
+                "scheduler sweep: expired dispatched task fail tx failed"
             );
         }
     }
