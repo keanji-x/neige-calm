@@ -66,7 +66,9 @@ use crate::operation::task_verify_adapter::{
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
-use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, operation_result_from};
+use crate::operation::{
+    OperationKey, OperationOutcome, OperationRuntime, PhaseTag, operation_result_from,
+};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
@@ -777,6 +779,13 @@ impl Scheduler {
                     .await;
             }
             if let Some(result) = operation_result_from(&existing)? {
+                return self
+                    .reconcile_spawn_result(task, wave, result.outcome)
+                    .await;
+            }
+            if existing.phase.tag() == PhaseTag::SpawnSucceeded {
+                runtime.drive().await?;
+                let result = runtime.wait(&existing.id).await?;
                 return self
                     .reconcile_spawn_result(task, wave, result.outcome)
                     .await;

@@ -237,7 +237,6 @@ impl OperationRepo for SqlxOperationRepo {
                    'tx_committed',
                    'app_server_interact',
                    'spawn_started',
-                   'spawn_succeeded',
                    'compensating'
                  )
                  AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,

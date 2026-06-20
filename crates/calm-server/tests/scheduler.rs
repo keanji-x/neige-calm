@@ -532,6 +532,24 @@ async fn seed_succeeded_codex_worker_op(boot: &Boot, task: &Task, card_id: &str)
     op_id
 }
 
+async fn seed_spawn_succeeded_codex_worker_op(boot: &Boot, task: &Task, card_id: &str) -> String {
+    let op_id = seed_succeeded_codex_worker_op(boot, task, card_id).await;
+    let now = now_ms();
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'spawn_succeeded',
+               completed_at_ms = NULL,
+               updated_at_ms = ?1
+           WHERE id = ?2"#,
+    )
+    .bind(now)
+    .bind(&op_id)
+    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("rewind op to spawn_succeeded");
+    op_id
+}
+
 async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
     sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
         .bind(lease_id)
@@ -788,6 +806,72 @@ impl ProviderAdapter for CardSpawnAdapter {
         _op: &Operation,
         _ctx: &SpawnCtx,
     ) -> CalmResult<SpawnOutcome> {
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
+    }
+    async fn plan_compensation(
+        &self,
+        _from_phase: PhaseTag,
+        _reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Err(unexpected("plan_compensation"))
+    }
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(unexpected("compensate_step"))
+    }
+}
+
+struct CountingCardSpawnAdapter {
+    kind: &'static str,
+    card_id: String,
+    spawn_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ProviderAdapter for CountingCardSpawnAdapter {
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+    fn phases(&self) -> &'static [PhaseTag] {
+        STUB_PHASES
+    }
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        Ok(TxOutput::new(
+            "card",
+            Some(self.card_id.clone()),
+            json!({ "id": self.card_id }),
+        ))
+    }
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        self.spawn_calls.fetch_add(1, Ordering::SeqCst);
         Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
     async fn plan_compensation(
@@ -2364,6 +2448,70 @@ async fn sweep_expired_dispatched_codex_terminal_op_reconciles_via_drive_spawn()
         .expect("op lookup")
         .expect("op row");
     assert_eq!(op.id, op_id);
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+    assert_eq!(task_id, row.id);
+}
+
+#[tokio::test]
+async fn sweep_expired_dispatched_codex_spawn_succeeded_reconciles_to_running() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "dispatch-spawn-succeeded").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "dispatch-spawn-succeeded").await;
+    let mut task = plan_task(
+        &boot.wave_id,
+        "dispatch-spawn-succeeded",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() - 1);
+    let task_id = task.id.clone();
+    seed_task(&boot, task.clone()).await;
+    let op_id = seed_spawn_succeeded_codex_worker_op(&boot, &task, &card_id).await;
+    let spawn_calls = Arc::new(AtomicUsize::new(0));
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CountingCardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: card_id.clone(),
+            spawn_calls: Arc::clone(&spawn_calls),
+        })],
+    );
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "dispatch-spawn-succeeded").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.status_detail, None);
+    assert_eq!(row.dispatched_deadline_ms, None);
+    assert!(row.running_deadline_ms.is_some());
+    assert_eq!(row.worker_card_id.as_deref(), Some(card_id.as_str()));
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        0,
+        "spawn_succeeded recovery must not run a fresh worker spawn"
+    );
+    assert_eq!(
+        workspace_lease_state(&boot, &lease_id).await,
+        "held",
+        "spawn_succeeded must not be compensated and release the live worker lease"
+    );
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Running);
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
     assert!(event_rows(&boot, "task.failed").await.is_empty());
     assert_eq!(task_id, row.id);
