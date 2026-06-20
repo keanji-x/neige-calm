@@ -46,6 +46,7 @@ struct Fixture {
     plugin_host: Arc<PluginHost>,
     repo: Arc<SqlxRepo>,
     socket_path: PathBuf,
+    gate_logs_dir: PathBuf,
     raw_token: String,
     thread_id: String,
     card_id: String,
@@ -284,6 +285,44 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .expect("stop malformed plugin");
 }
 
+#[tokio::test]
+async fn forge_action_default_result_dir_is_gate_logs_sibling() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::remove("NEIGE_FORGE_RESULTS_DIR");
+
+    let fx = boot_fixture(StubMode::Awaited).await;
+    let resp = call_forge_tool(&fx, 9).await;
+    assert!(
+        resp.get("error").is_none(),
+        "default-dir forge tool errored: {resp:#?}"
+    );
+    let payload = operation_payload_by_idem(&fx.repo, StubMode::Awaited.idem_key())
+        .await
+        .expect("default-dir op payload");
+    let expected_results_dir = fx
+        .gate_logs_dir
+        .parent()
+        .map(|parent| parent.join("forge-results"))
+        .unwrap_or_else(|| fx.gate_logs_dir.join("forge-results"));
+    assert_result_path_under(
+        &payload,
+        &expected_results_dir,
+        "default result_path must be durable beside gate logs",
+    );
+    assert!(
+        expected_results_dir.exists(),
+        "default forge results dir must be created"
+    );
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop default-dir plugin");
+}
+
 async fn boot_fixture(mode: StubMode) -> Fixture {
     let tmp = short_tempdir("mfa").expect("tempdir");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
@@ -422,6 +461,7 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
     assert!(plugin_host_cell.set(plugin_host.clone()).is_ok());
     let operation_runtime_cell = Arc::new(OnceCell::new());
     assert!(operation_runtime_cell.set(runtime.clone()).is_ok());
+    let gate_logs_dir = tmp.path().join("gate-logs");
     let server = McpServer::spawn(
         repo,
         events,
@@ -432,7 +472,7 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
         None,
         plugin_host_cell,
         operation_runtime_cell,
-        tmp.path().join("gate-logs"),
+        gate_logs_dir.clone(),
     )
     .await
     .expect("spawn McpServer");
@@ -442,6 +482,7 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
         plugin_host,
         repo: sqlx_repo,
         socket_path,
+        gate_logs_dir,
         raw_token,
         thread_id,
         card_id,
@@ -716,6 +757,12 @@ impl EnvGuard {
     fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(key);
         unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::remove_var(key) };
         Self { key, previous }
     }
 }

@@ -752,7 +752,7 @@ async fn dispatch_forge_action_plugin_tool(
         .clone()
         .ok_or_else(|| RpcError::invalid_params("forge action requires a wave-scoped caller"))?;
     let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;
-    let result_path = forge_result_path(&payload.idem_key)?;
+    let result_path = forge_result_path(&ctx.gate_logs_dir, &payload.idem_key)?;
     let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
 
     let key = OperationKey {
@@ -898,24 +898,31 @@ fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, RpcErro
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn forge_result_path(idem_key: &str) -> Result<PathBuf, RpcError> {
-    let dir = forge_results_dir()?;
+fn forge_result_path(gate_logs_dir: &Path, idem_key: &str) -> Result<PathBuf, RpcError> {
+    let dir = forge_results_dir(gate_logs_dir)?;
     std::fs::create_dir_all(&dir).map_err(|e| {
         RpcError::internal(format!("create forge results dir {}: {e}", dir.display()))
     })?;
     Ok(dir.join(forge_result_filename(idem_key)))
 }
 
-fn forge_results_dir() -> Result<PathBuf, RpcError> {
+fn forge_results_dir(gate_logs_dir: &Path) -> Result<PathBuf, RpcError> {
     let raw = std::env::var("NEIGE_FORGE_RESULTS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("neige-forge-results"));
+        .unwrap_or_else(|_| default_forge_results_dir(gate_logs_dir));
     if raw.is_absolute() {
         return Ok(raw);
     }
     let cwd = std::env::current_dir()
         .map_err(|e| RpcError::internal(format!("resolve current directory: {e}")))?;
     Ok(cwd.join(raw))
+}
+
+fn default_forge_results_dir(gate_logs_dir: &Path) -> PathBuf {
+    gate_logs_dir
+        .parent()
+        .map(|parent| parent.join("forge-results"))
+        .unwrap_or_else(|| gate_logs_dir.join("forge-results"))
 }
 
 fn forge_result_filename(idem_key: &str) -> String {

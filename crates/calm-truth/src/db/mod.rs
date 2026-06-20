@@ -480,7 +480,11 @@ pub trait RepoRead: Send + Sync + 'static {
         session_id: &str,
     ) -> Result<Option<SessionCardIdentity>>;
 
-    /// Return the newest active workspace lease held by a card, if any.
+    /// Return the newest workspace lease currently held by a card, if any.
+    ///
+    /// `releasing` leases are intentionally excluded: callers use this path
+    /// to execute work in a live workspace, and a releasing lease may already
+    /// be mid-teardown.
     async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>>;
 
     /// PR7b-i Unit 1 (#679) — look up the active worker session bound to
