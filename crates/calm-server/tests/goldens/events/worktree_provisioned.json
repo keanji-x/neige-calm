@@ -1,0 +1,11 @@
+{
+  "description": "worktree.provisioned carries the wave/card routing ids and provisioned worktree path",
+  "wire": {
+    "ev": "worktree.provisioned",
+    "data": {
+      "wave_id": "wave-01",
+      "card_id": "card-01",
+      "path": ".claude/worktrees/wave-01/card-01"
+    }
+  }
+}

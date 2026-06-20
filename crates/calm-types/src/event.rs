@@ -332,7 +332,9 @@ impl EventScope {
 /// * `7` — forge PR merge wire kind (issue #760 slice 6). Adds
 ///   `forge.pr.merged` to the event union. A v6 tab would otherwise
 ///   advance past those rows and fail zod before refreshing.
-pub const SYNC_EVENT_VERSION: u32 = 7;
+/// * `8` — git/forge toolset substrate kinds (issue #760 slice ③-a).
+///   Adds 5 forge.* and 2 worktree.* events to the union.
+pub const SYNC_EVENT_VERSION: u32 = 8;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -769,6 +771,45 @@ pub enum Event {
         head_sha: String,
         merge_sha: String,
     },
+    #[serde(rename = "forge.scan.completed")]
+    ForgeScanCompleted {
+        wave_id: WaveId,
+        overlapping_prs: Vec<u64>,
+    },
+    #[serde(rename = "forge.pr.opened")]
+    ForgePrOpened {
+        wave_id: WaveId,
+        pr_number: u64,
+        head_sha: String,
+    },
+    #[serde(rename = "forge.pr.diff.read")]
+    ForgePrDiffRead {
+        wave_id: WaveId,
+        pr_number: u64,
+        base_sha: String,
+        head_sha: String,
+        artifact_path: String,
+    },
+    #[serde(rename = "forge.pr.checks")]
+    ForgePrChecks {
+        wave_id: WaveId,
+        pr_number: u64,
+        conclusion: String,
+    },
+    #[serde(rename = "forge.issue.closed")]
+    ForgeIssueClosed { wave_id: WaveId, issue_number: u64 },
+    #[serde(rename = "worktree.provisioned")]
+    WorktreeProvisioned {
+        wave_id: WaveId,
+        card_id: CardId,
+        path: String,
+    },
+    #[serde(rename = "worktree.removed")]
+    WorktreeRemoved {
+        wave_id: WaveId,
+        card_id: CardId,
+        path: String,
+    },
 
     /// Issue #644 PR-C (§6.5) — the kernel `task-verify` runner completed a
     /// `task-verify` attempt and recorded its verdict. Appended in the
@@ -1081,12 +1122,25 @@ impl Event {
                     entity_id: Some(card_id.to_string()),
                 }
             }
-            Event::ForgePrMerged { wave_id, .. } => EventMetadata {
+            Event::ForgePrMerged { wave_id, .. }
+            | Event::ForgeScanCompleted { wave_id, .. }
+            | Event::ForgePrOpened { wave_id, .. }
+            | Event::ForgePrDiffRead { wave_id, .. }
+            | Event::ForgePrChecks { wave_id, .. }
+            | Event::ForgeIssueClosed { wave_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: Some("wave".into()),
                 entity_id: Some(wave_id.to_string()),
             },
+            Event::WorktreeProvisioned { card_id, .. } | Event::WorktreeRemoved { card_id, .. } => {
+                EventMetadata {
+                    kind_tag,
+                    plugin_id: None,
+                    entity_kind: Some("card".into()),
+                    entity_id: Some(card_id.to_string()),
+                }
+            }
             // Issue #644 PR-C — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via
             // the events kind clause + the envelope's wave scope.
@@ -1137,6 +1191,13 @@ impl Event {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
+            Event::ForgeScanCompleted { .. } => "forge.scan.completed",
+            Event::ForgePrOpened { .. } => "forge.pr.opened",
+            Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
+            Event::ForgePrChecks { .. } => "forge.pr.checks",
+            Event::ForgeIssueClosed { .. } => "forge.issue.closed",
+            Event::WorktreeProvisioned { .. } => "worktree.provisioned",
+            Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
@@ -1312,7 +1373,25 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
 
-        Event::ForgePrMerged { wave_id, .. } => vec![format!("wave:{}", wave_id), "*".into()],
+        Event::ForgePrMerged { wave_id, .. }
+        | Event::ForgeScanCompleted { wave_id, .. }
+        | Event::ForgePrOpened { wave_id, .. }
+        | Event::ForgePrDiffRead { wave_id, .. }
+        | Event::ForgePrChecks { wave_id, .. }
+        | Event::ForgeIssueClosed { wave_id, .. } => {
+            vec![format!("wave:{}", wave_id), "*".into()]
+        }
+
+        Event::WorktreeProvisioned {
+            wave_id, card_id, ..
+        }
+        | Event::WorktreeRemoved {
+            wave_id, card_id, ..
+        } => vec![
+            format!("card:{}", card_id),
+            format!("wave:{}", wave_id),
+            "*".into(),
+        ],
 
         // Issue #644 — plan revisions are wave-scoped on the payload, so
         // wave subscribers (future UI task list) can filter without the
@@ -1578,6 +1657,55 @@ mod scope_tests {
             merge_sha: "merge-sha".into(),
         };
         assert_eq!(forge_pr_merged.kind_tag(), "forge.pr.merged");
+
+        let forge_scan_completed = Event::ForgeScanCompleted {
+            wave_id: WaveId::from("wave-1"),
+            overlapping_prs: vec![1, 2],
+        };
+        assert_eq!(forge_scan_completed.kind_tag(), "forge.scan.completed");
+
+        let forge_pr_opened = Event::ForgePrOpened {
+            wave_id: WaveId::from("wave-1"),
+            pr_number: 1,
+            head_sha: "head-sha".into(),
+        };
+        assert_eq!(forge_pr_opened.kind_tag(), "forge.pr.opened");
+
+        let forge_pr_diff_read = Event::ForgePrDiffRead {
+            wave_id: WaveId::from("wave-1"),
+            pr_number: 1,
+            base_sha: "base-sha".into(),
+            head_sha: "head-sha".into(),
+            artifact_path: "/tmp/diff.patch".into(),
+        };
+        assert_eq!(forge_pr_diff_read.kind_tag(), "forge.pr.diff.read");
+
+        let forge_pr_checks = Event::ForgePrChecks {
+            wave_id: WaveId::from("wave-1"),
+            pr_number: 1,
+            conclusion: "success".into(),
+        };
+        assert_eq!(forge_pr_checks.kind_tag(), "forge.pr.checks");
+
+        let forge_issue_closed = Event::ForgeIssueClosed {
+            wave_id: WaveId::from("wave-1"),
+            issue_number: 1,
+        };
+        assert_eq!(forge_issue_closed.kind_tag(), "forge.issue.closed");
+
+        let worktree_provisioned = Event::WorktreeProvisioned {
+            wave_id: WaveId::from("wave-1"),
+            card_id: CardId::from("card-1"),
+            path: "/tmp/worktree".into(),
+        };
+        assert_eq!(worktree_provisioned.kind_tag(), "worktree.provisioned");
+
+        let worktree_removed = Event::WorktreeRemoved {
+            wave_id: WaveId::from("wave-1"),
+            card_id: CardId::from("card-1"),
+            path: "/tmp/worktree".into(),
+        };
+        assert_eq!(worktree_removed.kind_tag(), "worktree.removed");
 
         let claude_hook = Event::ClaudeHook {
             card_id: CardId::from("card-1"),
@@ -2510,6 +2638,41 @@ mod scope_tests {
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },
+            Event::ForgeScanCompleted {
+                wave_id: WaveId::from("wave-1"),
+                overlapping_prs: vec![1, 2],
+            },
+            Event::ForgePrOpened {
+                wave_id: WaveId::from("wave-1"),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+            },
+            Event::ForgePrDiffRead {
+                wave_id: WaveId::from("wave-1"),
+                pr_number: 1,
+                base_sha: "base-sha".into(),
+                head_sha: "head-sha".into(),
+                artifact_path: "/tmp/diff.patch".into(),
+            },
+            Event::ForgePrChecks {
+                wave_id: WaveId::from("wave-1"),
+                pr_number: 1,
+                conclusion: "success".into(),
+            },
+            Event::ForgeIssueClosed {
+                wave_id: WaveId::from("wave-1"),
+                issue_number: 1,
+            },
+            Event::WorktreeProvisioned {
+                wave_id: WaveId::from("wave-1"),
+                card_id: CardId::from("card-worktree"),
+                path: "/tmp/worktree".into(),
+            },
+            Event::WorktreeRemoved {
+                wave_id: WaveId::from("wave-1"),
+                card_id: CardId::from("card-worktree"),
+                path: "/tmp/worktree".into(),
+            },
         ]
     }
 
@@ -2686,6 +2849,69 @@ mod scope_tests {
                     },
                     "head_sha": "head-sha",
                     "merge_sha": "merge-sha",
+                }),
+            ),
+            (
+                "forge.scan.completed",
+                "forge.scan.completed",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "overlapping_prs": [1, 2],
+                }),
+            ),
+            (
+                "forge.pr.opened",
+                "forge.pr.opened",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "pr_number": 1,
+                    "head_sha": "head-sha",
+                }),
+            ),
+            (
+                "forge.pr.diff.read",
+                "forge.pr.diff.read",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "pr_number": 1,
+                    "base_sha": "base-sha",
+                    "head_sha": "head-sha",
+                    "artifact_path": "/tmp/diff.patch",
+                }),
+            ),
+            (
+                "forge.pr.checks",
+                "forge.pr.checks",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "pr_number": 1,
+                    "conclusion": "success",
+                }),
+            ),
+            (
+                "forge.issue.closed",
+                "forge.issue.closed",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "issue_number": 1,
+                }),
+            ),
+            (
+                "worktree.provisioned",
+                "worktree.provisioned",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "card_id": "card-1",
+                    "path": "/tmp/worktree",
+                }),
+            ),
+            (
+                "worktree.removed",
+                "worktree.removed",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "card_id": "card-1",
+                    "path": "/tmp/worktree",
                 }),
             ),
         ] {

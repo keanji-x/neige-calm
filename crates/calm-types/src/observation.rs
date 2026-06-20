@@ -75,6 +75,32 @@ pub enum Observation {
         card_id: CardId,
         lease_id: String,
     },
+    ForgePrMerged {
+        wave_id: WaveId,
+        pr_number: u64,
+    },
+    ForgeScanCompleted {
+        wave_id: WaveId,
+        overlapping_prs: Vec<u64>,
+    },
+    ForgePrOpened {
+        wave_id: WaveId,
+        pr_number: u64,
+    },
+    ForgePrChecks {
+        wave_id: WaveId,
+        pr_number: u64,
+        conclusion: String,
+    },
+    ForgeIssueClosed {
+        wave_id: WaveId,
+        issue_number: u64,
+    },
+    WorktreeProvisioned {
+        wave_id: WaveId,
+        card_id: CardId,
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +119,12 @@ impl Observation {
                 | Observation::WorkerHookStop { .. }
                 | Observation::UserMessage { .. }
                 | Observation::TaskGateResult { .. }
+                | Observation::ForgePrMerged { .. }
+                | Observation::ForgeScanCompleted { .. }
+                | Observation::ForgePrOpened { .. }
+                | Observation::ForgePrChecks { .. }
+                | Observation::ForgeIssueClosed { .. }
+                | Observation::WorktreeProvisioned { .. }
         )
     }
 
@@ -159,6 +191,31 @@ impl Observation {
             }
             Observation::WorkspaceReleased { .. } => {
                 "A worker workspace lease was released. Re-read the wave state.".to_string()
+            }
+            Observation::ForgePrMerged { pr_number, .. } => {
+                format!("Forge PR #{pr_number} was merged. Re-read the wave state.")
+            }
+            Observation::ForgeScanCompleted {
+                overlapping_prs, ..
+            } => format!(
+                "Forge scan completed with overlapping PRs {:?}. Re-read the wave state.",
+                overlapping_prs
+            ),
+            Observation::ForgePrOpened { pr_number, .. } => {
+                format!("Forge PR #{pr_number} was opened. Re-read the wave state.")
+            }
+            Observation::ForgePrChecks {
+                pr_number,
+                conclusion,
+                ..
+            } => format!(
+                "Forge checks completed for PR #{pr_number} with conclusion {conclusion}. Re-read the wave state."
+            ),
+            Observation::ForgeIssueClosed { issue_number, .. } => {
+                format!("Forge issue #{issue_number} was closed. Re-read the wave state.")
+            }
+            Observation::WorktreeProvisioned { path, .. } => {
+                format!("A worker git worktree was provisioned at {path}. Re-read the wave state.")
             }
         }
     }

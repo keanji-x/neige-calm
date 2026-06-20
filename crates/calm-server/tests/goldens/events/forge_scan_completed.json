@@ -1,0 +1,10 @@
+{
+  "description": "forge.scan.completed carries the wave routing id and overlapping PR numbers found by the forge scan",
+  "wire": {
+    "ev": "forge.scan.completed",
+    "data": {
+      "wave_id": "wave-01",
+      "overlapping_prs": [1, 2]
+    }
+  }
+}

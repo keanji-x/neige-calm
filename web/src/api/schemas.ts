@@ -601,6 +601,69 @@ export const forgePrMergedSchema = z.object({
   }),
 });
 
+export const forgeScanCompletedSchema = z.object({
+  ev: z.literal('forge.scan.completed'),
+  data: z.object({
+    wave_id: z.string(),
+    overlapping_prs: z.array(z.number()),
+  }),
+});
+
+export const forgePrOpenedSchema = z.object({
+  ev: z.literal('forge.pr.opened'),
+  data: z.object({
+    wave_id: z.string(),
+    pr_number: z.number(),
+    head_sha: z.string(),
+  }),
+});
+
+export const forgePrDiffReadSchema = z.object({
+  ev: z.literal('forge.pr.diff.read'),
+  data: z.object({
+    wave_id: z.string(),
+    pr_number: z.number(),
+    base_sha: z.string(),
+    head_sha: z.string(),
+    artifact_path: z.string(),
+  }),
+});
+
+export const forgePrChecksSchema = z.object({
+  ev: z.literal('forge.pr.checks'),
+  data: z.object({
+    wave_id: z.string(),
+    pr_number: z.number(),
+    conclusion: z.string(),
+  }),
+});
+
+export const forgeIssueClosedSchema = z.object({
+  ev: z.literal('forge.issue.closed'),
+  data: z.object({
+    wave_id: z.string(),
+    issue_number: z.number(),
+  }),
+});
+
+export const worktreeProvisionedSchema = z.object({
+  ev: z.literal('worktree.provisioned'),
+  data: z.object({
+    wave_id: z.string(),
+    card_id: z.string(),
+    path: z.string(),
+  }),
+});
+
+export const worktreeRemovedSchema = z.object({
+  ev: z.literal('worktree.removed'),
+  data: z.object({
+    wave_id: z.string(),
+    card_id: z.string(),
+    path: z.string(),
+  }),
+});
+
 /**
  * `Event::TaskGateResult` — issue #644 PR-C: the kernel gate runner
  * finished one `task-verify` attempt; appended in the same tx as the
@@ -693,6 +756,13 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   workspaceLeasedSchema,
   workspaceReleasedSchema,
   forgePrMergedSchema,
+  forgeScanCompletedSchema,
+  forgePrOpenedSchema,
+  forgePrDiffReadSchema,
+  forgePrChecksSchema,
+  forgeIssueClosedSchema,
+  worktreeProvisionedSchema,
+  worktreeRemovedSchema,
   taskGateResultSchema,
 ]);
 
@@ -742,6 +812,13 @@ export type TaskDispatchedEvent = z.infer<typeof taskDispatchedSchema>;
 export type WorkspaceLeasedEvent = z.infer<typeof workspaceLeasedSchema>;
 export type WorkspaceReleasedEvent = z.infer<typeof workspaceReleasedSchema>;
 export type ForgePrMergedEvent = z.infer<typeof forgePrMergedSchema>;
+export type ForgeScanCompletedEvent = z.infer<typeof forgeScanCompletedSchema>;
+export type ForgePrOpenedEvent = z.infer<typeof forgePrOpenedSchema>;
+export type ForgePrDiffReadEvent = z.infer<typeof forgePrDiffReadSchema>;
+export type ForgePrChecksEvent = z.infer<typeof forgePrChecksSchema>;
+export type ForgeIssueClosedEvent = z.infer<typeof forgeIssueClosedSchema>;
+export type WorktreeProvisionedEvent = z.infer<typeof worktreeProvisionedSchema>;
+export type WorktreeRemovedEvent = z.infer<typeof worktreeRemovedSchema>;
 export type TaskGateResultEvent = z.infer<typeof taskGateResultSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;

@@ -244,6 +244,27 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'forge.pr.merged': noop(
     'Forge merge lifecycle is card/wave-scoped; no React Query cache consumes forge merge rows yet.',
   ),
+  'forge.scan.completed': noop(
+    'Forge scan lifecycle is wave-scoped; no React Query cache consumes forge scan rows yet.',
+  ),
+  'forge.pr.opened': noop(
+    'Forge PR lifecycle is wave-scoped; no React Query cache consumes opened PR rows yet.',
+  ),
+  'forge.pr.diff.read': noop(
+    'Forge diff artifacts are persisted for workflow ordering; no React Query cache consumes diff-read rows yet.',
+  ),
+  'forge.pr.checks': noop(
+    'Forge checks lifecycle is wave-scoped; no React Query cache consumes checks rows yet.',
+  ),
+  'forge.issue.closed': noop(
+    'Forge issue lifecycle is wave-scoped; no React Query cache consumes issue-close rows yet.',
+  ),
+  'worktree.provisioned': noop(
+    'Git worktree provisioning is card-scoped; no React Query cache consumes worktree rows yet.',
+  ),
+  'worktree.removed': noop(
+    'Git worktree teardown is card-scoped; no React Query cache consumes worktree rows yet.',
+  ),
   'task.gate_result': {
     requiresContext: waveFilesDerivedEventKeys,
     reason:

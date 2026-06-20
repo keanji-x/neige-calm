@@ -1,0 +1,11 @@
+{
+  "description": "forge.pr.checks carries the wave routing id, checked PR number, and final checks conclusion",
+  "wire": {
+    "ev": "forge.pr.checks",
+    "data": {
+      "wave_id": "wave-01",
+      "pr_number": 1,
+      "conclusion": "success"
+    }
+  }
+}

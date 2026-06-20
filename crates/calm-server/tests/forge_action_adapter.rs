@@ -152,21 +152,27 @@ impl TestBoot {
 }
 
 fn event_spec() -> ForgeEventSpec {
+    event_spec_for("forge.pr.merged")
+}
+
+fn event_spec_for(kind: &str) -> ForgeEventSpec {
     let mut fields = BTreeMap::new();
-    fields.insert(
-        "merge_sha".into(),
-        FieldSource::JsonField {
-            path: "/oid".into(),
-        },
-    );
-    fields.insert(
-        "head_sha".into(),
-        FieldSource::JsonField {
-            path: "/headRefOid".into(),
-        },
-    );
+    if kind == "forge.pr.merged" {
+        fields.insert(
+            "merge_sha".into(),
+            FieldSource::JsonField {
+                path: "/oid".into(),
+            },
+        );
+        fields.insert(
+            "head_sha".into(),
+            FieldSource::JsonField {
+                path: "/headRefOid".into(),
+            },
+        );
+    }
     ForgeEventSpec {
-        event_kind: "forge.pr.merged".into(),
+        event_kind: kind.into(),
         fields,
     }
 }
@@ -194,10 +200,11 @@ fn payload_with_probe(
     serde_json::to_value(ForgeActionPayload {
         wave_id: boot.wave_id.clone(),
         card_id: new_id(),
-        subject: subject(),
+        subject: Some(subject()),
         argv,
         idem_key: idem_key.into(),
-        event_spec: event_spec(),
+        event_spec: Some(event_spec()),
+        context: Default::default(),
         probe: probe_argv.map(|probe_argv| ProbeSpec {
             probe_argv,
             output_probe_argv,
@@ -465,9 +472,34 @@ async fn latest_forge_event_payload(repo: &SqlxRepo) -> Value {
     serde_json::from_str(&payload_text).expect("event payload parses")
 }
 
+async fn latest_event_payload(repo: &SqlxRepo, kind: &str) -> Value {
+    let payload_text: String =
+        sqlx::query_scalar("SELECT payload FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1")
+            .bind(kind)
+            .fetch_one(repo.pool())
+            .await
+            .expect("event payload exists");
+    serde_json::from_str(&payload_text).expect("event payload parses")
+}
+
 async fn forge_event_count(repo: &SqlxRepo) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
         .bind("forge.pr.merged")
+        .fetch_one(repo.pool())
+        .await
+        .expect("event count")
+}
+
+async fn event_count(repo: &SqlxRepo, kind: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
+        .bind(kind)
+        .fetch_one(repo.pool())
+        .await
+        .expect("event count")
+}
+
+async fn all_event_count(repo: &SqlxRepo) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events")
         .fetch_one(repo.pool())
         .await
         .expect("event count")
@@ -657,6 +689,7 @@ async fn forge_action_rejects_non_forge_event_kind() -> CalmResult<()> {
         vec!["/bin/true".into()],
         boot.temp_path("non-forge-event-kind-result.json"),
     );
+    payload["subject"] = Value::Null;
     payload["event_spec"]["event_kind"] = json!("wave.deleted");
 
     let err = adapter
@@ -685,6 +718,7 @@ async fn forge_action_rejects_unsupported_forge_event_kind() -> CalmResult<()> {
         vec!["/bin/true".into()],
         boot.temp_path("unsupported-event-kind-result.json"),
     );
+    payload["subject"] = Value::Null;
     payload["event_spec"]["event_kind"] = json!("forge.pr.merge");
 
     let err = adapter
@@ -891,6 +925,72 @@ async fn forge_action_accepts_valid_json_pointer_syntax() -> CalmResult<()> {
             path: String::new(),
         })?;
     adapter.validate(&root_payload).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_subject_shape_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let adapter = ForgeActionAdapter::new();
+
+    let mut missing_subject = payload(
+        &boot,
+        "forge-merge-missing-subject",
+        vec!["/bin/true".into()],
+        boot.temp_path("merge-missing-subject-result.json"),
+    );
+    missing_subject["subject"] = Value::Null;
+    let err = adapter
+        .validate(&missing_subject)
+        .await
+        .expect_err("forge.pr.merged requires subject");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message) if message == "forge.pr.merged requires subject"
+        ),
+        "{err:?}"
+    );
+
+    let mut non_merge_subject = payload(
+        &boot,
+        "forge-scan-with-subject",
+        vec!["/bin/true".into()],
+        boot.temp_path("scan-with-subject-result.json"),
+    );
+    non_merge_subject["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
+    let err = adapter
+        .validate(&non_merge_subject)
+        .await
+        .expect_err("non-merge events must not carry subject");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "subject is only valid for forge.pr.merged"
+        ),
+        "{err:?}"
+    );
+
+    let mut resultless_subject = payload(
+        &boot,
+        "forge-resultless-with-subject",
+        vec!["/bin/true".into()],
+        boot.temp_path("resultless-with-subject-result.json"),
+    );
+    resultless_subject["event_spec"] = Value::Null;
+    let err = adapter
+        .validate(&resultless_subject)
+        .await
+        .expect_err("resultless events must not carry subject");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "subject is only valid for forge.pr.merged"
+        ),
+        "{err:?}"
+    );
     Ok(())
 }
 
@@ -1239,6 +1339,119 @@ exit 42
         "nonzero action exit must not consult probe"
     );
     assert_eq!(forge_event_count(&boot.repo).await, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_persists_non_merge_event_from_context() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("scan-completed-action.sh");
+    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'scan complete'\n");
+
+    let idem = "forge-scan-completed-context";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string()],
+        boot.temp_path("scan-completed-result.json"),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
+    input["context"] = json!({ "overlapping_prs": [1, 2] });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+
+    let event = latest_event_payload(&boot.repo, "forge.scan.completed").await;
+    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["overlapping_prs"], json!([1, 2]));
+    assert!(event.get("subject").is_none());
+    assert_eq!(event_count(&boot.repo, "forge.scan.completed").await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_resultless_succeeds_without_event_row() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("resultless-action.sh");
+    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'committed'\n");
+
+    let before = all_event_count(&boot.repo).await;
+    let idem = "forge-resultless";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string()],
+        boot.temp_path("resultless-result.json"),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = Value::Null;
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    match result.outcome {
+        OperationOutcome::Succeeded { result } => {
+            assert_eq!(result["exit_code"], json!(0));
+            assert_eq!(result["event_kind"], Value::Null);
+            assert_eq!(result["event"], Value::Null);
+        }
+        other => panic!("expected resultless success, got {other:?}"),
+    }
+    assert_eq!(
+        all_event_count(&boot.repo).await,
+        before,
+        "resultless success must not append an event"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_reserved_context_keys_without_event() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("reserved-context-action.sh");
+    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'scan complete'\n");
+
+    let idem = "forge-reserved-context";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string()],
+        boot.temp_path("reserved-context-result.json"),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
+    input["context"] = json!({ "wave_id": "plugin-wave", "overlapping_prs": [1] });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error.contains("forge event context/output may not set reserved key `wave_id`")
+                && class == "gate-infra"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(event_count(&boot.repo, "forge.scan.completed").await, 0);
     Ok(())
 }
 

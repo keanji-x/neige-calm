@@ -724,6 +724,76 @@ golden_test!(
 );
 
 golden_test!(
+    forge_scan_completed,
+    "forge_scan_completed.json",
+    Event::ForgeScanCompleted {
+        wave_id: WaveId::from("wave-01"),
+        overlapping_prs: vec![1, 2],
+    }
+);
+
+golden_test!(
+    forge_pr_opened,
+    "forge_pr_opened.json",
+    Event::ForgePrOpened {
+        wave_id: WaveId::from("wave-01"),
+        pr_number: 1,
+        head_sha: "head-sha".into(),
+    }
+);
+
+golden_test!(
+    forge_pr_diff_read,
+    "forge_pr_diff_read.json",
+    Event::ForgePrDiffRead {
+        wave_id: WaveId::from("wave-01"),
+        pr_number: 1,
+        base_sha: "base-sha".into(),
+        head_sha: "head-sha".into(),
+        artifact_path: "/tmp/neige/forge-diff.patch".into(),
+    }
+);
+
+golden_test!(
+    forge_pr_checks,
+    "forge_pr_checks.json",
+    Event::ForgePrChecks {
+        wave_id: WaveId::from("wave-01"),
+        pr_number: 1,
+        conclusion: "success".into(),
+    }
+);
+
+golden_test!(
+    forge_issue_closed,
+    "forge_issue_closed.json",
+    Event::ForgeIssueClosed {
+        wave_id: WaveId::from("wave-01"),
+        issue_number: 1,
+    }
+);
+
+golden_test!(
+    worktree_provisioned,
+    "worktree_provisioned.json",
+    Event::WorktreeProvisioned {
+        wave_id: WaveId::from("wave-01"),
+        card_id: CardId::from("card-01"),
+        path: ".claude/worktrees/wave-01/card-01".into(),
+    }
+);
+
+golden_test!(
+    worktree_removed,
+    "worktree_removed.json",
+    Event::WorktreeRemoved {
+        wave_id: WaveId::from("wave-01"),
+        card_id: CardId::from("card-01"),
+        path: ".claude/worktrees/wave-01/card-01".into(),
+    }
+);
+
+golden_test!(
     task_gate_result_full,
     "task_gate_result.full.json",
     Event::TaskGateResult {
@@ -789,7 +859,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 33] = [
+const ALL_KIND_TAGS: [&str; 40] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -822,6 +892,13 @@ const ALL_KIND_TAGS: [&str; 33] = [
     "workspace.leased",
     "workspace.released",
     "forge.pr.merged",
+    "forge.scan.completed",
+    "forge.pr.opened",
+    "forge.pr.diff.read",
+    "forge.pr.checks",
+    "forge.issue.closed",
+    "worktree.provisioned",
+    "worktree.removed",
     "task.gate_result",
 ];
 
@@ -857,7 +934,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 52,
+        files, 59,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -910,6 +987,13 @@ fn kind_tag_list_matches_enum() {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
+            Event::ForgeScanCompleted { .. } => "forge.scan.completed",
+            Event::ForgePrOpened { .. } => "forge.pr.opened",
+            Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
+            Event::ForgePrChecks { .. } => "forge.pr.checks",
+            Event::ForgeIssueClosed { .. } => "forge.issue.closed",
+            Event::WorktreeProvisioned { .. } => "worktree.provisioned",
+            Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
@@ -919,7 +1003,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        33,
+        40,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

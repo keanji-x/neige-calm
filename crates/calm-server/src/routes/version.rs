@@ -116,7 +116,13 @@ pub const API_VERSION: &str = "1";
 ///   zod `WireEvent` union doesn't know the new discriminator, so its
 ///   forge invalidation would silently drop. The compat modal forces a
 ///   hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 8;
+/// * `9` — git/forge toolset substrate events (issue #760 slice ③-a):
+///   5 forge.* and 2 worktree.* kinds join the WS event union with
+///   `SYNC_EVENT_VERSION` bumped 7 → 8 in lockstep. A v8 frontend's
+///   zod `WireEvent` union doesn't know the new discriminators, so its
+///   forge/worktree invalidation would silently drop. The compat modal
+///   forces a hard refresh.
+pub const WEB_COMPAT_VERSION: u32 = 9;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,
