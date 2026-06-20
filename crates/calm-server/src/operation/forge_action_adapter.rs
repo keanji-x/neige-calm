@@ -40,7 +40,7 @@ pub const FORGE_ACTION_KIND: &str = "forge-action";
 /// and persist. validate_payload rejects any other event_kind BEFORE the irreversible
 /// action can run, so a typo'd/unsupported kind can never execute the side effect and
 /// then fail to record its authoritative event. Slice ③ appends its forge.* kinds here.
-const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
+pub(crate) const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.pr.merged",
     "forge.scan.completed",
     "forge.pr.opened",
@@ -178,6 +178,55 @@ mod tests {
         assert!(frozen.context.is_empty());
         assert!(frozen.subject.is_some());
         assert!(frozen.event_spec.is_some());
+    }
+
+    #[test]
+    fn operation_key_match_accepts_raw_or_scoped_payload_idem() {
+        assert!(operation_key_matches_payload_idem(
+            Some("idem"),
+            "wave",
+            "card",
+            "idem"
+        ));
+        assert!(operation_key_matches_payload_idem(
+            Some("plugin:wave:card:idem"),
+            "wave",
+            "card",
+            "idem"
+        ));
+        assert!(operation_key_matches_payload_idem(
+            Some("plugin:wave:card:idem:with:colons"),
+            "wave",
+            "card",
+            "idem:with:colons"
+        ));
+        assert!(!operation_key_matches_payload_idem(
+            Some("not-idem"),
+            "wave",
+            "card",
+            "idem"
+        ));
+        assert!(!operation_key_matches_payload_idem(
+            Some("prefixidem"),
+            "wave",
+            "card",
+            "idem"
+        ));
+        assert!(!operation_key_matches_payload_idem(
+            Some("plugin:other-wave:card:idem"),
+            "wave",
+            "card",
+            "idem"
+        ));
+        assert!(!operation_key_matches_payload_idem(
+            Some("plugin:wave:other-card:idem"),
+            "wave",
+            "card",
+            "idem"
+        ));
+        assert!(!operation_key_matches_payload_idem(
+            None, "wave", "card", "idem"
+        ));
     }
 }
 
@@ -1157,7 +1206,12 @@ impl ProviderAdapter for ForgeActionAdapter {
     ) -> Result<TxOutput> {
         let payload: ForgeActionPayload = serde_json::from_value(input.clone())?;
         validate_payload(&payload)?;
-        if op.idempotency_key.as_deref() != Some(payload.idem_key.as_str()) {
+        if !operation_key_matches_payload_idem(
+            op.idempotency_key.as_deref(),
+            &payload.wave_id,
+            &payload.card_id,
+            &payload.idem_key,
+        ) {
             return Err(CalmError::BadRequest(
                 "forge-action idempotency key does not match payload idem_key".into(),
             ));
@@ -1541,4 +1595,20 @@ impl ProviderAdapter for ForgeActionAdapter {
             ))),
         }
     }
+}
+
+fn operation_key_matches_payload_idem(
+    op_idem_key: Option<&str>,
+    wave_id: &str,
+    card_id: &str,
+    payload_idem_key: &str,
+) -> bool {
+    let Some(op_idem_key) = op_idem_key else {
+        return false;
+    };
+    if op_idem_key == payload_idem_key {
+        return true;
+    }
+    let scoped_suffix = format!(":{wave_id}:{card_id}:{payload_idem_key}");
+    op_idem_key.ends_with(&scoped_suffix)
 }

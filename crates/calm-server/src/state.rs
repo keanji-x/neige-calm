@@ -841,6 +841,7 @@ impl AppState {
             crate::mcp_server::auth::get_or_generate_daemon_token(&cfg.data_dir_resolved())?;
         let daemon_mcp_token_hash = crate::mcp_server::auth::hash_token(&daemon_mcp_token);
         let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
+        let operation_runtime_cell = Arc::new(tokio::sync::OnceCell::new());
         // Issue #644 PR-C (PR #685 F3) — ONE resolution of the gate-logs
         // dir, shared by the gate runner (TaskVerifyAdapter below) and
         // the MCP `plan/<key>/gate.log` view, so a `--data-dir` CLI flag
@@ -855,6 +856,7 @@ impl AppState {
             mcp_registry,
             Some(daemon_mcp_token_hash),
             plugin_host_cell.clone(),
+            operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
         )
         .await?;
@@ -923,6 +925,7 @@ impl AppState {
             )
             .await?,
         );
+        let _ = operation_runtime_cell.set(operation_runtime.clone());
 
         // PR5 (#136) — dispatcher worker. Subscribes to
         // `*.worker_requested` envelopes and starts worker operations

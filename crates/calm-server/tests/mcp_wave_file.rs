@@ -204,6 +204,7 @@ async fn boot() -> Boot {
         daemon_token_hash: None,
         gate_logs_dir: gate_logs_dir.clone(),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
+        operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
     });
 
     let mut registry = ToolRegistry::new();

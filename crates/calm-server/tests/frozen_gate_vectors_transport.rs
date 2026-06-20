@@ -132,6 +132,7 @@ async fn boot_with_registry(
         registry,
         daemon_token_hash,
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await

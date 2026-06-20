@@ -124,6 +124,7 @@ async fn boot() -> Boot {
         registry,
         None,
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await
