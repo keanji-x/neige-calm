@@ -54,6 +54,7 @@ use calm_server::scheduler::{Scheduler, TerminalTaskHook, build_worker_payload};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -72,6 +73,7 @@ struct Boot {
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
+    shared_codex_appserver: Arc<SharedCodexAppServer>,
 }
 
 async fn boot() -> Boot {
@@ -134,6 +136,8 @@ async fn boot() -> Boot {
     .expect("boot wave opts out of rule 6");
 
     let events = EventBus::new();
+    let shared_codex_appserver =
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
@@ -181,6 +185,7 @@ async fn boot() -> Boot {
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
+        shared_codex_appserver,
     }
 }
 
@@ -272,7 +277,8 @@ fn build_scheduler_unbooted(
         TerminalRendererRegistry::new(),
         boot.events.clone(),
         completion.clone(),
-    );
+    )
+    .with_shared_codex_appserver(boot.shared_codex_appserver.clone());
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
         adapters,
@@ -422,6 +428,67 @@ async fn seed_held_workspace_lease(boot: &Boot, card_id: &str, label: &str) -> S
     .await
     .expect("insert held workspace lease");
     lease_id
+}
+
+async fn seed_active_codex_turn(boot: &Boot, runtime_id: &str, thread_id: &str, turn_id: &str) {
+    sqlx::query(
+        "UPDATE worker_sessions \
+         SET thread_id = ?1, active_turn_id = ?2, updated_at_ms = ?3 \
+         WHERE id = ?4",
+    )
+    .bind(thread_id)
+    .bind(turn_id)
+    .bind(now_ms())
+    .bind(runtime_id)
+    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("seed active codex turn");
+    boot.shared_codex_appserver
+        .set_active_turn_for_test(thread_id, turn_id);
+}
+
+async fn seed_succeeded_codex_worker_op(boot: &Boot, task: &Task, card_id: &str) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let op_repo = SqlxOperationRepo::new(pool.clone());
+    let (op_kind, payload) = build_worker_payload(task).expect("worker payload");
+    assert_eq!(op_kind, "codex-worker");
+    let payload_hash = stable_payload_hash(&payload).expect("payload hash");
+    let op_id = op_repo
+        .insert_operation(
+            op_kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash,
+            },
+            payload,
+        )
+        .await
+        .expect("insert terminal succeeded op");
+    let output = TxOutput::new("card", Some(card_id.to_string()), json!({ "id": card_id }));
+    let now = now_ms();
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'succeeded',
+               tx_output_json = ?1,
+               target_type = 'card',
+               target_id = ?2,
+               target_json = ?3,
+               lease_owner = NULL,
+               lease_until_ms = NULL,
+               completed_at_ms = ?4,
+               updated_at_ms = ?4
+           WHERE id = ?5"#,
+    )
+    .bind(serde_json::to_string(&output).expect("tx output json"))
+    .bind(card_id)
+    .bind(json!({ "type": "card", "id": card_id }).to_string())
+    .bind(now)
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .expect("mark op succeeded");
+    op_id
 }
 
 async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
@@ -1729,6 +1796,42 @@ async fn sweep_running_codex_past_liveness_deadline_fails_and_tears_down() {
 }
 
 #[tokio::test]
+async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired-turn").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-turn").await;
+    let thread_id = "thread-expired-turn";
+    let turn_id = "turn-expired-turn";
+    seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
+
+    let mut task = plan_task(&boot.wave_id, "expired-turn", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired-turn").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert!(
+        boot.shared_codex_appserver
+            .interrupted_turns_for_test()
+            .contains(&(thread_id.to_string(), turn_id.to_string())),
+        "running timeout must interrupt the active shared codex turn"
+    );
+    assert_eq!(
+        boot.shared_codex_appserver
+            .active_turn_id_for_thread(thread_id),
+        None
+    );
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+}
+
+#[tokio::test]
 async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
@@ -1861,6 +1964,56 @@ async fn sweep_expired_dispatched_codex_compensates_op_and_fails_task() {
         failed[0].1["reason"],
         json!("worker exceeded the dispatched liveness deadline")
     );
+}
+
+#[tokio::test]
+async fn sweep_expired_dispatched_codex_terminal_op_reconciles_via_drive_spawn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(
+        &boot.wave_id,
+        "dispatch-terminal-success",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() - 1);
+    let task_id = task.id.clone();
+    seed_task(&boot, task.clone()).await;
+    let op_id = seed_succeeded_codex_worker_op(&boot, &task, boot.worker_card_id.as_str()).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "dispatch-terminal-success").await;
+    assert_ne!(
+        row.status,
+        TaskStatus::Dispatched,
+        "expired dispatched row must not wedge after an already-terminal op"
+    );
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.dispatched_deadline_ms, None);
+    assert!(row.running_deadline_ms.is_some());
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str())
+    );
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.id, op_id);
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+    assert_eq!(task_id, row.id);
 }
 
 #[tokio::test]

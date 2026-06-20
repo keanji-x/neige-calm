@@ -42,6 +42,7 @@ use crate::event::{BroadcastEnvelope, EventBus};
 use crate::model::{new_id, now_ms};
 use crate::proc_identity::verify_owned_pid;
 use crate::routes::terminal::spawn_terminal_with_parts;
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
 
@@ -179,6 +180,7 @@ pub struct SpawnCtx {
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub events: EventBus,
     pub completion: OperationCompletionBus,
+    pub shared_codex_appserver: Option<Arc<SharedCodexAppServer>>,
 }
 
 impl SpawnCtx {
@@ -197,7 +199,13 @@ impl SpawnCtx {
             terminal_renderer,
             events,
             completion,
+            shared_codex_appserver: None,
         }
+    }
+
+    pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
+        self.shared_codex_appserver = Some(shared);
+        self
     }
 
     pub async fn spawn_terminal(

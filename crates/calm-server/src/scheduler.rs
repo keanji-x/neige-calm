@@ -95,6 +95,12 @@ pub const DEFAULT_TASK_RUN_TIMEOUT_SECS: u64 = 7200;
 /// into a silent no-op.
 const RACE_LOST: &str = "scheduler: race lost (guarded write no-op)";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchedTimeoutAction {
+    Handled,
+    ReconcileSpawn,
+}
+
 pub(crate) fn race_lost_err() -> CalmError {
     CalmError::Conflict(RACE_LOST.into())
 }
@@ -1205,8 +1211,10 @@ impl Scheduler {
                 .dispatched_deadline_ms
                 .is_some_and(|deadline| now_ms() > deadline)
         {
-            self.fail_dispatched_liveness_timeout(task, &wave).await;
-            return;
+            match self.fail_dispatched_liveness_timeout(&task, &wave).await {
+                DispatchedTimeoutAction::Handled => return,
+                DispatchedTimeoutAction::ReconcileSpawn => {}
+            }
         }
         let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
             Ok(p) => p,
@@ -1221,13 +1229,17 @@ impl Scheduler {
         }
     }
 
-    async fn fail_dispatched_liveness_timeout(self: &Arc<Self>, task: Task, wave: &Wave) {
+    async fn fail_dispatched_liveness_timeout(
+        self: &Arc<Self>,
+        task: &Task,
+        wave: &Wave,
+    ) -> DispatchedTimeoutAction {
         let Some(runtime) = self.operation_runtime.upgrade() else {
             tracing::warn!(
                 task_id = %task.id,
                 "scheduler sweep: operation runtime dropped; cannot cancel expired dispatched task"
             );
-            return;
+            return DispatchedTimeoutAction::Handled;
         };
         match runtime
             .find_by_kind_and_idempotency("codex-worker", &task.id)
@@ -1245,9 +1257,9 @@ impl Scheduler {
                     tracing::debug!(
                         task_id = %task.id,
                         op_id = %op.id,
-                        "scheduler sweep: expired dispatched op not claimable; next sweep retries"
+                        "scheduler sweep: expired dispatched op not claimable; reconciling via spawn drive"
                     );
-                    return;
+                    return DispatchedTimeoutAction::ReconcileSpawn;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1256,7 +1268,7 @@ impl Scheduler {
                         error = %e,
                         "scheduler sweep: expired dispatched op compensation failed"
                     );
-                    return;
+                    return DispatchedTimeoutAction::Handled;
                 }
             },
             Ok(None) => {
@@ -1271,13 +1283,13 @@ impl Scheduler {
                     error = %e,
                     "scheduler sweep: expired dispatched op lookup failed"
                 );
-                return;
+                return DispatchedTimeoutAction::Handled;
             }
         }
 
         if let Err(e) = self
             .fail_task_liveness_timeout(
-                &task,
+                task,
                 wave,
                 "worker exceeded the dispatched liveness deadline",
                 "[auto] worker dispatch liveness timeout",
@@ -1290,6 +1302,7 @@ impl Scheduler {
                 "scheduler sweep: expired dispatched task fail tx failed"
             );
         }
+        DispatchedTimeoutAction::Handled
     }
 
     /// Sweep `running`-terminal arm (§8/M2 downtime path): a `running`

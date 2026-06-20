@@ -237,7 +237,7 @@ fn dispatcher_operation_runtime(
         Arc::new(SpecHarnessInterruptAdapter::new(harness.clone()));
     let spec_harness_shutdown_adapter = Arc::new(SpecHarnessShutdownAdapter::new(
         harness,
-        shared_codex_appserver,
+        shared_codex_appserver.clone(),
         repo,
     ));
     let task_verify_adapter = Arc::new(
@@ -272,7 +272,8 @@ fn dispatcher_operation_runtime(
             terminal_renderer,
             events,
             completion,
-        ),
+        )
+        .with_shared_codex_appserver(shared_codex_appserver.clone()),
     ))
 }
 
