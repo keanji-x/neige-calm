@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
@@ -10,7 +11,9 @@ use crate::event::EventBus;
 use crate::model::{TaskStatus, now_ms};
 use crate::proc_identity::signal_process_group;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
-use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::terminal_sweeper::{
+    WaitForPidExit, reap_terminal_artifacts_with_renderer, wait_for_pid_exit,
+};
 
 use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
@@ -153,17 +156,33 @@ impl OperationRuntime {
 
     pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
         self.interrupt_running_codex_turn_for_card(card_id).await?;
-        self.spawn_ctx
-            .repo
-            .session_projection_complete_for_card(card_id, WorkerSessionState::Failed)
-            .await?;
         if let Some(term) = self.spawn_ctx.repo.terminal_get_by_card(card_id).await? {
             reap_terminal_artifacts_with_renderer(
                 Some(self.spawn_ctx.terminal_renderer.as_ref()),
                 &term,
             )
             .await;
+            if let Some(pid) = term.pid {
+                let verdict = wait_for_pid_exit(pid, Duration::from_secs(2)).await;
+                match verdict {
+                    WaitForPidExit::Exited | WaitForPidExit::InvalidPid => {}
+                    WaitForPidExit::StillAliveAfterSigkill | WaitForPidExit::Unsupported => {
+                        return Err(CalmError::Internal(format!(
+                            "timed-out worker terminal {} did not exit after reap ({verdict:?})",
+                            term.id
+                        )));
+                    }
+                }
+            }
+        } else {
+            return Err(CalmError::Internal(format!(
+                "timed-out worker card {card_id} has no terminal row"
+            )));
         }
+        self.spawn_ctx
+            .repo
+            .session_projection_complete_for_card(card_id, WorkerSessionState::Failed)
+            .await?;
         Ok(())
     }
 

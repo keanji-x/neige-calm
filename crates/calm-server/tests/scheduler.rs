@@ -603,6 +603,29 @@ async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
         .expect("workspace lease state")
 }
 
+async fn workspace_lease_path(boot: &Boot, lease_id: &str) -> String {
+    sqlx::query_scalar("SELECT path FROM workspace_leases WHERE lease_id = ?1")
+        .bind(lease_id)
+        .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .await
+        .expect("workspace lease path")
+}
+
+async fn timeout_cleanup_marker_exists(boot: &Boot, card_id: &str) -> bool {
+    let count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+           FROM worker_sessions
+           WHERE card_id = ?1
+             AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms')
+                 IS NOT NULL"#,
+    )
+    .bind(card_id)
+    .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("timeout cleanup marker query");
+    count > 0
+}
+
 async fn call_tool(
     boot: &Boot,
     name: &str,
@@ -2303,6 +2326,77 @@ async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
         None
     );
     assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+}
+
+#[tokio::test]
+async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired-retry").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-retry").await;
+    let thread_id = "thread-expired-retry";
+    let turn_id = "turn-expired-retry";
+    seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
+
+    let mut task = plan_task(&boot.wave_id, "expired-retry", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let lease_path = workspace_lease_path(&boot, &lease_id).await;
+    std::fs::remove_dir_all(&lease_path).expect("remove lease dir before failure fixture");
+    std::fs::write(&lease_path, "not a directory").expect("lease path file fixture");
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired-retry").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert!(
+        boot.shared_codex_appserver
+            .interrupted_turns_for_test()
+            .contains(&(thread_id.to_string(), turn_id.to_string())),
+        "first attempt interrupts the active shared codex turn"
+    );
+    assert_eq!(
+        boot.shared_codex_appserver
+            .active_turn_id_for_thread(thread_id),
+        None
+    );
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    assert_eq!(
+        workspace_lease_state(&boot, &lease_id).await,
+        "releasing",
+        "failed release attempt must not mark the lease released"
+    );
+    assert!(
+        timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker survives the failed first attempt"
+    );
+    assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
+
+    std::fs::remove_file(&lease_path).expect("clear failed lease path fixture");
+    scheduler.sweep_all().await;
+
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    assert!(
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker clears only after lease release succeeds"
+    );
+    assert_eq!(
+        event_rows(&boot, "task.failed").await.len(),
+        1,
+        "cleanup retry must not emit another task.failed"
+    );
 }
 
 #[tokio::test]
