@@ -222,6 +222,88 @@ impl OperationRepo for SqlxOperationRepo {
         Ok(claimed)
     }
 
+    async fn claim_recovery_drive_batch(&self, limit: i64) -> Result<Vec<Operation>> {
+        let now = now_ms();
+        let lease_owner = new_id();
+        let lease_until = now + OPERATION_LEASE_MS;
+        let mut tx = self.pool.begin().await?;
+        let ids = sqlx::query(
+            r#"SELECT id
+               FROM operations
+               WHERE phase IN (
+                 'pending',
+                 'tx_committed',
+                 'app_server_interact',
+                 'spawn_started',
+                 'spawn_succeeded',
+                 'compensating'
+               )
+               AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
+               AND NOT (
+                 kind = 'codex-worker'
+                 AND idempotency_key IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1
+                   FROM tasks
+                   WHERE tasks.id = operations.idempotency_key
+                     AND tasks.status = 'dispatched'
+                 )
+               )
+               ORDER BY created_at_ms ASC
+               LIMIT ?2"#,
+        )
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut claimed = Vec::new();
+        for row in ids {
+            let id: String = row.try_get("id")?;
+            let result = sqlx::query(
+                r#"UPDATE operations
+                   SET lease_owner = ?1,
+                       lease_until_ms = ?2,
+                       updated_at_ms = ?3
+                   WHERE id = ?4
+                     AND phase IN (
+                       'pending',
+                       'tx_committed',
+                       'app_server_interact',
+                       'spawn_started',
+                       'spawn_succeeded',
+                       'compensating'
+                     )
+                     AND (lease_until_ms IS NULL OR lease_until_ms < ?3)
+                     AND NOT (
+                       kind = 'codex-worker'
+                       AND idempotency_key IS NOT NULL
+                       AND EXISTS (
+                         SELECT 1
+                         FROM tasks
+                         WHERE tasks.id = operations.idempotency_key
+                           AND tasks.status = 'dispatched'
+                       )
+                     )"#,
+            )
+            .bind(&lease_owner)
+            .bind(lease_until)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() == 1 {
+                let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
+                    .bind(&id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                claimed.push(operation_from_row(&row)?);
+            }
+        }
+        tx.commit().await?;
+        Ok(claimed)
+    }
+
     async fn claim_inflight_for_compensation(&self, op_id: &str) -> Result<Option<Operation>> {
         let now = now_ms();
         let lease_owner = new_id();

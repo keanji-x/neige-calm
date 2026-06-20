@@ -46,8 +46,8 @@ use calm_server::model::{
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
     OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
-    PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, Tx,
-    TxOutput,
+    PhaseTag, ProviderAdapter, RecoveryItem, SpawnCtx, SpawnHandle, SpawnOutcome,
+    SqlxOperationRepo, Tx, TxOutput,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::routes::terminal_cards::stable_payload_hash;
@@ -747,6 +747,55 @@ async fn seed_spawn_started_codex_op(
     op_id
 }
 
+async fn seed_spawn_started_codex_worker_op(
+    boot: &Boot,
+    task: &Task,
+    card_id: &str,
+    lease_id: &str,
+) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let op_repo = SqlxOperationRepo::new(pool.clone());
+    let (op_kind, payload) = build_worker_payload(task).expect("worker payload");
+    assert_eq!(op_kind, "codex-worker");
+    let payload_hash = stable_payload_hash(&payload).expect("payload hash");
+    let op_id = op_repo
+        .insert_operation(
+            op_kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash,
+            },
+            payload,
+        )
+        .await
+        .expect("insert spawn_started op");
+    let mut output = TxOutput::new("card", Some(card_id.to_string()), json!({ "id": card_id }));
+    output.data = json!({
+        "card_id": card_id,
+        "lease_id": lease_id,
+    });
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'spawn_started',
+               tx_output_json = ?1,
+               target_type = 'card',
+               target_id = ?2,
+               target_json = ?3,
+               lease_owner = NULL,
+               lease_until_ms = NULL
+           WHERE id = ?4"#,
+    )
+    .bind(serde_json::to_string(&output).expect("tx output json"))
+    .bind(card_id)
+    .bind(json!({ "type": "card", "id": card_id }).to_string())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .expect("stamp spawn_started op output");
+    op_id
+}
+
 fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
@@ -1188,6 +1237,132 @@ impl ProviderAdapter for TimeoutCompensationAdapter {
             .ok_or_else(|| {
                 calm_server::error::CalmError::Internal(
                     "timeout-test compensation step missing lease_id".into(),
+                )
+            })?;
+        let now = now_ms();
+        sqlx::query(
+            r#"UPDATE workspace_leases
+               SET state = 'released',
+                   released_at_ms = COALESCE(released_at_ms, ?1),
+                   updated_at_ms = ?1
+               WHERE lease_id = ?2
+                 AND state IN ('held','releasing')"#,
+        )
+        .bind(now)
+        .bind(lease_id)
+        .execute(&ctx.operation_repo.sqlite_pool())
+        .await?;
+        Ok(())
+    }
+}
+
+struct CountingTimeoutCompensationAdapter {
+    kind: &'static str,
+    card_id: String,
+    lease_id: String,
+    spawn_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ProviderAdapter for CountingTimeoutCompensationAdapter {
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        SPAWN_STARTED_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        let mut output = TxOutput::new(
+            "card",
+            Some(self.card_id.clone()),
+            json!({ "id": self.card_id }),
+        );
+        output.data = json!({
+            "card_id": self.card_id,
+            "lease_id": self.lease_id,
+        });
+        Ok(output)
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        self.spawn_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Ok(CompensationStateVersioned {
+            version: 1,
+            from_phase,
+            reason: reason.to_string(),
+            steps: vec![CompensationStep {
+                op: "release_workspace_lease".to_string(),
+                args: json!({
+                    "lease_id": output
+                        .data
+                        .get("lease_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| calm_server::error::CalmError::Internal(
+                            "counting-timeout-test tx_output missing lease_id".into()
+                        ))?,
+                }),
+                completed: false,
+                attempts: 0,
+                last_error: None,
+            }],
+        })
+    }
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        if step.completed {
+            return Ok(());
+        }
+        if step.op != "release_workspace_lease" {
+            return Err(unexpected("compensate_step"));
+        }
+        let lease_id = step
+            .args
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                calm_server::error::CalmError::Internal(
+                    "counting-timeout-test compensation step missing lease_id".into(),
                 )
             })?;
         let now = now_ms();
@@ -2628,6 +2803,224 @@ async fn sweep_dispatched_codex_within_deadline_uses_normal_drive_spawn() {
     assert_eq!(row.dispatched_deadline_ms, None);
     assert!(row.running_deadline_ms.is_some());
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+}
+
+#[tokio::test]
+async fn boot_recovery_expired_dispatched_spawn_started_fails_worker_timeout_without_spawn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, _runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "boot-expired-spawn-started").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "boot-expired-spawn-started").await;
+    let mut task = plan_task(
+        &boot.wave_id,
+        "boot-expired-spawn-started",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() - 1);
+    let task_id = task.id.clone();
+    seed_task(&boot, task.clone()).await;
+    let op_id = seed_spawn_started_codex_worker_op(&boot, &task, &card_id, &lease_id).await;
+    let spawn_calls = Arc::new(AtomicUsize::new(0));
+
+    let (runtime, scheduler) = build_scheduler_unbooted(
+        &boot,
+        vec![Arc::new(CountingTimeoutCompensationAdapter {
+            kind: "codex-worker",
+            card_id: card_id.clone(),
+            lease_id: lease_id.clone(),
+            spawn_calls: Arc::clone(&spawn_calls),
+        })],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+    );
+    let plan = runtime.recover_on_boot().await.expect("recovery plan");
+    assert!(plan.items.iter().any(|item| {
+        matches!(
+            item,
+            RecoveryItem::Skip { op_id: skipped, reason }
+                if skipped == &op_id && reason.contains("scheduler owns")
+        )
+    }));
+    runtime
+        .apply_recovery(plan)
+        .await
+        .expect("apply boot recovery");
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        0,
+        "generic boot recovery must not spawn an expired dispatched codex worker"
+    );
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::SpawnStarted);
+
+    scheduler.sweep_boot().await;
+
+    let row = task_row(&boot, "boot-expired-spawn-started").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        0,
+        "scheduler boot timeout compensates instead of spawning"
+    );
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].1["reason"],
+        json!("worker exceeded the dispatched liveness deadline")
+    );
+    assert_eq!(task_id, row.id);
+}
+
+#[tokio::test]
+async fn boot_recovery_expired_dispatched_spawn_succeeded_reconciles_to_running() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "boot-spawn-succeeded").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "boot-spawn-succeeded").await;
+    let mut task = plan_task(&boot.wave_id, "boot-spawn-succeeded", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task.clone()).await;
+    let op_id = seed_spawn_succeeded_codex_worker_op(&boot, &task, &card_id).await;
+    let spawn_calls = Arc::new(AtomicUsize::new(0));
+
+    let (runtime, scheduler) = build_scheduler_unbooted(
+        &boot,
+        vec![Arc::new(CountingCardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: card_id.clone(),
+            spawn_calls: Arc::clone(&spawn_calls),
+        })],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+    );
+    let plan = runtime.recover_on_boot().await.expect("recovery plan");
+    assert!(plan.items.iter().any(|item| {
+        matches!(
+            item,
+            RecoveryItem::Skip { op_id: skipped, reason }
+                if skipped == &op_id && reason.contains("scheduler owns")
+        )
+    }));
+    runtime
+        .apply_recovery(plan)
+        .await
+        .expect("apply boot recovery");
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::SpawnSucceeded);
+
+    scheduler.sweep_boot().await;
+
+    let row = task_row(&boot, "boot-spawn-succeeded").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.status_detail, None);
+    assert_eq!(row.dispatched_deadline_ms, None);
+    assert!(row.running_deadline_ms.is_some());
+    assert_eq!(row.worker_card_id.as_deref(), Some(card_id.as_str()));
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "held");
+    assert_eq!(spawn_calls.load(Ordering::SeqCst), 0);
+    let runtime_row = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime_row.status, WorkerSessionState::Running);
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
+#[tokio::test]
+async fn boot_recovery_dispatched_within_deadline_uses_scheduler_drive_spawn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, _runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "boot-fresh-spawn-started").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "boot-fresh-spawn-started").await;
+    let mut task = plan_task(
+        &boot.wave_id,
+        "boot-fresh-spawn-started",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() + 60_000);
+    seed_task(&boot, task.clone()).await;
+    let op_id = seed_spawn_started_codex_worker_op(&boot, &task, &card_id, &lease_id).await;
+    let spawn_calls = Arc::new(AtomicUsize::new(0));
+
+    let (runtime, scheduler) = build_scheduler_unbooted(
+        &boot,
+        vec![Arc::new(CountingTimeoutCompensationAdapter {
+            kind: "codex-worker",
+            card_id: card_id.clone(),
+            lease_id: lease_id.clone(),
+            spawn_calls: Arc::clone(&spawn_calls),
+        })],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+    );
+    let plan = runtime.recover_on_boot().await.expect("recovery plan");
+    assert!(plan.items.iter().any(|item| {
+        matches!(
+            item,
+            RecoveryItem::Skip { op_id: skipped, reason }
+                if skipped == &op_id && reason.contains("scheduler owns")
+        )
+    }));
+    runtime
+        .apply_recovery(plan)
+        .await
+        .expect("apply boot recovery");
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        0,
+        "generic boot recovery leaves within-deadline dispatched codex work to the scheduler"
+    );
+
+    scheduler.sweep_boot().await;
+
+    let row = task_row(&boot, "boot-fresh-spawn-started").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.status_detail, None);
+    assert_eq!(row.dispatched_deadline_ms, None);
+    assert!(row.running_deadline_ms.is_some());
+    assert_eq!(row.worker_card_id.as_deref(), Some(card_id.as_str()));
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "held");
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        1,
+        "within-deadline boot sweep uses normal scheduler spawn recovery"
+    );
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, broadcast};
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::event::EventBus;
-use crate::model::now_ms;
+use crate::model::{TaskStatus, now_ms};
 use crate::proc_identity::signal_process_group;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -342,9 +342,21 @@ impl OperationRuntime {
     }
 
     pub async fn drive(&self) -> Result<()> {
+        self.drive_with_recovery_filter(false).await
+    }
+
+    async fn drive_recovery(&self) -> Result<()> {
+        self.drive_with_recovery_filter(true).await
+    }
+
+    async fn drive_with_recovery_filter(&self, recovery: bool) -> Result<()> {
         let _g = self.drive_mutex.lock().await;
         loop {
-            let batch = self.repo.claim_drive_batch(32).await?;
+            let batch = if recovery {
+                self.repo.claim_recovery_drive_batch(32).await?
+            } else {
+                self.repo.claim_drive_batch(32).await?
+            };
             if batch.is_empty() {
                 return Ok(());
             }
@@ -371,6 +383,13 @@ impl OperationRuntime {
         let rows = self.repo.abandoned_running_operations_on_boot().await?;
         let mut items = Vec::new();
         for op in rows {
+            if self.scheduler_owns_dispatched_codex_recovery(&op).await? {
+                items.push(RecoveryItem::Skip {
+                    op_id: op.id.clone(),
+                    reason: "deadline-aware scheduler owns dispatched codex-worker recovery".into(),
+                });
+                continue;
+            }
             let adapter = self.adapter(&op.kind)?;
             items.push(self.plan_recovery_for(adapter.as_ref(), &op).await?);
         }
@@ -381,7 +400,7 @@ impl OperationRuntime {
         for item in plan.items {
             match self.apply_recovery_item(item.clone()).await {
                 Ok(()) => {
-                    if let Err(e) = self.drive().await {
+                    if let Err(e) = self.drive_recovery().await {
                         tracing::error!(
                             error = %e,
                             item = ?item,
@@ -407,6 +426,21 @@ impl OperationRuntime {
             .get(kind)
             .cloned()
             .ok_or_else(|| CalmError::BadRequest(format!("unknown operation kind {kind}")))
+    }
+
+    async fn scheduler_owns_dispatched_codex_recovery(&self, op: &Operation) -> Result<bool> {
+        if op.kind != "codex-worker" {
+            return Ok(false);
+        }
+        let Some(task_id) = op.idempotency_key.as_deref() else {
+            return Ok(false);
+        };
+        Ok(self
+            .spawn_ctx
+            .repo
+            .task_get(task_id)
+            .await?
+            .is_some_and(|task| task.status == TaskStatus::Dispatched))
     }
 
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {

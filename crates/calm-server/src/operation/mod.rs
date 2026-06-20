@@ -655,6 +655,9 @@ pub trait OperationRepo: Send + Sync {
     async fn get_operation(&self, op_id: &str) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    async fn claim_recovery_drive_batch(&self, limit: i64) -> Result<Vec<Operation>> {
+        self.claim_drive_batch(limit).await
+    }
     async fn claim_inflight_for_compensation(&self, op_id: &str) -> Result<Option<Operation>>;
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>>;
     /// Reserved for PR2 background driver loop (design §B.3).
