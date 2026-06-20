@@ -9,6 +9,8 @@ use crate::error::{CalmError, Result};
 use crate::event::EventBus;
 use crate::model::now_ms;
 use crate::proc_identity::signal_process_group;
+use crate::session_projection_repo::WorkerSessionState;
+use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
 use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
@@ -147,6 +149,21 @@ impl OperationRuntime {
                 },
             )
             .await
+    }
+
+    pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
+        self.spawn_ctx
+            .repo
+            .session_projection_complete_for_card(card_id, WorkerSessionState::Failed)
+            .await?;
+        if let Some(term) = self.spawn_ctx.repo.terminal_get_by_card(card_id).await? {
+            reap_terminal_artifacts_with_renderer(
+                Some(self.spawn_ctx.terminal_renderer.as_ref()),
+                &term,
+            )
+            .await;
+        }
+        Ok(())
     }
 
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {

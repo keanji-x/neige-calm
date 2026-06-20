@@ -829,10 +829,17 @@ pub mod sqlite {
         id: &str,
         worker_card_id: Option<&str>,
         now: i64,
+        running_deadline_ms: i64,
     ) -> Result<u64> {
-        calm_truth::db::sqlite::task_mark_running_tx(tx, id, worker_card_id, now)
-            .await
-            .map_err(Into::into)
+        calm_truth::db::sqlite::task_mark_running_tx(
+            tx,
+            id,
+            worker_card_id,
+            now,
+            running_deadline_ms,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     pub async fn terminal_create_tx(

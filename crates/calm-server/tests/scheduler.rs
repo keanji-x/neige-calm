@@ -27,7 +27,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, task_insert_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, task_insert_tx,
+};
 use calm_server::error::Result as CalmResult;
 use calm_server::event::EventBus;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
@@ -37,8 +39,8 @@ use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewTerminal, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
-    WavePatch, new_id, now_ms,
+    CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, Task, TaskKind, TaskStatus,
+    WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -312,6 +314,8 @@ fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task
         gate_pid: None,
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
+        dispatched_deadline_ms: None,
+        running_deadline_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -348,6 +352,83 @@ async fn task_row(boot: &Boot, key: &str) -> Task {
         .await
         .expect("task_get")
         .expect("task row exists")
+}
+
+async fn seed_codex_worker_card_with_terminal(
+    boot: &Boot,
+    label: &str,
+) -> (String, String, String) {
+    let card_id = format!("card-timeout-{label}-{}", new_id());
+    let runtime_id = format!("runtime-timeout-{label}-{}", new_id());
+    let wave_id = boot.wave_id.clone();
+    let card_role_cache = boot.card_role_cache.clone();
+    let result = calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
+        let card_id = card_id.clone();
+        let runtime_id = runtime_id.clone();
+        move |tx| {
+            Box::pin(async move {
+                let (_card, term, _mcp_token) = card_with_codex_create_tx(
+                    tx,
+                    card_id,
+                    &runtime_id,
+                    None,
+                    wave_id,
+                    None,
+                    "/tmp".to_string(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    &card_role_cache,
+                    RequestTheme::default_dark(),
+                )
+                .await?;
+                Ok(term.id)
+            })
+        }
+    })
+    .await
+    .expect("seed codex worker card");
+    boot.repo
+        .session_projection_set_status_for_card(&card_id, WorkerSessionState::Running)
+        .await
+        .expect("mark seeded worker runtime running");
+    (card_id, runtime_id, result)
+}
+
+async fn seed_held_workspace_lease(boot: &Boot, card_id: &str, label: &str) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let lease_id = format!("lease-timeout-{label}-{}", new_id());
+    let path = std::env::temp_dir().join(format!("neige-timeout-lease-{label}-{}", new_id()));
+    std::fs::create_dir_all(&path).expect("create lease dir");
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO workspace_leases (
+               lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
+               boot_id, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)"#,
+    )
+    .bind(&lease_id)
+    .bind(card_id)
+    .bind(boot.wave_id.as_str())
+    .bind(path.display().to_string())
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("insert held workspace lease");
+    lease_id
+}
+
+async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
+    sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+        .bind(lease_id)
+        .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .await
+        .expect("workspace lease state")
 }
 
 async fn call_tool(
@@ -1348,8 +1429,15 @@ async fn terminal_exit_beats_running_stamp() {
         let task_id = task_id.clone();
         move |tx| {
             Box::pin(async move {
-                calm_server::db::sqlite::task_mark_running_tx(tx, &task_id, Some("late"), now_ms())
-                    .await
+                let now = now_ms();
+                calm_server::db::sqlite::task_mark_running_tx(
+                    tx,
+                    &task_id,
+                    Some("late"),
+                    now,
+                    now + 7200_000,
+                )
+                .await
             })
         }
     })
@@ -1432,6 +1520,95 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
     // Sweeping again is a no-op (guarded completion, first writer won).
     scheduler.sweep_all().await;
     assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
+}
+
+#[tokio::test]
+async fn sweep_running_codex_past_liveness_deadline_fails_and_tears_down() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired").await;
+
+    let mut task = plan_task(&boot.wave_id, "expired", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(
+        workspace_lease_state(&boot, &lease_id).await,
+        "released",
+        "CAS-success timeout releases the workspace lease"
+    );
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].1["reason"],
+        json!("worker exceeded the running liveness deadline")
+    );
+}
+
+#[tokio::test]
+async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "fresh").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "fresh").await;
+
+    let mut task = plan_task(&boot.wave_id, "fresh", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() + 60_000);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "fresh").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.status_detail, None);
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "held");
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Running);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
+#[tokio::test]
+async fn sweep_running_terminal_past_liveness_deadline_is_not_timed_out() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "terminal-timeout", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Running;
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "terminal-timeout").await;
+    assert_eq!(row.status, TaskStatus::Running);
+    assert_eq!(row.status_detail, None);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
 // ---------------------------------------------------------------------------

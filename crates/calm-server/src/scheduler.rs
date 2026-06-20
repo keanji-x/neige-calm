@@ -12,9 +12,10 @@
 //!
 //! The scheduler never re-runs a `failed` task, never reorders beyond
 //! `(priority DESC, created_at ASC, key ASC)`, never edits the plan,
-//! never times a worker out, and never garbage-collects. Retry is the
-//! spec inserting a new task. The only judgment it holds is the
-//! ready-set predicate.
+//! and never garbage-collects. Retry is the spec inserting a new task.
+//! The only runtime judgment it holds is the persisted agent-worker
+//! liveness deadline; terminal workers remain mechanically reconciled
+//! by exit status.
 //!
 //! ## Triggers (§5.1)
 //!
@@ -42,6 +43,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use dashmap::DashMap;
 use serde_json::{Value, json};
@@ -63,6 +65,7 @@ use crate::operation::task_verify_adapter::{
     apply_gate_result_in_tx, gate_attempt_key,
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
+use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
@@ -76,6 +79,14 @@ pub const DEFAULT_WAVE_TASK_BUDGET: i64 = 1;
 
 /// Default reconcile-tick period (§5.1 liveness backstop).
 pub const DEFAULT_RECONCILE_SECS: u64 = 300;
+
+/// Default wall-clock window for `pending → dispatched` rows to start
+/// their worker operation.
+pub const DEFAULT_TASK_DISPATCH_TIMEOUT_SECS: u64 = 600;
+
+/// Default wall-clock window for agent workers to report task
+/// completion/failure after the running stamp.
+pub const DEFAULT_TASK_RUN_TIMEOUT_SECS: u64 = 7200;
 
 /// Internal sentinel: a guarded flip affected 0 rows because another
 /// writer (claim race, fast worker report, earlier sweep) won. Carried
@@ -204,6 +215,10 @@ fn task_kind_str(kind: TaskKind) -> &'static str {
     }
 }
 
+fn duration_ms_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+}
+
 /// RAII guard for the per-task single-flight map: at most one in-process
 /// driver (live scheduling pass OR sweep) submits/waits a given task's
 /// worker operation at a time. Losing a slot is always safe — the holder
@@ -249,6 +264,12 @@ pub struct Scheduler {
     /// Kernel default budget (`NEIGE_WAVE_TASK_BUDGET`, default 1);
     /// `waves.task_budget` overrides per wave.
     budget_default: i64,
+    /// Persisted dispatched liveness window, resolved once from
+    /// `NEIGE_TASK_DISPATCH_TIMEOUT_SECS`.
+    task_dispatch_timeout: Duration,
+    /// Persisted running liveness window, resolved once from
+    /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
+    task_run_timeout: Duration,
     /// §5.1 per-wave single-flight: exactly the push-locks pattern.
     wave_locks: DashMap<WaveId, Arc<tokio::sync::Mutex<()>>>,
     /// Dirty flags — a trigger arriving mid-pass marks dirty and the
@@ -283,6 +304,8 @@ impl Scheduler {
             operation_runtime,
             semaphore,
             budget_default: Self::budget_from_env(DEFAULT_WAVE_TASK_BUDGET),
+            task_dispatch_timeout: Self::task_dispatch_timeout_from_env(),
+            task_run_timeout: Self::task_run_timeout_from_env(),
             wave_locks: DashMap::new(),
             wave_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
@@ -322,9 +345,31 @@ impl Scheduler {
         Self::reconcile_secs_from_env_var("NEIGE_SCHEDULER_RECONCILE_SECS", default)
     }
 
+    pub fn task_dispatch_timeout_from_env() -> Duration {
+        Duration::from_secs(Self::reconcile_secs_from_env_var(
+            "NEIGE_TASK_DISPATCH_TIMEOUT_SECS",
+            DEFAULT_TASK_DISPATCH_TIMEOUT_SECS,
+        ))
+    }
+
+    pub fn task_run_timeout_from_env() -> Duration {
+        Duration::from_secs(Self::reconcile_secs_from_env_var(
+            "NEIGE_TASK_RUN_TIMEOUT_SECS",
+            DEFAULT_TASK_RUN_TIMEOUT_SECS,
+        ))
+    }
+
     /// Configured kernel-default budget. Exposed for test assertions.
     pub fn budget_default(&self) -> i64 {
         self.budget_default
+    }
+
+    pub fn task_dispatch_timeout_ms(&self) -> i64 {
+        duration_ms_i64(self.task_dispatch_timeout)
+    }
+
+    pub fn task_run_timeout_ms(&self) -> i64 {
+        duration_ms_i64(self.task_run_timeout)
     }
 
     /// Fire-and-forget trigger: schedule the wave on a fresh task. Used
@@ -495,6 +540,7 @@ impl Scheduler {
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
         let budget_default = self.budget_default;
+        let task_dispatch_timeout_ms = self.task_dispatch_timeout_ms();
         let result =
             write_with_actor_events_typed::<Task, _>(
                 self.repo.as_ref(),
@@ -515,7 +561,14 @@ impl Scheduler {
                         if !lifecycle_allows_scheduling(lifecycle) {
                             return Err(race_lost_err());
                         }
-                        let rows = task_claim_pending_tx(tx, &task_id, now_ms()).await?;
+                        let now = now_ms();
+                        let rows = task_claim_pending_tx(
+                            tx,
+                            &task_id,
+                            now,
+                            now.saturating_add(task_dispatch_timeout_ms),
+                        )
+                        .await?;
                         if rows == 0 {
                             return Err(race_lost_err());
                         }
@@ -736,7 +789,15 @@ impl Scheduler {
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
-        let rows = task_mark_running_tx(&mut tx, task_id, worker_card_id, now_ms()).await?;
+        let now = now_ms();
+        let rows = task_mark_running_tx(
+            &mut tx,
+            task_id,
+            worker_card_id,
+            now,
+            now.saturating_add(self.task_run_timeout_ms()),
+        )
+        .await?;
         tx.commit().await?;
         if rows == 0 {
             tracing::debug!(
@@ -831,7 +892,8 @@ impl Scheduler {
     ///   boot supervisor reconcile has already persisted dead PTYs as
     ///   `terminals.exit_code = -1`, so a recorded exit runs the same
     ///   guarded completion tx as the live exit hook.
-    /// - `running` + codex kind: left alone (policy-free; risk R4).
+    /// - `running` + codex kind: fail only after the persisted
+    ///   wall-clock liveness deadline, CAS first, then teardown.
     /// - `verifying`: drive the current gate attempt
     ///   ([`Scheduler::drive_gate`] — submit when missing, `wait()`
     ///   re-drive when non-terminal, outcome copy when terminal); the
@@ -926,9 +988,14 @@ impl Scheduler {
                 TaskStatus::Running if task.kind == TaskKind::Terminal => {
                     self.reconcile_running_terminal(task).await;
                 }
-                // Policy-free: a running codex worker survives restarts
-                // (PTY under proc-supervisor) and reports via the emit
-                // tx; the scheduler holds no liveness judgment (R4).
+                TaskStatus::Running
+                    if task.kind == TaskKind::Codex
+                        && task
+                            .running_deadline_ms
+                            .is_some_and(|deadline| now_ms() > deadline) =>
+                {
+                    self.fail_running_liveness_timeout(task).await;
+                }
                 TaskStatus::Running => {}
                 // §8 verifying arm (parked formulation): drive the
                 // current gate attempt — op missing → submit,
@@ -947,6 +1014,143 @@ impl Scheduler {
             }
         }
         pending_waves
+    }
+
+    async fn fail_running_liveness_timeout(self: &Arc<Self>, task: Task) {
+        let wave = match self.repo.wave_get(&task.wave_id).await {
+            Ok(Some(wave)) => wave,
+            Ok(None) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    "scheduler sweep: running timeout task's wave row is gone; leaving row"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "scheduler sweep: running timeout wave_get failed"
+                );
+                return;
+            }
+        };
+
+        let scope = EventScope::Wave {
+            wave: wave.id.clone(),
+            cove: wave.cove_id.clone(),
+        };
+        let task_id = task.id.clone();
+        let wave_id = wave.id.clone();
+        let result = write_with_actor_events_typed::<(), _>(
+            self.repo.as_ref(),
+            None,
+            &self.events,
+            &self.write,
+            move |tx| {
+                Box::pin(async move {
+                    let rows = task_fail_from_worker_tx(
+                        tx,
+                        &task_id,
+                        wave_id.as_str(),
+                        TaskReporter::Kernel,
+                        "worker-timeout",
+                        now_ms(),
+                    )
+                    .await?;
+                    if rows == 0 {
+                        return Err(race_lost_err());
+                    }
+                    let mut events = vec![(
+                        ActorId::KernelDispatcher,
+                        scope.clone(),
+                        Event::TaskFailed {
+                            idempotency_key: task_id.clone(),
+                            reason: "worker exceeded the running liveness deadline".to_string(),
+                            agent_message: None,
+                        },
+                    )];
+                    if let Some(auto_events) = auto_transition_if_current_in_tx(
+                        tx,
+                        &wave_id,
+                        WaveLifecycle::Working,
+                        WaveLifecycle::Reviewing,
+                        &ActorId::KernelDispatcher,
+                        Some("[auto] worker liveness timeout".to_string()),
+                    )
+                    .await?
+                    {
+                        events.extend(
+                            auto_events
+                                .into_iter()
+                                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
+                        );
+                    }
+                    Ok(((), events))
+                })
+            },
+        )
+        .await;
+
+        match result {
+            Ok(_) => {
+                self.teardown_timed_out_running_worker(&task).await;
+            }
+            Err(e) if is_race_lost(&e) => {}
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "scheduler sweep: running timeout fail tx failed"
+                );
+            }
+        }
+    }
+
+    async fn teardown_timed_out_running_worker(self: &Arc<Self>, task: &Task) {
+        let card_id = match self.worker_card_id_for_task(task).await {
+            Some(card_id) => card_id,
+            None => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    "scheduler sweep: timed-out worker has no resolvable card id; skipping teardown"
+                );
+                return;
+            }
+        };
+        if let Some(runtime) = self.operation_runtime.upgrade()
+            && let Err(e) = runtime.fail_running_worker_card(&card_id).await
+        {
+            tracing::warn!(
+                task_id = %task.id,
+                card_id = %card_id,
+                error = %e,
+                "scheduler sweep: timed-out worker PTY/session teardown failed"
+            );
+        }
+        if let Err(e) =
+            release_workspace_lease_for_card_repo(self.repo.as_ref(), &self.events, &card_id).await
+        {
+            tracing::warn!(
+                task_id = %task.id,
+                card_id = %card_id,
+                error = %e,
+                "scheduler sweep: timed-out worker lease release failed"
+            );
+        }
+    }
+
+    async fn worker_card_id_for_task(&self, task: &Task) -> Option<String> {
+        if let Some(card_id) = task.worker_card_id.as_ref() {
+            return Some(card_id.clone());
+        }
+        self.operation_runtime
+            .upgrade()?
+            .find_by_kind_and_idempotency("codex-worker", &task.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|op| op.target_id)
     }
 
     /// Sweep `dispatched` arm (§5.5/§8): the claim landed but the spawn
@@ -1542,6 +1746,8 @@ mod tests {
             gate_pid: None,
             gate_pid_starttime: None,
             gate_pid_boot_id: None,
+            dispatched_deadline_ms: None,
+            running_deadline_ms: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             finished_at_ms: None,
@@ -1714,6 +1920,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn task_liveness_timeout_env_fallback_paths() {
+        let saved_dispatch = std::env::var("NEIGE_TASK_DISPATCH_TIMEOUT_SECS").ok();
+        let saved_run = std::env::var("NEIGE_TASK_RUN_TIMEOUT_SECS").ok();
+        fn set(var: &str, v: &str) {
+            // SAFETY: single-threaded test; no concurrent env reader.
+            unsafe { std::env::set_var(var, v) };
+        }
+        fn remove(var: &str) {
+            // SAFETY: see `set`.
+            unsafe { std::env::remove_var(var) };
+        }
+
+        remove("NEIGE_TASK_DISPATCH_TIMEOUT_SECS");
+        assert_eq!(
+            Scheduler::task_dispatch_timeout_from_env(),
+            Duration::from_secs(DEFAULT_TASK_DISPATCH_TIMEOUT_SECS)
+        );
+        set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", "31");
+        assert_eq!(
+            Scheduler::task_dispatch_timeout_from_env(),
+            Duration::from_secs(31)
+        );
+        set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", "nope");
+        assert_eq!(
+            Scheduler::task_dispatch_timeout_from_env(),
+            Duration::from_secs(DEFAULT_TASK_DISPATCH_TIMEOUT_SECS)
+        );
+        set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", "0");
+        assert_eq!(
+            Scheduler::task_dispatch_timeout_from_env(),
+            Duration::from_secs(DEFAULT_TASK_DISPATCH_TIMEOUT_SECS)
+        );
+
+        remove("NEIGE_TASK_RUN_TIMEOUT_SECS");
+        assert_eq!(
+            Scheduler::task_run_timeout_from_env(),
+            Duration::from_secs(DEFAULT_TASK_RUN_TIMEOUT_SECS)
+        );
+        set("NEIGE_TASK_RUN_TIMEOUT_SECS", "47");
+        assert_eq!(
+            Scheduler::task_run_timeout_from_env(),
+            Duration::from_secs(47)
+        );
+        set("NEIGE_TASK_RUN_TIMEOUT_SECS", "-1");
+        assert_eq!(
+            Scheduler::task_run_timeout_from_env(),
+            Duration::from_secs(DEFAULT_TASK_RUN_TIMEOUT_SECS)
+        );
+
+        match saved_dispatch {
+            Some(v) => set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", &v),
+            None => remove("NEIGE_TASK_DISPATCH_TIMEOUT_SECS"),
+        }
+        match saved_run {
+            Some(v) => set("NEIGE_TASK_RUN_TIMEOUT_SECS", &v),
+            None => remove("NEIGE_TASK_RUN_TIMEOUT_SECS"),
+        }
+    }
+
     // ------------------------------------------------- payload determinism
 
     #[test]
@@ -1842,5 +2108,94 @@ mod tests {
             InflightGuard::acquire(&map, "w:a").is_some(),
             "slot frees on drop"
         );
+    }
+
+    #[tokio::test]
+    async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
+        let concrete = Arc::new(
+            crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open repo"),
+        );
+        let repo: Arc<dyn Repo> = concrete.clone();
+        let cove = repo
+            .cove_create(crate::model::NewCove {
+                name: "timeout-race".into(),
+                color: "#101010".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(crate::model::NewWave {
+                cove_id: cove.id,
+                title: "timeout-race".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let mut stored = task("race", TaskStatus::Done, &[], 0);
+        stored.id = format!("{}:race", wave.id.as_str());
+        stored.wave_id = wave.id.as_str().to_string();
+        stored.worker_card_id = Some("card-race".into());
+        let mut snapshot = stored.clone();
+        snapshot.status = TaskStatus::Running;
+        snapshot.running_deadline_ms = Some(now_ms() - 1);
+
+        let pool = concrete.pool().clone();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .expect("begin task tx");
+        calm_truth::db::sqlite::task_insert_tx(&mut tx, &stored)
+            .await
+            .expect("insert done task");
+        tx.commit().await.expect("commit task tx");
+
+        let now = now_ms();
+        sqlx::query(
+            r#"INSERT INTO workspace_leases (
+                   lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
+                   boot_id, created_at_ms, updated_at_ms
+               )
+               VALUES ('lease-race', 'card-race', ?1, '/tmp/neige-timeout-race',
+                       'held', 'test-owner', ?2, NULL, ?3, ?3)"#,
+        )
+        .bind(wave.id.as_str())
+        .bind(now + 60_000)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert held lease");
+
+        let events = EventBus::new();
+        let write = WriteContext::new(
+            concrete.card_role_cache().clone(),
+            concrete.wave_cove_cache().clone(),
+        );
+        let scheduler = Scheduler::new(
+            repo,
+            events,
+            write,
+            Weak::<OperationRuntime>::new(),
+            Arc::new(Semaphore::new(1)),
+        );
+
+        scheduler.fail_running_liveness_timeout(snapshot).await;
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = 'lease-race'")
+                .fetch_one(&pool)
+                .await
+                .expect("lease state");
+        assert_eq!(state, "held", "0-row CAS must not release lease");
+        let failed_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'task.failed'")
+                .fetch_one(&pool)
+                .await
+                .expect("failed event count");
+        assert_eq!(failed_events, 0, "0-row CAS must not emit task.failed");
     }
 }
