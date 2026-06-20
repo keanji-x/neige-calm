@@ -550,6 +550,51 @@ async fn seed_spawn_succeeded_codex_worker_op(boot: &Boot, task: &Task, card_id:
     op_id
 }
 
+async fn seed_failed_codex_worker_timeout_op(boot: &Boot, task: &Task) -> String {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let op_repo = SqlxOperationRepo::new(pool.clone());
+    let (op_kind, payload) = build_worker_payload(task).expect("worker payload");
+    assert_eq!(op_kind, "codex-worker");
+    let payload_hash = stable_payload_hash(&payload).expect("payload hash");
+    let op_id = op_repo
+        .insert_operation(
+            op_kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash,
+            },
+            payload,
+        )
+        .await
+        .expect("insert failed timeout op");
+    let now = now_ms();
+    sqlx::query(
+        r#"UPDATE operations
+           SET phase = 'failed',
+               phase_detail_json = ?1,
+               last_error = 'worker exceeded the dispatched liveness deadline',
+               lease_owner = NULL,
+               lease_until_ms = NULL,
+               completed_at_ms = ?2,
+               updated_at_ms = ?2
+           WHERE id = ?3"#,
+    )
+    .bind(
+        json!({
+            "from_phase": PhaseTag::SpawnStarted,
+            "last_error_class": null,
+        })
+        .to_string(),
+    )
+    .bind(now)
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .expect("mark op failed by dispatched timeout");
+    op_id
+}
+
 async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
     sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
         .bind(lease_id)
@@ -2218,6 +2263,49 @@ async fn sweep_expired_dispatched_codex_compensates_op_and_fails_task() {
         failed[0].1["reason"],
         json!("worker exceeded the dispatched liveness deadline")
     );
+}
+
+#[tokio::test]
+async fn sweep_expired_dispatched_codex_terminal_timeout_op_fails_worker_timeout() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(
+        &boot.wave_id,
+        "dispatch-terminal-timeout",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() - 1);
+    let task_id = task.id.clone();
+    seed_task(&boot, task.clone()).await;
+    let op_id = seed_failed_codex_worker_timeout_op(&boot, &task).await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "dispatch-terminal-timeout").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].1["reason"],
+        json!("worker exceeded the dispatched liveness deadline")
+    );
+    assert_eq!(task_id, row.id);
 }
 
 #[tokio::test]

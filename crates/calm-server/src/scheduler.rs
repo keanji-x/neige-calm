@@ -67,7 +67,7 @@ use crate::operation::task_verify_adapter::{
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{
-    OperationKey, OperationOutcome, OperationRuntime, PhaseTag, operation_result_from,
+    Operation, OperationKey, OperationOutcome, OperationRuntime, PhaseTag, operation_result_from,
 };
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
@@ -96,6 +96,7 @@ pub const DEFAULT_TASK_RUN_TIMEOUT_SECS: u64 = 7200;
 /// the tx back without persisting events; callers translate it back
 /// into a silent no-op.
 const RACE_LOST: &str = "scheduler: race lost (guarded write no-op)";
+const DISPATCHED_LIVENESS_TIMEOUT_REASON: &str = "worker exceeded the dispatched liveness deadline";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DispatchedTimeoutAction {
@@ -109,6 +110,11 @@ pub(crate) fn race_lost_err() -> CalmError {
 
 pub(crate) fn is_race_lost(e: &CalmError) -> bool {
     matches!(e, CalmError::Conflict(m) if m == RACE_LOST)
+}
+
+fn op_failed_due_to_dispatched_timeout(op: &Operation) -> bool {
+    op.phase.tag() == PhaseTag::Failed
+        && op.last_error.as_deref() == Some(DISPATCHED_LIVENESS_TIMEOUT_REASON)
 }
 
 /// §5.2 lifecycle gating: schedule only while the wave is in an active
@@ -1371,14 +1377,30 @@ impl Scheduler {
             .await
         {
             Ok(Some(op)) => match runtime
-                .cancel_inflight_to_compensation(
-                    &op.id,
-                    "worker exceeded the dispatched liveness deadline",
-                )
+                .cancel_inflight_to_compensation(&op.id, DISPATCHED_LIVENESS_TIMEOUT_REASON)
                 .await
             {
                 Ok(true) => {}
                 Ok(false) => {
+                    if op_failed_due_to_dispatched_timeout(&op) {
+                        if let Err(e) = self
+                            .fail_task_liveness_timeout(
+                                task,
+                                wave,
+                                DISPATCHED_LIVENESS_TIMEOUT_REASON,
+                                "[auto] worker dispatch liveness timeout",
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                task_id = %task.id,
+                                op_id = %op.id,
+                                error = %e,
+                                "scheduler sweep: expired dispatched terminal-timeout task fail tx failed"
+                            );
+                        }
+                        return DispatchedTimeoutAction::Handled;
+                    }
                     tracing::debug!(
                         task_id = %task.id,
                         op_id = %op.id,
@@ -1416,7 +1438,7 @@ impl Scheduler {
             .fail_task_liveness_timeout(
                 task,
                 wave,
-                "worker exceeded the dispatched liveness deadline",
+                DISPATCHED_LIVENESS_TIMEOUT_REASON,
                 "[auto] worker dispatch liveness timeout",
             )
             .await
