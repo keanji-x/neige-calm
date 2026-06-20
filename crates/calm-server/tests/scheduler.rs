@@ -1809,12 +1809,12 @@ async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure
     assert_eq!(runtime.status, WorkerSessionState::Failed);
     assert_eq!(
         workspace_lease_state(&boot, &lease_id).await,
-        "releasing",
-        "failed release attempt must not mark the lease released"
+        "released",
+        "best-effort release marks the lease released despite removal failure"
     );
     assert!(
-        timeout_cleanup_marker_exists(&boot, &card_id).await,
-        "cleanup marker survives the failed first attempt"
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker clears once the lease row is released"
     );
     assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
 
@@ -1824,7 +1824,7 @@ async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure
     assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
     assert!(
         !timeout_cleanup_marker_exists(&boot, &card_id).await,
-        "cleanup marker clears only after lease release succeeds"
+        "cleanup retry remains cleared after best-effort release"
     );
     assert_eq!(
         event_rows(&boot, "task.failed").await.len(),
@@ -1869,10 +1869,10 @@ async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_re
         .expect("runtime lookup")
         .expect("runtime row");
     assert_eq!(runtime.status, WorkerSessionState::Failed);
-    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "releasing");
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
     assert!(
-        timeout_cleanup_marker_exists(&boot, &card_id).await,
-        "cleanup marker survives the failed first release"
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker clears once best-effort release marks the lease released"
     );
 
     boot.repo

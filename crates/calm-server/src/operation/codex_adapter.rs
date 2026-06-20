@@ -1473,8 +1473,17 @@ async fn provision_codex_worker_workspace(
     let wave_id = output.output_string("wave_id", "codex-worker")?;
     let runtime_id = output.output_string("runtime_id", "codex-worker")?;
     let cwd = output.output_string("cwd", "codex-worker")?;
-    let repo_root = output.output_string("repo_root", "codex-worker")?;
-    let branch = output.output_string("slice_branch", "codex-worker")?;
+    let repo_root = output.output_optional_string("repo_root", "codex-worker")?;
+    let branch = output.output_optional_string("slice_branch", "codex-worker")?;
+    let Some((repo_root, branch)) = repo_root.zip(branch) else {
+        tracing::info!(
+            operation_id = %op.id,
+            card_id = %card_id,
+            wave_id = %wave_id,
+            "codex-worker legacy tx_output has no worktree target; skipping workspace provisioning"
+        );
+        return Ok(());
+    };
     let target = WorkspaceLeaseTarget {
         repo_root: PathBuf::from(repo_root),
         path: PathBuf::from(cwd.clone()),

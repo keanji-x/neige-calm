@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, Output},
 };
@@ -167,7 +167,15 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
     let Some(lease) = mark_workspace_lease_releasing_for_card_repo(repo, card_id).await? else {
         return Ok(false);
     };
-    remove_workspace_worktree_for_lease(&lease)?;
+    if let Err(error) = remove_workspace_worktree_for_lease(&lease) {
+        tracing::warn!(
+            lease_id = %lease.lease_id,
+            card_id = %lease.card_id,
+            path = %lease.path,
+            error = %error,
+            "online workspace lease release could not remove workspace worktree; marking lease released"
+        );
+    }
     let envelopes = complete_workspace_lease_release_repo(repo, lease).await?;
     if envelopes.is_empty() {
         return Ok(false);
@@ -653,6 +661,8 @@ fn remove_workspace_dir_if_exists(path: &str) -> Result<()> {
 }
 
 pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result<()> {
+    ensure_workspace_worktree_root_excluded(&target.repo_root)?;
+
     let parent = target.path.parent().ok_or_else(|| {
         CalmError::Internal(format!(
             "workspace lease path {} has no parent",
@@ -696,12 +706,21 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
 
 fn remove_workspace_worktree_for_lease(lease: &WorkspaceLease) -> Result<()> {
     let Some(target) = workspace_lease_target_from_lease(lease)? else {
+        // Pre-3c relative leases were never registered as git worktrees.
         return remove_workspace_dir_if_exists(&lease.path);
     };
     remove_workspace_worktree(&target)
 }
 
 pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result<()> {
+    #[cfg(test)]
+    if take_forced_workspace_worktree_remove_failure(&target.path) {
+        return Err(CalmError::Internal(format!(
+            "remove workspace worktree {}: forced removal failure for test",
+            target.path.display()
+        )));
+    }
+
     if !git_repo_available(&target.repo_root) {
         return remove_workspace_dir_if_exists(&target.path_string());
     }
@@ -754,8 +773,64 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
     remove_workspace_dir_if_exists(&target.path_string())
 }
 
+fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
+    const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
+    let exclude_path = repo_root.join(".git").join("info").join("exclude");
+    let existing = match std::fs::read_to_string(&exclude_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(CalmError::Internal(format!(
+                "read git exclude {}: {error}",
+                exclude_path.display()
+            )));
+        }
+    };
+    if existing.lines().any(|line| line.trim() == WORKTREE_EXCLUDE) {
+        return Ok(());
+    }
+    if let Some(parent) = exclude_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            CalmError::Internal(format!(
+                "create git exclude directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude_path)
+        .map_err(|error| {
+            CalmError::Internal(format!(
+                "open git exclude {}: {error}",
+                exclude_path.display()
+            ))
+        })?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        file.write_all(b"\n").map_err(|error| {
+            CalmError::Internal(format!(
+                "write git exclude {}: {error}",
+                exclude_path.display()
+            ))
+        })?;
+    }
+    file.write_all(format!("{WORKTREE_EXCLUDE}\n").as_bytes())
+        .map_err(|error| {
+            CalmError::Internal(format!(
+                "write git exclude {}: {error}",
+                exclude_path.display()
+            ))
+        })?;
+    Ok(())
+}
+
 #[cfg(test)]
 static FORCED_WORKSPACE_DIR_REMOVE_FAILURES: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+
+#[cfg(test)]
+static FORCED_WORKSPACE_WORKTREE_REMOVE_FAILURES: OnceLock<Mutex<BTreeSet<String>>> =
+    OnceLock::new();
 
 #[cfg(test)]
 pub(crate) fn fail_next_workspace_dir_removal_for_test(path: &str) {
@@ -774,6 +849,26 @@ fn take_forced_workspace_dir_remove_failure(path: &Path) -> bool {
     failures
         .lock()
         .expect("forced workspace dir removal failures lock")
+        .remove(path.to_string_lossy().as_ref())
+}
+
+#[cfg(test)]
+fn fail_next_workspace_worktree_removal_for_test(path: &Path) {
+    FORCED_WORKSPACE_WORKTREE_REMOVE_FAILURES
+        .get_or_init(|| Mutex::new(BTreeSet::new()))
+        .lock()
+        .expect("forced workspace worktree removal failures lock")
+        .insert(path.to_string_lossy().to_string());
+}
+
+#[cfg(test)]
+fn take_forced_workspace_worktree_remove_failure(path: &Path) -> bool {
+    let Some(failures) = FORCED_WORKSPACE_WORKTREE_REMOVE_FAILURES.get() else {
+        return false;
+    };
+    failures
+        .lock()
+        .expect("forced workspace worktree removal failures lock")
         .remove(path.to_string_lossy().as_ref())
 }
 
@@ -1073,6 +1168,67 @@ mod tests {
         remove_workspace_worktree(&target).unwrap();
     }
 
+    #[test]
+    fn workspace_worktree_provision_excludes_root_from_base_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let target = WorkspaceLeaseTarget {
+            repo_root: tmp.path().to_path_buf(),
+            path: tmp.path().join(".claude/worktrees/wave-clean/card-clean"),
+            branch: workspace_slice_branch_for("wave-clean", "card-clean").unwrap(),
+        };
+
+        provision_workspace_worktree(&target).unwrap();
+
+        let status = git_stdout(tmp.path(), ["status", "--short", "--untracked-files=all"]);
+        assert_eq!(status, "", "base repo must stay clean after provisioning");
+
+        provision_workspace_worktree(&target).unwrap();
+        let exclude = std::fs::read_to_string(tmp.path().join(".git/info/exclude")).unwrap();
+        assert_eq!(
+            exclude
+                .lines()
+                .filter(|line| line.trim() == ".claude/worktrees/")
+                .count(),
+            1,
+            "worktree exclude entry is idempotent"
+        );
+    }
+
+    #[tokio::test]
+    async fn card_release_marks_released_when_worktree_remove_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
+            .await
+            .unwrap();
+        let (lease, _event) =
+            acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        provision_workspace_worktree(&target).unwrap();
+        fail_next_workspace_worktree_removal_for_test(&target.path);
+
+        let events = EventBus::new();
+        assert!(
+            release_workspace_lease_for_card_repo(&repo, &events, &card_id)
+                .await
+                .unwrap()
+        );
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                .bind(&lease.lease_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(state, "released");
+    }
+
     async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String, String) {
         let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
@@ -1138,5 +1294,22 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn git_stdout<const N: usize>(repo: &Path, args: [&str; N]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).to_string()
     }
 }
