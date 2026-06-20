@@ -52,7 +52,8 @@ use tokio::sync::Semaphore;
 use crate::db::sqlite::{
     SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
     task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
-    task_report_success_from_worker_tx, tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
+    task_report_success_from_worker_tx, task_stamp_missing_dispatched_deadline_tx,
+    task_stamp_missing_running_deadline_tx, tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -1205,7 +1206,7 @@ impl Scheduler {
                 return pending_waves;
             }
         };
-        for task in tasks {
+        for mut task in tasks {
             match task.status {
                 TaskStatus::Pending => {
                     pending_waves.insert(task.wave_id.clone());
@@ -1216,13 +1217,32 @@ impl Scheduler {
                 TaskStatus::Running if task.kind == TaskKind::Terminal => {
                     self.reconcile_running_terminal(task).await;
                 }
-                TaskStatus::Running
-                    if task.kind == TaskKind::Codex
+                TaskStatus::Running if task.kind == TaskKind::Codex => {
+                    let stamped = match self
+                        .stamp_missing_running_liveness_deadline(&mut task)
+                        .await
+                    {
+                        Ok(stamped) => stamped,
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %task.id,
+                                error = %e,
+                                "scheduler sweep: running liveness deadline stamp failed; next sweep retries"
+                            );
+                            continue;
+                        }
+                    };
+                    if !stamped {
+                        continue;
+                    }
+                    if task.status == TaskStatus::Running
+                        && task.kind == TaskKind::Codex
                         && task
                             .running_deadline_ms
-                            .is_some_and(|deadline| now_ms() > deadline) =>
-                {
-                    self.fail_running_liveness_timeout(task).await;
+                            .is_some_and(|deadline| now_ms() > deadline)
+                    {
+                        self.fail_running_liveness_timeout(task).await;
+                    }
                 }
                 TaskStatus::Running => {}
                 // §8 verifying arm (parked formulation): drive the
@@ -1242,6 +1262,71 @@ impl Scheduler {
             }
         }
         pending_waves
+    }
+
+    async fn stamp_missing_dispatched_liveness_deadline(&self, task: &mut Task) -> Result<bool> {
+        if task.kind != TaskKind::Codex
+            || task.status != TaskStatus::Dispatched
+            || task.dispatched_deadline_ms.is_some()
+        {
+            return Ok(true);
+        }
+        let pool = self
+            .repo
+            .sqlite_pool()
+            .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
+        let mut tx = begin_immediate_tx(&pool).await?;
+        let now = now_ms();
+        let deadline = now.saturating_add(self.task_dispatch_timeout_ms());
+        let rows =
+            task_stamp_missing_dispatched_deadline_tx(&mut tx, &task.id, now, deadline).await?;
+        let current = if rows == 0 {
+            task_get_tx(&mut tx, &task.id).await?
+        } else {
+            None
+        };
+        tx.commit().await?;
+        if rows > 0 {
+            task.dispatched_deadline_ms = Some(deadline);
+            task.updated_at_ms = now;
+        } else if let Some(current) = current {
+            *task = current;
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    async fn stamp_missing_running_liveness_deadline(&self, task: &mut Task) -> Result<bool> {
+        if task.kind != TaskKind::Codex
+            || task.status != TaskStatus::Running
+            || task.running_deadline_ms.is_some()
+        {
+            return Ok(true);
+        }
+        let pool = self
+            .repo
+            .sqlite_pool()
+            .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
+        let mut tx = begin_immediate_tx(&pool).await?;
+        let now = now_ms();
+        let deadline = now.saturating_add(self.task_run_timeout_ms());
+        let rows = task_stamp_missing_running_deadline_tx(&mut tx, &task.id, now, deadline).await?;
+        let current = if rows == 0 {
+            task_get_tx(&mut tx, &task.id).await?
+        } else {
+            None
+        };
+        tx.commit().await?;
+        if rows > 0 {
+            task.running_deadline_ms = Some(deadline);
+            task.updated_at_ms = now;
+        } else if let Some(current) = current {
+            *task = current;
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     async fn fail_running_liveness_timeout(self: &Arc<Self>, task: Task) {
@@ -1604,10 +1689,30 @@ impl Scheduler {
     /// between op success and the running stamp, or a lost completion).
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()`
     /// + guarded reconcile writes.
-    async fn resume_dispatched(self: &Arc<Self>, task: Task) {
+    async fn resume_dispatched(self: &Arc<Self>, mut task: Task) {
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             return;
         };
+        let stamped = match self
+            .stamp_missing_dispatched_liveness_deadline(&mut task)
+            .await
+        {
+            Ok(stamped) => stamped,
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "scheduler sweep: dispatched liveness deadline stamp failed; next sweep retries"
+                );
+                return;
+            }
+        };
+        if !stamped {
+            return;
+        }
+        if task.status != TaskStatus::Dispatched {
+            return;
+        }
         let wave = match self.repo.wave_get(&task.wave_id).await {
             Ok(Some(wave)) => wave,
             Ok(None) => {

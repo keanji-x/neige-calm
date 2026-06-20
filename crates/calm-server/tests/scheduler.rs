@@ -2599,6 +2599,92 @@ async fn sweep_running_terminal_past_liveness_deadline_is_not_timed_out() {
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
+#[tokio::test]
+async fn sweep_stamps_null_codex_liveness_deadlines_before_timing_out() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+
+    let mut dispatched = plan_task(&boot.wave_id, "upgrade-dispatched", TaskKind::Codex, &[]);
+    dispatched.status = TaskStatus::Dispatched;
+    seed_task(&boot, dispatched).await;
+
+    let mut running = plan_task(&boot.wave_id, "upgrade-running", TaskKind::Codex, &[]);
+    running.status = TaskStatus::Running;
+    seed_task(&boot, running).await;
+
+    let mut terminal_dispatched = plan_task(
+        &boot.wave_id,
+        "terminal-dispatched",
+        TaskKind::Terminal,
+        &[],
+    );
+    terminal_dispatched.status = TaskStatus::Dispatched;
+    seed_task(&boot, terminal_dispatched).await;
+
+    let mut terminal_running =
+        plan_task(&boot.wave_id, "terminal-running", TaskKind::Terminal, &[]);
+    terminal_running.status = TaskStatus::Running;
+    seed_task(&boot, terminal_running).await;
+
+    let (_runtime, scheduler) = build_scheduler_with_timeouts(
+        &boot,
+        vec![],
+        std::time::Duration::from_millis(40),
+        std::time::Duration::from_millis(70),
+    );
+
+    let before = now_ms();
+    scheduler.sweep_all().await;
+    let after = now_ms();
+
+    let dispatched = task_row(&boot, "upgrade-dispatched").await;
+    let dispatched_deadline = dispatched
+        .dispatched_deadline_ms
+        .expect("dispatched sweep stamps missing deadline");
+    assert_eq!(dispatched.status, TaskStatus::Dispatched);
+    assert!(
+        (before + 40..=after + 40).contains(&dispatched_deadline),
+        "dispatched deadline {dispatched_deadline} must use the configured timeout"
+    );
+
+    let running = task_row(&boot, "upgrade-running").await;
+    let running_deadline = running
+        .running_deadline_ms
+        .expect("running sweep stamps missing deadline");
+    assert_eq!(running.status, TaskStatus::Running);
+    assert!(
+        (before + 70..=after + 70).contains(&running_deadline),
+        "running deadline {running_deadline} must use the configured timeout"
+    );
+
+    let terminal_dispatched = task_row(&boot, "terminal-dispatched").await;
+    assert_eq!(terminal_dispatched.status, TaskStatus::Dispatched);
+    assert_eq!(terminal_dispatched.dispatched_deadline_ms, None);
+
+    let terminal_running = task_row(&boot, "terminal-running").await;
+    assert_eq!(terminal_running.status, TaskStatus::Running);
+    assert_eq!(terminal_running.running_deadline_ms, None);
+
+    tokio::time::sleep(std::time::Duration::from_millis(90)).await;
+    scheduler.sweep_all().await;
+
+    let dispatched = task_row(&boot, "upgrade-dispatched").await;
+    assert_eq!(dispatched.status, TaskStatus::Failed);
+    assert_eq!(dispatched.status_detail.as_deref(), Some("worker-timeout"));
+
+    let running = task_row(&boot, "upgrade-running").await;
+    assert_eq!(running.status, TaskStatus::Failed);
+    assert_eq!(running.status_detail.as_deref(), Some("worker-timeout"));
+
+    let terminal_dispatched = task_row(&boot, "terminal-dispatched").await;
+    assert_eq!(terminal_dispatched.status, TaskStatus::Dispatched);
+    assert_eq!(terminal_dispatched.dispatched_deadline_ms, None);
+
+    let terminal_running = task_row(&boot, "terminal-running").await;
+    assert_eq!(terminal_running.status, TaskStatus::Running);
+    assert_eq!(terminal_running.running_deadline_ms, None);
+}
+
 // ---------------------------------------------------------------------------
 // §8 — sweep `dispatched` arm: crash between claim and operation insert
 // ---------------------------------------------------------------------------

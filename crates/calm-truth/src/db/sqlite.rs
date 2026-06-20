@@ -1155,6 +1155,58 @@ pub async fn task_mark_running_tx(
     Ok(res.rows_affected())
 }
 
+/// Upgrade/lost-stamp backfill for codex tasks already in-flight when
+/// liveness deadlines were introduced. Guarded so terminal/non-codex
+/// rows and live-path stamped rows are untouched.
+pub async fn task_stamp_missing_dispatched_deadline_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    now: i64,
+    dispatched_deadline_ms: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET dispatched_deadline_ms = ?1,
+               updated_at_ms = ?2
+           WHERE id = ?3
+             AND kind = 'codex'
+             AND status = 'dispatched'
+             AND dispatched_deadline_ms IS NULL"#,
+    )
+    .bind(dispatched_deadline_ms)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Upgrade/lost-stamp backfill for codex tasks already running when
+/// liveness deadlines were introduced. Guarded so terminal/non-codex
+/// rows and live-path stamped rows are untouched.
+pub async fn task_stamp_missing_running_deadline_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    now: i64,
+    running_deadline_ms: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET running_deadline_ms = ?1,
+               updated_at_ms = ?2
+           WHERE id = ?3
+             AND kind = 'codex'
+             AND status = 'running'
+             AND running_deadline_ms IS NULL"#,
+    )
+    .bind(running_deadline_ms)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// Round-4 review F1/F2 — durable ownership proof for the
 /// unstamped-row window: is `card_id` the card the worker-spawn
 /// operation for `task_id` actually created?
