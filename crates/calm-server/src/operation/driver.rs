@@ -175,9 +175,10 @@ impl OperationRuntime {
                 }
             }
         } else {
-            return Err(CalmError::Internal(format!(
-                "timed-out worker card {card_id} has no terminal row"
-            )));
+            tracing::debug!(
+                card_id,
+                "timed-out worker terminal row already missing; treating cleanup as reaped"
+            );
         }
         self.spawn_ctx
             .repo

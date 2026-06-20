@@ -2400,6 +2400,83 @@ async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure
 }
 
 #[tokio::test]
+async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_reaped() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, runtime_id, terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "expired-missing-terminal").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-missing-terminal").await;
+
+    let mut task = plan_task(
+        &boot.wave_id,
+        "expired-missing-terminal",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Running;
+    task.worker_card_id = Some(card_id.clone());
+    task.running_deadline_ms = Some(now_ms() - 1);
+    seed_task(&boot, task).await;
+
+    let lease_path = workspace_lease_path(&boot, &lease_id).await;
+    std::fs::remove_dir_all(&lease_path).expect("remove lease dir before failure fixture");
+    std::fs::write(&lease_path, "not a directory").expect("lease path file fixture");
+
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "expired-missing-terminal").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "releasing");
+    assert!(
+        timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker survives the failed first release"
+    );
+
+    boot.repo
+        .terminal_delete(&terminal_id)
+        .await
+        .expect("delete terminal row before retry");
+    assert!(
+        boot.repo
+            .terminal_get_by_card(&card_id)
+            .await
+            .expect("terminal lookup")
+            .is_none(),
+        "retry fixture starts with the terminal row already gone"
+    );
+    std::fs::remove_file(&lease_path).expect("clear failed lease path fixture");
+
+    scheduler.sweep_all().await;
+
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    assert!(
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "missing terminal row is treated as already reaped so the marker clears"
+    );
+    let runtime = boot
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .expect("runtime lookup")
+        .expect("runtime row");
+    assert_eq!(runtime.status, WorkerSessionState::Failed);
+    assert_eq!(
+        event_rows(&boot, "task.failed").await.len(),
+        1,
+        "cleanup retry must not emit another task.failed"
+    );
+}
+
+#[tokio::test]
 async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
