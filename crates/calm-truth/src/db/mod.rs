@@ -256,6 +256,15 @@ pub struct SharedCodexDaemonUpdate {
     pub daemon_env_signature: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceLease {
+    pub lease_id: String,
+    pub card_id: String,
+    pub wave_id: String,
+    pub path: String,
+    pub state: String,
+}
+
 // ---------------------------------------------------------------------------
 // Sub-trait split. See the "Trait capability split" section in the module
 // docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
@@ -470,6 +479,9 @@ pub trait RepoRead: Send + Sync + 'static {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionCardIdentity>>;
+
+    /// Return the newest active workspace lease held by a card, if any.
+    async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>>;
 
     /// PR7b-i Unit 1 (#679) — look up the active worker session bound to
     /// a presented MCP token's `SHA-256` hash. Mirrors
@@ -949,6 +961,7 @@ pub trait RepoOutOfDomain: RepoRead {
 pub mod prelude {
     pub use super::{
         Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
+        WorkspaceLease,
     };
     pub use crate::session_projection_repo::WorkerSessionProjectionRepo;
     pub use crate::session_repo::SessionRepo;

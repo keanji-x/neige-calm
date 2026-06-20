@@ -40,7 +40,7 @@ pub const FORGE_ACTION_KIND: &str = "forge-action";
 /// and persist. validate_payload rejects any other event_kind BEFORE the irreversible
 /// action can run, so a typo'd/unsupported kind can never execute the side effect and
 /// then fail to record its authoritative event. Slice ③ appends its forge.* kinds here.
-const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
+pub(crate) const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.pr.merged",
     "forge.scan.completed",
     "forge.pr.opened",

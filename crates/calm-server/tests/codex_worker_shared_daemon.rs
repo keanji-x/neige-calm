@@ -142,6 +142,7 @@ async fn boot(start_shared: bool) -> Boot {
         daemon_token_hash: None,
         gate_logs_dir: tmp.path().join("gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
+        operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

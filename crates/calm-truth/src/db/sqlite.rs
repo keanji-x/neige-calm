@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use super::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SessionCardIdentity,
-    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn,
+    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WorkspaceLease, WriteInTxFn,
     WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn,
 };
 use crate::card_kind::validate_card_kind_global;
@@ -4745,6 +4745,30 @@ impl RepoRead for SqlxRepo {
                 "multiple cards linked to worker session {session_id}"
             ))),
         }
+    }
+
+    async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>> {
+        let row = sqlx::query(
+            r#"SELECT lease_id, card_id, wave_id, path, state
+               FROM workspace_leases
+               WHERE card_id = ?1
+                 AND state IN ('held','releasing')
+               ORDER BY created_at_ms DESC, lease_id DESC
+               LIMIT 1"#,
+        )
+        .bind(card_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(WorkspaceLease {
+                lease_id: row.try_get("lease_id")?,
+                card_id: row.try_get("card_id")?,
+                wave_id: row.try_get("wave_id")?,
+                path: row.try_get("path")?,
+                state: row.try_get("state")?,
+            })
+        })
+        .transpose()
     }
 
     async fn session_get_by_active_token_hash(

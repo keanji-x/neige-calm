@@ -187,11 +187,19 @@ pub struct ViewSize {
     pub min_h: Option<u32>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolKind {
+    ForgeAction,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExposedTool {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub kind: Option<ToolKind>,
 }
 
 /// Permissions the plugin requests. Kernel enforces at the callback dispatch
@@ -498,7 +506,12 @@ mod tests {
                 }
             ],
             "exposes_tools": [
-                { "name": "hello.ping", "description": "Returns 'pong'" }
+                { "name": "hello.ping", "description": "Returns 'pong'" },
+                {
+                    "name": "hello.forge",
+                    "description": "Returns a lowered forge-action payload",
+                    "kind": "forge-action"
+                }
             ],
             "permissions": {
                 "overlays_write": ["wave", "card"],
@@ -518,6 +531,7 @@ mod tests {
         assert_eq!(m.version, "0.1.0");
         assert_eq!(m.views.len(), 1);
         assert_eq!(m.views[0].scope, "card");
+        assert_eq!(m.exposes_tools.len(), 2);
         assert!(m.permissions.cards_create);
         assert_eq!(m.permissions.kv_quota_bytes, 1_048_576);
     }
@@ -756,6 +770,30 @@ mod tests {
         let re_parsed: Manifest = serde_json::from_value(v).expect("re-parse from serialized json");
         assert_eq!(re_parsed.id, m.id);
         assert_eq!(re_parsed.views.len(), m.views.len());
+    }
+
+    #[test]
+    fn exposed_tool_kind_round_trips_and_legacy_defaults_to_none() {
+        let m = Manifest::parse(hello_world()).unwrap();
+        assert_eq!(m.exposes_tools[0].kind, None);
+        assert_eq!(m.exposes_tools[1].kind, Some(ToolKind::ForgeAction));
+
+        let v = m.to_json();
+        let re_parsed: Manifest = serde_json::from_value(v).expect("re-parse manifest JSON");
+        assert_eq!(re_parsed.exposes_tools[0].kind, None);
+        assert_eq!(re_parsed.exposes_tools[1].kind, Some(ToolKind::ForgeAction));
+
+        let legacy = r#"{
+            "manifest_version": 1,
+            "id": "dev.neige.legacy-tool",
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Legacy tool",
+            "entrypoint": { "command": "bin/x" },
+            "exposes_tools": [{ "name": "legacy.run" }]
+        }"#;
+        let legacy = Manifest::parse(legacy).expect("legacy manifest parses");
+        assert_eq!(legacy.exposes_tools[0].kind, None);
     }
 
     // ----- M3: view-level CSP / permissions -------------------------------
