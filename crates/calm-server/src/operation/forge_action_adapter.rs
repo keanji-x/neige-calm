@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
+use crate::db::RouteRepo;
 use crate::db::sqlite::{append_decision_event_in_tx, begin_immediate_tx};
 use crate::error::{CalmError, Result};
 use crate::event::{
@@ -50,6 +51,7 @@ const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
     "GITHUB_TOKEN",
     "GH_HOST",
     "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
     "SSH_AUTH_SOCK",
     "GIT_SSH_COMMAND",
     "NO_PROXY",
@@ -149,6 +151,14 @@ enum ProbeVerdict {
 enum ForgeEventBuildError {
     ActionFailed { reason: String },
     ExtractionFailed { reason: String },
+}
+
+#[derive(Clone, Copy)]
+struct ForgeCompletionRefs<'a> {
+    pool: &'a sqlx::SqlitePool,
+    completion: &'a OperationCompletionBus,
+    events: &'a EventBus,
+    repo: &'a dyn RouteRepo,
 }
 
 /// POSIX single-quote escaping: `'` -> `'\''`.
@@ -290,6 +300,33 @@ where
         .into_iter()
         .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
         .collect()
+}
+
+/// Build the forge subprocess environment: env_clear + a tight allowlist
+/// (base PATH/HOME/..., settings-based proxy, runtime auth/proxy passthrough).
+/// Applied identically to the action and to recovery probes — both run
+/// plugin-supplied argv and both need gh auth + proxy, neither may inherit
+/// daemon secrets.
+async fn apply_forge_subprocess_env(cmd: &mut tokio::process::Command, repo: &dyn RouteRepo) {
+    cmd.env_clear();
+    for key in FORGE_BASE_ENV_KEYS {
+        if let Some(v) = std::env::var_os(key) {
+            cmd.env(key, v);
+        }
+    }
+    if let Value::Object(env) = super::terminal_adapter::terminal_worker_env(repo)
+        .await
+        .unwrap_or(Value::Null)
+    {
+        for (k, v) in env {
+            if let Value::String(v) = v {
+                cmd.env(k, v);
+            }
+        }
+    }
+    for (key, value) in forge_passthrough_env_from(|key| std::env::var_os(key)) {
+        cmd.env(key, value);
+    }
 }
 
 fn forge_spec_needs_json(spec: &ForgeEventSpec) -> bool {
@@ -577,9 +614,7 @@ pub(crate) async fn complete_forge_op_with_result(
 }
 
 async fn complete_forge_op_from_live_result(
-    pool: &sqlx::SqlitePool,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
+    refs: ForgeCompletionRefs<'_>,
     op_id: &str,
     frozen: &FrozenForge,
     exit_code: i32,
@@ -589,8 +624,8 @@ async fn complete_forge_op_from_live_result(
         Ok(ok) => ok,
         Err(ForgeEventBuildError::ActionFailed { reason }) => {
             return complete_forge_op_failed(
-                pool,
-                completion,
+                refs.pool,
+                refs.completion,
                 op_id,
                 reason,
                 Some("action-failed".into()),
@@ -599,9 +634,10 @@ async fn complete_forge_op_from_live_result(
         }
         Err(ForgeEventBuildError::ExtractionFailed { reason }) => {
             resolve_post_release_via_probe(
-                pool,
-                completion,
-                events,
+                refs.pool,
+                refs.completion,
+                refs.events,
+                refs.repo,
                 op_id,
                 frozen,
                 &format!("extraction failed: {reason}"),
@@ -611,7 +647,16 @@ async fn complete_forge_op_from_live_result(
         }
     };
 
-    complete_forge_op_succeeded(pool, completion, events, op_id, frozen, event, result).await
+    complete_forge_op_succeeded(
+        refs.pool,
+        refs.completion,
+        refs.events,
+        op_id,
+        frozen,
+        event,
+        result,
+    )
+    .await
 }
 
 async fn complete_forge_op_succeeded(
@@ -667,7 +712,11 @@ fn verdict_from_exit_code(exit_code: Option<i32>) -> ProbeVerdict {
     }
 }
 
-async fn run_probe(argv: &[String], cwd: &Path) -> Result<(Option<i32>, String)> {
+async fn run_probe(
+    argv: &[String],
+    cwd: &Path,
+    repo: &dyn RouteRepo,
+) -> Result<(Option<i32>, String)> {
     if argv.is_empty() {
         return Err(CalmError::Internal(
             "forge-action probe argv must not be empty".into(),
@@ -679,6 +728,7 @@ async fn run_probe(argv: &[String], cwd: &Path) -> Result<(Option<i32>, String)>
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    apply_forge_subprocess_env(&mut cmd, repo).await;
     let output = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
         .await
         .map_err(|_| CalmError::Internal("forge-action probe timed out".into()))??;
@@ -692,11 +742,12 @@ async fn complete_from_probe(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
     events: &EventBus,
+    repo: &dyn RouteRepo,
     op_id: &str,
     frozen: &FrozenForge,
     probe: &ProbeSpec,
 ) -> Result<ParkedRecovery> {
-    let (exit_code, _) = match run_probe(&probe.probe_argv, &frozen.cwd_lease).await {
+    let (exit_code, _) = match run_probe(&probe.probe_argv, &frozen.cwd_lease, repo).await {
         Ok(result) => result,
         Err(e) => {
             return Ok(ParkedRecovery::Fail {
@@ -714,7 +765,7 @@ async fn complete_from_probe(
                                 .into(),
                     });
                 };
-                match run_probe(output_probe_argv, &frozen.cwd_lease).await {
+                match run_probe(output_probe_argv, &frozen.cwd_lease, repo).await {
                     Ok((Some(0), stdout)) => stdout,
                     Ok((exit_code, _)) => {
                         return Ok(ParkedRecovery::Fail {
@@ -753,6 +804,7 @@ async fn resolve_post_release_via_probe(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
     events: &EventBus,
+    repo: &dyn RouteRepo,
     op_id: &str,
     frozen: &FrozenForge,
     ambiguous_reason: &str,
@@ -769,7 +821,7 @@ async fn resolve_post_release_via_probe(
         return;
     };
 
-    match complete_from_probe(pool, completion, events, op_id, frozen, probe).await {
+    match complete_from_probe(pool, completion, events, repo, op_id, frozen, probe).await {
         Ok(ParkedRecovery::Fail { reason }) => {
             let last_error_class = if reason.contains("gate-infra") {
                 "gate-infra"
@@ -807,15 +859,19 @@ async fn resolve_dead_outcome(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
     events: &EventBus,
+    repo: &dyn RouteRepo,
     op_id: &str,
     frozen: &FrozenForge,
     ambiguous_reason: &str,
 ) {
     if let Ok(result) = read_result_file(&frozen.result_path).await {
         if let Err(e) = complete_forge_op_from_live_result(
-            pool,
-            completion,
-            events,
+            ForgeCompletionRefs {
+                pool,
+                completion,
+                events,
+                repo,
+            },
             op_id,
             frozen,
             result.exit_code,
@@ -832,7 +888,16 @@ async fn resolve_dead_outcome(
             return;
         }
     }
-    resolve_post_release_via_probe(pool, completion, events, op_id, frozen, ambiguous_reason).await;
+    resolve_post_release_via_probe(
+        pool,
+        completion,
+        events,
+        repo,
+        op_id,
+        frozen,
+        ambiguous_reason,
+    )
+    .await;
 }
 
 #[async_trait]
@@ -928,34 +993,9 @@ impl ProviderAdapter for ForgeActionAdapter {
             .current_dir(&frozen.cwd_lease)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .env_clear()
-            .env("NEIGE_FORGE_RESULT_PATH", &frozen.result_path);
-        // Forge action env is an allowlist, never blanket inheritance. The
-        // plugin-supplied argv runs as the host's configured GitHub identity:
-        // runtime-only auth/proxy env can reach `gh`, while no secret feeds
-        // the frozen idem_key or any persisted payload. HOME gives the
-        // zero-config `~/.config/gh/hosts.yml` credential fallback when
-        // GH_TOKEN is unset; bare `git push` credential-helper setup is
-        // deferred to slice ③.
-        for key in FORGE_BASE_ENV_KEYS {
-            if let Some(v) = std::env::var_os(key) {
-                cmd.env(key, v);
-            }
-        }
-        if let Value::Object(env) = super::terminal_adapter::terminal_worker_env(ctx.repo.as_ref())
-            .await
-            .unwrap_or(Value::Null)
-        {
-            for (k, v) in env {
-                if let Value::String(v) = v {
-                    cmd.env(k, v);
-                }
-            }
-        }
-        for (key, value) in forge_passthrough_env_from(|key| std::env::var_os(key)) {
-            cmd.env(key, value);
-        }
+            .stderr(Stdio::null());
+        apply_forge_subprocess_env(&mut cmd, ctx.repo.as_ref()).await;
+        cmd.env("NEIGE_FORGE_RESULT_PATH", &frozen.result_path);
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -992,6 +1032,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         let op_id = op.id.clone();
         let observer_frozen = frozen.clone();
         let observer_artifacts = artifacts.clone();
+        let observer_repo = ctx.repo.clone();
         let observer = Box::pin(async move {
             let release = async {
                 let mut stdin = child.stdin.take().ok_or_else(|| {
@@ -1039,9 +1080,12 @@ impl ProviderAdapter for ForgeActionAdapter {
                     match read_result_file(&observer_frozen.result_path).await {
                         Ok(result) => {
                             if let Err(e) = complete_forge_op_from_live_result(
-                                &pool,
-                                &completion,
-                                &events,
+                                ForgeCompletionRefs {
+                                    pool: &pool,
+                                    completion: &completion,
+                                    events: &events,
+                                    repo: observer_repo.as_ref(),
+                                },
                                 &op_id,
                                 &observer_frozen,
                                 result.exit_code,
@@ -1066,6 +1110,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                                 &pool,
                                 &completion,
                                 &events,
+                                observer_repo.as_ref(),
                                 &op_id,
                                 &observer_frozen,
                                 "result file unreadable",
@@ -1079,6 +1124,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                         &pool,
                         &completion,
                         &events,
+                        observer_repo.as_ref(),
                         &op_id,
                         &observer_frozen,
                         "forge wrapper killed by signal",
@@ -1095,6 +1141,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                         &pool,
                         &completion,
                         &events,
+                        observer_repo.as_ref(),
                         &op_id,
                         &observer_frozen,
                         "wrapper wait failed",
@@ -1129,6 +1176,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                     let pool = ctx.operation_repo.sqlite_pool();
                     let completion = ctx.completion.clone();
                     let events = ctx.events.clone();
+                    let repo = ctx.repo.clone();
                     let op_id = op.id.clone();
                     let artifacts = artifacts.clone();
                     tokio::spawn(async move {
@@ -1146,6 +1194,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                             &pool,
                             &completion,
                             &events,
+                            repo.as_ref(),
                             &op_id,
                             &frozen,
                             "forge action process dead",
@@ -1167,10 +1216,16 @@ impl ProviderAdapter for ForgeActionAdapter {
         // them, even with probe:None. read failure (missing/torn .code) falls through
         // to the existing probe / no-probe path.
         if let Ok(result) = read_result_file(&frozen.result_path).await {
+            // Propagate completion tx errors here so the op stays parked for a later sweep;
+            // async dead reattach logs that error and falls back to the probe.
+            let pool = ctx.operation_repo.sqlite_pool();
             complete_forge_op_from_live_result(
-                &ctx.operation_repo.sqlite_pool(),
-                &ctx.completion,
-                &ctx.events,
+                ForgeCompletionRefs {
+                    pool: &pool,
+                    completion: &ctx.completion,
+                    events: &ctx.events,
+                    repo: ctx.repo.as_ref(),
+                },
                 &op.id,
                 &frozen,
                 result.exit_code,
@@ -1196,6 +1251,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             &ctx.operation_repo.sqlite_pool(),
             &ctx.completion,
             &ctx.events,
+            ctx.repo.as_ref(),
             &op.id,
             &frozen,
             probe,
