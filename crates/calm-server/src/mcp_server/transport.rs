@@ -796,6 +796,13 @@ async fn dispatch_forge_action_plugin_tool(
         Err(e) => return Ok(mcp_error_result(e.to_string())),
     };
     if parked {
+        let result = match runtime.operation_result(&op_id).await {
+            Ok(result) => result,
+            Err(e) => return Ok(mcp_error_result(e.to_string())),
+        };
+        if let Some(result) = result {
+            return Ok(operation_result_to_mcp_result(result));
+        }
         return Ok(mcp_success_result(json!({
             "op_id": op_id,
             "parked": true,

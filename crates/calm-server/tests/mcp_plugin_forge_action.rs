@@ -264,8 +264,44 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .await
         .expect("stop parked plugin");
 
+    let parked_missing_cwd = boot_fixture_with_role(StubMode::Parked, CardRole::Spec).await;
+    std::fs::remove_dir_all(parked_missing_cwd._tmp.path().join("wave-cwd"))
+        .expect("delete wave cwd before parked forge action");
+    let parked_missing_cwd_resp = call_forge_tool(&parked_missing_cwd, 6).await;
+    assert!(
+        parked_missing_cwd_resp.get("error").is_none(),
+        "parked missing-cwd forge tool returned a JSON-RPC error: {parked_missing_cwd_resp:#?}"
+    );
+    assert_eq!(parked_missing_cwd_resp["result"]["isError"], true);
+    let parked_missing_cwd_structured = &parked_missing_cwd_resp["result"]["structuredContent"];
+    assert!(
+        parked_missing_cwd_structured["op_id"].as_str().is_some(),
+        "parked already-terminal failure must carry op_id: {parked_missing_cwd_resp:#?}"
+    );
+    assert_ne!(
+        parked_missing_cwd_structured["parked"], true,
+        "parked already-terminal failure must not be reported as parked success"
+    );
+    assert!(
+        parked_missing_cwd_structured["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cwd_lease"),
+        "parked already-terminal failure must carry the operation failure: {parked_missing_cwd_resp:#?}"
+    );
+    assert_eq!(
+        event_count(&parked_missing_cwd.repo, "forge.scan.completed").await,
+        0,
+        "failed parked forge action must not persist the typed event"
+    );
+    parked_missing_cwd
+        .plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop parked missing-cwd plugin");
+
     let override_fx = boot_fixture(StubMode::Override).await;
-    let override_resp = call_forge_tool(&override_fx, 6).await;
+    let override_resp = call_forge_tool(&override_fx, 7).await;
     assert!(
         override_resp.get("error").is_none(),
         "override forge tool errored: {override_resp:#?}"
@@ -314,7 +350,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "dev.neige.other-forge");
         let untrusted = boot_fixture(StubMode::Awaited).await;
         let before_ops = operation_count(&untrusted.repo).await;
-        let untrusted_resp = call_forge_tool(&untrusted, 7).await;
+        let untrusted_resp = call_forge_tool(&untrusted, 8).await;
         assert_eq!(untrusted_resp["error"]["code"], -32602);
         assert!(
             untrusted_resp["error"]["message"]
@@ -342,7 +378,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
 
     let malformed = boot_fixture(StubMode::Malformed).await;
     let before_ops = operation_count(&malformed.repo).await;
-    let malformed_resp = call_forge_tool(&malformed, 8).await;
+    let malformed_resp = call_forge_tool(&malformed, 9).await;
     assert_eq!(malformed_resp["error"]["code"], -32602);
     assert!(
         malformed_resp["error"]["message"]
