@@ -190,6 +190,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -201,6 +202,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
@@ -447,6 +449,30 @@ async fn upsert_creates_rows_and_emits_plan_updated() {
 }
 
 #[tokio::test]
+async fn upsert_accepts_claude_task_kind() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+
+    let resp = upsert_ok(
+        &boot,
+        json!([{ "key": "ask-claude", "kind": "claude", "goal": "implement it" }]),
+    )
+    .await;
+    assert_eq!(
+        outcomes_of(&resp),
+        vec![("ask-claude".to_string(), "created".to_string())]
+    );
+
+    let row = boot
+        .repo
+        .task_get(&format!("{}:ask-claude", boot.wave_id.as_str()))
+        .await
+        .unwrap()
+        .expect("claude task row");
+    assert_eq!(row.kind, calm_server::model::TaskKind::Claude);
+}
+
+#[tokio::test]
 async fn upsert_identical_batch_is_unchanged_and_emits_nothing() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
@@ -583,11 +609,6 @@ async fn upsert_validation_errors_surface_as_invalid_params() {
                 { "key": "a", "kind": "codex", "goal": "g2" }
             ]),
             "duplicate key `a` in batch",
-        ),
-        // Rule 2 — claude not yet supported.
-        (
-            json!([{ "key": "a", "kind": "claude", "goal": "g" }]),
-            "not yet supported",
         ),
         // Rule 4 — cycle with path.
         (
@@ -1181,6 +1202,18 @@ async fn rule6_matrix_require_task_gates() {
         1,
         "rejected batch must not land its gated sibling either (atomic): {rows:?}"
     );
+
+    // Ungated claude task → same agent-worker gate requirement as codex.
+    let err = call_tool(
+        &boot,
+        TOOL_PLAN_UPSERT,
+        spec_identity(&boot),
+        upsert_args(json!([{ "key": "naked-claude", "kind": "claude", "goal": "g" }])),
+    )
+    .await
+    .expect_err("rule 6 rejects an ungated claude task");
+    assert!(err.message.contains("rule 6"), "{err:?}");
+    assert!(err.message.contains("naked-claude"), "{err:?}");
 
     // codex + gate → accepted, gate_json stored canonically.
     upsert_ok(

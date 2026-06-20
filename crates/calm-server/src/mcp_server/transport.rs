@@ -107,6 +107,14 @@ pub struct McpServer {
 }
 
 impl McpServer {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(shim_config: McpShimConfig) -> Arc<Self> {
+        Arc::new(Self {
+            shim_config,
+            listener_task: std::sync::Mutex::new(None),
+        })
+    }
+
     /// Bind the UDS at `socket_path`, spawn the accept loop, and return
     /// the handle. The accept loop runs until the process exits or the
     /// listener errors out (logged at warn!).
@@ -1086,6 +1094,7 @@ async fn card_bound_tool_identity(
     Ok(ToolCallIdentity {
         card_id: card.card_id.as_str().to_string(),
         role: card.role,
+        provider: bound.provider.clone(),
         session_id: bound.session_id.clone(),
         wave_id: Some(card.wave_id.as_str().to_string()),
         cove_id: card.cove_id.as_str().to_string(),
@@ -1218,6 +1227,10 @@ async fn resolve_thread_identity(
     Ok(ToolCallIdentity {
         card_id: card.card_id.as_str().to_string(),
         role: card.role,
+        provider: runtime
+            .agent_provider
+            .clone()
+            .unwrap_or(AgentProvider::Codex),
         session_id: runtime.id.clone(),
         wave_id: Some(card.wave_id.as_str().to_string()),
         cove_id: card.cove_id.as_str().to_string(),

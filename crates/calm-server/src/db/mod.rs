@@ -967,6 +967,47 @@ pub mod sqlite {
         .await
         .map_err(Into::into)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn card_with_claude_worker_create_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        card_id: String,
+        runtime_id: &str,
+        spawn_op_id: Option<&str>,
+        wave_id: WaveId,
+        sort: Option<f64>,
+        program: String,
+        cwd: String,
+        env: serde_json::Value,
+        prompt: Option<String>,
+        icon_bg: Option<String>,
+        icon_fg: Option<String>,
+        settings_path: String,
+        claude_session_id: String,
+        card_role_cache: &CardRoleCache,
+        theme: RequestTheme,
+    ) -> Result<(Card, Terminal)> {
+        calm_truth::db::sqlite::card_with_claude_worker_create_tx(
+            tx,
+            card_id,
+            runtime_id,
+            spawn_op_id,
+            wave_id,
+            sort,
+            program,
+            cwd,
+            env,
+            prompt,
+            icon_bg,
+            icon_fg,
+            settings_path,
+            claude_session_id,
+            card_role_cache,
+            theme,
+        )
+        .await
+        .map_err(Into::into)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

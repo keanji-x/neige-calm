@@ -14,6 +14,7 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_report::WaveReportPayload;
@@ -275,6 +276,7 @@ pub fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),

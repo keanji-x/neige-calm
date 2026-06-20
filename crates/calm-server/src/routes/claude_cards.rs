@@ -253,6 +253,10 @@ pub(crate) fn build_claude_settings_json(hook_command: &str) -> String {
     serde_json::to_string_pretty(&value).expect("claude settings serializes")
 }
 
+pub(crate) fn build_claude_worker_settings_json(hook_command: &str) -> String {
+    build_claude_settings_json(hook_command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +309,16 @@ mod tests {
                 h.event_name, h.matcher
             );
         }
+    }
+
+    #[test]
+    fn worker_settings_json_is_hooks_only_without_mcp_servers() {
+        let s = build_claude_worker_settings_json("bridge --provider claude");
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert!(v.get("hooks").is_some());
+        assert!(v.get("mcpServers").is_none());
+        assert!(v.get("mcp_servers").is_none());
+        assert_eq!(s, build_claude_settings_json("bridge --provider claude"));
     }
 
     #[test]

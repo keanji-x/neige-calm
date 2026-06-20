@@ -312,15 +312,12 @@ pub struct NewPlugin {
 /// Worker kind a planned task lowers to at dispatch time.
 ///
 /// Persisted as a lowercase string in `tasks.kind` (migration 0041).
-/// `claude` is deliberately absent: no claude-worker dispatch adapter
-/// exists, the column CHECK omits it, and `calm.plan.upsert` rejects it
-/// with an explicit "not yet supported" error so a later migration can
-/// add the variant together with the adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum TaskKind {
     Codex,
+    Claude,
     Terminal,
 }
 

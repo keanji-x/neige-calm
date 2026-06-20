@@ -1149,9 +1149,9 @@ pub async fn task_mark_running_tx(
     Ok(res.rows_affected())
 }
 
-/// Upgrade/lost-stamp backfill for codex tasks already running when
-/// liveness deadlines were introduced. Guarded so terminal/non-codex
-/// rows and live-path stamped rows are untouched.
+/// Upgrade/lost-stamp backfill for agent tasks already running when
+/// liveness deadlines were introduced. Guarded so terminal rows and
+/// live-path stamped rows are untouched.
 pub async fn task_stamp_missing_running_deadline_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -1163,7 +1163,7 @@ pub async fn task_stamp_missing_running_deadline_tx(
            SET running_deadline_ms = ?1,
                updated_at_ms = ?2
            WHERE id = ?3
-             AND kind = 'codex'
+             AND kind IN ('codex', 'claude')
              AND status = 'running'
              AND running_deadline_ms IS NULL"#,
     )
@@ -1179,7 +1179,8 @@ pub async fn task_stamp_missing_running_deadline_tx(
 /// unstamped-row window: is `card_id` the card the worker-spawn
 /// operation for `task_id` actually created?
 ///
-/// The worker-spawn op (`kind 'codex-worker' | 'terminal-worker'`,
+/// The worker-spawn op (`kind 'codex-worker' | 'terminal-worker' |
+/// 'claude-worker'`,
 /// `idempotency_key = task id`) records its created card as the
 /// operation target: `prepare_tx_and_advance` stamps
 /// `target_type = 'card'` / `target_id` in the SAME tx in which the
@@ -1213,7 +1214,7 @@ pub async fn worker_op_targets_card_tx(
     let owns: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
                SELECT 1 FROM operations
-               WHERE kind IN ('codex-worker', 'terminal-worker')
+               WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker')
                  AND idempotency_key = ?1
                  AND target_type = 'card'
                  AND target_id = ?2
@@ -2380,6 +2381,115 @@ pub async fn card_with_claude_create_tx(
     } else {
         session_start_runtime_tx(tx, runtime_init).await?;
     }
+
+    Ok((card, term))
+}
+
+/// Atomically create a scheduler-owned `claude` worker card and terminal.
+///
+/// This mirrors [`card_with_claude_create_tx`] for the persisted card shape,
+/// but is specific to first-class task workers: the role is always
+/// [`CardRole::Worker`], `spawn_op_id` is recorded for reaper convergence,
+/// and the worker session row is seeded without minting a raw MCP token.
+/// The spawn-side effect rotates the token post-commit and writes only the
+/// hash back into `card_mcp_tokens` and `worker_sessions`.
+#[allow(clippy::too_many_arguments)]
+pub async fn card_with_claude_worker_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: String,
+    runtime_id: &str,
+    spawn_op_id: Option<&str>,
+    wave_id: WaveId,
+    sort: Option<f64>,
+    program: String,
+    cwd: String,
+    env: serde_json::Value,
+    prompt: Option<String>,
+    icon_bg: Option<String>,
+    icon_fg: Option<String>,
+    settings_path: String,
+    claude_session_id: String,
+    card_role_cache: &CardRoleCache,
+    theme: RequestTheme,
+) -> Result<(Card, Terminal)> {
+    let card = card_create_with_id_tx(
+        tx,
+        card_id,
+        NewCard {
+            wave_id,
+            kind: "claude".into(),
+            sort,
+            payload: serde_json::Value::Null,
+        },
+        CardRole::Worker,
+        true,
+        card_role_cache,
+    )
+    .await?;
+
+    let term = terminal_create_tx(
+        tx,
+        NewTerminal {
+            card_id: card.id.clone(),
+            program,
+            cwd: cwd.clone(),
+            env,
+            theme,
+        },
+    )
+    .await?;
+
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "schemaVersion".into(),
+        serde_json::Value::from(CLAUDE_PAYLOAD_SCHEMA_VERSION),
+    );
+    payload.insert(
+        "settings_path".into(),
+        serde_json::Value::String(settings_path),
+    );
+    if !cwd.is_empty() {
+        payload.insert("cwd".into(), serde_json::Value::String(cwd));
+    }
+    if let Some(p) = prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("prompt".into(), serde_json::Value::String(p.to_string()));
+    }
+    if let Some(c) = icon_bg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("icon_bg".into(), serde_json::Value::String(c.to_string()));
+    }
+    if let Some(c) = icon_fg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("icon_fg".into(), serde_json::Value::String(c.to_string()));
+    }
+    let payload = serde_json::Value::Object(payload);
+    validate_card_kind_global("claude", &payload)?;
+
+    let card = card_update_tx(
+        tx,
+        card.id.as_ref(),
+        CardPatch {
+            kind: None,
+            sort: None,
+            payload: Some(payload),
+            deletable: None,
+        },
+    )
+    .await?;
+
+    let runtime_init = WorkerSessionInit {
+        id: runtime_id.to_string(),
+        card_id: card.id.to_string(),
+        kind: WorkerSessionKind::ClaudeCard,
+        agent_provider: Some(AgentProvider::Claude),
+        status: WorkerSessionState::Starting,
+        terminal_run_id: Some(term.id.clone()),
+        thread_id: None,
+        session_id: Some(claude_session_id),
+        active_turn_id: None,
+        handle_state_json: None,
+        spawn_op_id: spawn_op_id.map(str::to_string),
+        now_ms: now_ms(),
+    };
+    session_start_runtime_tx(tx, runtime_init).await?;
 
     Ok((card, term))
 }
@@ -6533,6 +6643,7 @@ mod tests {
 mod task_liveness_deadline_tests {
     use super::{
         SqlxRepo, task_claim_pending_tx, task_get_tx, task_insert_tx, task_mark_running_tx,
+        task_stamp_missing_running_deadline_tx,
     };
     use crate::model::{Task, TaskKind, TaskStatus, now_ms};
 
@@ -6634,6 +6745,46 @@ mod task_liveness_deadline_tests {
         assert_eq!(running.status, TaskStatus::Running);
         assert_eq!(running.worker_card_id.as_deref(), Some("worker-card"));
         assert_eq!(running.running_deadline_ms, Some(9200));
+    }
+
+    #[tokio::test]
+    async fn stamp_missing_running_liveness_deadline_includes_claude_and_excludes_terminal() {
+        let repo = SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo");
+        let mut claude = task("claude", TaskStatus::Running);
+        claude.kind = TaskKind::Claude;
+        let mut terminal = task("terminal", TaskStatus::Running);
+        terminal.kind = TaskKind::Terminal;
+        let claude_id = claude.id.clone();
+        let terminal_id = terminal.id.clone();
+        let mut tx = repo.pool().begin().await.expect("begin insert tx");
+        task_insert_tx(&mut tx, &claude)
+            .await
+            .expect("insert claude task");
+        task_insert_tx(&mut tx, &terminal)
+            .await
+            .expect("insert terminal task");
+
+        let rows = task_stamp_missing_running_deadline_tx(&mut tx, &claude_id, 3000, 9700)
+            .await
+            .expect("stamp claude");
+        assert_eq!(rows, 1);
+        let rows = task_stamp_missing_running_deadline_tx(&mut tx, &terminal_id, 3000, 9700)
+            .await
+            .expect("stamp terminal");
+        assert_eq!(rows, 0);
+        let stamped = task_get_tx(&mut tx, &claude_id)
+            .await
+            .expect("read claude")
+            .expect("claude row");
+        let terminal = task_get_tx(&mut tx, &terminal_id)
+            .await
+            .expect("read terminal")
+            .expect("terminal row");
+        tx.commit().await.expect("commit");
+        assert_eq!(stamped.running_deadline_ms, Some(9700));
+        assert_eq!(terminal.running_deadline_ms, None);
     }
 }
 

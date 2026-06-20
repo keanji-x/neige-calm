@@ -674,6 +674,7 @@ mod tests {
         let identity = ToolCallIdentity {
             card_id: spec_card.id.as_str().to_string(),
             role: CardRole::Spec,
+            provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: "non-root-session".to_string(),
             wave_id: Some(wave.id.as_str().to_string()),
             cove_id: cove.id.as_str().to_string(),
@@ -809,6 +810,7 @@ mod tests {
         let identity = ToolCallIdentity {
             card_id: spec_card.id.as_str().to_string(),
             role: CardRole::Spec,
+            provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: root_session_id.as_str().to_string(),
             wave_id: Some(wave.id.as_str().to_string()),
             cove_id: cove.id.as_str().to_string(),

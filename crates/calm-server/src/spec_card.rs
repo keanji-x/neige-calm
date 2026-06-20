@@ -91,13 +91,13 @@ writes are transactional.
    * Maintain the task plan with `calm.plan.upsert`, `calm.plan.cancel`, \
      and `calm.plan.list`. Use `calm.plan.upsert` to add or revise \
      pending tasks. Each task needs a per-wave-unique `key`, `kind` \
-     (`codex` or `terminal`), `goal`, optional `depends_on` sibling \
+     (`codex`, `claude`, or `terminal`), `goal`, optional `depends_on` sibling \
      keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
      drop a pending task. Use `calm.plan.list` to inspect plan status.
-   * Every codex task should declare a verification `gate` with \
+   * Every codex or claude task should declare a verification `gate` with \
      re-runnable commands (fmt/clippy/tests as appropriate). Waves with \
-     `require_task_gates` reject ungated code tasks unless you provide \
-     `no_gate_reason`. Gate cwd defaults task cwd → wave cwd; set \
+     `require_task_gates` reject ungated agent/code tasks unless you provide \
+     `no_gate_reason`; terminal tasks are exempt. Gate cwd defaults task cwd → wave cwd; set \
      `gate.cwd` when the worker's checkout differs. Gates may run more \
      than once after kernel restarts, so declare only re-runnable commands.
    * When a gate fails, treat the `task.gate_result` as a machine fact, \
@@ -375,6 +375,24 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
         assert!(worker.contains("You are a worker agent under spec card on wave `wave-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    #[test]
+    fn spec_prompt_documents_claude_plan_kind_and_gate_policy() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+
+        assert!(
+            p.contains("(`codex`, `claude`, or `terminal`)"),
+            "spec prompt must advertise the accepted task kinds"
+        );
+        assert!(
+            p.contains("Every codex or claude task should declare a verification `gate`"),
+            "spec prompt must require gates for both agent/code worker kinds"
+        );
+        assert!(
+            p.contains("terminal tasks are exempt"),
+            "spec prompt must not imply terminal tasks require gates"
+        );
     }
 
     /// #293 cutover — the spec prompt must be push-native, not pull. It must

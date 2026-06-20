@@ -36,7 +36,8 @@ use crate::db::RouteRepo;
 use crate::mcp_server::auth;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{CardIdentity, ConnectionIdentity};
-use calm_types::worker::{Principal, WorkerSessionId};
+use crate::session_projection_repo::AgentProvider;
+use calm_types::worker::{Principal, WorkerProviderKind, WorkerSessionId};
 use serde_json::{Value, json};
 
 /// Custom JSON-RPC error code for "presented MCP token did not resolve
@@ -141,6 +142,7 @@ pub async fn handle_initialize(
     let card_identity = CardIdentity {
         card_id: card.card_id,
         role: card.role,
+        provider: agent_provider_from_worker_provider(session.provider),
         session_id: session.id.as_str().to_string(),
         wave_id: Some(session.wave_id.as_str().to_string()),
         cove_id: card.cove_id.as_str().to_string(),
@@ -157,6 +159,13 @@ pub async fn handle_initialize(
         connection_identity,
         result_payload,
     })
+}
+
+fn agent_provider_from_worker_provider(provider: WorkerProviderKind) -> AgentProvider {
+    match provider {
+        WorkerProviderKind::Claude => AgentProvider::Claude,
+        WorkerProviderKind::Codex | WorkerProviderKind::Terminal => AgentProvider::Codex,
+    }
 }
 
 fn token_not_recognized() -> RpcError {
