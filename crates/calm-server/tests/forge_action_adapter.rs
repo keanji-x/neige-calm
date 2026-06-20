@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use calm_server::model::{NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::ProviderAdapter;
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
+    forge_passthrough_env_for_test,
 };
 use calm_server::operation::{
     Operation, OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo,
@@ -29,6 +31,40 @@ use calm_server::state::DaemonClient;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use serde_json::{Value, json};
 use tempfile::TempDir;
+
+static FORGE_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct EnvVarGuard {
+    key: String,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: tests that mutate forge env take FORGE_ENV_TEST_LOCK and use
+        // unique keys so subprocess assertions cannot observe each other.
+        unsafe { std::env::set_var(key, value) };
+        Self {
+            key: key.to_string(),
+            previous,
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: see EnvVarGuard::set; the guard restores the process env while
+        // the same test-level lock is still held.
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(&self.key, previous);
+            } else {
+                std::env::remove_var(&self.key);
+            }
+        }
+    }
+}
 
 struct TestBoot {
     _tmp: TempDir,
@@ -279,6 +315,25 @@ printf '%s\n' '{"oid":"action-merge","headRefOid":"action-head"}'
     );
 }
 
+fn write_http_proxy_action(path: &Path) {
+    write_script(
+        path,
+        r#"#!/bin/sh
+printf '{"oid":"%s","headRefOid":"proxy-head"}\n' "$HTTP_PROXY"
+"#,
+    );
+}
+
+fn write_env_json_script(path: &Path, allowed_key: &str, forbidden_key: &str) {
+    let mut body =
+        String::from("#!/bin/sh\nprintf '{\"oid\":\"%s\",\"headRefOid\":\"%s\"}\\n' \"$");
+    body.push_str(allowed_key);
+    body.push_str("\" \"$");
+    body.push_str(forbidden_key);
+    body.push_str("\"\n");
+    write_script(path, &body);
+}
+
 fn write_missing_oid_counter_action(path: &Path) {
     write_script(
         path,
@@ -389,6 +444,15 @@ fn dead_artifacts() -> SpawnArtifacts {
         log_path: None,
         extra: Value::Null,
     }
+}
+
+fn stage_result_files(result_path: &Path, code: &str, stdout: &str) {
+    fs::write(format!("{}.code", result_path.display()), code).expect("stage result code");
+    fs::write(format!("{}.stdout", result_path.display()), stdout).expect("stage result stdout");
+}
+
+fn stage_result_code(result_path: &Path, code: &str) {
+    fs::write(format!("{}.code", result_path.display()), code).expect("stage result code");
 }
 
 async fn latest_forge_event_payload(repo: &SqlxRepo) -> Value {
@@ -1246,6 +1310,161 @@ while [ ! -f "$2" ]; do sleep 0.02; done
 }
 
 #[tokio::test]
+async fn forge_action_settings_proxy_reaches_subprocess_env() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let proxy = "http://forge.proxy.local:3128";
+    boot.repo.settings_upsert("http_proxy", proxy).await?;
+    let action = boot.temp_path("settings-proxy-env-action.sh");
+    write_http_proxy_action(&action);
+
+    let idem = "forge-settings-proxy-env";
+    let (op_id, observer) = spawn_parked_observer(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![action.display().to_string()],
+            boot.temp_path("settings-proxy-env-result.json"),
+        ),
+    )
+    .await?;
+    observer.await.expect("observer joins");
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!(proxy));
+    assert_eq!(event["head_sha"], json!("proxy-head"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_subprocess_env_passes_auth_and_strips_forbidden() -> CalmResult<()> {
+    let _lock = FORGE_ENV_TEST_LOCK.lock().await;
+    let _auth = EnvVarGuard::set("GH_TOKEN", "action-auth-token-e2e");
+    let _forbidden = EnvVarGuard::set("FORGE_ACTION_FORBIDDEN_ENV_E2E", "must-not-pass");
+
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("action-env-auth.sh");
+    write_env_json_script(&action, "GH_TOKEN", "FORGE_ACTION_FORBIDDEN_ENV_E2E");
+
+    let idem = "forge-action-env-auth";
+    let (op_id, observer) = spawn_parked_observer(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![action.display().to_string()],
+            boot.temp_path("action-env-auth-result.json"),
+        ),
+    )
+    .await?;
+    observer.await.expect("observer joins");
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("action-auth-token-e2e"));
+    assert_eq!(event["head_sha"], json!(""));
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_recovery_probe_env_passes_auth_and_strips_forbidden() -> CalmResult<()> {
+    let _lock = FORGE_ENV_TEST_LOCK.lock().await;
+    let _auth = EnvVarGuard::set("GH_TOKEN", "probe-auth-token-e2e");
+    let _forbidden = EnvVarGuard::set("FORGE_PROBE_FORBIDDEN_ENV_E2E", "must-not-pass");
+
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("probe-env-action.sh");
+    let counter = boot.temp_path("probe-env-counter");
+    let sentinel = boot.temp_path("probe-env-sentinel");
+    let finish = boot.temp_path("probe-env-finish");
+    let verdict_probe = boot.temp_path("probe-env-verdict.sh");
+    let output_probe = boot.temp_path("probe-env-output.sh");
+    write_counter_action(&action);
+    write_verdict_probe(&verdict_probe, 0, "landed");
+    write_env_json_script(&output_probe, "GH_TOKEN", "FORGE_PROBE_FORBIDDEN_ENV_E2E");
+
+    let idem = "forge-probe-env-auth";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            boot.temp_path("probe-env-result.json"),
+            Some(vec![verdict_probe.display().to_string()]),
+            Some(output_probe_argv(&output_probe)),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(matches!(
+        plan.items.as_slice(),
+        [RecoveryItem::VerifyParked { .. }]
+    ));
+    boot.runtime.apply_recovery(plan).await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("probe-auth-token-e2e"));
+    assert_eq!(event["head_sha"], json!(""));
+    assert_eq!(
+        read_counter(&counter),
+        0,
+        "probe recovery must not re-run argv"
+    );
+    assert!(!sentinel.exists());
+    Ok(())
+}
+
+#[test]
+fn forge_action_auth_env_allowlist_passes_auth_and_strips_unknown() {
+    let env: BTreeMap<_, _> = forge_passthrough_env_for_test(|key| match key {
+        "GH_TOKEN" => Some("gh-token-from-test".into()),
+        "GH_ENTERPRISE_TOKEN" => Some("gh-enterprise-token-from-test".into()),
+        "GITHUB_ENTERPRISE_TOKEN" => Some("github-enterprise-token-from-test".into()),
+        "FORGE_TEST_SECRET" => Some("must-not-pass".into()),
+        _ => None,
+    })
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        env.get("GH_TOKEN").map(String::as_str),
+        Some("gh-token-from-test")
+    );
+    assert_eq!(
+        env.get("GH_ENTERPRISE_TOKEN").map(String::as_str),
+        Some("gh-enterprise-token-from-test")
+    );
+    assert_eq!(
+        env.get("GITHUB_ENTERPRISE_TOKEN").map(String::as_str),
+        Some("github-enterprise-token-from-test")
+    );
+    assert!(!env.contains_key("FORGE_TEST_SECRET"));
+}
+
+#[tokio::test]
 async fn forge_action_pre_park_dropped_observer_leaves_action_unrun_then_redrive_runs_once()
 -> CalmResult<()> {
     let boot = TestBoot::new().await;
@@ -1310,6 +1529,367 @@ async fn forge_action_pre_park_dropped_observer_leaves_action_unrun_then_redrive
     assert_eq!(read_counter(&counter), 1);
     assert_eq!(forge_event_count(&boot.repo).await, 1);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_dead_parked_no_probe_recovers_from_result_files_once() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("dead-result-no-probe-action.sh");
+    let counter = boot.temp_path("dead-result-no-probe-counter");
+    let sentinel = boot.temp_path("dead-result-no-probe-sentinel");
+    let finish = boot.temp_path("dead-result-no-probe-finish");
+    let result_path = boot.temp_path("dead-result-no-probe-result.json");
+    write_counter_action(&action);
+
+    let idem = "forge-dead-result-no-probe";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path.clone(),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+    stage_result_files(
+        &result_path,
+        "0\n",
+        r#"{"oid":"file-merge","headRefOid":"file-head"}"#,
+    );
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(
+        matches!(
+            plan.items.as_slice(),
+            [RecoveryItem::VerifyParked { op_id: item_op_id }] if item_op_id == &op_id
+        ),
+        "dead parked op should use recover_parked: {:?}",
+        plan.items
+    );
+    boot.runtime.apply_recovery(plan).await?;
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(forge_event_count(&boot.repo).await, 1);
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("file-merge"));
+    assert_eq!(event["head_sha"], json!("file-head"));
+    assert_eq!(
+        read_counter(&counter),
+        0,
+        "result-file recovery must not re-run argv"
+    );
+    assert!(!sentinel.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_dead_parked_result_file_wins_over_probe() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("dead-result-wins-action.sh");
+    let counter = boot.temp_path("dead-result-wins-counter");
+    let sentinel = boot.temp_path("dead-result-wins-sentinel");
+    let finish = boot.temp_path("dead-result-wins-finish");
+    let result_path = boot.temp_path("dead-result-wins-result.json");
+    let probe = boot.temp_path("dead-result-wins-probe.sh");
+    let probe_counter = boot.temp_path("dead-result-wins-probe-counter");
+    write_counter_action(&action);
+    write_counting_probe(&probe, "probe-merge", "probe-head", 0);
+
+    let idem = "forge-dead-result-wins-probe";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path.clone(),
+            Some(vec![
+                probe.display().to_string(),
+                probe_counter.display().to_string(),
+            ]),
+            Some(vec![
+                probe.display().to_string(),
+                probe_counter.display().to_string(),
+                "--json".into(),
+            ]),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+    stage_result_files(
+        &result_path,
+        "0\n",
+        r#"{"oid":"file-merge","headRefOid":"file-head"}"#,
+    );
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(
+        matches!(
+            plan.items.as_slice(),
+            [RecoveryItem::VerifyParked { op_id: item_op_id }] if item_op_id == &op_id
+        ),
+        "dead parked op should use recover_parked: {:?}",
+        plan.items
+    );
+    boot.runtime.apply_recovery(plan).await?;
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("file-merge"));
+    assert_eq!(event["head_sha"], json!("file-head"));
+    assert_eq!(forge_event_count(&boot.repo).await, 1);
+    assert_eq!(read_counter(&probe_counter), 0, "probe must not run");
+    assert_eq!(
+        read_counter(&counter),
+        0,
+        "result-file recovery must not re-run argv"
+    );
+    assert!(!sentinel.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_dead_parked_result_file_nonzero_fails_action_failed() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("dead-result-nonzero-action.sh");
+    let counter = boot.temp_path("dead-result-nonzero-counter");
+    let sentinel = boot.temp_path("dead-result-nonzero-sentinel");
+    let finish = boot.temp_path("dead-result-nonzero-finish");
+    let result_path = boot.temp_path("dead-result-nonzero-result.json");
+    write_counter_action(&action);
+
+    let idem = "forge-dead-result-nonzero";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path.clone(),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+    stage_result_files(
+        &result_path,
+        "42\n",
+        r#"{"oid":"file-merge","headRefOid":"file-head"}"#,
+    );
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(matches!(
+        plan.items.as_slice(),
+        [RecoveryItem::VerifyParked { .. }]
+    ));
+    boot.runtime.apply_recovery(plan).await?;
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error == "forge action exited with code 42" && class == "action-failed"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+    assert_eq!(
+        read_counter(&counter),
+        0,
+        "result-file recovery must not re-run argv"
+    );
+    assert!(!sentinel.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_dead_parked_unparseable_result_code_falls_back_to_probe_or_parked_dead()
+-> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("bad-code-probe-action.sh");
+    let counter = boot.temp_path("bad-code-probe-counter");
+    let sentinel = boot.temp_path("bad-code-probe-sentinel");
+    let finish = boot.temp_path("bad-code-probe-finish");
+    let result_path = boot.temp_path("bad-code-probe-result.json");
+    let probe = boot.temp_path("bad-code-probe.sh");
+    write_counter_action(&action);
+    write_probe(&probe, "bad-code-probe-merge", "bad-code-probe-head", 0);
+
+    let idem = "forge-bad-code-probe";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path.clone(),
+            Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+    stage_result_code(&result_path, "\n");
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(matches!(
+        plan.items.as_slice(),
+        [RecoveryItem::VerifyParked { .. }]
+    ));
+    boot.runtime.apply_recovery(plan).await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("bad-code-probe-merge"));
+    assert_eq!(event["head_sha"], json!("bad-code-probe-head"));
+    assert_eq!(read_counter(&counter), 0);
+    assert!(!sentinel.exists());
+
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("bad-code-no-probe-action.sh");
+    let counter = boot.temp_path("bad-code-no-probe-counter");
+    let sentinel = boot.temp_path("bad-code-no-probe-sentinel");
+    let finish = boot.temp_path("bad-code-no-probe-finish");
+    let result_path = boot.temp_path("bad-code-no-probe-result.json");
+    write_counter_action(&action);
+
+    let idem = "forge-bad-code-no-probe";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path.clone(),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+    stage_result_code(&result_path, "\n");
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(matches!(
+        plan.items.as_slice(),
+        [RecoveryItem::VerifyParked { .. }]
+    ));
+    boot.runtime.apply_recovery(plan).await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(
+        matches!(
+            result.outcome,
+            OperationOutcome::Failed {
+                ref last_error,
+                from_phase: calm_server::operation::PhaseTag::Parked,
+                last_error_class: Some(ref class),
+            } if last_error == "forge action process dead with no probe; gate-infra"
+                && class == "parked_dead"
+        ),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(read_counter(&counter), 0);
+    assert!(!sentinel.exists());
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_dead_parked_missing_stdout_falls_back_to_output_probe() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("missing-stdout-action.sh");
+    let counter = boot.temp_path("missing-stdout-counter");
+    let sentinel = boot.temp_path("missing-stdout-sentinel");
+    let finish = boot.temp_path("missing-stdout-finish");
+    let result_path = boot.temp_path("missing-stdout-result.json");
+    let probe = boot.temp_path("missing-stdout-probe.sh");
+    write_counter_action(&action);
+    write_probe(
+        &probe,
+        "missing-stdout-probe-merge",
+        "missing-stdout-probe-head",
+        0,
+    );
+
+    let idem = "forge-missing-stdout-probe";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path.clone(),
+            Some(vec![probe.display().to_string()]),
+            Some(output_probe_argv(&probe)),
+        ),
+        dead_artifacts(),
+    )
+    .await?;
+    stage_result_code(&result_path, "0\n");
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(matches!(
+        plan.items.as_slice(),
+        [RecoveryItem::VerifyParked { .. }]
+    ));
+    boot.runtime.apply_recovery(plan).await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("missing-stdout-probe-merge"));
+    assert_eq!(event["head_sha"], json!("missing-stdout-probe-head"));
+    assert_eq!(read_counter(&counter), 0);
+    assert!(!sentinel.exists());
     Ok(())
 }
 
@@ -1483,6 +2063,92 @@ async fn forge_action_boot_recovery_redrives_non_terminal_phases_and_probes_park
     );
     assert!(!sentinel.exists());
     assert_eq!(forge_event_count(&boot.repo).await, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_boot_live_reattach_completes_from_result_files_without_probe()
+-> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("live-reattach-result-action.sh");
+    let counter = boot.temp_path("live-reattach-result-counter");
+    let sentinel = boot.temp_path("live-reattach-result-sentinel");
+    let finish = boot.temp_path("live-reattach-result-finish");
+    let result_path = boot.temp_path("live-reattach-result.json");
+    let probe = boot.temp_path("live-reattach-result-probe.sh");
+    let probe_counter = boot.temp_path("live-reattach-result-probe-counter");
+    write_counter_action(&action);
+    write_counting_probe(&probe, "probe-must-not-win", "probe-must-not-win-head", 0);
+    let (mut child, artifacts) =
+        spawn_live_counter_action(&action, &counter, &sentinel, &finish).await;
+    wait_for_file(&sentinel).await;
+    assert_eq!(read_counter(&counter), 1);
+    let artifacts_for_kill = artifacts.clone();
+
+    let idem = "forge-live-reattach-result-files";
+    let op_id = seed_parked_forge_op(
+        &boot,
+        idem,
+        payload_with_probe(
+            &boot,
+            idem,
+            vec![
+                action.display().to_string(),
+                counter.display().to_string(),
+                sentinel.display().to_string(),
+                finish.display().to_string(),
+            ],
+            result_path.clone(),
+            Some(vec![
+                probe.display().to_string(),
+                probe_counter.display().to_string(),
+            ]),
+            Some(vec![
+                probe.display().to_string(),
+                probe_counter.display().to_string(),
+                "--json".into(),
+            ]),
+        ),
+        artifacts,
+    )
+    .await?;
+
+    let plan = boot.runtime.recover_on_boot().await?;
+    assert!(
+        matches!(
+            plan.items.as_slice(),
+            [RecoveryItem::VerifyParked { op_id: item_op_id }] if item_op_id == &op_id
+        ),
+        "live parked op should use recover_parked: {:?}",
+        plan.items
+    );
+    boot.runtime.apply_recovery(plan).await?;
+    assert_eq!(phase(&boot.repo, &op_id).await, "parked");
+    assert_eq!(forge_event_count(&boot.repo).await, 0);
+
+    stage_result_files(
+        &result_path,
+        "0\n",
+        r#"{"oid":"reattach-file-merge","headRefOid":"reattach-file-head"}"#,
+    );
+    assert!(signal_process_group(artifacts_for_kill.pgid, libc::SIGKILL));
+    let _ = child.wait().await.expect("wait killed live fake action");
+    let result = wait_for_operation_result(&boot, &op_id).await;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], json!("reattach-file-merge"));
+    assert_eq!(event["head_sha"], json!("reattach-file-head"));
+    assert_eq!(read_counter(&probe_counter), 0, "probe must not run");
+    assert_eq!(
+        read_counter(&counter),
+        1,
+        "live reattach must not re-run argv"
+    );
     Ok(())
 }
 
