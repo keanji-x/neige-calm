@@ -3,6 +3,8 @@
 Status: **CONVERGED — both review channels return no blockers (round 5). Phase-1 ratify-ready; Phase-2 has one explicitly-open, deferred design question.** Substrate beneath #760. HEAD `530b9357`.
 Grounding: two independent code-exploration channels (codex `gpt-5.5` + subagent) + external Claude-Code capability verification (docs/CLI `2.1.170`) + a Phase-2 mechanism-design pass + **five rounds of dual-channel adversarial review to convergence** (resolutions logged in §9). File:line anchors verified on current `main`.
 
+> **AS-SHIPPED NOTE (Slice 1, PR #799).** Slice 1 shipped **only the running-worker wall-clock liveness timeout** (the *fatal-gap closer* of §4.4 — a hung-but-alive worker that already spawned and never reports). The **dispatched-deadline** (spawn-start window, also described in §4.4) was **descoped to follow-up #803** after eight dual-channel review rounds surfaced a deep **spawn cancellation-safety** problem: bounding a hung spawn via `tokio::time::timeout` drops `spawn_side_effect` mid-external-work and can orphan a live codex thread/PTY whose IDs aren't yet persisted. A full dispatched-deadline (durable compensation marker + CAS-first fence + retryable sweep + boot-recovery routing) was built and reviewed in PR #799 history (up to `335a2c87`) and is sound *except* for that underlying spawn cancellation-safety — see #803 for the deferred work. The running-deadline below is the part that shipped.
+
 ---
 
 ## 0. TL;DR
