@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +25,8 @@ use crate::operation::worker_cleanup::{
     WorkerCleanupOutcome, compensate_worker_rows, worker_spawn_failure_preserved,
 };
 use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, release_workspace_lease_by_id, workspace_lease_path_for,
+    WorkspaceLeaseTarget, acquire_workspace_lease_tx, prepare_workspace_lease_target_tx,
+    provision_workspace_worktree, release_workspace_lease_by_id,
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
@@ -717,10 +719,21 @@ impl ProviderAdapter for CodexWorkerAdapter {
         &[
             PhaseTag::Pending,
             PhaseTag::TxCommitted,
+            PhaseTag::AppServerInteract,
             PhaseTag::SpawnStarted,
             PhaseTag::SpawnSucceeded,
             PhaseTag::Succeeded,
         ]
+    }
+
+    fn app_server_interact_kind(
+        &self,
+        output: &TxOutput,
+        _op: &Operation,
+    ) -> Result<AppServerInteractKind> {
+        Ok(AppServerInteractKind::RegisterPending {
+            entry_id: Some(output.output_string("card_id", "codex-worker")?),
+        })
     }
 
     async fn validate(&self, input: &Value) -> Result<()> {
@@ -748,7 +761,9 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let wave_id = WaveId::from(payload.wave_id.clone());
         // `payload.cwd` is forward-compatible only; the isolated lease path is
         // authoritative for codex-worker execution.
-        let cwd = workspace_lease_path_for(wave_id.as_str(), &card_id)?;
+        let lease_target =
+            prepare_workspace_lease_target_tx(tx, wave_id.as_str(), &card_id).await?;
+        let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_worker_prompt(
             &payload.goal,
@@ -782,7 +797,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         .await?;
 
         let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &card_id, card.wave_id.as_str(), &op.id).await?;
+            acquire_workspace_lease_tx(tx, &card_id, card.wave_id.as_str(), &op.id, &lease_target)
+                .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -822,6 +838,10 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "terminal_id": term.id,
             "cwd": cwd,
             "lease_id": lease.lease_id,
+            "repo_root": lease_target.repo_root_string(),
+            "slice_branch": lease_target.branch,
+            "worktree_provisioned_event_persisted": false,
+            "runtime_started_event_persisted": false,
             "env": env,
             "prompt": rendered_prompt,
             "scope": scope,
@@ -832,10 +852,18 @@ impl ProviderAdapter for CodexWorkerAdapter {
 
     async fn app_server_interact(
         &self,
-        _output: &mut TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
+        output: &mut TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
+        provision_codex_worker_workspace(
+            ctx,
+            &self.card_role_cache,
+            &self.wave_cove_cache,
+            op,
+            output,
+        )
+        .await?;
         Ok(AppServerInteractOutcome::NotApplicable)
     }
 
@@ -1434,6 +1462,114 @@ async fn build_codex_env(
     Ok(Value::Object(env_map))
 }
 
+async fn provision_codex_worker_workspace(
+    ctx: &SpawnCtx,
+    card_role_cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
+    op: &Operation,
+    output: &mut TxOutput,
+) -> Result<()> {
+    let card_id = output.output_string("card_id", "codex-worker")?;
+    let wave_id = output.output_string("wave_id", "codex-worker")?;
+    let runtime_id = output.output_string("runtime_id", "codex-worker")?;
+    let cwd = output.output_string("cwd", "codex-worker")?;
+    let repo_root = output.output_string("repo_root", "codex-worker")?;
+    let branch = output.output_string("slice_branch", "codex-worker")?;
+    let target = WorkspaceLeaseTarget {
+        repo_root: PathBuf::from(repo_root),
+        path: PathBuf::from(cwd.clone()),
+        branch,
+    };
+    provision_workspace_worktree(&target)?;
+
+    let provisioned_persisted = output
+        .data
+        .get("worktree_provisioned_event_persisted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let runtime_started_persisted = output
+        .data
+        .get("runtime_started_event_persisted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if provisioned_persisted && runtime_started_persisted {
+        return Ok(());
+    }
+
+    let scope = card_scope(
+        ctx.repo.as_ref(),
+        CardId::from(card_id.clone()),
+        WaveId::from(wave_id.clone()),
+    )
+    .await?;
+    let mut checkpoint_output = output.clone();
+    checkpoint_output.set_output_data(
+        "worktree_provisioned_event_persisted",
+        json!(true),
+        "codex-worker",
+    )?;
+    checkpoint_output.set_output_data(
+        "runtime_started_event_persisted",
+        json!(true),
+        "codex-worker",
+    )?;
+
+    let card_id_for_tx = card_id.clone();
+    let wave_id_for_tx = wave_id.clone();
+    let runtime_id_for_tx = runtime_id.clone();
+    let cwd_for_tx = cwd.clone();
+    let op_for_tx = op.clone();
+    let output_for_tx = checkpoint_output.clone();
+    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    write_with_events_typed(
+        ctx.repo.as_ref(),
+        ActorId::KernelDispatcher,
+        None,
+        &ctx.events,
+        &write,
+        move |tx| {
+            Box::pin(async move {
+                checkpoint_app_server_interact_tx(
+                    tx,
+                    &op_for_tx,
+                    AppServerInteractKind::RegisterPending {
+                        entry_id: Some(card_id_for_tx.clone()),
+                    },
+                    &output_for_tx,
+                )
+                .await?;
+                let mut events = Vec::new();
+                if !provisioned_persisted {
+                    events.push((
+                        scope.clone(),
+                        Event::WorktreeProvisioned {
+                            wave_id: WaveId::from(wave_id_for_tx.clone()),
+                            card_id: CardId::from(card_id_for_tx.clone()),
+                            path: cwd_for_tx.clone(),
+                        },
+                    ));
+                }
+                if !runtime_started_persisted {
+                    events.push((
+                        scope,
+                        Event::RuntimeStarted {
+                            runtime_id: runtime_id_for_tx,
+                            card_id: card_id_for_tx,
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Starting,
+                        },
+                    ));
+                }
+                Ok(((), events))
+            })
+        },
+    )
+    .await?;
+    *output = checkpoint_output;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn persist_prompt_thread(
     ctx: &SpawnCtx,
@@ -1706,6 +1842,8 @@ mod tests {
     use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
     use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
     use sqlx::Row;
+    use std::path::Path;
+    use std::process::Command;
     use std::sync::Arc;
 
     struct WorkerLeaseHarness {
@@ -1713,9 +1851,12 @@ mod tests {
         adapter: CodexWorkerAdapter,
         wave_id: String,
         events: EventBus,
+        repo_root: tempfile::TempDir,
     }
 
     async fn worker_lease_harness() -> WorkerLeaseHarness {
+        let repo_root = tempfile::tempdir().unwrap();
+        init_git_repo(repo_root.path());
         let repo = Arc::new(
             crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
                 .await
@@ -1737,7 +1878,7 @@ mod tests {
                 cove_id: cove.id,
                 title: "workspace leases".into(),
                 sort: None,
-                cwd: String::new(),
+                cwd: repo_root.path().display().to_string(),
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -1758,6 +1899,7 @@ mod tests {
             repo,
             wave_id: wave.id.to_string(),
             events: EventBus::new(),
+            repo_root,
         }
     }
 
@@ -1952,8 +2094,17 @@ mod tests {
         let lease_id = output.output_string("lease_id", "test").unwrap();
         let cwd = output.output_string("cwd", "test").unwrap();
 
-        assert!(cwd.starts_with(".claude/worktrees/"));
-        assert!(std::path::Path::new(&cwd).is_dir(), "leased cwd exists");
+        let cwd_path = std::path::Path::new(&cwd);
+        assert!(cwd_path.is_absolute());
+        assert!(cwd_path.starts_with(harness.repo_root.path()));
+        assert!(
+            cwd_path.parent().unwrap().is_dir(),
+            "leased cwd parent exists"
+        );
+        assert!(
+            !cwd_path.exists(),
+            "leased cwd leaf is left for git worktree add"
+        );
         let row = sqlx::query(
             "SELECT state, path, card_id, wave_id FROM workspace_leases WHERE lease_id = ?1",
         )
@@ -1973,7 +2124,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert!(!std::path::Path::new(&cwd).exists(), "leased cwd removed");
+        assert!(!std::path::Path::new(&cwd).exists(), "leased cwd absent");
     }
 
     #[tokio::test]
@@ -1988,8 +2139,8 @@ mod tests {
 
         assert_ne!(first_card, second_card);
         assert_ne!(first_cwd, second_cwd);
-        assert!(first_cwd.starts_with(".claude/worktrees/"));
-        assert!(second_cwd.starts_with(".claude/worktrees/"));
+        assert!(std::path::Path::new(&first_cwd).is_absolute());
+        assert!(std::path::Path::new(&second_cwd).is_absolute());
 
         let held: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE state = 'held'")
@@ -2031,6 +2182,12 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(released_events, 1);
+        let removed_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(removed_events, 1);
 
         assert!(
             !release_workspace_lease_for_card_repo(
@@ -2068,6 +2225,32 @@ mod tests {
         assert_eq!(
             state.steps[0].arg_string("lease_id", "test").unwrap(),
             lease_id
+        );
+    }
+
+    fn init_git_repo(path: &Path) {
+        std::fs::create_dir_all(path).unwrap();
+        run_git(path, ["init"]);
+        run_git(path, ["config", "user.email", "codex-worker@example.test"]);
+        run_git(path, ["config", "user.name", "Codex Worker Test"]);
+        std::fs::write(path.join("README.md"), "initial\n").unwrap();
+        run_git(path, ["add", "README.md"]);
+        run_git(path, ["commit", "-m", "initial"]);
+    }
+
+    fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

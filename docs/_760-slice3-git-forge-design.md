@@ -189,6 +189,17 @@ when ③-c lands.
 `.claude/worktrees/` (absolute, anchored under `repo_root`); branch ref exists with ≥1 commit;
 collision + teardown handled; ordering per the chosen (α/β/γ). **Size M→L. Deps: ③-a, ③-b, ①.**
 
+**③-c implementation note.** Literal α was rejected: the codex-worker op mints the lease/card inside
+`prepare_tx`, while daemon spawn happens later, and `OperationRuntime::submit`/`wait` drive under the
+same mutex; submitting a nested forge-action op from the worker adapter would deadlock. ③-c uses
+α-prime instead: codex-worker opts into the existing durable `AppServerInteract` phase and provisions
+between `TxCommitted` and `SpawnStarted` in a separate drive cycle. No new phase enum/migration was
+needed. This phase runs kernel-internal `git worktree add` directly via shared lease-core helpers,
+which intentionally relaxes §2.5-B only for automatic worker-spawn provisioning; the
+`dev.neige.git-forge` `git.worktree.add` verb remains the explicit agent-driven path. The phase
+persists `worktree.provisioned{wave_id,card_id,path}` and then `runtime.started` for the worker path,
+so invariant-3 is asserted as durable event order before daemon spawn.
+
 ---
 
 ## 4. ③-d — PR ops end-to-end + E2E (flips 2,3,9,13,14,15,16 + diff-source of 10)

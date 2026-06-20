@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -2376,6 +2377,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     assert_eq!(failed, 0, "recovery preservation must not emit TaskFailed");
 
     let mut boot = boot_with_counted_spawn().await;
+    let git_repo = init_git_repo_for_wave(&boot, "codex-worker-recovery-exited").await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let codex_adapter = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
@@ -2413,6 +2415,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
+    assert!(git_repo.join(".git").is_dir());
     mark_operation_succeeded(&boot.repo, &op.id).await;
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
     boot.repo
@@ -2809,6 +2812,43 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;
+}
+
+async fn init_git_repo_for_wave(boot: &Boot, name: &str) -> PathBuf {
+    let repo_path = boot._tmp.path().join(name);
+    std::fs::create_dir_all(&repo_path).expect("create git repo dir");
+    run_git(&repo_path, ["init"]);
+    run_git(
+        &repo_path,
+        ["config", "user.email", "no-double-spawn@example.test"],
+    );
+    run_git(&repo_path, ["config", "user.name", "No Double Spawn Test"]);
+    std::fs::write(repo_path.join("README.md"), "initial\n").expect("write readme");
+    run_git(&repo_path, ["add", "README.md"]);
+    run_git(&repo_path, ["commit", "-m", "initial"]);
+    sqlx::query("UPDATE waves SET cwd = ?1 WHERE id = ?2")
+        .bind(repo_path.to_string_lossy().as_ref())
+        .bind(&boot.wave_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    repo_path
+}
+
+fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+        args,
+        repo.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn terminal_payload(wave_id: &str) -> Value {

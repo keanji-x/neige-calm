@@ -630,6 +630,8 @@ pub(crate) fn reset_reaper_boot_gate_for_test() {
 mod tests {
     use super::*;
 
+    use std::{path::Path, process::Command};
+
     use crate::card_role_cache::CardRoleCache;
     use calm_exec::WorkerProvider;
     use calm_truth::db::RepoEventWrite;
@@ -655,6 +657,8 @@ mod tests {
     static REAPER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
+        let wave_cwd = tempfile::tempdir().expect("wave cwd tempdir").keep();
+        init_git_repo(&wave_cwd);
         let repo = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
@@ -676,7 +680,7 @@ mod tests {
                 cove_id: cove.id,
                 title: "reaper-test".into(),
                 sort: None,
-                cwd: "/tmp".into(),
+                cwd: wave_cwd.display().to_string(),
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -860,16 +864,52 @@ mod tests {
         lease_owner: &str,
     ) -> (String, String) {
         let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+        let target = crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
+            &mut tx,
+            wave_id.as_str(),
+            card_id,
+        )
+        .await
+        .expect("prepare workspace lease target");
         let (lease, _event) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
             &mut tx,
             card_id,
             wave_id.as_str(),
             lease_owner,
+            &target,
         )
         .await
         .expect("acquire workspace lease");
         tx.commit().await.expect("commit lease");
+        crate::operation::workspace_lease::provision_workspace_worktree(&target)
+            .expect("provision test workspace lease worktree");
         (lease.lease_id, lease.path)
+    }
+
+    fn init_git_repo(path: &Path) {
+        std::fs::create_dir_all(path).expect("create git repo dir");
+        run_git(path, ["init"]);
+        run_git(path, ["config", "user.email", "reaper@example.test"]);
+        run_git(path, ["config", "user.name", "Reaper Test"]);
+        std::fs::write(path.join("README.md"), "initial\n").expect("write readme");
+        run_git(path, ["add", "README.md"]);
+        run_git(path, ["commit", "-m", "initial"]);
+    }
+
+    fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     async fn task_failed_events(repo: &SqlxRepo, task_id: &str) -> Vec<Event> {

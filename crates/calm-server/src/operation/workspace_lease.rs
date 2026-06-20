@@ -1,4 +1,8 @@
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
 
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -28,16 +32,52 @@ pub(crate) struct WorkspaceLease {
     pub boot_id: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspaceLeaseTarget {
+    pub repo_root: PathBuf,
+    pub path: PathBuf,
+    pub branch: String,
+}
+
+impl WorkspaceLeaseTarget {
+    pub(crate) fn path_string(&self) -> String {
+        self.path.to_string_lossy().to_string()
+    }
+
+    pub(crate) fn repo_root_string(&self) -> String {
+        self.repo_root.to_string_lossy().to_string()
+    }
+}
+
+pub(crate) async fn prepare_workspace_lease_target_tx(
+    tx: &mut Tx<'_>,
+    wave_id: &str,
+    card_id: &str,
+) -> Result<WorkspaceLeaseTarget> {
+    validate_path_segment("wave_id", wave_id)?;
+    validate_path_segment("card_id", card_id)?;
+    let cwd: String = sqlx::query_scalar("SELECT cwd FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+    let repo_root = git_repo_root_for_wave_cwd(wave_id, &cwd)?;
+    Ok(WorkspaceLeaseTarget {
+        path: workspace_lease_path_for(&repo_root, wave_id, card_id)?,
+        branch: workspace_slice_branch_for(wave_id, card_id)?,
+        repo_root,
+    })
+}
+
 pub(crate) async fn acquire_workspace_lease_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
     wave_id: &str,
     lease_owner: &str,
+    target: &WorkspaceLeaseTarget,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     let lease_id = new_id();
-    let path = workspace_lease_path_for(wave_id, card_id)?;
-    // TODO(#760 slices 3/6): decide repo-root anchoring when git worktree
-    // layering lands; slice 1 paths are relative to the server process cwd.
+    let path = target.path_string();
     let now = now_ms();
     let boot_id = read_boot_id();
     sqlx::query(
@@ -58,8 +98,17 @@ pub(crate) async fn acquire_workspace_lease_tx(
     .execute(&mut **tx)
     .await?;
 
-    std::fs::create_dir_all(&path).map_err(|e| {
-        CalmError::Internal(format!("create workspace lease directory {path}: {e}"))
+    let parent = target.path.parent().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "workspace lease path {} has no parent",
+            target.path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        CalmError::Internal(format!(
+            "create workspace lease parent directory {}: {e}",
+            parent.display()
+        ))
     })?;
 
     let scope = workspace_scope_tx(tx, card_id, wave_id).await?;
@@ -118,11 +167,14 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
     let Some(lease) = mark_workspace_lease_releasing_for_card_repo(repo, card_id).await? else {
         return Ok(false);
     };
-    remove_workspace_dir_if_exists(&lease.path)?;
-    let Some(envelope) = complete_workspace_lease_release_repo(repo, lease).await? else {
+    remove_workspace_worktree_for_lease(&lease)?;
+    let envelopes = complete_workspace_lease_release_repo(repo, lease).await?;
+    if envelopes.is_empty() {
         return Ok(false);
-    };
-    events.emit_envelope(envelope);
+    }
+    for envelope in envelopes {
+        events.emit_envelope(envelope);
+    }
     Ok(true)
 }
 
@@ -146,9 +198,7 @@ pub(crate) async fn release_workspace_lease_for_card_tx(
     };
     let lease = row_to_workspace_lease(row)?;
     let mut events = Vec::new();
-    if let Some(event) = release_workspace_lease_tx(tx, lease).await? {
-        events.push(event);
-    }
+    events.extend(release_workspace_lease_tx(tx, lease).await?);
     Ok(events)
 }
 
@@ -202,7 +252,7 @@ async fn release_workspace_lease(
     events: &EventBus,
     lease: WorkspaceLease,
 ) -> Result<bool> {
-    remove_workspace_dir_if_exists(&lease.path)?;
+    remove_workspace_worktree_for_lease(&lease)?;
     complete_workspace_lease_release(pool, events, lease).await
 }
 
@@ -215,7 +265,7 @@ async fn release_workspace_lease_on_boot(
         return Ok(false);
     };
 
-    if let Err(error) = remove_workspace_dir_if_exists(&lease.path) {
+    if let Err(error) = remove_workspace_worktree_for_lease(&lease) {
         tracing::warn!(
             lease_id = %lease.lease_id,
             path = %lease.path,
@@ -253,6 +303,20 @@ async fn complete_workspace_lease_release(
         return Ok(false);
     }
 
+    let removed_event = Event::WorktreeRemoved {
+        wave_id: WaveId::from(lease.wave_id.clone()),
+        card_id: CardId::from(lease.card_id.clone()),
+        path: lease.path.clone(),
+    };
+    let removed_event_id = append_decision_event_in_tx(
+        &mut tx,
+        &PermissiveGate,
+        &ActorId::KernelDispatcher,
+        &scope,
+        None,
+        &removed_event,
+    )
+    .await?;
     let event = Event::WorkspaceReleased {
         wave_id: WaveId::from(lease.wave_id.clone()),
         card_id: CardId::from(lease.card_id.clone()),
@@ -269,6 +333,13 @@ async fn complete_workspace_lease_release(
     .await?;
     tx.commit().await?;
 
+    events.emit_envelope(BroadcastEnvelope {
+        id: removed_event_id,
+        event_version: SYNC_EVENT_VERSION,
+        actor: ActorId::KernelDispatcher,
+        scope: scope.clone(),
+        event: removed_event,
+    });
     events.emit_envelope(BroadcastEnvelope {
         id: event_id,
         event_version: SYNC_EVENT_VERSION,
@@ -342,9 +413,7 @@ pub(crate) async fn release_workspace_leases_for_wave_tx(
         .collect::<Result<Vec<_>>>()?;
     let mut events = Vec::new();
     for lease in leases {
-        if let Some(event) = release_workspace_lease_tx(tx, lease).await? {
-            events.push(event);
-        }
+        events.extend(release_workspace_lease_tx(tx, lease).await?);
     }
     Ok(events)
 }
@@ -352,8 +421,8 @@ pub(crate) async fn release_workspace_leases_for_wave_tx(
 async fn release_workspace_lease_tx(
     tx: &mut Tx<'_>,
     lease: WorkspaceLease,
-) -> Result<Option<(ActorId, EventScope, Event)>> {
-    remove_workspace_dir_if_exists(&lease.path)?;
+) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    remove_workspace_worktree_for_lease(&lease)?;
     let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
     let now = now_ms();
     let rows = sqlx::query(
@@ -370,23 +439,34 @@ async fn release_workspace_lease_tx(
     .await?
     .rows_affected();
     if rows == 0 {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    Ok(Some((
-        ActorId::KernelDispatcher,
-        scope,
-        Event::WorkspaceReleased {
-            wave_id: WaveId::from(lease.wave_id),
-            card_id: CardId::from(lease.card_id),
-            lease_id: lease.lease_id,
-        },
-    )))
+    Ok(vec![
+        (
+            ActorId::KernelDispatcher,
+            scope.clone(),
+            Event::WorktreeRemoved {
+                wave_id: WaveId::from(lease.wave_id.clone()),
+                card_id: CardId::from(lease.card_id.clone()),
+                path: lease.path,
+            },
+        ),
+        (
+            ActorId::KernelDispatcher,
+            scope,
+            Event::WorkspaceReleased {
+                wave_id: WaveId::from(lease.wave_id),
+                card_id: CardId::from(lease.card_id),
+                lease_id: lease.lease_id,
+            },
+        ),
+    ])
 }
 
 async fn complete_workspace_lease_release_repo(
     repo: &dyn RepoEventWrite,
     lease: WorkspaceLease,
-) -> Result<Option<BroadcastEnvelope>> {
+) -> Result<Vec<BroadcastEnvelope>> {
     write_in_tx_typed(repo, move |tx| {
         let lease = lease.clone();
         Box::pin(async move {
@@ -406,8 +486,22 @@ async fn complete_workspace_lease_release_repo(
             .await?
             .rows_affected();
             if rows == 0 {
-                return Ok(None);
+                return Ok(Vec::new());
             }
+            let removed_event = Event::WorktreeRemoved {
+                wave_id: WaveId::from(lease.wave_id.clone()),
+                card_id: CardId::from(lease.card_id.clone()),
+                path: lease.path.clone(),
+            };
+            let removed_event_id = append_decision_event_in_tx(
+                tx,
+                &PermissiveGate,
+                &ActorId::KernelDispatcher,
+                &scope,
+                None,
+                &removed_event,
+            )
+            .await?;
             let event = Event::WorkspaceReleased {
                 wave_id: WaveId::from(lease.wave_id.clone()),
                 card_id: CardId::from(lease.card_id.clone()),
@@ -422,13 +516,22 @@ async fn complete_workspace_lease_release_repo(
                 &event,
             )
             .await?;
-            Ok(Some(BroadcastEnvelope {
-                id: event_id,
-                event_version: SYNC_EVENT_VERSION,
-                actor: ActorId::KernelDispatcher,
-                scope,
-                event,
-            }))
+            Ok(vec![
+                BroadcastEnvelope {
+                    id: removed_event_id,
+                    event_version: SYNC_EVENT_VERSION,
+                    actor: ActorId::KernelDispatcher,
+                    scope: scope.clone(),
+                    event: removed_event,
+                },
+                BroadcastEnvelope {
+                    id: event_id,
+                    event_version: SYNC_EVENT_VERSION,
+                    actor: ActorId::KernelDispatcher,
+                    scope,
+                    event,
+                },
+            ])
         })
     })
     .await
@@ -549,6 +652,108 @@ fn remove_workspace_dir_if_exists(path: &str) -> Result<()> {
     }
 }
 
+pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result<()> {
+    let parent = target.path.parent().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "workspace lease path {} has no parent",
+            target.path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        CalmError::Internal(format!(
+            "create workspace worktree parent {}: {e}",
+            parent.display()
+        ))
+    })?;
+
+    if git_worktree_registered(&target.repo_root, &target.path)? {
+        return Ok(());
+    }
+
+    let branch_ref = format!("refs/heads/{}", target.branch);
+    let branch_exists = git_ref_exists(&target.repo_root, &branch_ref)?;
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(&target.repo_root)
+        .args(["worktree", "add"]);
+    if branch_exists {
+        command.arg(&target.path).arg(&target.branch);
+    } else {
+        command.args(["-b", &target.branch]).arg(&target.path);
+    }
+    let output = command.output().map_err(|e| {
+        CalmError::Internal(format!(
+            "spawn git worktree add for {}: {e}",
+            target.path.display()
+        ))
+    })?;
+    if output.status.success() || git_worktree_registered(&target.repo_root, &target.path)? {
+        return Ok(());
+    }
+    Err(git_failed("git worktree add", &target.repo_root, &output))
+}
+
+fn remove_workspace_worktree_for_lease(lease: &WorkspaceLease) -> Result<()> {
+    let Some(target) = workspace_lease_target_from_lease(lease)? else {
+        return remove_workspace_dir_if_exists(&lease.path);
+    };
+    remove_workspace_worktree(&target)
+}
+
+pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result<()> {
+    if !git_repo_available(&target.repo_root) {
+        return remove_workspace_dir_if_exists(&target.path_string());
+    }
+
+    let registered = git_worktree_registered(&target.repo_root, &target.path)?;
+    if registered || target.path.exists() {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&target.repo_root)
+            .args(["worktree", "remove", "--force"])
+            .arg(&target.path)
+            .output()
+            .map_err(|e| {
+                CalmError::Internal(format!(
+                    "spawn git worktree remove for {}: {e}",
+                    target.path.display()
+                ))
+            })?;
+        if !output.status.success()
+            && registered
+            && git_worktree_registered(&target.repo_root, &target.path)?
+        {
+            return Err(git_failed(
+                "git worktree remove --force",
+                &target.repo_root,
+                &output,
+            ));
+        }
+    }
+
+    let branch_ref = format!("refs/heads/{}", target.branch);
+    if git_ref_exists(&target.repo_root, &branch_ref)? {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&target.repo_root)
+            .args(["branch", "-D", &target.branch])
+            .output()
+            .map_err(|e| {
+                CalmError::Internal(format!(
+                    "spawn git branch -D {} in {}: {e}",
+                    target.branch,
+                    target.repo_root.display()
+                ))
+            })?;
+        if !output.status.success() && git_ref_exists(&target.repo_root, &branch_ref)? {
+            return Err(git_failed("git branch -D", &target.repo_root, &output));
+        }
+    }
+
+    remove_workspace_dir_if_exists(&target.path_string())
+}
+
 #[cfg(test)]
 static FORCED_WORKSPACE_DIR_REMOVE_FAILURES: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
 
@@ -572,10 +777,30 @@ fn take_forced_workspace_dir_remove_failure(path: &Path) -> bool {
         .remove(path.to_string_lossy().as_ref())
 }
 
-pub(crate) fn workspace_lease_path_for(wave_id: &str, card_id: &str) -> Result<String> {
+pub(crate) fn workspace_lease_path_for(
+    repo_root: &Path,
+    wave_id: &str,
+    card_id: &str,
+) -> Result<PathBuf> {
     validate_path_segment("wave_id", wave_id)?;
     validate_path_segment("card_id", card_id)?;
-    Ok(format!(".claude/worktrees/{wave_id}/{card_id}"))
+    if !repo_root.is_absolute() {
+        return Err(CalmError::BadRequest(format!(
+            "workspace lease repo root must be absolute: {}",
+            repo_root.display()
+        )));
+    }
+    Ok(repo_root
+        .join(".claude")
+        .join("worktrees")
+        .join(wave_id)
+        .join(card_id))
+}
+
+pub(crate) fn workspace_slice_branch_for(wave_id: &str, card_id: &str) -> Result<String> {
+    validate_path_segment("wave_id", wave_id)?;
+    validate_path_segment("card_id", card_id)?;
+    Ok(format!("neige/{wave_id}/{card_id}"))
 }
 
 fn validate_path_segment(label: &str, value: &str) -> Result<()> {
@@ -592,11 +817,171 @@ fn validate_path_segment(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn git_repo_root_for_wave_cwd(wave_id: &str, cwd: &str) -> Result<PathBuf> {
+    let cwd_path = Path::new(cwd);
+    if cwd.trim().is_empty() || !cwd_path.is_absolute() {
+        return Err(CalmError::BadRequest(format!(
+            "wave {wave_id} cwd must be an absolute git repository path for workspace leasing"
+        )));
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd_path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| {
+            CalmError::Internal(format!(
+                "spawn git rev-parse --show-toplevel for wave {wave_id} cwd {}: {e}",
+                cwd_path.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(CalmError::BadRequest(format!(
+            "wave {wave_id} cwd {} is not a git repository: {}",
+            cwd_path.display(),
+            output_summary(&output)
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let repo_root = stdout.trim_end_matches(&['\r', '\n'][..]);
+    if repo_root.is_empty() {
+        return Err(CalmError::BadRequest(format!(
+            "wave {wave_id} cwd {} did not resolve to a git repository root",
+            cwd_path.display()
+        )));
+    }
+    let repo_root = PathBuf::from(repo_root);
+    if !repo_root.is_absolute() {
+        return Err(CalmError::BadRequest(format!(
+            "wave {wave_id} git repository root must be absolute: {}",
+            repo_root.display()
+        )));
+    }
+    Ok(repo_root)
+}
+
+fn workspace_lease_target_from_lease(
+    lease: &WorkspaceLease,
+) -> Result<Option<WorkspaceLeaseTarget>> {
+    validate_path_segment("wave_id", &lease.wave_id)?;
+    validate_path_segment("card_id", &lease.card_id)?;
+    let path = PathBuf::from(&lease.path);
+    if !path.is_absolute() {
+        return Ok(None);
+    }
+    let Some(card_dir) = path.file_name().and_then(|s| s.to_str()) else {
+        return Ok(None);
+    };
+    let Some(wave_dir_path) = path.parent() else {
+        return Ok(None);
+    };
+    let Some(wave_dir) = wave_dir_path.file_name().and_then(|s| s.to_str()) else {
+        return Ok(None);
+    };
+    let Some(worktrees_path) = wave_dir_path.parent() else {
+        return Ok(None);
+    };
+    let Some(worktrees_dir) = worktrees_path.file_name().and_then(|s| s.to_str()) else {
+        return Ok(None);
+    };
+    let Some(claude_path) = worktrees_path.parent() else {
+        return Ok(None);
+    };
+    let Some(claude_dir) = claude_path.file_name().and_then(|s| s.to_str()) else {
+        return Ok(None);
+    };
+    let Some(repo_root) = claude_path.parent() else {
+        return Ok(None);
+    };
+    if card_dir != lease.card_id
+        || wave_dir != lease.wave_id
+        || worktrees_dir != "worktrees"
+        || claude_dir != ".claude"
+        || !repo_root.is_absolute()
+    {
+        return Ok(None);
+    }
+    Ok(Some(WorkspaceLeaseTarget {
+        repo_root: repo_root.to_path_buf(),
+        path,
+        branch: workspace_slice_branch_for(&lease.wave_id, &lease.card_id)?,
+    }))
+}
+
+fn git_repo_available(repo_root: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn git_ref_exists(repo_root: &Path, full_ref: &str) -> Result<bool> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["show-ref", "--verify", "--quiet", full_ref])
+        .status()
+        .map_err(|e| {
+            CalmError::Internal(format!(
+                "spawn git show-ref {full_ref} in {}: {e}",
+                repo_root.display()
+            ))
+        })?;
+    Ok(status.success())
+}
+
+fn git_worktree_registered(repo_root: &Path, path: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|e| {
+            CalmError::Internal(format!(
+                "spawn git worktree list in {}: {e}",
+                repo_root.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(git_failed("git worktree list", repo_root, &output));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().any(|line| {
+        line.strip_prefix("worktree ")
+            .map(|listed| Path::new(listed) == path)
+            .unwrap_or(false)
+    }))
+}
+
+fn git_failed(action: &str, repo_root: &Path, output: &Output) -> CalmError {
+    CalmError::Internal(format!(
+        "{action} failed in {}: {}",
+        repo_root.display(),
+        output_summary(output)
+    ))
+}
+
+fn output_summary(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    format!("exit status {}", output.status)
+}
+
 const WORKSPACE_LEASE_MS: TimestampMs = 60_000;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::sqlite::begin_immediate_tx;
 
     #[test]
     fn remove_workspace_dir_if_exists_treats_missing_as_success() {
@@ -606,5 +991,152 @@ mod tests {
         std::fs::remove_dir_all(&path).unwrap();
 
         remove_workspace_dir_if_exists(path.to_str().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn acquire_workspace_lease_anchors_under_git_root_without_creating_leaf() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
+            .await
+            .unwrap();
+        assert!(target.repo_root.is_absolute());
+        assert_eq!(
+            target.repo_root.canonicalize().unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+        assert!(target.path.is_absolute());
+        assert!(target.path.starts_with(&target.repo_root));
+
+        let (lease, _event) =
+            acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+                .await
+                .unwrap();
+        assert_eq!(lease.path, target.path_string());
+        assert!(
+            target.path.parent().unwrap().is_dir(),
+            "lease acquisition creates the worktree parent"
+        );
+        assert!(
+            !target.path.exists(),
+            "lease acquisition must leave the worktree leaf for git worktree add"
+        );
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_lease_target_rejects_non_git_wave_cwd_without_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
+
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let err = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+        tx.rollback().await.unwrap();
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let target = WorkspaceLeaseTarget {
+            repo_root: tmp.path().to_path_buf(),
+            path: tmp.path().join(".claude/worktrees/wave-a/card-a"),
+            branch: workspace_slice_branch_for("wave-a", "card-a").unwrap(),
+        };
+
+        provision_workspace_worktree(&target).unwrap();
+        assert!(target.path.is_dir(), "provisioned worktree exists");
+        assert!(
+            git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch)).unwrap(),
+            "slice branch exists"
+        );
+
+        remove_workspace_worktree(&target).unwrap();
+        assert!(!target.path.exists(), "worktree path removed");
+        assert!(
+            !git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch)).unwrap(),
+            "slice branch removed"
+        );
+
+        remove_workspace_worktree(&target).unwrap();
+    }
+
+    async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String, String) {
+        let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let cove = crate::db::RepoSyncDomainRaw::cove_create(
+            &repo,
+            crate::model::NewCove {
+                name: "lease fixture".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let wave = crate::db::RepoSyncDomainRaw::wave_create(
+            &repo,
+            crate::model::NewWave {
+                cove_id: cove.id,
+                title: "lease fixture".into(),
+                sort: None,
+                cwd: wave_cwd.display().to_string(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            },
+        )
+        .await
+        .unwrap();
+        let card = crate::db::RepoSyncDomainRaw::card_create(
+            &repo,
+            crate::model::NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: serde_json::Value::Null,
+            },
+        )
+        .await
+        .unwrap();
+        (repo, wave.id.to_string(), card.id.to_string())
+    }
+
+    fn init_git_repo(path: &Path) {
+        std::fs::create_dir_all(path).unwrap();
+        run_git(path, ["init"]);
+        run_git(path, ["config", "user.email", "lease@example.test"]);
+        run_git(path, ["config", "user.name", "Lease Test"]);
+        std::fs::write(path.join("README.md"), "initial\n").unwrap();
+        run_git(path, ["add", "README.md"]);
+        run_git(path, ["commit", "-m", "initial"]);
+    }
+
+    fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
