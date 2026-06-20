@@ -48,23 +48,31 @@ struct Fixture {
     socket_path: PathBuf,
     raw_token: String,
     thread_id: String,
+    card_id: String,
+    wave_id: String,
+    lease_abs: PathBuf,
     _runtime: Arc<OperationRuntime>,
+    _lease_tmp: TempDir,
     _tmp: TempDir,
 }
 
 #[derive(Clone, Copy)]
 enum StubMode {
     Awaited,
+    AwaitFailure,
     Parked,
     Malformed,
+    Override,
 }
 
 impl StubMode {
     fn idem_key(self) -> &'static str {
         match self {
             Self::Awaited => "stub-forge-awaited",
+            Self::AwaitFailure => "stub-forge-await-failure",
             Self::Parked => "stub-forge-parked",
             Self::Malformed => "stub-forge-malformed",
+            Self::Override => "stub-forge-override",
         }
     }
 
@@ -72,8 +80,20 @@ impl StubMode {
         matches!(self, Self::Parked)
     }
 
-    fn malformed(self) -> bool {
-        matches!(self, Self::Malformed)
+    fn stub_mode(self) -> Option<&'static str> {
+        match self {
+            Self::Malformed => Some("malformed"),
+            Self::Override => Some("override"),
+            _ => None,
+        }
+    }
+
+    fn argv_json(self) -> &'static str {
+        match self {
+            Self::AwaitFailure => r#"["/bin/false"]"#,
+            Self::Parked => r#"["/bin/sh","-c","sleep 1"]"#,
+            _ => r#"["/bin/true"]"#,
+        }
     }
 }
 
@@ -83,7 +103,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let results_dir = tempfile::tempdir().expect("forge results tempdir");
+    let results_dir = short_tempdir("fr").expect("forge results tempdir");
     let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
 
@@ -106,14 +126,52 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         1,
         "awaited mode must persist the typed forge event"
     );
+    let awaited_payload = operation_payload_by_idem(&awaited.repo, StubMode::Awaited.idem_key())
+        .await
+        .expect("awaited op payload");
+    assert_result_path_under(
+        &awaited_payload,
+        results_dir.path(),
+        "awaited result_path must stay inside configured results dir",
+    );
     awaited
         .plugin_host
         .stop(PLUGIN_ID)
         .await
         .expect("stop awaited plugin");
 
+    let failed = boot_fixture(StubMode::AwaitFailure).await;
+    let failed_resp = call_forge_tool(&failed, 4).await;
+    assert!(
+        failed_resp.get("error").is_none(),
+        "await-failure forge tool returned a JSON-RPC error: {failed_resp:#?}"
+    );
+    assert_eq!(failed_resp["result"]["isError"], true);
+    assert!(
+        failed_resp["result"]["structuredContent"]["op_id"]
+            .as_str()
+            .is_some()
+    );
+    assert!(
+        failed_resp["result"]["structuredContent"]["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forge action exited with code 1"),
+        "await-mode failure must carry the operation failure: {failed_resp:#?}"
+    );
+    assert_eq!(
+        event_count(&failed.repo, "forge.scan.completed").await,
+        0,
+        "failed await-mode forge action must not persist the typed event"
+    );
+    failed
+        .plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop failed plugin");
+
     let parked = boot_fixture(StubMode::Parked).await;
-    let parked_resp = call_forge_tool(&parked, 4).await;
+    let parked_resp = call_forge_tool(&parked, 5).await;
     assert!(
         parked_resp.get("error").is_none(),
         "parked forge tool errored: {parked_resp:#?}"
@@ -121,15 +179,86 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
     let parked_structured = &parked_resp["result"]["structuredContent"];
     assert_eq!(parked_structured["parked"], true);
     assert!(parked_structured["op_id"].as_str().is_some());
+    assert_eq!(
+        event_count(&parked.repo, "forge.scan.completed").await,
+        0,
+        "parked response must return before the typed forge event lands"
+    );
+    wait_for_event_count(&parked.repo, "forge.scan.completed", 1).await;
     parked
         .plugin_host
         .stop(PLUGIN_ID)
         .await
         .expect("stop parked plugin");
 
+    let override_fx = boot_fixture(StubMode::Override).await;
+    let override_resp = call_forge_tool(&override_fx, 6).await;
+    assert!(
+        override_resp.get("error").is_none(),
+        "override forge tool errored: {override_resp:#?}"
+    );
+    let override_payload =
+        operation_payload_by_idem(&override_fx.repo, StubMode::Override.idem_key())
+            .await
+            .expect("override op payload");
+    assert_eq!(override_payload["wave_id"], override_fx.wave_id);
+    assert_eq!(override_payload["card_id"], override_fx.card_id);
+    assert_eq!(
+        PathBuf::from(
+            override_payload["cwd_lease"]
+                .as_str()
+                .expect("cwd_lease string")
+        ),
+        override_fx.lease_abs
+    );
+    assert_ne!(override_payload["wave_id"], "attacker-wave");
+    assert_ne!(override_payload["card_id"], "attacker-card");
+    assert_ne!(override_payload["cwd_lease"], "/tmp/attacker-cwd-lease");
+    assert_ne!(override_payload["result_path"], "/tmp/attacker.result");
+    assert_result_path_under(
+        &override_payload,
+        results_dir.path(),
+        "override result_path must be kernel-derived",
+    );
+    override_fx
+        .plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop override plugin");
+
+    {
+        let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "dev.neige.other-forge");
+        let untrusted = boot_fixture(StubMode::Awaited).await;
+        let before_ops = operation_count(&untrusted.repo).await;
+        let untrusted_resp = call_forge_tool(&untrusted, 7).await;
+        assert_eq!(untrusted_resp["error"]["code"], -32602);
+        assert!(
+            untrusted_resp["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("plugin not trusted to submit forge actions"),
+            "untrusted error should name the trust failure: {untrusted_resp:#?}"
+        );
+        assert_eq!(
+            operation_count(&untrusted.repo).await,
+            before_ops,
+            "untrusted forge plugin must not submit an operation"
+        );
+        assert_eq!(
+            event_count(&untrusted.repo, "forge.scan.completed").await,
+            0,
+            "untrusted forge plugin must not persist a forge event"
+        );
+        untrusted
+            .plugin_host
+            .stop(PLUGIN_ID)
+            .await
+            .expect("stop untrusted plugin");
+    }
+
     let malformed = boot_fixture(StubMode::Malformed).await;
     let before_ops = operation_count(&malformed.repo).await;
-    let malformed_resp = call_forge_tool(&malformed, 5).await;
+    let malformed_resp = call_forge_tool(&malformed, 8).await;
     assert_eq!(malformed_resp["error"]["code"], -32602);
     assert!(
         malformed_resp["error"]["message"]
@@ -156,12 +285,16 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
 }
 
 async fn boot_fixture(mode: StubMode) -> Fixture {
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = short_tempdir("mfa").expect("tempdir");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     let wave_cwd = tmp.path().join("wave-cwd");
     std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
+    let lease_tmp = tempfile::Builder::new()
+        .prefix(".forge-action-lease-")
+        .tempdir_in(std::env::current_dir().expect("current dir"))
+        .expect("server-cwd-relative lease tempdir");
 
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -198,8 +331,18 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
 
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_rel = format!("leases/{card_id}");
-    std::fs::create_dir_all(wave_cwd.join(&lease_rel)).expect("create lease dir");
+    let lease_rel = format!(
+        "{}/leases/{card_id}",
+        lease_tmp
+            .path()
+            .file_name()
+            .expect("lease tempdir basename")
+            .to_string_lossy()
+    );
+    let lease_abs = std::env::current_dir()
+        .expect("current dir")
+        .join(&lease_rel);
+    std::fs::create_dir_all(&lease_abs).expect("create lease dir");
     let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
@@ -301,7 +444,11 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
         socket_path,
         raw_token,
         thread_id,
+        card_id,
+        wave_id: wave.id.to_string(),
+        lease_abs,
         _runtime: runtime,
+        _lease_tmp: lease_tmp,
         _tmp: tmp,
     }
 }
@@ -332,9 +479,9 @@ async fn boot_plugin_host(
         "STUB_FORGE_CONTEXT_JSON".into(),
         json!(r#"{"overlapping_prs":[]}"#),
     );
-    env.insert("STUB_FORGE_ARGV_JSON".into(), json!(r#"["/bin/true"]"#));
-    if mode.malformed() {
-        env.insert("STUB_FORGE_MODE".into(), json!("malformed"));
+    env.insert("STUB_FORGE_ARGV_JSON".into(), json!(mode.argv_json()));
+    if let Some(stub_mode) = mode.stub_mode() {
+        env.insert("STUB_FORGE_MODE".into(), json!(stub_mode));
     }
 
     let manifest_json = json!({
@@ -506,12 +653,58 @@ async fn event_count(repo: &SqlxRepo, kind: &str) -> i64 {
         .expect("event count")
 }
 
+async fn wait_for_event_count(repo: &SqlxRepo, kind: &str, expected: i64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let count = event_count(repo, kind).await;
+        if count == expected {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("expected {expected} `{kind}` events, got {count}");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
 async fn operation_count(repo: &SqlxRepo) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = ?1")
         .bind(FORGE_ACTION_KIND)
         .fetch_one(repo.pool())
         .await
         .expect("operation count")
+}
+
+async fn operation_payload_by_idem(repo: &SqlxRepo, idem_key: &str) -> Option<Value> {
+    let payload: Option<String> = sqlx::query_scalar(
+        "SELECT payload_json FROM operations WHERE kind = ?1 AND idempotency_key = ?2",
+    )
+    .bind(FORGE_ACTION_KIND)
+    .bind(idem_key)
+    .fetch_optional(repo.pool())
+    .await
+    .expect("operation payload lookup");
+    payload.map(|payload| serde_json::from_str(&payload).expect("operation payload json"))
+}
+
+fn assert_result_path_under(payload: &Value, results_dir: &Path, message: &str) {
+    let result_path = PathBuf::from(payload["result_path"].as_str().expect("result_path string"));
+    assert_eq!(result_path.parent(), Some(results_dir), "{message}");
+    let filename = result_path
+        .file_name()
+        .and_then(|filename| filename.to_str())
+        .expect("result_path filename");
+    assert_eq!(filename.len(), 71, "{message}");
+    assert!(filename.ends_with(".result"), "{message}");
+}
+
+fn short_tempdir(prefix: &str) -> std::io::Result<TempDir> {
+    let base = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("mfa-tmp");
+    std::fs::create_dir_all(&base)?;
+    tempfile::Builder::new().prefix(prefix).tempdir_in(base)
 }
 
 struct EnvGuard {

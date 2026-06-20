@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -795,11 +795,7 @@ async fn dispatch_forge_action_plugin_tool(
         Ok(outcome) => outcome,
         Err(e) => return Ok(mcp_error_result(e.to_string())),
     };
-    Ok(mcp_success_result(json!({
-        "op_id": op_id,
-        "parked": false,
-        "result": operation_result_to_value(outcome),
-    })))
+    Ok(operation_result_to_mcp_result(outcome))
 }
 
 fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), RpcError> {
@@ -831,6 +827,11 @@ async fn resolve_forge_cwd(
         .await
         .map_err(|e| RpcError::internal(format!("forge action wave lookup: {e}")))?
         .ok_or_else(|| RpcError::invalid_params(format!("unknown wave `{wave_id}`")))?;
+    if wave.cove_id.as_str() != identity.cove_id.as_str() {
+        return Err(RpcError::invalid_params(
+            "forge action wave belongs to a different cove",
+        ));
+    }
     let wave_cwd = PathBuf::from(&wave.cwd);
     if !wave_cwd.is_absolute() {
         return Err(RpcError::invalid_params(
@@ -852,12 +853,29 @@ async fn resolve_forge_cwd(
                 ));
             }
             let lease_path = Path::new(&lease.path);
-            if lease_path.is_absolute() {
+            if !lease_path.is_absolute()
+                && !lease_path
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+            {
                 return Err(RpcError::invalid_params(
-                    "workspace lease path must be relative",
+                    "workspace lease path contains invalid relative segments",
                 ));
             }
-            Ok(wave_cwd.join(lease_path))
+            if lease_path.as_os_str().is_empty() {
+                return Err(RpcError::invalid_params(
+                    "workspace lease path must not be empty",
+                ));
+            }
+            // ③-c re-anchors the lease under repo_root (git toplevel of wave.cwd)
+            // and updates BOTH ① and this resolve together; until then match ①'s base.
+            if lease_path.is_absolute() {
+                Ok(lease_path.to_path_buf())
+            } else {
+                let cwd = std::env::current_dir()
+                    .map_err(|e| RpcError::internal(format!("resolve current directory: {e}")))?;
+                Ok(cwd.join(lease_path))
+            }
         }
         _ => Err(RpcError::invalid_params(
             "forge action requires a spec or worker caller",
@@ -885,9 +903,7 @@ fn forge_result_path(idem_key: &str) -> Result<PathBuf, RpcError> {
     std::fs::create_dir_all(&dir).map_err(|e| {
         RpcError::internal(format!("create forge results dir {}: {e}", dir.display()))
     })?;
-    Ok(dir
-        .join(sanitize_forge_idem_key(idem_key))
-        .with_extension("result"))
+    Ok(dir.join(forge_result_filename(idem_key)))
 }
 
 fn forge_results_dir() -> Result<PathBuf, RpcError> {
@@ -902,26 +918,10 @@ fn forge_results_dir() -> Result<PathBuf, RpcError> {
     Ok(cwd.join(raw))
 }
 
-fn sanitize_forge_idem_key(idem_key: &str) -> String {
-    let mut sanitized = idem_key
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    sanitized.truncate(96);
-    let sanitized = sanitized.trim_matches('_').to_string();
-    if sanitized.is_empty() {
-        let mut hasher = Sha256::new();
-        hasher.update(idem_key.as_bytes());
-        format!("idem-{:x}", hasher.finalize())
-    } else {
-        sanitized
-    }
+fn forge_result_filename(idem_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(idem_key.as_bytes());
+    format!("{:x}.result", hasher.finalize())
 }
 
 fn forge_deadline_ms(parked: bool) -> i64 {
@@ -943,32 +943,59 @@ fn trusted_forge_plugin(plugin_id: &str) -> bool {
         .any(|trusted| trusted == plugin_id)
 }
 
-fn operation_result_to_value(result: OperationResult) -> Value {
+fn operation_result_to_mcp_result(result: OperationResult) -> Value {
+    let op_id = result.op_id;
     match result.outcome {
-        OperationOutcome::Succeeded { result } => result,
+        OperationOutcome::Succeeded { result } => mcp_success_result(json!({
+            "op_id": op_id,
+            "parked": false,
+            "result": result,
+        })),
         OperationOutcome::SucceededViaCollision {
             existing_op_id,
             result,
-        } => json!({
-            "outcome": "succeeded_via_collision",
-            "existing_op_id": existing_op_id,
-            "result": result,
-        }),
+        } => mcp_success_result(json!({
+            "op_id": op_id,
+            "parked": false,
+            "result": {
+                "outcome": "succeeded_via_collision",
+                "existing_op_id": existing_op_id,
+                "result": result,
+            },
+        })),
         OperationOutcome::Failed {
             last_error,
             from_phase,
             last_error_class,
-        } => json!({
-            "outcome": "failed",
-            "last_error": last_error,
-            "from_phase": from_phase.as_str(),
-            "last_error_class": last_error_class,
-        }),
-        OperationOutcome::Stuck { reason, from_phase } => json!({
-            "outcome": "stuck",
-            "reason": reason,
-            "from_phase": from_phase.as_str(),
-        }),
+        } => {
+            let message = format!("forge action operation {op_id} failed: {last_error}");
+            mcp_error_result_with_structured(
+                message.clone(),
+                json!({
+                    "error": message,
+                    "op_id": op_id,
+                    "parked": false,
+                    "outcome": "failed",
+                    "last_error": last_error,
+                    "from_phase": from_phase.as_str(),
+                    "last_error_class": last_error_class,
+                }),
+            )
+        }
+        OperationOutcome::Stuck { reason, from_phase } => {
+            let message = format!("forge action operation {op_id} stuck: {reason}");
+            mcp_error_result_with_structured(
+                message.clone(),
+                json!({
+                    "error": message,
+                    "op_id": op_id,
+                    "parked": false,
+                    "outcome": "stuck",
+                    "reason": reason,
+                    "from_phase": from_phase.as_str(),
+                }),
+            )
+        }
     }
 }
 
@@ -986,11 +1013,40 @@ fn mcp_success_result(structured: Value) -> Value {
 }
 
 fn mcp_error_result(message: String) -> Value {
+    mcp_error_result_with_structured(message.clone(), json!({ "error": message }))
+}
+
+fn mcp_error_result_with_structured(message: String, structured: Value) -> Value {
     json!({
         "content": [{ "type": "text", "text": message.clone() }],
-        "structuredContent": { "error": message },
+        "structuredContent": structured,
         "isError": true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forge_result_filename_is_hash_based_and_path_safe() {
+        let foo = forge_result_filename("foo");
+        let foo_bar = forge_result_filename("foo.bar");
+        let dot = forge_result_filename(".");
+        let dotdot = forge_result_filename("..");
+
+        assert_ne!(foo, foo_bar);
+        assert_ne!(dot, dotdot);
+        for filename in [foo, foo_bar, dot, dotdot] {
+            assert_eq!(filename.len(), 71);
+            assert!(filename.ends_with(".result"));
+            assert!(
+                Path::new(&filename)
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+            );
+        }
+    }
 }
 
 async fn card_bound_tool_identity(

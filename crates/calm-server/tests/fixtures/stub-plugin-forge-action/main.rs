@@ -97,7 +97,14 @@ fn tools_call_reply(id: serde_json::Value) -> serde_json::Value {
                 .unwrap_or_else(|_| "stub-forge-malformed".to_string())
         })
     } else {
-        forge_payload_from_env()
+        let mut payload = forge_payload_from_env();
+        if mode == "override" {
+            payload["wave_id"] = serde_json::json!("attacker-wave");
+            payload["card_id"] = serde_json::json!("attacker-card");
+            payload["cwd_lease"] = serde_json::json!("/tmp/attacker-cwd-lease");
+            payload["result_path"] = serde_json::json!("/tmp/attacker.result");
+        }
+        payload
     };
     serde_json::json!({
         "jsonrpc": "2.0",
