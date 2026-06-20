@@ -66,7 +66,7 @@ use crate::operation::task_verify_adapter::{
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
-use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
+use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, operation_result_from};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
@@ -225,7 +225,7 @@ fn duration_ms_i64(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
-fn dispatched_live_wait_timeout(task: &Task) -> Option<Duration> {
+fn dispatched_spawn_drive_timeout(task: &Task) -> Option<Duration> {
     if task.kind != TaskKind::Codex {
         return None;
     }
@@ -563,7 +563,7 @@ impl Scheduler {
                 return;
             }
         };
-        if let Err(e) = self.drive_spawn_live_dispatched(&frozen, wave).await {
+        if let Err(e) = self.drive_spawn(&frozen, wave).await {
             tracing::warn!(
                 task_id = %task.id,
                 error = %e,
@@ -746,23 +746,6 @@ impl Scheduler {
     /// `drive()` until the op is terminal (no background driver exists,
     /// §8). The drive lease (60s, `claim_drive_batch`) makes concurrent
     /// drivers execute no phase twice.
-    async fn drive_spawn_live_dispatched(&self, task: &Task, wave: &Wave) -> Result<()> {
-        let Some(timeout) = dispatched_live_wait_timeout(task) else {
-            return self.drive_spawn(task, wave).await;
-        };
-        match tokio::time::timeout(timeout, self.drive_spawn(task, wave)).await {
-            Ok(result) => result,
-            Err(_) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    dispatched_deadline_ms = task.dispatched_deadline_ms,
-                    "scheduler: live dispatched spawn drive exceeded deadline; releasing guard for sweep"
-                );
-                Ok(())
-            }
-        }
-    }
-
     async fn drive_spawn(&self, task: &Task, wave: &Wave) -> Result<()> {
         let Some(runtime) = self.operation_runtime.upgrade() else {
             tracing::debug!(
@@ -773,6 +756,60 @@ impl Scheduler {
         };
         let (op_kind, payload) = build_worker_payload(task)?;
         let payload_hash = stable_payload_hash(&payload)?;
+        if let Some(existing) = runtime
+            .find_by_kind_and_idempotency(op_kind, &task.id)
+            .await?
+        {
+            if existing.payload_hash != payload_hash {
+                tracing::warn!(
+                    task_id = %task.id,
+                    "scheduler: task idempotency key owned by a foreign operation (permanent); failing task"
+                );
+                return self
+                    .fail_spawn(
+                        task,
+                        wave,
+                        &format!(
+                            "operation idempotency key {} already used with different payload",
+                            task.id
+                        ),
+                    )
+                    .await;
+            }
+            if let Some(result) = operation_result_from(&existing)? {
+                return self
+                    .reconcile_spawn_result(task, wave, result.outcome)
+                    .await;
+            }
+        }
+
+        let drive =
+            self.drive_spawn_inner(runtime.as_ref(), task, wave, op_kind, payload_hash, payload);
+        let Some(timeout) = dispatched_spawn_drive_timeout(task) else {
+            return drive.await;
+        };
+        match tokio::time::timeout(timeout, drive).await {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    dispatched_deadline_ms = task.dispatched_deadline_ms,
+                    "scheduler: dispatched spawn drive exceeded deadline; releasing guard for sweep"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    async fn drive_spawn_inner(
+        &self,
+        runtime: &OperationRuntime,
+        task: &Task,
+        wave: &Wave,
+        op_kind: &str,
+        payload_hash: String,
+        payload: Value,
+    ) -> Result<()> {
         let op_id = match runtime
             .submit(
                 op_kind,
@@ -810,7 +847,17 @@ impl Scheduler {
             Err(e) => return Err(e),
         };
         let result = runtime.wait(&op_id).await?;
-        match result.outcome {
+        self.reconcile_spawn_result(task, wave, result.outcome)
+            .await
+    }
+
+    async fn reconcile_spawn_result(
+        &self,
+        task: &Task,
+        wave: &Wave,
+        outcome: OperationOutcome,
+    ) -> Result<()> {
+        match outcome {
             OperationOutcome::Succeeded { result }
             | OperationOutcome::SucceededViaCollision { result, .. } => {
                 // §3: guarded `dispatched → running` + two-sided

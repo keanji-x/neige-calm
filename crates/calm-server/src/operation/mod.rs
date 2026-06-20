@@ -857,7 +857,7 @@ fn parked_artifacts_alive(artifacts: &SpawnArtifacts) -> bool {
     verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id)
 }
 
-fn operation_result_from(op: &Operation) -> Result<Option<OperationResult>> {
+pub(crate) fn operation_result_from(op: &Operation) -> Result<Option<OperationResult>> {
     match &op.phase {
         Phase::Succeeded => {
             if let Some(detail) = &op.phase_detail

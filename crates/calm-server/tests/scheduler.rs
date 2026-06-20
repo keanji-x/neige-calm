@@ -2231,6 +2231,95 @@ async fn live_dispatched_codex_deadline_releases_guard_then_sweep_compensates() 
 }
 
 #[tokio::test]
+async fn sweep_dispatched_codex_deadline_releases_guard_then_next_sweep_compensates() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, _runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "sweep-dispatch-hung").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "sweep-dispatch-hung").await;
+    let mut task = plan_task(&boot.wave_id, "sweep-dispatch-hung", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() + 2_000);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    let entered_spawn = Arc::new(tokio::sync::Notify::new());
+    let spawn_calls = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(HungTimeoutCompensationAdapter {
+            kind: "codex-worker",
+            card_id: card_id.clone(),
+            lease_id: lease_id.clone(),
+            entered_spawn: Arc::clone(&entered_spawn),
+            spawn_calls: Arc::clone(&spawn_calls),
+        })],
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        async move { scheduler.sweep_all().await }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_spawn.notified())
+        .await
+        .expect("sweep spawn drive parked before the dispatched deadline");
+    let row = task_row(&boot, "sweep-dispatch-hung").await;
+    assert_eq!(row.status, TaskStatus::Dispatched);
+
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::SpawnStarted);
+    let expired_lease = sqlx::query(
+        "UPDATE operations SET lease_until_ms = ?1 WHERE id = ?2 AND phase = 'spawn_started'",
+    )
+    .bind(now_ms() - 1)
+    .bind(&op.id)
+    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("expire operation drive lease");
+    assert_eq!(expired_lease.rows_affected(), 1);
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("sweep drive releases the InflightGuard at the dispatched deadline")
+        .expect("sweep task");
+    let row = task_row(&boot, "sweep-dispatch-hung").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Dispatched,
+        "the bounded sweep drive only releases the guard; the next sweep owns failure"
+    );
+
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "sweep-dispatch-hung").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(op.lease_owner.is_none());
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        1,
+        "the follow-up sweep compensated the original op without waiting for or re-running the hung spawn"
+    );
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].1["reason"],
+        json!("worker exceeded the dispatched liveness deadline")
+    );
+}
+
+#[tokio::test]
 async fn sweep_expired_dispatched_codex_terminal_op_reconciles_via_drive_spawn() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
