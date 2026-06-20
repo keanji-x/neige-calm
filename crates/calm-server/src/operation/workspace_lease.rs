@@ -224,6 +224,7 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
     let Some(lease) = mark_workspace_lease_releasing_for_card_repo(repo, card_id).await? else {
         return Ok(false);
     };
+    // Online reaper release is best-effort: warn and mark released rather than wedge the lease.
     if let Err(error) = remove_workspace_worktree_for_lease(&lease) {
         tracing::warn!(
             lease_id = %lease.lease_id,
@@ -317,6 +318,7 @@ async fn release_workspace_lease(
     events: &EventBus,
     lease: WorkspaceLease,
 ) -> Result<bool> {
+    // Spawn-failure compensation propagates removal failures rather than silently orphaning worktrees.
     remove_workspace_worktree_for_lease(&lease)?;
     complete_workspace_lease_release(pool, events, lease).await
 }
@@ -330,6 +332,7 @@ async fn release_workspace_lease_on_boot(
         return Ok(false);
     };
 
+    // Boot reclaim is best-effort (#792): warn and mark released so startup stays resilient.
     if let Err(error) = remove_workspace_worktree_for_lease(&lease) {
         tracing::warn!(
             lease_id = %lease.lease_id,
@@ -487,6 +490,7 @@ async fn release_workspace_lease_tx(
     tx: &mut Tx<'_>,
     lease: WorkspaceLease,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    // Wave teardown propagates removal failures rather than silently orphaning worktrees.
     remove_workspace_worktree_for_lease(&lease)?;
     let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
     let now = now_ms();
@@ -832,7 +836,7 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
 
 fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
     const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
-    let exclude_path = repo_root.join(".git").join("info").join("exclude");
+    let exclude_path = git_exclude_path(repo_root)?;
     let existing = match std::fs::read_to_string(&exclude_path) {
         Ok(existing) => existing,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -880,6 +884,41 @@ fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
             ))
         })?;
     Ok(())
+}
+
+fn git_exclude_path(repo_root: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-path", "info/exclude"])
+        .output()
+        .map_err(|e| {
+            CalmError::Internal(format!(
+                "spawn git rev-parse --git-path info/exclude in {}: {e}",
+                repo_root.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(git_failed(
+            "git rev-parse --git-path info/exclude",
+            repo_root,
+            &output,
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let exclude_path = stdout.trim_end_matches(&['\r', '\n'][..]);
+    if exclude_path.is_empty() {
+        return Err(CalmError::Internal(format!(
+            "git rev-parse --git-path info/exclude in {} returned an empty path",
+            repo_root.display()
+        )));
+    }
+    let exclude_path = PathBuf::from(exclude_path);
+    if exclude_path.is_absolute() {
+        Ok(exclude_path)
+    } else {
+        Ok(repo_root.join(exclude_path))
+    }
 }
 
 #[cfg(test)]
@@ -1287,6 +1326,72 @@ mod tests {
                 .count(),
             1,
             "worktree exclude entry is idempotent"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_worktree_provision_resolves_exclude_for_linked_wave_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary");
+        init_git_repo(&primary);
+        let linked = tmp.path().join("linked-wave");
+        let linked_str = linked.to_str().unwrap();
+        run_git(
+            &primary,
+            ["worktree", "add", "-b", "linked-wave", linked_str],
+        );
+        assert!(
+            linked.join(".git").is_file(),
+            "linked worktree .git is a gitdir file"
+        );
+
+        let (repo, wave_id, card_id) = lease_fixture(&linked).await;
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            target.repo_root.canonicalize().unwrap(),
+            linked.canonicalize().unwrap()
+        );
+        let (_lease, _event) =
+            acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+
+        provision_workspace_worktree(&target).unwrap();
+
+        assert!(target.path.is_dir(), "provisioned worktree exists");
+        assert_eq!(
+            git_stdout(&linked, ["status", "--short", "--untracked-files=all"]),
+            "",
+            "linked wave worktree must stay clean after provisioning"
+        );
+        let exclude_path = git_exclude_path(&linked).unwrap();
+        assert_eq!(
+            exclude_path.canonicalize().unwrap(),
+            primary.join(".git/info/exclude").canonicalize().unwrap()
+        );
+        let exclude = std::fs::read_to_string(&exclude_path).unwrap();
+        assert_eq!(
+            exclude
+                .lines()
+                .filter(|line| line.trim() == ".claude/worktrees/")
+                .count(),
+            1,
+            "linked worktree exclude entry is written once"
+        );
+
+        provision_workspace_worktree(&target).unwrap();
+        let exclude = std::fs::read_to_string(&exclude_path).unwrap();
+        assert_eq!(
+            exclude
+                .lines()
+                .filter(|line| line.trim() == ".claude/worktrees/")
+                .count(),
+            1,
+            "linked worktree exclude entry remains idempotent"
         );
     }
 
