@@ -1,7 +1,7 @@
 pub use calm_truth::db::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
-    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn,
-    WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
+    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent,
+    WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
 };
 
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use calm_types::worker::{WorkerSession, WorkerSessionId};
 pub mod prelude {
     pub use super::{
         Repo, RouteRepo, ServerRepoEventWriteExt, ServerRepoOutOfDomainExt, ServerRepoReadExt,
-        ServerRepoSyncDomainRawExt,
+        ServerRepoSyncDomainRawExt, WorkspaceLease,
     };
     pub use crate::session_projection_repo::WorkerSessionProjectionRepo;
     pub use calm_truth::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo};

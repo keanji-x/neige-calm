@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use super::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SessionCardIdentity,
-    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn,
+    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WorkspaceLease, WriteInTxFn,
     WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn,
 };
 use crate::card_kind::validate_card_kind_global;
@@ -4778,6 +4778,30 @@ impl RepoRead for SqlxRepo {
         }
     }
 
+    async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>> {
+        let row = sqlx::query(
+            r#"SELECT lease_id, card_id, wave_id, path, state
+               FROM workspace_leases
+               WHERE card_id = ?1
+                 AND state = 'held'
+               ORDER BY created_at_ms DESC, lease_id DESC
+               LIMIT 1"#,
+        )
+        .bind(card_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(WorkspaceLease {
+                lease_id: row.try_get("lease_id")?,
+                card_id: row.try_get("card_id")?,
+                wave_id: row.try_get("wave_id")?,
+                path: row.try_get("path")?,
+                state: row.try_get("state")?,
+            })
+        })
+        .transpose()
+    }
+
     async fn session_get_by_active_token_hash(
         &self,
         hashed_token: &str,
@@ -6610,6 +6634,126 @@ mod task_liveness_deadline_tests {
         assert_eq!(running.status, TaskStatus::Running);
         assert_eq!(running.worker_card_id.as_deref(), Some("worker-card"));
         assert_eq!(running.running_deadline_ms, Some(9200));
+    }
+}
+
+#[cfg(test)]
+mod workspace_lease_lookup_tests {
+    use super::{SqlxRepo, cove_create_tx, wave_create_tx};
+    use crate::db::RepoRead;
+    use crate::model::{NewCove, NewWave, RequestTheme, now_ms};
+
+    async fn seed_wave(repo: &SqlxRepo) -> String {
+        let mut tx = repo.pool().begin().await.expect("begin seed tx");
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "workspace lease lookup".into(),
+                color: "#202020".into(),
+                sort: None,
+            },
+        )
+        .await
+        .expect("create cove");
+        let wave = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: "workspace lease lookup".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .expect("create wave");
+        tx.commit().await.expect("commit seed tx");
+        wave.id.to_string()
+    }
+
+    async fn insert_workspace_lease(
+        repo: &SqlxRepo,
+        lease_id: &str,
+        card_id: &str,
+        wave_id: &str,
+        path: &str,
+        state: &str,
+        created_at_ms: i64,
+    ) {
+        sqlx::query(
+            r#"INSERT INTO workspace_leases (
+                   lease_id, card_id, wave_id, path, state, lease_owner,
+                   lease_until_ms, boot_id, created_at_ms, updated_at_ms, released_at_ms
+               )
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, NULL)"#,
+        )
+        .bind(lease_id)
+        .bind(card_id)
+        .bind(wave_id)
+        .bind(path)
+        .bind(state)
+        .bind("workspace-lease-lookup-test")
+        .bind(now_ms() + 60_000)
+        .bind(created_at_ms)
+        .execute(repo.pool())
+        .await
+        .expect("insert workspace lease");
+    }
+
+    #[tokio::test]
+    async fn workspace_lease_for_card_returns_only_held_leases() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
+        let wave_id = seed_wave(&repo).await;
+
+        insert_workspace_lease(
+            &repo,
+            "lease-releasing-only",
+            "card-releasing-only",
+            &wave_id,
+            "/tmp/lease-releasing-only",
+            "releasing",
+            100,
+        )
+        .await;
+        assert!(
+            repo.workspace_lease_for_card("card-releasing-only")
+                .await
+                .expect("lookup releasing-only lease")
+                .is_none(),
+            "releasing leases must not be used as forge execution workspaces"
+        );
+
+        insert_workspace_lease(
+            &repo,
+            "lease-held-older",
+            "card-held-with-newer-releasing",
+            &wave_id,
+            "/tmp/lease-held-older",
+            "held",
+            200,
+        )
+        .await;
+        insert_workspace_lease(
+            &repo,
+            "lease-releasing-newer",
+            "card-held-with-newer-releasing",
+            &wave_id,
+            "/tmp/lease-releasing-newer",
+            "releasing",
+            300,
+        )
+        .await;
+
+        let lease = repo
+            .workspace_lease_for_card("card-held-with-newer-releasing")
+            .await
+            .expect("lookup mixed lease states")
+            .expect("held lease should resolve");
+        assert_eq!(lease.lease_id, "lease-held-older");
+        assert_eq!(lease.state, "held");
+        assert_eq!(lease.path, "/tmp/lease-held-older");
     }
 }
 

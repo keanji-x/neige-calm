@@ -304,6 +304,7 @@ async fn boot_fixture() -> Fixture {
         build_default_registry(),
         None,
         plugin_host_cell,
+        Arc::new(OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
     )
     .await

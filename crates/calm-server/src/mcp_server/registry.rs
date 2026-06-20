@@ -205,6 +205,9 @@ pub struct AppContext {
     /// before plugin host construction; plugin-tool discovery/routing reads
     /// this cell at dispatch time once `AppState::new` has populated it.
     pub plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
+    /// Late-bound operation runtime handle. Plugin forge-action tools need to
+    /// submit durable operations, but MCP boot precedes runtime construction.
+    pub operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;
@@ -477,6 +480,7 @@ mod tests {
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),
+            operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 

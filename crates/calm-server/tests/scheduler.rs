@@ -169,6 +169,7 @@ async fn boot() -> Boot {
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
+        operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

@@ -275,6 +275,10 @@ impl OperationRuntime {
         }
     }
 
+    pub async fn operation_result(&self, op_id: &OperationId) -> Result<Option<OperationResult>> {
+        self.repo.operation_result(op_id).await
+    }
+
     pub async fn cancel_parked(&self, op_id: &OperationId, reason: &str) -> Result<bool> {
         let Some(op) = self.repo.claim_parked(op_id).await? else {
             return Ok(false);

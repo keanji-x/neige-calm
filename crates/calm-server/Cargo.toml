@@ -73,6 +73,12 @@ path = "tests/fixtures/stub-plugin-caller/main.rs"
 name = "plugin-host-stub-toolcall"
 path = "tests/fixtures/stub-plugin-toolcall/main.rs"
 
+# #760 slice ③-b-i — stub forge-action tool that returns a lowered
+# forge-action payload through structuredContent.
+[[bin]]
+name = "plugin-host-stub-forge-action"
+path = "tests/fixtures/stub-plugin-forge-action/main.rs"
+
 # #177 PR3 — e2e OSC roundtrip child: runs inside a real PTY, performs
 # the OSC 11 (default background) startup probe codex does,
 # and writes "OK" / "FAIL" to a sidecar result file the test driver polls.

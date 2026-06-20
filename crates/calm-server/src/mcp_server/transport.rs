@@ -42,13 +42,22 @@ use crate::mcp_server::registry::{
     require_role_any,
 };
 use crate::model::CardRole;
+use crate::model::{new_id, now_ms};
+use crate::operation::forge_action_adapter::{
+    FORGE_ACTION_KIND, ForgeActionPayload, ProbeSpec, SUPPORTED_FORGE_EVENT_KINDS,
+};
+use crate::operation::{OperationKey, OperationOutcome, OperationResult, OperationRuntime};
+use crate::plugin_host::manifest::ToolKind;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use calm_truth::wave_vcs_repo::SqlxWaveVcsRepo;
+use calm_types::event::{ForgeEventSpec, ForgeMergeSubject};
 use calm_types::worker::WorkerSessionId;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -124,6 +133,7 @@ impl McpServer {
         registry: Arc<ToolRegistry>,
         daemon_token_hash: Option<String>,
         plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
+        operation_runtime: Arc<tokio::sync::OnceCell<Arc<OperationRuntime>>>,
         gate_logs_dir: PathBuf,
     ) -> anyhow::Result<Arc<Self>> {
         if let Some(parent) = socket_path.parent()
@@ -179,6 +189,7 @@ impl McpServer {
             daemon_token_hash,
             gate_logs_dir,
             plugin_host,
+            operation_runtime,
         });
 
         let socket_for_handle = socket_path.clone();
@@ -602,26 +613,44 @@ async fn dispatch_plugin_tools_call(
         return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
     };
     let running_ids = plugin_host.running_plugin_ids().await;
-    let Some((plugin_id, tool_name)) = plugin_tool_route(&plugin_host, name, &running_ids)? else {
+    let Some((plugin_id, tool_name, kind)) = plugin_tool_route(&plugin_host, name, &running_ids)?
+    else {
         return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
     };
 
     let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
-    let client = plugin_host
-        .mcp_client(&plugin_id)
-        .await
-        .ok_or_else(|| RpcError::custom(-32002, format!("plugin `{plugin_id}` not running")))?;
-    let result = client.tools_call(&tool_name, arguments).await?;
-    serde_json::to_value(result)
-        .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))
+    match kind {
+        None => {
+            let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
+                RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+            })?;
+            let result = client.tools_call(&tool_name, arguments).await?;
+            serde_json::to_value(result)
+                .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))
+        }
+        Some(ToolKind::ForgeAction) => {
+            if !trusted_forge_plugin(&plugin_id) {
+                return Err(RpcError::invalid_params(
+                    "plugin not trusted to submit forge actions",
+                ));
+            }
+            let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
+                RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+            })?;
+            dispatch_forge_action_plugin_tool(
+                ctx, client, &plugin_id, &tool_name, arguments, identity,
+            )
+            .await
+        }
+    }
 }
 
 fn plugin_tool_route(
     plugin_host: &Arc<crate::plugin_host::PluginHost>,
     name: &str,
     running_ids: &BTreeSet<String>,
-) -> Result<Option<(String, String)>, RpcError> {
+) -> Result<Option<(String, String, Option<ToolKind>)>, RpcError> {
     let Some(rest) = name.strip_prefix("plugin.") else {
         return Ok(None);
     };
@@ -634,20 +663,20 @@ fn plugin_tool_route(
         }
         let prefix = format!("{plugin_id}_");
         if let Some(tool_name) = rest.strip_prefix(&prefix)
-            && manifest
+            && let Some(entry) = manifest
                 .exposes_tools
                 .iter()
-                .any(|entry| entry.name == tool_name)
+                .find(|entry| entry.name == tool_name)
         {
-            candidates.push((plugin_id, tool_name.to_string()));
+            candidates.push((plugin_id, tool_name.to_string(), entry.kind));
         }
     }
 
     match candidates.len() {
         0 => Ok(None),
         1 => {
-            let (plugin_id, tool_name) = candidates.remove(0);
-            Ok(Some((plugin_id, tool_name)))
+            let (plugin_id, tool_name, kind) = candidates.remove(0);
+            Ok(Some((plugin_id, tool_name, kind)))
         }
         _ => {
             // Unreachable by construction: plugin ids cannot contain `_`, so
@@ -655,7 +684,7 @@ fn plugin_tool_route(
             // can match. Keep this as defense-in-depth against future changes.
             let mut matches = candidates
                 .into_iter()
-                .map(|(plugin_id, tool_name)| format!("plugin.{plugin_id}_{tool_name}"))
+                .map(|(plugin_id, tool_name, _kind)| format!("plugin.{plugin_id}_{tool_name}"))
                 .collect::<Vec<_>>();
             matches.sort();
             Err(RpcError::custom(
@@ -665,6 +694,386 @@ fn plugin_tool_route(
                     matches.join(", ")
                 ),
             ))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginForgePayload {
+    argv: Vec<String>,
+    idem_key: String,
+    #[serde(default)]
+    event_spec: Option<ForgeEventSpec>,
+    #[serde(default)]
+    subject: Option<ForgeMergeSubject>,
+    #[serde(default)]
+    context: serde_json::Map<String, Value>,
+    #[serde(default)]
+    probe: Option<ProbeSpec>,
+    #[serde(default)]
+    parked: bool,
+}
+
+#[derive(Serialize)]
+struct SemanticForgePayload<'a> {
+    idem_key: &'a str,
+    argv: &'a [String],
+    event_spec: Option<&'a ForgeEventSpec>,
+    subject: Option<&'a ForgeMergeSubject>,
+    context: &'a serde_json::Map<String, Value>,
+    probe: Option<&'a ProbeSpec>,
+}
+
+async fn dispatch_forge_action_plugin_tool(
+    ctx: &Arc<AppContext>,
+    client: Arc<crate::plugin_host::McpClient>,
+    plugin_id: &str,
+    tool_name: &str,
+    arguments: Value,
+    identity: ToolCallIdentity,
+) -> Result<Value, RpcError> {
+    let result = client.tools_call(tool_name, arguments).await?;
+    if result.is_error == Some(true) {
+        return serde_json::to_value(result)
+            .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")));
+    }
+
+    let Some(structured) = result.structured_content else {
+        return Err(malformed_forge_payload());
+    };
+    let payload: PluginForgePayload =
+        serde_json::from_value(structured).map_err(|_| malformed_forge_payload())?;
+
+    validate_plugin_forge_payload(&payload)?;
+
+    let Some(runtime) = ctx.operation_runtime.get().cloned() else {
+        return Err(RpcError::internal("operation runtime not bound"));
+    };
+
+    let wave_id = identity
+        .wave_id
+        .clone()
+        .ok_or_else(|| RpcError::invalid_params("forge action requires a wave-scoped caller"))?;
+    let parked = payload.parked;
+    if identity.role == CardRole::Worker && parked {
+        // A parked worker forge op would inherit the worker card lease path
+        // while the lease remains owned by the card. Until ③-c fences that
+        // lease against normal worker completion/reaper release, the op could
+        // be rug-pulled out from under a deleted workspace.
+        return Err(RpcError::invalid_params(
+            "parked worker forge actions require workspace-lease fencing (slice ③-c); use await-synchronous mode (parked:false) for worker forge actions",
+        ));
+    }
+    let card_id = identity.card_id.clone();
+    let idempotency_key = format!("{plugin_id}:{wave_id}:{card_id}:{}", payload.idem_key);
+    let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;
+    let result_path = forge_result_path(&ctx.gate_logs_dir, &idempotency_key)?;
+    let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
+
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(idempotency_key),
+        payload_hash: semantic_payload_hash(&payload)?,
+    };
+    let forge_payload = ForgeActionPayload {
+        wave_id,
+        card_id,
+        subject: payload.subject,
+        argv: payload.argv,
+        idem_key: payload.idem_key,
+        event_spec: payload.event_spec,
+        context: payload.context,
+        probe: payload.probe,
+        cwd_lease,
+        result_path,
+        deadline_ms,
+    };
+    let operation_payload = serde_json::to_value(forge_payload)
+        .map_err(|e| RpcError::internal(format!("forge-action payload serialization: {e}")))?;
+
+    let op_id = match runtime
+        .submit(FORGE_ACTION_KIND, key, operation_payload)
+        .await
+    {
+        Ok(op_id) => op_id,
+        Err(e) => return Ok(mcp_error_result(e.to_string())),
+    };
+    if parked {
+        let result = match runtime.operation_result(&op_id).await {
+            Ok(result) => result,
+            Err(e) => return Ok(mcp_error_result(e.to_string())),
+        };
+        if let Some(result) = result {
+            return Ok(operation_result_to_mcp_result(result));
+        }
+        return Ok(mcp_success_result(json!({
+            "op_id": op_id,
+            "parked": true,
+        })));
+    }
+
+    let outcome = match runtime.wait(&op_id).await {
+        Ok(outcome) => outcome,
+        Err(e) => return Ok(mcp_error_result(e.to_string())),
+    };
+    Ok(operation_result_to_mcp_result(outcome))
+}
+
+fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), RpcError> {
+    if payload.argv.is_empty() {
+        return Err(malformed_forge_payload());
+    }
+    if payload.idem_key.trim().is_empty() {
+        return Err(malformed_forge_payload());
+    }
+    if let Some(spec) = payload.event_spec.as_ref()
+        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&spec.event_kind.as_str())
+    {
+        return Err(RpcError::invalid_params(format!(
+            "forge-action event_kind `{}` is not supported",
+            spec.event_kind
+        )));
+    }
+    Ok(())
+}
+
+async fn resolve_forge_cwd(
+    ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
+    wave_id: &str,
+) -> Result<PathBuf, RpcError> {
+    let wave = ctx
+        .repo
+        .wave_get(wave_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("forge action wave lookup: {e}")))?
+        .ok_or_else(|| RpcError::invalid_params(format!("unknown wave `{wave_id}`")))?;
+    if wave.cove_id.as_str() != identity.cove_id.as_str() {
+        return Err(RpcError::invalid_params(
+            "forge action wave belongs to a different cove",
+        ));
+    }
+    let wave_cwd = PathBuf::from(&wave.cwd);
+    if !wave_cwd.is_absolute() {
+        return Err(RpcError::invalid_params(
+            "forge action requires an absolute wave cwd",
+        ));
+    }
+    match identity.role {
+        CardRole::Spec => Ok(wave_cwd),
+        CardRole::Worker => {
+            let lease = ctx
+                .repo
+                .workspace_lease_for_card(&identity.card_id)
+                .await
+                .map_err(|e| RpcError::internal(format!("workspace lease lookup: {e}")))?
+                .ok_or_else(|| RpcError::invalid_params("no held workspace lease"))?;
+            if lease.wave_id != wave_id {
+                return Err(RpcError::invalid_params(
+                    "workspace lease belongs to a different wave",
+                ));
+            }
+            let lease_path = Path::new(&lease.path);
+            if !lease_path.is_absolute()
+                && !lease_path
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+            {
+                return Err(RpcError::invalid_params(
+                    "workspace lease path contains invalid relative segments",
+                ));
+            }
+            if lease_path.as_os_str().is_empty() {
+                return Err(RpcError::invalid_params(
+                    "workspace lease path must not be empty",
+                ));
+            }
+            // ③-c re-anchors the lease under repo_root (git toplevel of wave.cwd)
+            // and updates BOTH ① and this resolve together; until then match ①'s base.
+            if lease_path.is_absolute() {
+                Ok(lease_path.to_path_buf())
+            } else {
+                let cwd = std::env::current_dir()
+                    .map_err(|e| RpcError::internal(format!("resolve current directory: {e}")))?;
+                Ok(cwd.join(lease_path))
+            }
+        }
+        _ => Err(RpcError::invalid_params(
+            "forge action requires a spec or worker caller",
+        )),
+    }
+}
+
+fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, RpcError> {
+    let semantic = SemanticForgePayload {
+        idem_key: &payload.idem_key,
+        argv: &payload.argv,
+        event_spec: payload.event_spec.as_ref(),
+        subject: payload.subject.as_ref(),
+        context: &payload.context,
+        probe: payload.probe.as_ref(),
+    };
+    let bytes = serde_json::to_vec(&semantic)
+        .map_err(|e| RpcError::internal(format!("forge-action hash serialization: {e}")))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn forge_result_path(gate_logs_dir: &Path, idem_key: &str) -> Result<PathBuf, RpcError> {
+    let dir = forge_results_dir(gate_logs_dir)?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        RpcError::internal(format!("create forge results dir {}: {e}", dir.display()))
+    })?;
+    Ok(dir.join(forge_result_filename(idem_key)))
+}
+
+fn forge_results_dir(gate_logs_dir: &Path) -> Result<PathBuf, RpcError> {
+    let raw = std::env::var("NEIGE_FORGE_RESULTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_forge_results_dir(gate_logs_dir));
+    if raw.is_absolute() {
+        return Ok(raw);
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|e| RpcError::internal(format!("resolve current directory: {e}")))?;
+    Ok(cwd.join(raw))
+}
+
+fn default_forge_results_dir(gate_logs_dir: &Path) -> PathBuf {
+    gate_logs_dir
+        .parent()
+        .map(|parent| parent.join("forge-results"))
+        .unwrap_or_else(|| gate_logs_dir.join("forge-results"))
+}
+
+fn forge_result_filename(idem_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(idem_key.as_bytes());
+    format!("{:x}.result", hasher.finalize())
+}
+
+fn forge_deadline_ms(parked: bool) -> i64 {
+    let default_secs = if parked { 900 } else { 300 };
+    let secs = std::env::var("NEIGE_FORGE_DEADLINE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default_secs);
+    secs.saturating_mul(1000)
+}
+
+fn trusted_forge_plugin(plugin_id: &str) -> bool {
+    let configured = std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS")
+        .unwrap_or_else(|_| "dev.neige.git-forge".to_string());
+    configured
+        .split(',')
+        .map(str::trim)
+        .any(|trusted| trusted == plugin_id)
+}
+
+fn operation_result_to_mcp_result(result: OperationResult) -> Value {
+    let op_id = result.op_id;
+    match result.outcome {
+        OperationOutcome::Succeeded { result } => mcp_success_result(json!({
+            "op_id": op_id,
+            "parked": false,
+            "result": result,
+        })),
+        OperationOutcome::SucceededViaCollision {
+            existing_op_id,
+            result,
+        } => mcp_success_result(json!({
+            "op_id": op_id,
+            "parked": false,
+            "result": {
+                "outcome": "succeeded_via_collision",
+                "existing_op_id": existing_op_id,
+                "result": result,
+            },
+        })),
+        OperationOutcome::Failed {
+            last_error,
+            from_phase,
+            last_error_class,
+        } => {
+            let message = format!("forge action operation {op_id} failed: {last_error}");
+            mcp_error_result_with_structured(
+                message.clone(),
+                json!({
+                    "error": message,
+                    "op_id": op_id,
+                    "parked": false,
+                    "outcome": "failed",
+                    "last_error": last_error,
+                    "from_phase": from_phase.as_str(),
+                    "last_error_class": last_error_class,
+                }),
+            )
+        }
+        OperationOutcome::Stuck { reason, from_phase } => {
+            let message = format!("forge action operation {op_id} stuck: {reason}");
+            mcp_error_result_with_structured(
+                message.clone(),
+                json!({
+                    "error": message,
+                    "op_id": op_id,
+                    "parked": false,
+                    "outcome": "stuck",
+                    "reason": reason,
+                    "from_phase": from_phase.as_str(),
+                }),
+            )
+        }
+    }
+}
+
+fn malformed_forge_payload() -> RpcError {
+    RpcError::invalid_params("forge-action plugin returned a malformed payload")
+}
+
+fn mcp_success_result(structured: Value) -> Value {
+    let text = serde_json::to_string(&structured).unwrap_or_else(|_| "{}".to_string());
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": structured,
+        "isError": false,
+    })
+}
+
+fn mcp_error_result(message: String) -> Value {
+    mcp_error_result_with_structured(message.clone(), json!({ "error": message }))
+}
+
+fn mcp_error_result_with_structured(message: String, structured: Value) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": message.clone() }],
+        "structuredContent": structured,
+        "isError": true,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forge_result_filename_is_hash_based_and_path_safe() {
+        let foo = forge_result_filename("foo");
+        let foo_bar = forge_result_filename("foo.bar");
+        let dot = forge_result_filename(".");
+        let dotdot = forge_result_filename("..");
+
+        assert_ne!(foo, foo_bar);
+        assert_ne!(dot, dotdot);
+        for filename in [foo, foo_bar, dot, dotdot] {
+            assert_eq!(filename.len(), 71);
+            assert!(filename.ends_with(".result"));
+            assert!(
+                Path::new(&filename)
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+            );
         }
     }
 }
