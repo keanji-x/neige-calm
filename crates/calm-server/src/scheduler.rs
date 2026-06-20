@@ -67,7 +67,9 @@ use crate::operation::task_verify_adapter::{
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{
-    Operation, OperationKey, OperationOutcome, OperationRuntime, PhaseTag, operation_result_from,
+    DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH,
+    DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH, Operation, OperationKey,
+    OperationOutcome, OperationRuntime, PhaseTag, operation_result_from,
 };
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
@@ -153,6 +155,47 @@ async fn mark_running_timeout_cleanup_tx(
     .bind(marker)
     .bind(now)
     .bind(card_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    Ok(rows)
+}
+
+async fn mark_dispatched_timeout_compensation_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    op_id: &str,
+    task_id: &str,
+    now: i64,
+) -> Result<u64> {
+    let marker = serde_json::to_string(&json!({
+        "task_id": task_id,
+        "requested_at_ms": now,
+        "reason": "dispatched_liveness_timeout",
+    }))?;
+    let rows = sqlx::query(
+        r#"UPDATE operations
+           SET compensation_state = json_set(
+                 COALESCE(compensation_state, '{}'),
+                 ?1,
+                 json(?2)
+               ),
+               updated_at_ms = ?3
+           WHERE id = ?4
+             AND kind = 'codex-worker'
+             AND idempotency_key = ?5
+             AND phase IN (
+               'pending',
+               'tx_committed',
+               'app_server_interact',
+               'spawn_started',
+               'compensating'
+             )"#,
+    )
+    .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH)
+    .bind(marker)
+    .bind(now)
+    .bind(op_id)
+    .bind(task_id)
     .execute(&mut **tx)
     .await?
     .rows_affected();
@@ -1230,6 +1273,7 @@ impl Scheduler {
                 "worker exceeded the running liveness deadline",
                 "[auto] worker liveness timeout",
                 cleanup_card_id.as_deref(),
+                None,
             )
             .await
         {
@@ -1254,6 +1298,7 @@ impl Scheduler {
         reason: &str,
         auto_message: &str,
         timeout_cleanup_card_id: Option<&str>,
+        dispatched_timeout_compensation_op_id: Option<&str>,
     ) -> Result<bool> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
@@ -1264,6 +1309,8 @@ impl Scheduler {
         let reason = reason.to_string();
         let auto_message = auto_message.to_string();
         let timeout_cleanup_card_id = timeout_cleanup_card_id.map(str::to_string);
+        let dispatched_timeout_compensation_op_id =
+            dispatched_timeout_compensation_op_id.map(str::to_string);
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
@@ -1286,6 +1333,14 @@ impl Scheduler {
                     }
                     if let Some(card_id) = timeout_cleanup_card_id.as_deref() {
                         mark_running_timeout_cleanup_tx(tx, card_id, &task_id, now).await?;
+                    }
+                    if let Some(op_id) = dispatched_timeout_compensation_op_id.as_deref() {
+                        let marked =
+                            mark_dispatched_timeout_compensation_tx(tx, op_id, &task_id, now)
+                                .await?;
+                        if marked == 0 {
+                            return Err(race_lost_err());
+                        }
                     }
                     let mut events = vec![(
                         ActorId::KernelDispatcher,
@@ -1329,7 +1384,7 @@ impl Scheduler {
         let Some(pool) = self.repo.sqlite_pool() else {
             return;
         };
-        let rows = match sqlx::query_as::<_, (String, String)>(
+        let worker_rows = match sqlx::query_as::<_, (String, String)>(
             r#"SELECT id, card_id
                FROM worker_sessions
                WHERE provider = 'codex'
@@ -1350,18 +1405,40 @@ impl Scheduler {
                 return;
             }
         };
+        let op_rows = match sqlx::query_as::<_, (String,)>(
+            r#"SELECT id
+               FROM operations
+               WHERE kind = 'codex-worker'
+                 AND json_extract(COALESCE(compensation_state, '{}'), ?1)
+                     IS NOT NULL
+               ORDER BY updated_at_ms ASC, id ASC"#,
+        )
+        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
+        .fetch_all(&pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "scheduler sweep: dispatched timeout compensation marker scan failed"
+                );
+                return;
+            }
+        };
 
         let Some(runtime) = self.operation_runtime.upgrade() else {
-            if !rows.is_empty() {
+            if !worker_rows.is_empty() || !op_rows.is_empty() {
                 tracing::warn!(
-                    count = rows.len(),
-                    "scheduler sweep: operation runtime dropped; cannot retry timed-out worker cleanup"
+                    running_cleanup_count = worker_rows.len(),
+                    dispatched_compensation_count = op_rows.len(),
+                    "scheduler sweep: operation runtime dropped; cannot retry timed-out cleanup"
                 );
             }
             return;
         };
 
-        for (session_id, card_id) in rows {
+        for (session_id, card_id) in worker_rows {
             let cleanup = TimeoutCleanupSession {
                 session_id,
                 card_id,
@@ -1402,6 +1479,57 @@ impl Scheduler {
                 );
             }
         }
+
+        for (op_id,) in op_rows {
+            match runtime
+                .cancel_marked_dispatched_timeout_to_compensation(
+                    &op_id,
+                    DISPATCHED_LIVENESS_TIMEOUT_REASON,
+                )
+                .await
+            {
+                Ok(true) => {
+                    if let Err(e) = self
+                        .clear_dispatched_timeout_compensation_marker_if_terminal(&op_id)
+                        .await
+                    {
+                        tracing::warn!(
+                            op_id = %op_id,
+                            error = %e,
+                            "scheduler sweep: dispatched timeout compensation marker clear check failed"
+                        );
+                    }
+                }
+                Ok(false) => {
+                    match self
+                        .clear_dispatched_timeout_compensation_marker_if_terminal(&op_id)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::debug!(
+                                op_id = %op_id,
+                                "scheduler sweep: dispatched timeout compensation op still leased; marker retained"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                op_id = %op_id,
+                                error = %e,
+                                "scheduler sweep: dispatched timeout compensation marker clear check failed"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        op_id = %op_id,
+                        error = %e,
+                        "scheduler sweep: dispatched timeout op compensation failed; marker retained"
+                    );
+                }
+            }
+        }
     }
 
     async fn clear_timeout_worker_cleanup_marker(&self, session_id: &str) -> Result<()> {
@@ -1423,6 +1551,39 @@ impl Scheduler {
         .execute(&pool)
         .await?;
         Ok(())
+    }
+
+    async fn clear_dispatched_timeout_compensation_marker_if_terminal(
+        &self,
+        op_id: &str,
+    ) -> Result<bool> {
+        let pool = self
+            .repo
+            .sqlite_pool()
+            .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
+        let rows = sqlx::query(
+            r#"UPDATE operations
+               SET compensation_state = NULLIF(
+                     json_remove(
+                       COALESCE(compensation_state, '{}'),
+                       ?1
+                     ),
+                     '{}'
+                   ),
+                   updated_at_ms = ?2
+               WHERE id = ?3
+                 AND phase IN ('succeeded','failed','stuck')
+                 AND json_extract(COALESCE(compensation_state, '{}'), ?4)
+                     IS NOT NULL"#,
+        )
+        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH)
+        .bind(now_ms())
+        .bind(op_id)
+        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
+        .execute(&pool)
+        .await?
+        .rows_affected();
+        Ok(rows > 0)
     }
 
     async fn worker_card_id_for_task(&self, task: &Task) -> Option<String> {
@@ -1508,6 +1669,7 @@ impl Scheduler {
                         DISPATCHED_LIVENESS_TIMEOUT_REASON,
                         "[auto] worker dispatch liveness timeout",
                         None,
+                        None,
                     )
                     .await
                 {
@@ -1536,6 +1698,7 @@ impl Scheduler {
                         DISPATCHED_LIVENESS_TIMEOUT_REASON,
                         "[auto] worker dispatch liveness timeout",
                         None,
+                        Some(&op.id),
                     )
                     .await
                 {
@@ -1560,7 +1723,10 @@ impl Scheduler {
                 }
 
                 match runtime
-                    .cancel_inflight_to_compensation(&op.id, DISPATCHED_LIVENESS_TIMEOUT_REASON)
+                    .cancel_marked_dispatched_timeout_to_compensation(
+                        &op.id,
+                        DISPATCHED_LIVENESS_TIMEOUT_REASON,
+                    )
                     .await
                 {
                     Ok(true) => {}
@@ -1605,6 +1771,7 @@ impl Scheduler {
                 wave,
                 DISPATCHED_LIVENESS_TIMEOUT_REASON,
                 "[auto] worker dispatch liveness timeout",
+                None,
                 None,
             )
             .await

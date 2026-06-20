@@ -50,6 +50,10 @@ pub type OperationId = String;
 pub type TimestampMs = i64;
 pub type Tx<'tx> = Transaction<'tx, Sqlite>;
 const OPERATION_LEASE_MS: TimestampMs = 60_000;
+pub(crate) const DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH: &str =
+    "$.dispatched_timeout_compensation";
+pub(crate) const DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH: &str =
+    "$.dispatched_timeout_compensation.requested_at_ms";
 
 #[derive(Clone, Copy)]
 enum ParkedClaimMode {
@@ -659,6 +663,12 @@ pub trait OperationRepo: Send + Sync {
         self.claim_drive_batch(limit).await
     }
     async fn claim_inflight_for_compensation(&self, op_id: &str) -> Result<Option<Operation>>;
+    async fn claim_marked_dispatched_timeout_for_compensation(
+        &self,
+        op_id: &str,
+    ) -> Result<Option<Operation>> {
+        self.claim_inflight_for_compensation(op_id).await
+    }
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>>;
     /// Reserved for PR2 background driver loop (design §B.3).
     async fn abandoned_running_operations_steady_state(&self) -> Result<Vec<Operation>>;

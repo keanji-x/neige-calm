@@ -17,7 +17,8 @@ use crate::terminal_sweeper::{
 
 use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
-    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationId, OperationKey,
+    AppServerInteractOutcome, CompensationStateVersioned,
+    DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH, Operation, OperationId, OperationKey,
     OperationRepo, OperationResult, ParkedClaimMode, ParkedCompletion, ParkedOutcome,
     ParkedRecovery, Phase, PhaseTag, ProviderAdapter, RecoveryItem, RecoveryMode, RecoveryPlan,
     SpawnArtifacts, SpawnCtx, SpawnOutcome, TxOutput, complete_parked_tx,
@@ -305,6 +306,25 @@ impl OperationRuntime {
         let Some(op) = self.repo.claim_inflight_for_compensation(op_id).await? else {
             return Ok(false);
         };
+        self.cancel_claimed_to_compensation(op, reason).await
+    }
+
+    pub async fn cancel_marked_dispatched_timeout_to_compensation(
+        &self,
+        op_id: &OperationId,
+        reason: &str,
+    ) -> Result<bool> {
+        let Some(op) = self
+            .repo
+            .claim_marked_dispatched_timeout_for_compensation(op_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        self.cancel_claimed_to_compensation(op, reason).await
+    }
+
+    async fn cancel_claimed_to_compensation(&self, op: Operation, reason: &str) -> Result<bool> {
         let adapter = self.adapter(&op.kind)?;
         let from_phase = op.phase.tag();
         if matches!(op.phase, Phase::Compensating) {
@@ -403,10 +423,10 @@ impl OperationRuntime {
         let rows = self.repo.abandoned_running_operations_on_boot().await?;
         let mut items = Vec::new();
         for op in rows {
-            if self.scheduler_owns_dispatched_codex_recovery(&op).await? {
+            if self.scheduler_owns_codex_task_recovery(&op).await? {
                 items.push(RecoveryItem::Skip {
                     op_id: op.id.clone(),
-                    reason: "deadline-aware scheduler owns dispatched codex-worker recovery".into(),
+                    reason: "deadline-aware scheduler owns codex-worker task recovery".into(),
                 });
                 continue;
             }
@@ -448,19 +468,88 @@ impl OperationRuntime {
             .ok_or_else(|| CalmError::BadRequest(format!("unknown operation kind {kind}")))
     }
 
-    async fn scheduler_owns_dispatched_codex_recovery(&self, op: &Operation) -> Result<bool> {
+    async fn scheduler_owns_codex_task_recovery(&self, op: &Operation) -> Result<bool> {
         if op.kind != "codex-worker" {
             return Ok(false);
         }
         let Some(task_id) = op.idempotency_key.as_deref() else {
             return Ok(false);
         };
-        Ok(self
-            .spawn_ctx
-            .repo
-            .task_get(task_id)
-            .await?
-            .is_some_and(|task| task.status == TaskStatus::Dispatched))
+        let Some(task) = self.spawn_ctx.repo.task_get(task_id).await? else {
+            return Ok(false);
+        };
+        match task.status {
+            TaskStatus::Dispatched => {
+                self.clear_abandoned_codex_op_lease_for_scheduler_recovery(&op.id)
+                    .await?;
+                Ok(true)
+            }
+            TaskStatus::Failed => {
+                self.mark_dispatched_timeout_compensation_for_boot(&op.id, task_id)
+                    .await?;
+                self.clear_abandoned_codex_op_lease_for_scheduler_recovery(&op.id)
+                    .await?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    async fn mark_dispatched_timeout_compensation_for_boot(
+        &self,
+        op_id: &str,
+        task_id: &str,
+    ) -> Result<()> {
+        let marker = serde_json::to_string(&serde_json::json!({
+            "task_id": task_id,
+            "requested_at_ms": now_ms(),
+            "reason": "dispatched_liveness_timeout_boot_recovery",
+        }))?;
+        sqlx::query(
+            r#"UPDATE operations
+               SET compensation_state = json_set(
+                     COALESCE(compensation_state, '{}'),
+                     ?1,
+                     json(?2)
+                   ),
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND kind = 'codex-worker'"#,
+        )
+        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH)
+        .bind(marker)
+        .bind(now_ms())
+        .bind(op_id)
+        .execute(&self.repo.sqlite_pool())
+        .await?;
+        Ok(())
+    }
+
+    async fn clear_abandoned_codex_op_lease_for_scheduler_recovery(
+        &self,
+        op_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE operations
+               SET lease_owner = NULL,
+                   lease_until_ms = NULL,
+                   updated_at_ms = ?1
+               WHERE id = ?2
+                 AND kind = 'codex-worker'
+                 AND phase IN (
+                   'pending',
+                   'tx_committed',
+                   'app_server_interact',
+                   'spawn_started',
+                   'spawn_succeeded',
+                   'compensating'
+                 )"#,
+        )
+        .bind(now_ms())
+        .bind(op_id)
+        .execute(&self.repo.sqlite_pool())
+        .await?;
+        Ok(())
     }
 
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {

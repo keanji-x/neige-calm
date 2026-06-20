@@ -626,6 +626,80 @@ async fn timeout_cleanup_marker_exists(boot: &Boot, card_id: &str) -> bool {
     count > 0
 }
 
+async fn dispatched_timeout_compensation_marker_exists(boot: &Boot, op_id: &str) -> bool {
+    let count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+           FROM operations
+           WHERE id = ?1
+             AND json_extract(
+                   COALESCE(compensation_state, '{}'),
+                   '$.dispatched_timeout_compensation.requested_at_ms'
+                 ) IS NOT NULL"#,
+    )
+    .bind(op_id)
+    .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("dispatched timeout compensation marker query");
+    count > 0
+}
+
+async fn mark_dispatched_timeout_compensation_marker_for_test(
+    boot: &Boot,
+    op_id: &str,
+    task_id: &str,
+) {
+    sqlx::query(
+        r#"UPDATE operations
+           SET compensation_state = json_set(
+                 COALESCE(compensation_state, '{}'),
+                 '$.dispatched_timeout_compensation',
+                 json(?1)
+               ),
+               updated_at_ms = ?2
+           WHERE id = ?3"#,
+    )
+    .bind(
+        json!({
+            "task_id": task_id,
+            "requested_at_ms": now_ms(),
+            "reason": "test",
+        })
+        .to_string(),
+    )
+    .bind(now_ms())
+    .bind(op_id)
+    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("mark dispatched timeout compensation");
+}
+
+async fn set_operation_lease_for_test(boot: &Boot, op_id: &str, owner: &str, until_ms: i64) {
+    let rows = sqlx::query(
+        r#"UPDATE operations
+           SET lease_owner = ?1,
+               lease_until_ms = ?2,
+               updated_at_ms = ?3
+           WHERE id = ?4"#,
+    )
+    .bind(owner)
+    .bind(until_ms)
+    .bind(now_ms())
+    .bind(op_id)
+    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("set operation lease")
+    .rows_affected();
+    assert_eq!(rows, 1, "operation lease fixture must update one row");
+}
+
+async fn operation_lease_owner(boot: &Boot, op_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT lease_owner FROM operations WHERE id = ?1")
+        .bind(op_id)
+        .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .await
+        .expect("operation lease owner")
+}
+
 async fn call_tool(
     boot: &Boot,
     name: &str,
@@ -2609,6 +2683,78 @@ async fn sweep_expired_dispatched_codex_compensates_op_and_fails_task() {
         failed[0].1["reason"],
         json!("worker exceeded the dispatched liveness deadline")
     );
+    assert!(
+        !dispatched_timeout_compensation_marker_exists(&boot, &op_id).await,
+        "marker clears after dispatched timeout compensation reaches a terminal op"
+    );
+}
+
+#[tokio::test]
+async fn sweep_expired_dispatched_codex_retry_marker_after_unclaimable_op_lease() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, _runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "dispatch-expired-held-lease").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "dispatch-expired-held-lease").await;
+    let mut task = plan_task(
+        &boot.wave_id,
+        "dispatch-expired-held-lease",
+        TaskKind::Codex,
+        &[],
+    );
+    task.status = TaskStatus::Dispatched;
+    task.dispatched_deadline_ms = Some(now_ms() - 1);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let op_id = seed_spawn_started_codex_op(&boot, &task_id, &card_id, &lease_id).await;
+    set_operation_lease_for_test(&boot, &op_id, "dead-driver", now_ms() + 60_000).await;
+
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(TimeoutCompensationAdapter {
+            kind: "codex-worker",
+        })],
+    );
+
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "dispatch-expired-held-lease").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(
+        workspace_lease_state(&boot, &lease_id).await,
+        "held",
+        "held op lease prevents first compensation attempt"
+    );
+    assert!(
+        dispatched_timeout_compensation_marker_exists(&boot, &op_id).await,
+        "fence and durable compensation marker commit atomically"
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::SpawnStarted);
+    assert_eq!(op.lease_owner.as_deref(), Some("dead-driver"));
+
+    set_operation_lease_for_test(&boot, &op_id, "dead-driver", now_ms() - 1).await;
+    scheduler.sweep_all().await;
+
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(op.lease_owner.is_none());
+    assert!(
+        !dispatched_timeout_compensation_marker_exists(&boot, &op_id).await,
+        "marker clears after the retry compensates the op"
+    );
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
 }
 
 #[tokio::test]
@@ -2947,6 +3093,10 @@ async fn sweep_expired_dispatched_codex_spawn_succeeded_reconciles_to_running() 
         .expect("op lookup")
         .expect("op row");
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(
+        !dispatched_timeout_compensation_marker_exists(&boot, &op_id).await,
+        "spawn_succeeded completion race must not create a compensation marker"
+    );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
     assert_eq!(task_id, row.id);
 }
@@ -2994,6 +3144,7 @@ async fn boot_recovery_expired_dispatched_spawn_started_fails_worker_timeout_wit
     let task_id = task.id.clone();
     seed_task(&boot, task.clone()).await;
     let op_id = seed_spawn_started_codex_worker_op(&boot, &task, &card_id, &lease_id).await;
+    set_operation_lease_for_test(&boot, &op_id, "dead-driver", now_ms() + 60_000).await;
     let spawn_calls = Arc::new(AtomicUsize::new(0));
 
     let (runtime, scheduler) = build_scheduler_unbooted(
@@ -3029,6 +3180,10 @@ async fn boot_recovery_expired_dispatched_spawn_started_fails_worker_timeout_wit
         .expect("op lookup")
         .expect("op row");
     assert_eq!(op.phase.tag(), PhaseTag::SpawnStarted);
+    assert!(
+        operation_lease_owner(&boot, &op_id).await.is_none(),
+        "boot recovery clears abandoned scheduler-owned op lease before timeout compensation"
+    );
 
     scheduler.sweep_boot().await;
 
@@ -3042,6 +3197,10 @@ async fn boot_recovery_expired_dispatched_spawn_started_fails_worker_timeout_wit
         .expect("op lookup")
         .expect("op row");
     assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(
+        !dispatched_timeout_compensation_marker_exists(&boot, &op_id).await,
+        "boot timeout marker clears after compensation"
+    );
     assert_eq!(
         spawn_calls.load(Ordering::SeqCst),
         0,
@@ -3052,6 +3211,91 @@ async fn boot_recovery_expired_dispatched_spawn_started_fails_worker_timeout_wit
     assert_eq!(
         failed[0].1["reason"],
         json!("worker exceeded the dispatched liveness deadline")
+    );
+    assert_eq!(task_id, row.id);
+}
+
+#[tokio::test]
+async fn boot_recovery_failed_task_marker_compensates_spawn_started_without_spawn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, _runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "boot-failed-marker").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "boot-failed-marker").await;
+    let mut task = plan_task(&boot.wave_id, "boot-failed-marker", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Failed;
+    task.status_detail = Some("worker-timeout".into());
+    task.finished_at_ms = Some(now_ms());
+    let task_id = task.id.clone();
+    seed_task(&boot, task.clone()).await;
+    let op_id = seed_spawn_started_codex_worker_op(&boot, &task, &card_id, &lease_id).await;
+    mark_dispatched_timeout_compensation_marker_for_test(&boot, &op_id, &task_id).await;
+    set_operation_lease_for_test(&boot, &op_id, "dead-driver", now_ms() + 60_000).await;
+    let spawn_calls = Arc::new(AtomicUsize::new(0));
+
+    let (runtime, scheduler) = build_scheduler_unbooted(
+        &boot,
+        vec![Arc::new(CountingTimeoutCompensationAdapter {
+            kind: "codex-worker",
+            card_id: card_id.clone(),
+            lease_id: lease_id.clone(),
+            spawn_calls: Arc::clone(&spawn_calls),
+        })],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+    );
+    let plan = runtime.recover_on_boot().await.expect("recovery plan");
+    assert!(plan.items.iter().any(|item| {
+        matches!(
+            item,
+            RecoveryItem::Skip { op_id: skipped, reason }
+                if skipped == &op_id && reason.contains("scheduler owns")
+        )
+    }));
+    runtime
+        .apply_recovery(plan)
+        .await
+        .expect("apply boot recovery");
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        0,
+        "boot recovery must not spawn for a fenced failed task"
+    );
+    assert!(
+        operation_lease_owner(&boot, &op_id).await.is_none(),
+        "boot recovery clears the abandoned op lease for marker compensation"
+    );
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::SpawnStarted);
+
+    scheduler.sweep_boot().await;
+
+    let row = task_row(&boot, "boot-failed-marker").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    let op = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"))
+        .get_operation(&op_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(op.lease_owner.is_none());
+    assert!(
+        !dispatched_timeout_compensation_marker_exists(&boot, &op_id).await,
+        "boot marker clears after compensating the failed task's op"
+    );
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        0,
+        "marker recovery compensates instead of spawning a worker"
+    );
+    assert!(
+        event_rows(&boot, "task.failed").await.is_empty(),
+        "seeded crash state is already failed; recovery only compensates the op"
     );
     assert_eq!(task_id, row.id);
 }

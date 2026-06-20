@@ -9,8 +9,9 @@ use crate::event::BroadcastEnvelope;
 use crate::model::{new_id, now_ms};
 
 use super::{
-    AppServerInteractKind, CompensationStateVersioned, OPERATION_LEASE_MS, Operation, OperationId,
-    OperationKey, OperationOutcome, OperationRepo, OperationResult, ParkedCompletion,
+    AppServerInteractKind, CompensationStateVersioned,
+    DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH, OPERATION_LEASE_MS, Operation,
+    OperationId, OperationKey, OperationOutcome, OperationRepo, OperationResult, ParkedCompletion,
     ParkedOutcome, Phase, PhaseTag, ProviderAdapter, SpawnArtifacts, Tx, TxOutput,
     idempotency_payload_conflict, operation_result_from, required_lease_owner, required_output,
 };
@@ -176,12 +177,17 @@ impl OperationRepo for SqlxOperationRepo {
                  'spawn_succeeded',
                  'compensating'
                )
+               AND json_extract(
+                     COALESCE(compensation_state, '{}'),
+                     ?3
+                   ) IS NULL
                AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
                ORDER BY created_at_ms ASC
                LIMIT ?2"#,
         )
         .bind(now)
         .bind(limit)
+        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
         .fetch_all(&mut *tx)
         .await?;
 
@@ -202,12 +208,17 @@ impl OperationRepo for SqlxOperationRepo {
                        'spawn_succeeded',
                        'compensating'
                      )
+                     AND json_extract(
+                           COALESCE(compensation_state, '{}'),
+                           ?5
+                         ) IS NULL
                      AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
             )
             .bind(&lease_owner)
             .bind(lease_until)
             .bind(now)
             .bind(&id)
+            .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
             .execute(&mut *tx)
             .await?;
             if result.rows_affected() == 1 {
@@ -238,6 +249,10 @@ impl OperationRepo for SqlxOperationRepo {
                  'spawn_succeeded',
                  'compensating'
                )
+               AND json_extract(
+                     COALESCE(compensation_state, '{}'),
+                     ?3
+                   ) IS NULL
                AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
                AND NOT (
                  kind = 'codex-worker'
@@ -246,7 +261,7 @@ impl OperationRepo for SqlxOperationRepo {
                    SELECT 1
                    FROM tasks
                    WHERE tasks.id = operations.idempotency_key
-                     AND tasks.status = 'dispatched'
+                     AND tasks.status IN ('dispatched','failed')
                  )
                )
                ORDER BY created_at_ms ASC
@@ -254,6 +269,7 @@ impl OperationRepo for SqlxOperationRepo {
         )
         .bind(now)
         .bind(limit)
+        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
         .fetch_all(&mut *tx)
         .await?;
 
@@ -274,6 +290,10 @@ impl OperationRepo for SqlxOperationRepo {
                        'spawn_succeeded',
                        'compensating'
                      )
+                     AND json_extract(
+                           COALESCE(compensation_state, '{}'),
+                           ?5
+                         ) IS NULL
                      AND (lease_until_ms IS NULL OR lease_until_ms < ?3)
                      AND NOT (
                        kind = 'codex-worker'
@@ -282,7 +302,7 @@ impl OperationRepo for SqlxOperationRepo {
                          SELECT 1
                          FROM tasks
                          WHERE tasks.id = operations.idempotency_key
-                           AND tasks.status = 'dispatched'
+                           AND tasks.status IN ('dispatched','failed')
                        )
                      )"#,
             )
@@ -290,6 +310,7 @@ impl OperationRepo for SqlxOperationRepo {
             .bind(lease_until)
             .bind(now)
             .bind(&id)
+            .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
             .execute(&mut *tx)
             .await?;
             if result.rows_affected() == 1 {
@@ -327,6 +348,51 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(lease_until)
         .bind(now)
         .bind(op_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        let row = sqlx::query("SELECT * FROM operations WHERE id = ?1 AND lease_owner = ?2")
+            .bind(op_id)
+            .bind(&lease_owner)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(operation_from_row).transpose()
+    }
+
+    async fn claim_marked_dispatched_timeout_for_compensation(
+        &self,
+        op_id: &str,
+    ) -> Result<Option<Operation>> {
+        let now = now_ms();
+        let lease_owner = new_id();
+        let lease_until = now + OPERATION_LEASE_MS;
+        let result = sqlx::query(
+            r#"UPDATE operations
+               SET lease_owner = ?1,
+                   lease_until_ms = ?2,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND phase IN (
+                   'pending',
+                   'tx_committed',
+                   'app_server_interact',
+                   'spawn_started',
+                   'spawn_succeeded',
+                   'compensating'
+                 )
+                 AND json_extract(
+                       COALESCE(compensation_state, '{}'),
+                       ?5
+                     ) IS NOT NULL
+                 AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
+        )
+        .bind(&lease_owner)
+        .bind(lease_until)
+        .bind(now)
+        .bind(op_id)
+        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
