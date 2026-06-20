@@ -1676,7 +1676,7 @@ mod scope_tests {
             pr_number: 1,
             base_sha: "base-sha".into(),
             head_sha: "head-sha".into(),
-            artifact_path: "/tmp/diff.patch".into(),
+            artifact_path: "/tmp/neige/forge-diff.patch".into(),
         };
         assert_eq!(forge_pr_diff_read.kind_tag(), "forge.pr.diff.read");
 
@@ -2652,7 +2652,7 @@ mod scope_tests {
                 pr_number: 1,
                 base_sha: "base-sha".into(),
                 head_sha: "head-sha".into(),
-                artifact_path: "/tmp/diff.patch".into(),
+                artifact_path: "/tmp/neige/forge-diff.patch".into(),
             },
             Event::ForgePrChecks {
                 wave_id: WaveId::from("wave-1"),
@@ -2876,7 +2876,7 @@ mod scope_tests {
                     "pr_number": 1,
                     "base_sha": "base-sha",
                     "head_sha": "head-sha",
-                    "artifact_path": "/tmp/diff.patch",
+                    "artifact_path": "/tmp/neige/forge-diff.patch",
                 }),
             ),
             (

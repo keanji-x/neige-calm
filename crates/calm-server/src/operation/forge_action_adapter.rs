@@ -21,7 +21,7 @@ use crate::event::{
     BroadcastEnvelope, Event, EventBus, EventScope, FieldSource, ForgeEventSpec, ForgeMergeSubject,
     SYNC_EVENT_VERSION,
 };
-use crate::ids::{ActorId, CoveId, WaveId};
+use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
@@ -128,10 +128,18 @@ impl FrozenForge {
         })
     }
 
-    fn event_scope(&self) -> EventScope {
-        EventScope::Wave {
-            wave: WaveId::from(self.wave_id.clone()),
-            cove: CoveId::from(self.cove_id.clone()),
+    fn event_scope_for(&self, event_kind: &str) -> EventScope {
+        if event_kind.starts_with("worktree.") {
+            EventScope::Card {
+                card: CardId::from(self.card_id.clone()),
+                wave: WaveId::from(self.wave_id.clone()),
+                cove: CoveId::from(self.cove_id.clone()),
+            }
+        } else {
+            EventScope::Wave {
+                wave: WaveId::from(self.wave_id.clone()),
+                cove: CoveId::from(self.cove_id.clone()),
+            }
         }
     }
 }
@@ -502,6 +510,18 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             }
         }
     }
+    for reserved in ["wave_id", "subject"] {
+        if payload.context.contains_key(reserved)
+            || payload
+                .event_spec
+                .as_ref()
+                .is_some_and(|spec| spec.fields.contains_key(reserved))
+        {
+            return Err(CalmError::BadRequest(format!(
+                "forge event context/output may not set reserved key `{reserved}`"
+            )));
+        }
+    }
     if payload.cwd_lease.as_os_str().is_empty() {
         return Err(CalmError::BadRequest(
             "forge-action cwd_lease must not be empty".into(),
@@ -777,7 +797,7 @@ async fn complete_forge_op_succeeded(
     match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
         ParkedCompletion::Completed(result) => {
             let envelope = if let Some(event) = event {
-                let scope = frozen.event_scope();
+                let scope = frozen.event_scope_for(event.kind_tag());
                 let event_id = append_decision_event_in_tx(
                     &mut tx,
                     &PermissiveGate,

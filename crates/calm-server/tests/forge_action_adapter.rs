@@ -482,6 +482,20 @@ async fn latest_event_payload(repo: &SqlxRepo, kind: &str) -> Value {
     serde_json::from_str(&payload_text).expect("event payload parses")
 }
 
+async fn latest_event_scope(
+    repo: &SqlxRepo,
+    kind: &str,
+) -> (String, Option<String>, Option<String>, Option<String>) {
+    sqlx::query_as(
+        "SELECT scope_kind, scope_cove, scope_wave, scope_card \
+         FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(kind)
+    .fetch_one(repo.pool())
+    .await
+    .expect("event scope exists")
+}
+
 async fn forge_event_count(repo: &SqlxRepo) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
         .bind("forge.pr.merged")
@@ -1379,6 +1393,74 @@ async fn forge_action_persists_non_merge_event_from_context() -> CalmResult<()> 
 }
 
 #[tokio::test]
+async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("scoped-event-action.sh");
+    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'ok'\n");
+
+    let worktree_idem = "forge-worktree-provisioned-scope";
+    let mut worktree_input = payload(
+        &boot,
+        worktree_idem,
+        vec![action.display().to_string()],
+        boot.temp_path("worktree-provisioned-scope-result.json"),
+    );
+    worktree_input["subject"] = Value::Null;
+    worktree_input["event_spec"] = serde_json::to_value(event_spec_for("worktree.provisioned"))?;
+    let card_id = worktree_input["card_id"]
+        .as_str()
+        .expect("payload card_id")
+        .to_string();
+    worktree_input["context"] = json!({
+        "card_id": card_id,
+        "path": "/tmp/neige/worktrees/card-1"
+    });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(worktree_idem), worktree_input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+
+    let worktree_event = latest_event_payload(&boot.repo, "worktree.provisioned").await;
+    assert_eq!(worktree_event["wave_id"], json!(boot.wave_id));
+    assert_eq!(worktree_event["card_id"], json!(card_id));
+    let (scope_kind, scope_cove, scope_wave, scope_card) =
+        latest_event_scope(&boot.repo, "worktree.provisioned").await;
+    assert_eq!(scope_kind, "card");
+    assert_eq!(scope_card.as_deref(), Some(card_id.as_str()));
+    assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
+    assert!(scope_cove.is_some(), "card scope carries cove");
+
+    let forge_idem = "forge-scan-completed-wave-scope";
+    let mut forge_input = payload(
+        &boot,
+        forge_idem,
+        vec![action.display().to_string()],
+        boot.temp_path("scan-completed-wave-scope-result.json"),
+    );
+    forge_input["subject"] = Value::Null;
+    forge_input["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
+    forge_input["context"] = json!({ "overlapping_prs": [7] });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(forge_idem), forge_input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+
+    let (scope_kind, scope_cove, scope_wave, scope_card) =
+        latest_event_scope(&boot.repo, "forge.scan.completed").await;
+    assert_eq!(scope_kind, "wave");
+    assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
+    assert!(scope_cove.is_some(), "wave scope carries cove");
+    assert!(scope_card.is_none(), "forge.* events remain wave-scoped");
+    Ok(())
+}
+
+#[tokio::test]
 async fn forge_action_resultless_succeeds_without_event_row() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("resultless-action.sh");
@@ -1417,41 +1499,96 @@ async fn forge_action_resultless_succeeds_without_event_row() -> CalmResult<()> 
 }
 
 #[tokio::test]
-async fn forge_action_rejects_reserved_context_keys_without_event() -> CalmResult<()> {
+async fn forge_action_rejects_reserved_event_keys_before_spawn() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("reserved-context-action.sh");
-    write_script(&action, "#!/bin/sh\nprintf '%s\\n' 'scan complete'\n");
-
-    let idem = "forge-reserved-context";
-    let mut input = payload(
-        &boot,
-        idem,
-        vec![action.display().to_string()],
-        boot.temp_path("reserved-context-result.json"),
+    let counter = boot.temp_path("reserved-context-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
+"#,
     );
-    input["subject"] = Value::Null;
-    input["event_spec"] = serde_json::to_value(event_spec_for("forge.scan.completed"))?;
-    input["context"] = json!({ "wave_id": "plugin-wave", "overlapping_prs": [1] });
 
-    let op_id = boot
+    let mut context_wave = payload(
+        &boot,
+        "forge-reserved-context-wave",
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-context-wave-result.json"),
+    );
+    context_wave["context"] = json!({ "wave_id": "plugin-wave" });
+    let err = boot
         .runtime
-        .submit(FORGE_ACTION_KIND, op_key(idem), input)
-        .await?;
-    let result = boot.runtime.wait(&op_id).await?;
+        .submit(
+            FORGE_ACTION_KIND,
+            op_key("forge-reserved-context-wave"),
+            context_wave,
+        )
+        .await
+        .expect_err("context.wave_id must be rejected before spawn");
     assert!(
         matches!(
-            result.outcome,
-            OperationOutcome::Failed {
-                ref last_error,
-                from_phase: calm_server::operation::PhaseTag::Parked,
-                last_error_class: Some(ref class),
-            } if last_error.contains("forge event context/output may not set reserved key `wave_id`")
-                && class == "gate-infra"
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `wave_id`"
         ),
-        "{:?}",
-        result.outcome
+        "{err:?}"
     );
-    assert_eq!(event_count(&boot.repo, "forge.scan.completed").await, 0);
+
+    let mut context_subject = payload(
+        &boot,
+        "forge-reserved-context-subject",
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-context-subject-result.json"),
+    );
+    context_subject["context"] = json!({ "subject": { "phase": "impl" } });
+    let err = boot
+        .runtime
+        .submit(
+            FORGE_ACTION_KIND,
+            op_key("forge-reserved-context-subject"),
+            context_subject,
+        )
+        .await
+        .expect_err("context.subject must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `subject`"
+        ),
+        "{err:?}"
+    );
+
+    let mut field_wave = payload(
+        &boot,
+        "forge-reserved-field-wave",
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-field-wave-result.json"),
+    );
+    field_wave["event_spec"]["fields"]["wave_id"] = json!("exit_code");
+    let err = boot
+        .runtime
+        .submit(
+            FORGE_ACTION_KIND,
+            op_key("forge-reserved-field-wave"),
+            field_wave,
+        )
+        .await
+        .expect_err("event_spec.fields.wave_id must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `wave_id`"
+        ),
+        "{err:?}"
+    );
+
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
     Ok(())
 }
 
