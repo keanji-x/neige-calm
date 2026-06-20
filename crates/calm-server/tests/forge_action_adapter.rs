@@ -785,7 +785,48 @@ printf '%s\n' '{"oid":"abc123","headRefOid":"def456"}'
         matches!(
             err,
             CalmError::BadRequest(ref message)
-                if message == "forge-action event_spec for `forge.pr.merged` must populate field `merge_sha`"
+                if message == "forge-action event_spec/context for `forge.pr.merged` must provide field `merge_sha`"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_missing_required_new_kind_field_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("missing-issue-number-action.sh");
+    let counter = boot.temp_path("missing-issue-number-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' 'closed'
+"#,
+    );
+    let idem = "forge-issue-closed-missing-issue-number";
+    let mut payload = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("missing-issue-number-result.json"),
+    );
+    payload["subject"] = Value::Null;
+    payload["event_spec"] = serde_json::to_value(event_spec_for("forge.issue.closed"))?;
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), payload)
+        .await
+        .expect_err("missing issue_number must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge-action event_spec/context for `forge.issue.closed` must provide field `issue_number`"
         ),
         "{err:?}"
     );
@@ -1412,7 +1453,6 @@ async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() 
         .expect("payload card_id")
         .to_string();
     worktree_input["context"] = json!({
-        "card_id": card_id,
         "path": "/tmp/neige/worktrees/card-1"
     });
 
@@ -1426,6 +1466,7 @@ async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() 
     let worktree_event = latest_event_payload(&boot.repo, "worktree.provisioned").await;
     assert_eq!(worktree_event["wave_id"], json!(boot.wave_id));
     assert_eq!(worktree_event["card_id"], json!(card_id));
+    assert_eq!(worktree_event["path"], json!("/tmp/neige/worktrees/card-1"));
     let (scope_kind, scope_cove, scope_wave, scope_card) =
         latest_event_scope(&boot.repo, "worktree.provisioned").await;
     assert_eq!(scope_kind, "card");
@@ -1495,6 +1536,51 @@ async fn forge_action_resultless_succeeds_without_event_row() -> CalmResult<()> 
         before,
         "resultless success must not append an event"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_rejects_worktree_context_card_id_before_spawn() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("reserved-worktree-card-action.sh");
+    let counter = boot.temp_path("reserved-worktree-card-counter");
+    write_script(
+        &action,
+        r#"#!/bin/sh
+n=0
+if [ -f "$1" ]; then n=$(cat "$1"); fi
+printf '%s\n' "$((n + 1))" > "$1"
+printf '%s\n' 'ok'
+"#,
+    );
+    let idem = "forge-worktree-reserved-card-id";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string(), counter.display().to_string()],
+        boot.temp_path("reserved-worktree-card-result.json"),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = serde_json::to_value(event_spec_for("worktree.provisioned"))?;
+    input["context"] = json!({
+        "card_id": "plugin-card",
+        "path": "/tmp/neige/worktrees/plugin-card"
+    });
+
+    let err = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await
+        .expect_err("worktree context.card_id must be rejected before spawn");
+    assert!(
+        matches!(
+            err,
+            CalmError::BadRequest(ref message)
+                if message == "forge event context/output may not set reserved key `card_id`"
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_counter(&counter), 0, "argv must not run");
     Ok(())
 }
 

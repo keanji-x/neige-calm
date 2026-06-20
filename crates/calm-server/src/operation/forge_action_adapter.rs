@@ -407,6 +407,34 @@ fn required_output_fields(event_kind: &str) -> &'static [(&'static str, bool)] {
     }
 }
 
+/// Payload fields each forge/worktree event kind requires from plugin
+/// `context` or `event_spec` extraction -- excluding kernel-authoritative
+/// fields (see `kernel_injected_fields`). Checked pre-spawn so the
+/// authoritative event is fully determined before the irreversible action.
+fn required_event_fields(event_kind: &str) -> &'static [&'static str] {
+    match event_kind {
+        "forge.pr.merged" => &["head_sha", "merge_sha"],
+        "forge.scan.completed" => &["overlapping_prs"],
+        "forge.pr.opened" => &["pr_number", "head_sha"],
+        "forge.pr.diff.read" => &["pr_number", "base_sha", "head_sha", "artifact_path"],
+        "forge.pr.checks" => &["pr_number", "conclusion"],
+        "forge.issue.closed" => &["issue_number"],
+        "worktree.provisioned" | "worktree.removed" => &["path"],
+        _ => &[],
+    }
+}
+
+/// Kernel-authoritative payload fields the kernel injects last and that
+/// plugin `context`/`event_spec.fields` may not set: `wave_id` for every
+/// kind; `subject` for `forge.pr.merged`; `card_id` for `worktree.*`.
+fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
+    match event_kind {
+        "forge.pr.merged" => &["wave_id", "subject"],
+        "worktree.provisioned" | "worktree.removed" => &["wave_id", "card_id"],
+        _ => &["wave_id"],
+    }
+}
+
 fn field_source_type_name(source: &FieldSource) -> &'static str {
     match source {
         FieldSource::ExitCode => "exit_code",
@@ -483,6 +511,21 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
                 spec.event_kind
             )));
         }
+        for reserved in kernel_injected_fields(&spec.event_kind) {
+            if payload.context.contains_key(*reserved) || spec.fields.contains_key(*reserved) {
+                return Err(CalmError::BadRequest(format!(
+                    "forge event context/output may not set reserved key `{reserved}`"
+                )));
+            }
+        }
+        for field in required_event_fields(&spec.event_kind) {
+            if !payload.context.contains_key(*field) && !spec.fields.contains_key(*field) {
+                return Err(CalmError::BadRequest(format!(
+                    "forge-action event_spec/context for `{}` must provide field `{field}`",
+                    spec.event_kind
+                )));
+            }
+        }
         for (field, source) in &spec.fields {
             if let FieldSource::JsonField { path } = source
                 && !path.is_empty()
@@ -508,18 +551,6 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
                     field_source_type_name(source)
                 )));
             }
-        }
-    }
-    for reserved in ["wave_id", "subject"] {
-        if payload.context.contains_key(reserved)
-            || payload
-                .event_spec
-                .as_ref()
-                .is_some_and(|spec| spec.fields.contains_key(reserved))
-        {
-            return Err(CalmError::BadRequest(format!(
-                "forge event context/output may not set reserved key `{reserved}`"
-            )));
         }
     }
     if payload.cwd_lease.as_os_str().is_empty() {
@@ -606,28 +637,55 @@ fn build_forge_event(
     {
         payload.insert(key, value);
     }
-    for reserved in ["wave_id", "subject"] {
-        if payload.contains_key(reserved) {
+    for field in kernel_injected_fields(&spec.event_kind) {
+        if payload.contains_key(*field) {
             return Err(ForgeEventBuildError::ExtractionFailed {
-                reason: format!("forge event context/output may not set reserved key `{reserved}`"),
+                reason: format!("forge event context/output may not set reserved key `{field}`"),
             });
         }
     }
-    payload.insert(
-        "wave_id".into(),
-        serde_json::to_value(WaveId::from(frozen.wave_id.clone())).map_err(|e| {
-            ForgeEventBuildError::ExtractionFailed {
-                reason: format!("gate-infra: forge event context serialize failed: {e}"),
+    for field in kernel_injected_fields(&spec.event_kind) {
+        match *field {
+            "wave_id" => {
+                payload.insert(
+                    "wave_id".into(),
+                    serde_json::to_value(WaveId::from(frozen.wave_id.clone())).map_err(|e| {
+                        ForgeEventBuildError::ExtractionFailed {
+                            reason: format!(
+                                "gate-infra: forge event context serialize failed: {e}"
+                            ),
+                        }
+                    })?,
+                );
             }
-        })?,
-    );
-    if let Some(subject) = frozen.subject.as_ref() {
-        payload.insert(
-            "subject".into(),
-            serde_json::to_value(subject).map_err(|e| ForgeEventBuildError::ExtractionFailed {
-                reason: format!("gate-infra: forge event subject serialize failed: {e}"),
-            })?,
-        );
+            "subject" if spec.event_kind == "forge.pr.merged" => {
+                if let Some(subject) = frozen.subject.as_ref() {
+                    payload.insert(
+                        "subject".into(),
+                        serde_json::to_value(subject).map_err(|e| {
+                            ForgeEventBuildError::ExtractionFailed {
+                                reason: format!(
+                                    "gate-infra: forge event subject serialize failed: {e}"
+                                ),
+                            }
+                        })?,
+                    );
+                }
+            }
+            "card_id" => {
+                payload.insert(
+                    "card_id".into(),
+                    serde_json::to_value(CardId::from(frozen.card_id.clone())).map_err(|e| {
+                        ForgeEventBuildError::ExtractionFailed {
+                            reason: format!(
+                                "gate-infra: forge event card_id serialize failed: {e}"
+                            ),
+                        }
+                    })?,
+                );
+            }
+            _ => {}
+        }
     }
     let payload_value = Value::Object(payload);
     let event =
