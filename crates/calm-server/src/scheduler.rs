@@ -225,6 +225,17 @@ fn duration_ms_i64(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
+fn dispatched_live_wait_timeout(task: &Task) -> Option<Duration> {
+    if task.kind != TaskKind::Codex {
+        return None;
+    }
+    let deadline = task.dispatched_deadline_ms?;
+    let remaining_ms = deadline.saturating_sub(now_ms()).max(1);
+    Some(Duration::from_millis(
+        u64::try_from(remaining_ms).unwrap_or(u64::MAX),
+    ))
+}
+
 /// RAII guard for the per-task single-flight map: at most one in-process
 /// driver (live scheduling pass OR sweep) submits/waits a given task's
 /// worker operation at a time. Losing a slot is always safe — the holder
@@ -303,6 +314,47 @@ impl Scheduler {
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
     ) -> Arc<Self> {
+        Self::new_with_timeouts(
+            repo,
+            events,
+            write,
+            operation_runtime,
+            semaphore,
+            Self::task_dispatch_timeout_from_env(),
+            Self::task_run_timeout_from_env(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_timeouts_for_test(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        operation_runtime: Weak<OperationRuntime>,
+        semaphore: Arc<Semaphore>,
+        task_dispatch_timeout: Duration,
+        task_run_timeout: Duration,
+    ) -> Arc<Self> {
+        Self::new_with_timeouts(
+            repo,
+            events,
+            write,
+            operation_runtime,
+            semaphore,
+            task_dispatch_timeout,
+            task_run_timeout,
+        )
+    }
+
+    fn new_with_timeouts(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        operation_runtime: Weak<OperationRuntime>,
+        semaphore: Arc<Semaphore>,
+        task_dispatch_timeout: Duration,
+        task_run_timeout: Duration,
+    ) -> Arc<Self> {
         Arc::new(Self {
             repo,
             events,
@@ -310,8 +362,8 @@ impl Scheduler {
             operation_runtime,
             semaphore,
             budget_default: Self::budget_from_env(DEFAULT_WAVE_TASK_BUDGET),
-            task_dispatch_timeout: Self::task_dispatch_timeout_from_env(),
-            task_run_timeout: Self::task_run_timeout_from_env(),
+            task_dispatch_timeout,
+            task_run_timeout,
             wave_locks: DashMap::new(),
             wave_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
@@ -511,7 +563,7 @@ impl Scheduler {
                 return;
             }
         };
-        if let Err(e) = self.drive_spawn(&frozen, wave).await {
+        if let Err(e) = self.drive_spawn_live_dispatched(&frozen, wave).await {
             tracing::warn!(
                 task_id = %task.id,
                 error = %e,
@@ -694,6 +746,23 @@ impl Scheduler {
     /// `drive()` until the op is terminal (no background driver exists,
     /// §8). The drive lease (60s, `claim_drive_batch`) makes concurrent
     /// drivers execute no phase twice.
+    async fn drive_spawn_live_dispatched(&self, task: &Task, wave: &Wave) -> Result<()> {
+        let Some(timeout) = dispatched_live_wait_timeout(task) else {
+            return self.drive_spawn(task, wave).await;
+        };
+        match tokio::time::timeout(timeout, self.drive_spawn(task, wave)).await {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    dispatched_deadline_ms = task.dispatched_deadline_ms,
+                    "scheduler: live dispatched spawn drive exceeded deadline; releasing guard for sweep"
+                );
+                Ok(())
+            }
+        }
+    }
+
     async fn drive_spawn(&self, task: &Task, wave: &Wave) -> Result<()> {
         let Some(runtime) = self.operation_runtime.upgrade() else {
             tracing::debug!(

@@ -23,6 +23,7 @@
 //!     `sweep_resubmits_dispatched_task_with_missing_operation`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
@@ -249,6 +250,25 @@ fn build_scheduler_with_semaphore(
     (runtime, scheduler)
 }
 
+fn build_scheduler_with_timeouts(
+    boot: &Boot,
+    adapters: Vec<Arc<dyn ProviderAdapter>>,
+    task_dispatch_timeout: std::time::Duration,
+    task_run_timeout: std::time::Duration,
+) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
+    let (runtime, scheduler) = build_scheduler_unbooted_with_timeouts(
+        boot,
+        adapters,
+        Arc::new(tokio::sync::Semaphore::new(8)),
+        Some((task_dispatch_timeout, task_run_timeout)),
+    );
+    // Production opens the boot gate via the `scheduler_sweep_on_boot`
+    // funnel; these tests model the post-boot steady state so backstop
+    // sweeps run for real (round-3 review F2).
+    scheduler.mark_boot_sweep_complete();
+    (runtime, scheduler)
+}
+
 /// `build_scheduler_with_semaphore` WITHOUT opening the boot gate —
 /// the dispatcher-built scheduler's state before `main` runs
 /// `recover_operations_on_boot` → `scheduler_sweep_on_boot` (round-3
@@ -257,6 +277,15 @@ fn build_scheduler_unbooted(
     boot: &Boot,
     adapters: Vec<Arc<dyn ProviderAdapter>>,
     semaphore: Arc<tokio::sync::Semaphore>,
+) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
+    build_scheduler_unbooted_with_timeouts(boot, adapters, semaphore, None)
+}
+
+fn build_scheduler_unbooted_with_timeouts(
+    boot: &Boot,
+    adapters: Vec<Arc<dyn ProviderAdapter>>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    timeouts: Option<(std::time::Duration, std::time::Duration)>,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         boot.repo
@@ -286,13 +315,25 @@ fn build_scheduler_unbooted(
         completion,
         spawn_ctx,
     ));
-    let scheduler = Scheduler::new(
-        boot.repo.clone(),
-        boot.events.clone(),
-        boot.write.clone(),
-        Arc::downgrade(&runtime),
-        semaphore,
-    );
+    let scheduler = if let Some((task_dispatch_timeout, task_run_timeout)) = timeouts {
+        Scheduler::new_with_timeouts_for_test(
+            boot.repo.clone(),
+            boot.events.clone(),
+            boot.write.clone(),
+            Arc::downgrade(&runtime),
+            semaphore,
+            task_dispatch_timeout,
+            task_run_timeout,
+        )
+    } else {
+        Scheduler::new(
+            boot.repo.clone(),
+            boot.events.clone(),
+            boot.write.clone(),
+            Arc::downgrade(&runtime),
+            semaphore,
+        )
+    };
     (runtime, scheduler)
 }
 
@@ -696,6 +737,7 @@ async fn operation_count(boot: &Boot, kind: &str) -> i64 {
 // ---------------------------------------------------------------------------
 
 const STUB_PHASES: &[PhaseTag] = &[];
+const SPAWN_STARTED_PHASES: &[PhaseTag] = &[PhaseTag::SpawnStarted];
 
 fn unexpected(name: &str) -> calm_server::error::CalmError {
     calm_server::error::CalmError::Internal(format!("scheduler test stub unexpected call: {name}"))
@@ -1017,6 +1059,134 @@ impl ProviderAdapter for TimeoutCompensationAdapter {
             .ok_or_else(|| {
                 calm_server::error::CalmError::Internal(
                     "timeout-test compensation step missing lease_id".into(),
+                )
+            })?;
+        let now = now_ms();
+        sqlx::query(
+            r#"UPDATE workspace_leases
+               SET state = 'released',
+                   released_at_ms = COALESCE(released_at_ms, ?1),
+                   updated_at_ms = ?1
+               WHERE lease_id = ?2
+                 AND state IN ('held','releasing')"#,
+        )
+        .bind(now)
+        .bind(lease_id)
+        .execute(&ctx.operation_repo.sqlite_pool())
+        .await?;
+        Ok(())
+    }
+}
+
+struct HungTimeoutCompensationAdapter {
+    kind: &'static str,
+    card_id: String,
+    lease_id: String,
+    entered_spawn: Arc<tokio::sync::Notify>,
+    spawn_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ProviderAdapter for HungTimeoutCompensationAdapter {
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        SPAWN_STARTED_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        _tx: &mut Tx<'tx>,
+        _input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        let mut output = TxOutput::new(
+            "card",
+            Some(self.card_id.clone()),
+            json!({ "id": self.card_id }),
+        );
+        output.data = json!({
+            "card_id": self.card_id,
+            "lease_id": self.lease_id,
+        });
+        Ok(output)
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        self.spawn_calls.fetch_add(1, Ordering::SeqCst);
+        self.entered_spawn.notify_one();
+        std::future::pending::<CalmResult<SpawnOutcome>>().await
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Ok(CompensationStateVersioned {
+            version: 1,
+            from_phase,
+            reason: reason.to_string(),
+            steps: vec![CompensationStep {
+                op: "release_workspace_lease".to_string(),
+                args: json!({
+                    "lease_id": output
+                        .data
+                        .get("lease_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| calm_server::error::CalmError::Internal(
+                            "hung-timeout-test tx_output missing lease_id".into()
+                        ))?,
+                }),
+                completed: false,
+                attempts: 0,
+                last_error: None,
+            }],
+        })
+    }
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        if step.completed {
+            return Ok(());
+        }
+        if step.op != "release_workspace_lease" {
+            return Err(unexpected("compensate_step"));
+        }
+        let lease_id = step
+            .args
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                calm_server::error::CalmError::Internal(
+                    "hung-timeout-test compensation step missing lease_id".into(),
                 )
             })?;
         let now = now_ms();
@@ -1958,6 +2128,100 @@ async fn sweep_expired_dispatched_codex_compensates_op_and_fails_task() {
         .expect("op row");
     assert_eq!(op.id, op_id);
     assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].1["reason"],
+        json!("worker exceeded the dispatched liveness deadline")
+    );
+}
+
+#[tokio::test]
+async fn live_dispatched_codex_deadline_releases_guard_then_sweep_compensates() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let (card_id, _runtime_id, _terminal_id) =
+        seed_codex_worker_card_with_terminal(&boot, "live-dispatch-hung").await;
+    let lease_id = seed_held_workspace_lease(&boot, &card_id, "live-dispatch-hung").await;
+    let task = plan_task(&boot.wave_id, "live-dispatch-hung", TaskKind::Codex, &[]);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+
+    let entered_spawn = Arc::new(tokio::sync::Notify::new());
+    let spawn_calls = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler_with_timeouts(
+        &boot,
+        vec![Arc::new(HungTimeoutCompensationAdapter {
+            kind: "codex-worker",
+            card_id: card_id.clone(),
+            lease_id: lease_id.clone(),
+            entered_spawn: Arc::clone(&entered_spawn),
+            spawn_calls: Arc::clone(&spawn_calls),
+        })],
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(60),
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        let wave_id = boot.wave_id.clone();
+        async move { scheduler.schedule_wave(wave_id).await }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_spawn.notified())
+        .await
+        .expect("live spawn drive parked");
+    let row = task_row(&boot, "live-dispatch-hung").await;
+    assert_eq!(row.status, TaskStatus::Dispatched);
+    assert!(
+        row.dispatched_deadline_ms.is_some(),
+        "live claim stamps the dispatched liveness deadline"
+    );
+
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::SpawnStarted);
+    let expired_lease = sqlx::query(
+        "UPDATE operations SET lease_until_ms = ?1 WHERE id = ?2 AND phase = 'spawn_started'",
+    )
+    .bind(now_ms() - 1)
+    .bind(&op.id)
+    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("expire operation drive lease");
+    assert_eq!(expired_lease.rows_affected(), 1);
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("live drive releases the InflightGuard at the dispatched deadline")
+        .expect("schedule_wave task");
+    let row = task_row(&boot, "live-dispatch-hung").await;
+    assert_eq!(
+        row.status,
+        TaskStatus::Dispatched,
+        "the live timeout only releases the guard; the sweep owns failure"
+    );
+
+    scheduler.sweep_all().await;
+
+    let row = task_row(&boot, "live-dispatch-hung").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("worker-timeout"));
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .expect("op lookup")
+        .expect("op row");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(op.lease_owner.is_none());
+    assert_eq!(
+        spawn_calls.load(Ordering::SeqCst),
+        1,
+        "sweep compensated the original op instead of waiting for or re-running the hung spawn"
+    );
     let failed = event_rows(&boot, "task.failed").await;
     assert_eq!(failed.len(), 1);
     assert_eq!(
