@@ -698,7 +698,6 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         gate_pid: None,
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
-        dispatched_deadline_ms: None,
         running_deadline_ms: None,
         created_at_ms: now,
         updated_at_ms: now,

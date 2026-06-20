@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, broadcast};
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::event::EventBus;
-use crate::model::{TaskStatus, now_ms};
+use crate::model::now_ms;
 use crate::proc_identity::signal_process_group;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
 use crate::terminal_sweeper::{
@@ -17,8 +17,7 @@ use crate::terminal_sweeper::{
 
 use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
-    AppServerInteractOutcome, CompensationStateVersioned,
-    DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH, Operation, OperationId, OperationKey,
+    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationId, OperationKey,
     OperationRepo, OperationResult, ParkedClaimMode, ParkedCompletion, ParkedOutcome,
     ParkedRecovery, Phase, PhaseTag, ProviderAdapter, RecoveryItem, RecoveryMode, RecoveryPlan,
     SpawnArtifacts, SpawnCtx, SpawnOutcome, TxOutput, complete_parked_tx,
@@ -298,74 +297,6 @@ impl OperationRuntime {
         Ok(true)
     }
 
-    pub async fn cancel_inflight_to_compensation(
-        &self,
-        op_id: &OperationId,
-        reason: &str,
-    ) -> Result<bool> {
-        let Some(op) = self.repo.claim_inflight_for_compensation(op_id).await? else {
-            return Ok(false);
-        };
-        self.cancel_claimed_to_compensation(op, reason).await
-    }
-
-    pub async fn cancel_marked_dispatched_timeout_to_compensation(
-        &self,
-        op_id: &OperationId,
-        reason: &str,
-    ) -> Result<bool> {
-        let Some(op) = self
-            .repo
-            .claim_marked_dispatched_timeout_for_compensation(op_id)
-            .await?
-        else {
-            return Ok(false);
-        };
-        self.cancel_claimed_to_compensation(op, reason).await
-    }
-
-    async fn cancel_claimed_to_compensation(&self, op: Operation, reason: &str) -> Result<bool> {
-        let adapter = self.adapter(&op.kind)?;
-        let from_phase = op.phase.tag();
-        if matches!(op.phase, Phase::Compensating) {
-            if let Some(result) = self.resume_compensation(adapter.as_ref(), op).await? {
-                self.completion.complete(result);
-            }
-            return Ok(true);
-        }
-        let output = match required_output(&op) {
-            Ok(output) => output.clone(),
-            Err(_e) if matches!(op.phase, Phase::Pending) => {
-                if let Some(result) = self
-                    .repo
-                    .mark_failed(&op, reason.to_string(), from_phase, Some("internal".into()))
-                    .await?
-                {
-                    self.completion.complete(result);
-                } else {
-                    log_lost_lease(&op, PhaseTag::Failed);
-                    return Ok(false);
-                }
-                return Ok(true);
-            }
-            Err(e) => return Err(e),
-        };
-        let state = adapter
-            .plan_compensation(from_phase, reason, &output, &op)
-            .await?;
-        if self
-            .repo
-            .set_compensating(&op, &state, &output)
-            .await?
-            .is_none()
-        {
-            log_lost_lease(&op, PhaseTag::Compensating);
-            return Ok(false);
-        }
-        self.drive().await?;
-        Ok(true)
-    }
-
     pub async fn sweep_parked(&self) -> Result<()> {
         self.sweep_parked_with_claim(ParkedClaimMode::SteadyState)
             .await
@@ -382,21 +313,9 @@ impl OperationRuntime {
     }
 
     pub async fn drive(&self) -> Result<()> {
-        self.drive_with_recovery_filter(false).await
-    }
-
-    async fn drive_recovery(&self) -> Result<()> {
-        self.drive_with_recovery_filter(true).await
-    }
-
-    async fn drive_with_recovery_filter(&self, recovery: bool) -> Result<()> {
         let _g = self.drive_mutex.lock().await;
         loop {
-            let batch = if recovery {
-                self.repo.claim_recovery_drive_batch(32).await?
-            } else {
-                self.repo.claim_drive_batch(32).await?
-            };
+            let batch = self.repo.claim_drive_batch(32).await?;
             if batch.is_empty() {
                 return Ok(());
             }
@@ -423,13 +342,6 @@ impl OperationRuntime {
         let rows = self.repo.abandoned_running_operations_on_boot().await?;
         let mut items = Vec::new();
         for op in rows {
-            if self.scheduler_owns_codex_task_recovery(&op).await? {
-                items.push(RecoveryItem::Skip {
-                    op_id: op.id.clone(),
-                    reason: "deadline-aware scheduler owns codex-worker task recovery".into(),
-                });
-                continue;
-            }
             let adapter = self.adapter(&op.kind)?;
             items.push(self.plan_recovery_for(adapter.as_ref(), &op).await?);
         }
@@ -440,7 +352,7 @@ impl OperationRuntime {
         for item in plan.items {
             match self.apply_recovery_item(item.clone()).await {
                 Ok(()) => {
-                    if let Err(e) = self.drive_recovery().await {
+                    if let Err(e) = self.drive().await {
                         tracing::error!(
                             error = %e,
                             item = ?item,
@@ -466,90 +378,6 @@ impl OperationRuntime {
             .get(kind)
             .cloned()
             .ok_or_else(|| CalmError::BadRequest(format!("unknown operation kind {kind}")))
-    }
-
-    async fn scheduler_owns_codex_task_recovery(&self, op: &Operation) -> Result<bool> {
-        if op.kind != "codex-worker" {
-            return Ok(false);
-        }
-        let Some(task_id) = op.idempotency_key.as_deref() else {
-            return Ok(false);
-        };
-        let Some(task) = self.spawn_ctx.repo.task_get(task_id).await? else {
-            return Ok(false);
-        };
-        match task.status {
-            TaskStatus::Dispatched => {
-                self.clear_abandoned_codex_op_lease_for_scheduler_recovery(&op.id)
-                    .await?;
-                Ok(true)
-            }
-            TaskStatus::Failed => {
-                self.mark_dispatched_timeout_compensation_for_boot(&op.id, task_id)
-                    .await?;
-                self.clear_abandoned_codex_op_lease_for_scheduler_recovery(&op.id)
-                    .await?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    async fn mark_dispatched_timeout_compensation_for_boot(
-        &self,
-        op_id: &str,
-        task_id: &str,
-    ) -> Result<()> {
-        let marker = serde_json::to_string(&serde_json::json!({
-            "task_id": task_id,
-            "requested_at_ms": now_ms(),
-            "reason": "dispatched_liveness_timeout_boot_recovery",
-        }))?;
-        sqlx::query(
-            r#"UPDATE operations
-               SET compensation_state = json_set(
-                     COALESCE(compensation_state, '{}'),
-                     ?1,
-                     json(?2)
-                   ),
-                   updated_at_ms = ?3
-               WHERE id = ?4
-                 AND kind = 'codex-worker'"#,
-        )
-        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH)
-        .bind(marker)
-        .bind(now_ms())
-        .bind(op_id)
-        .execute(&self.repo.sqlite_pool())
-        .await?;
-        Ok(())
-    }
-
-    async fn clear_abandoned_codex_op_lease_for_scheduler_recovery(
-        &self,
-        op_id: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"UPDATE operations
-               SET lease_owner = NULL,
-                   lease_until_ms = NULL,
-                   updated_at_ms = ?1
-               WHERE id = ?2
-                 AND kind = 'codex-worker'
-                 AND phase IN (
-                   'pending',
-                   'tx_committed',
-                   'app_server_interact',
-                   'spawn_started',
-                   'spawn_succeeded',
-                   'compensating'
-                 )"#,
-        )
-        .bind(now_ms())
-        .bind(op_id)
-        .execute(&self.repo.sqlite_pool())
-        .await?;
-        Ok(())
     }
 
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {

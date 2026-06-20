@@ -902,7 +902,6 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         gate_pid: None,
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
-        dispatched_deadline_ms: None,
         running_deadline_ms: None,
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),

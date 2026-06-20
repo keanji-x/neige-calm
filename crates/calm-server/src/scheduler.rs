@@ -52,8 +52,8 @@ use tokio::sync::Semaphore;
 use crate::db::sqlite::{
     SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
     task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
-    task_report_success_from_worker_tx, task_stamp_missing_dispatched_deadline_tx,
-    task_stamp_missing_running_deadline_tx, tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
+    task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
+    wave_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -67,11 +67,7 @@ use crate::operation::task_verify_adapter::{
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
-use crate::operation::{
-    DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH,
-    DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH, Operation, OperationKey,
-    OperationOutcome, OperationRuntime, PhaseTag, operation_result_from,
-};
+use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
@@ -85,10 +81,6 @@ pub const DEFAULT_WAVE_TASK_BUDGET: i64 = 1;
 /// Default reconcile-tick period (§5.1 liveness backstop).
 pub const DEFAULT_RECONCILE_SECS: u64 = 300;
 
-/// Default wall-clock window for `pending → dispatched` rows to start
-/// their worker operation.
-pub const DEFAULT_TASK_DISPATCH_TIMEOUT_SECS: u64 = 600;
-
 /// Default wall-clock window for agent workers to report task
 /// completion/failure after the running stamp.
 pub const DEFAULT_TASK_RUN_TIMEOUT_SECS: u64 = 7200;
@@ -99,13 +91,6 @@ pub const DEFAULT_TASK_RUN_TIMEOUT_SECS: u64 = 7200;
 /// the tx back without persisting events; callers translate it back
 /// into a silent no-op.
 const RACE_LOST: &str = "scheduler: race lost (guarded write no-op)";
-const DISPATCHED_LIVENESS_TIMEOUT_REASON: &str = "worker exceeded the dispatched liveness deadline";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DispatchedTimeoutAction {
-    Handled,
-    ReconcileSpawn,
-}
 
 pub(crate) fn race_lost_err() -> CalmError {
     CalmError::Conflict(RACE_LOST.into())
@@ -113,22 +98,6 @@ pub(crate) fn race_lost_err() -> CalmError {
 
 pub(crate) fn is_race_lost(e: &CalmError) -> bool {
     matches!(e, CalmError::Conflict(m) if m == RACE_LOST)
-}
-
-fn op_failed_due_to_dispatched_timeout(op: &Operation) -> bool {
-    op.phase.tag() == PhaseTag::Failed
-        && op.last_error.as_deref() == Some(DISPATCHED_LIVENESS_TIMEOUT_REASON)
-}
-
-fn op_can_cancel_inflight_to_compensation(op: &Operation) -> bool {
-    matches!(
-        op.phase.tag(),
-        PhaseTag::Pending
-            | PhaseTag::TxCommitted
-            | PhaseTag::AppServerInteract
-            | PhaseTag::SpawnStarted
-            | PhaseTag::Compensating
-    )
 }
 
 async fn mark_running_timeout_cleanup_tx(
@@ -156,47 +125,6 @@ async fn mark_running_timeout_cleanup_tx(
     .bind(marker)
     .bind(now)
     .bind(card_id)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    Ok(rows)
-}
-
-async fn mark_dispatched_timeout_compensation_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    op_id: &str,
-    task_id: &str,
-    now: i64,
-) -> Result<u64> {
-    let marker = serde_json::to_string(&json!({
-        "task_id": task_id,
-        "requested_at_ms": now,
-        "reason": "dispatched_liveness_timeout",
-    }))?;
-    let rows = sqlx::query(
-        r#"UPDATE operations
-           SET compensation_state = json_set(
-                 COALESCE(compensation_state, '{}'),
-                 ?1,
-                 json(?2)
-               ),
-               updated_at_ms = ?3
-           WHERE id = ?4
-             AND kind = 'codex-worker'
-             AND idempotency_key = ?5
-             AND phase IN (
-               'pending',
-               'tx_committed',
-               'app_server_interact',
-               'spawn_started',
-               'compensating'
-             )"#,
-    )
-    .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH)
-    .bind(marker)
-    .bind(now)
-    .bind(op_id)
-    .bind(task_id)
     .execute(&mut **tx)
     .await?
     .rows_affected();
@@ -319,17 +247,6 @@ fn duration_ms_i64(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
-fn dispatched_spawn_drive_timeout(task: &Task) -> Option<Duration> {
-    if task.kind != TaskKind::Codex {
-        return None;
-    }
-    let deadline = task.dispatched_deadline_ms?;
-    let remaining_ms = deadline.saturating_sub(now_ms()).max(1);
-    Some(Duration::from_millis(
-        u64::try_from(remaining_ms).unwrap_or(u64::MAX),
-    ))
-}
-
 /// RAII guard for the per-task single-flight map: at most one in-process
 /// driver (live scheduling pass OR sweep) submits/waits a given task's
 /// worker operation at a time. Losing a slot is always safe — the holder
@@ -380,9 +297,6 @@ pub struct Scheduler {
     /// Kernel default budget (`NEIGE_WAVE_TASK_BUDGET`, default 1);
     /// `waves.task_budget` overrides per wave.
     budget_default: i64,
-    /// Persisted dispatched liveness window, resolved once from
-    /// `NEIGE_TASK_DISPATCH_TIMEOUT_SECS`.
-    task_dispatch_timeout: Duration,
     /// Persisted running liveness window, resolved once from
     /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
     task_run_timeout: Duration,
@@ -419,7 +333,6 @@ impl Scheduler {
             write,
             operation_runtime,
             semaphore,
-            Self::task_dispatch_timeout_from_env(),
             Self::task_run_timeout_from_env(),
         )
     }
@@ -431,7 +344,6 @@ impl Scheduler {
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
-        task_dispatch_timeout: Duration,
         task_run_timeout: Duration,
     ) -> Arc<Self> {
         Self::new_with_timeouts(
@@ -440,7 +352,6 @@ impl Scheduler {
             write,
             operation_runtime,
             semaphore,
-            task_dispatch_timeout,
             task_run_timeout,
         )
     }
@@ -451,7 +362,6 @@ impl Scheduler {
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
-        task_dispatch_timeout: Duration,
         task_run_timeout: Duration,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -461,7 +371,6 @@ impl Scheduler {
             operation_runtime,
             semaphore,
             budget_default: Self::budget_from_env(DEFAULT_WAVE_TASK_BUDGET),
-            task_dispatch_timeout,
             task_run_timeout,
             wave_locks: DashMap::new(),
             wave_dirty: DashMap::new(),
@@ -502,13 +411,6 @@ impl Scheduler {
         Self::reconcile_secs_from_env_var("NEIGE_SCHEDULER_RECONCILE_SECS", default)
     }
 
-    pub fn task_dispatch_timeout_from_env() -> Duration {
-        Duration::from_secs(Self::reconcile_secs_from_env_var(
-            "NEIGE_TASK_DISPATCH_TIMEOUT_SECS",
-            DEFAULT_TASK_DISPATCH_TIMEOUT_SECS,
-        ))
-    }
-
     pub fn task_run_timeout_from_env() -> Duration {
         Duration::from_secs(Self::reconcile_secs_from_env_var(
             "NEIGE_TASK_RUN_TIMEOUT_SECS",
@@ -519,10 +421,6 @@ impl Scheduler {
     /// Configured kernel-default budget. Exposed for test assertions.
     pub fn budget_default(&self) -> i64 {
         self.budget_default
-    }
-
-    pub fn task_dispatch_timeout_ms(&self) -> i64 {
-        duration_ms_i64(self.task_dispatch_timeout)
     }
 
     pub fn task_run_timeout_ms(&self) -> i64 {
@@ -697,7 +595,6 @@ impl Scheduler {
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
         let budget_default = self.budget_default;
-        let task_dispatch_timeout_ms = self.task_dispatch_timeout_ms();
         let result =
             write_with_actor_events_typed::<Task, _>(
                 self.repo.as_ref(),
@@ -719,13 +616,7 @@ impl Scheduler {
                             return Err(race_lost_err());
                         }
                         let now = now_ms();
-                        let rows = task_claim_pending_tx(
-                            tx,
-                            &task_id,
-                            now,
-                            now.saturating_add(task_dispatch_timeout_ms),
-                        )
-                        .await?;
+                        let rows = task_claim_pending_tx(tx, &task_id, now).await?;
                         if rows == 0 {
                             return Err(race_lost_err());
                         }
@@ -855,67 +746,6 @@ impl Scheduler {
         };
         let (op_kind, payload) = build_worker_payload(task)?;
         let payload_hash = stable_payload_hash(&payload)?;
-        if let Some(existing) = runtime
-            .find_by_kind_and_idempotency(op_kind, &task.id)
-            .await?
-        {
-            if existing.payload_hash != payload_hash {
-                tracing::warn!(
-                    task_id = %task.id,
-                    "scheduler: task idempotency key owned by a foreign operation (permanent); failing task"
-                );
-                return self
-                    .fail_spawn(
-                        task,
-                        wave,
-                        &format!(
-                            "operation idempotency key {} already used with different payload",
-                            task.id
-                        ),
-                    )
-                    .await;
-            }
-            if let Some(result) = operation_result_from(&existing)? {
-                return self
-                    .reconcile_spawn_result(task, wave, result.outcome)
-                    .await;
-            }
-            if existing.phase.tag() == PhaseTag::SpawnSucceeded {
-                runtime.drive().await?;
-                let result = runtime.wait(&existing.id).await?;
-                return self
-                    .reconcile_spawn_result(task, wave, result.outcome)
-                    .await;
-            }
-        }
-
-        let drive =
-            self.drive_spawn_inner(runtime.as_ref(), task, wave, op_kind, payload_hash, payload);
-        let Some(timeout) = dispatched_spawn_drive_timeout(task) else {
-            return drive.await;
-        };
-        match tokio::time::timeout(timeout, drive).await {
-            Ok(result) => result,
-            Err(_) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    dispatched_deadline_ms = task.dispatched_deadline_ms,
-                    "scheduler: dispatched spawn drive exceeded deadline; releasing guard for sweep"
-                );
-                Ok(())
-            }
-        }
-    }
-
-    async fn drive_spawn_inner(
-        &self,
-        runtime: &OperationRuntime,
-        task: &Task,
-        wave: &Wave,
-        op_kind: &str,
-        payload_hash: String,
-        payload: Value,
-    ) -> Result<()> {
         let op_id = match runtime
             .submit(
                 op_kind,
@@ -1264,39 +1094,6 @@ impl Scheduler {
         pending_waves
     }
 
-    async fn stamp_missing_dispatched_liveness_deadline(&self, task: &mut Task) -> Result<bool> {
-        if task.kind != TaskKind::Codex
-            || task.status != TaskStatus::Dispatched
-            || task.dispatched_deadline_ms.is_some()
-        {
-            return Ok(true);
-        }
-        let pool = self
-            .repo
-            .sqlite_pool()
-            .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        let mut tx = begin_immediate_tx(&pool).await?;
-        let now = now_ms();
-        let deadline = now.saturating_add(self.task_dispatch_timeout_ms());
-        let rows =
-            task_stamp_missing_dispatched_deadline_tx(&mut tx, &task.id, now, deadline).await?;
-        let current = if rows == 0 {
-            task_get_tx(&mut tx, &task.id).await?
-        } else {
-            None
-        };
-        tx.commit().await?;
-        if rows > 0 {
-            task.dispatched_deadline_ms = Some(deadline);
-            task.updated_at_ms = now;
-        } else if let Some(current) = current {
-            *task = current;
-        } else {
-            return Ok(false);
-        }
-        Ok(true)
-    }
-
     async fn stamp_missing_running_liveness_deadline(&self, task: &mut Task) -> Result<bool> {
         if task.kind != TaskKind::Codex
             || task.status != TaskStatus::Running
@@ -1358,7 +1155,6 @@ impl Scheduler {
                 "worker exceeded the running liveness deadline",
                 "[auto] worker liveness timeout",
                 cleanup_card_id.as_deref(),
-                None,
             )
             .await
         {
@@ -1383,7 +1179,6 @@ impl Scheduler {
         reason: &str,
         auto_message: &str,
         timeout_cleanup_card_id: Option<&str>,
-        dispatched_timeout_compensation_op_id: Option<&str>,
     ) -> Result<bool> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
@@ -1394,8 +1189,6 @@ impl Scheduler {
         let reason = reason.to_string();
         let auto_message = auto_message.to_string();
         let timeout_cleanup_card_id = timeout_cleanup_card_id.map(str::to_string);
-        let dispatched_timeout_compensation_op_id =
-            dispatched_timeout_compensation_op_id.map(str::to_string);
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
@@ -1418,14 +1211,6 @@ impl Scheduler {
                     }
                     if let Some(card_id) = timeout_cleanup_card_id.as_deref() {
                         mark_running_timeout_cleanup_tx(tx, card_id, &task_id, now).await?;
-                    }
-                    if let Some(op_id) = dispatched_timeout_compensation_op_id.as_deref() {
-                        let marked =
-                            mark_dispatched_timeout_compensation_tx(tx, op_id, &task_id, now)
-                                .await?;
-                        if marked == 0 {
-                            return Err(race_lost_err());
-                        }
                     }
                     let mut events = vec![(
                         ActorId::KernelDispatcher,
@@ -1490,33 +1275,10 @@ impl Scheduler {
                 return;
             }
         };
-        let op_rows = match sqlx::query_as::<_, (String,)>(
-            r#"SELECT id
-               FROM operations
-               WHERE kind = 'codex-worker'
-                 AND json_extract(COALESCE(compensation_state, '{}'), ?1)
-                     IS NOT NULL
-               ORDER BY updated_at_ms ASC, id ASC"#,
-        )
-        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
-        .fetch_all(&pool)
-        .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "scheduler sweep: dispatched timeout compensation marker scan failed"
-                );
-                return;
-            }
-        };
-
         let Some(runtime) = self.operation_runtime.upgrade() else {
-            if !worker_rows.is_empty() || !op_rows.is_empty() {
+            if !worker_rows.is_empty() {
                 tracing::warn!(
                     running_cleanup_count = worker_rows.len(),
-                    dispatched_compensation_count = op_rows.len(),
                     "scheduler sweep: operation runtime dropped; cannot retry timed-out cleanup"
                 );
             }
@@ -1564,57 +1326,6 @@ impl Scheduler {
                 );
             }
         }
-
-        for (op_id,) in op_rows {
-            match runtime
-                .cancel_marked_dispatched_timeout_to_compensation(
-                    &op_id,
-                    DISPATCHED_LIVENESS_TIMEOUT_REASON,
-                )
-                .await
-            {
-                Ok(true) => {
-                    if let Err(e) = self
-                        .clear_dispatched_timeout_compensation_marker_if_terminal(&op_id)
-                        .await
-                    {
-                        tracing::warn!(
-                            op_id = %op_id,
-                            error = %e,
-                            "scheduler sweep: dispatched timeout compensation marker clear check failed"
-                        );
-                    }
-                }
-                Ok(false) => {
-                    match self
-                        .clear_dispatched_timeout_compensation_marker_if_terminal(&op_id)
-                        .await
-                    {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            tracing::debug!(
-                                op_id = %op_id,
-                                "scheduler sweep: dispatched timeout compensation op still leased; marker retained"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                op_id = %op_id,
-                                error = %e,
-                                "scheduler sweep: dispatched timeout compensation marker clear check failed"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        op_id = %op_id,
-                        error = %e,
-                        "scheduler sweep: dispatched timeout op compensation failed; marker retained"
-                    );
-                }
-            }
-        }
     }
 
     async fn clear_timeout_worker_cleanup_marker(&self, session_id: &str) -> Result<()> {
@@ -1638,39 +1349,6 @@ impl Scheduler {
         Ok(())
     }
 
-    async fn clear_dispatched_timeout_compensation_marker_if_terminal(
-        &self,
-        op_id: &str,
-    ) -> Result<bool> {
-        let pool = self
-            .repo
-            .sqlite_pool()
-            .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        let rows = sqlx::query(
-            r#"UPDATE operations
-               SET compensation_state = NULLIF(
-                     json_remove(
-                       COALESCE(compensation_state, '{}'),
-                       ?1
-                     ),
-                     '{}'
-                   ),
-                   updated_at_ms = ?2
-               WHERE id = ?3
-                 AND phase IN ('succeeded','failed','stuck')
-                 AND json_extract(COALESCE(compensation_state, '{}'), ?4)
-                     IS NOT NULL"#,
-        )
-        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_PATH)
-        .bind(now_ms())
-        .bind(op_id)
-        .bind(DISPATCHED_TIMEOUT_COMPENSATION_MARKER_REQUESTED_AT_PATH)
-        .execute(&pool)
-        .await?
-        .rows_affected();
-        Ok(rows > 0)
-    }
-
     async fn worker_card_id_for_task(&self, task: &Task) -> Option<String> {
         if let Some(card_id) = task.worker_card_id.as_ref() {
             return Some(card_id.clone());
@@ -1689,30 +1367,10 @@ impl Scheduler {
     /// between op success and the running stamp, or a lost completion).
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()`
     /// + guarded reconcile writes.
-    async fn resume_dispatched(self: &Arc<Self>, mut task: Task) {
+    async fn resume_dispatched(self: &Arc<Self>, task: Task) {
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             return;
         };
-        let stamped = match self
-            .stamp_missing_dispatched_liveness_deadline(&mut task)
-            .await
-        {
-            Ok(stamped) => stamped,
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    error = %e,
-                    "scheduler sweep: dispatched liveness deadline stamp failed; next sweep retries"
-                );
-                return;
-            }
-        };
-        if !stamped {
-            return;
-        }
-        if task.status != TaskStatus::Dispatched {
-            return;
-        }
         let wave = match self.repo.wave_get(&task.wave_id).await {
             Ok(Some(wave)) => wave,
             Ok(None) => {
@@ -1727,16 +1385,6 @@ impl Scheduler {
                 return;
             }
         };
-        if task.kind == TaskKind::Codex
-            && task
-                .dispatched_deadline_ms
-                .is_some_and(|deadline| now_ms() > deadline)
-        {
-            match self.fail_dispatched_liveness_timeout(&task, &wave).await {
-                DispatchedTimeoutAction::Handled => return,
-                DispatchedTimeoutAction::ReconcileSpawn => {}
-            }
-        }
         let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
             Ok(p) => p,
             Err(_) => return,
@@ -1748,146 +1396,6 @@ impl Scheduler {
                 "scheduler sweep: dispatched-arm drive failed; next sweep retries"
             );
         }
-    }
-
-    async fn fail_dispatched_liveness_timeout(
-        self: &Arc<Self>,
-        task: &Task,
-        wave: &Wave,
-    ) -> DispatchedTimeoutAction {
-        let Some(runtime) = self.operation_runtime.upgrade() else {
-            tracing::warn!(
-                task_id = %task.id,
-                "scheduler sweep: operation runtime dropped; cannot cancel expired dispatched task"
-            );
-            return DispatchedTimeoutAction::Handled;
-        };
-        match runtime
-            .find_by_kind_and_idempotency("codex-worker", &task.id)
-            .await
-        {
-            Ok(Some(op)) if op_failed_due_to_dispatched_timeout(&op) => {
-                if let Err(e) = self
-                    .fail_task_liveness_timeout(
-                        task,
-                        wave,
-                        DISPATCHED_LIVENESS_TIMEOUT_REASON,
-                        "[auto] worker dispatch liveness timeout",
-                        None,
-                        None,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        task_id = %task.id,
-                        op_id = %op.id,
-                        error = %e,
-                        "scheduler sweep: expired dispatched terminal-timeout task fail tx failed"
-                    );
-                }
-                return DispatchedTimeoutAction::Handled;
-            }
-            Ok(Some(op)) if !op_can_cancel_inflight_to_compensation(&op) => {
-                tracing::debug!(
-                    task_id = %task.id,
-                    op_id = %op.id,
-                    "scheduler sweep: expired dispatched op not claimable; reconciling via spawn drive"
-                );
-                return DispatchedTimeoutAction::ReconcileSpawn;
-            }
-            Ok(Some(op)) => {
-                match self
-                    .fail_task_liveness_timeout(
-                        task,
-                        wave,
-                        DISPATCHED_LIVENESS_TIMEOUT_REASON,
-                        "[auto] worker dispatch liveness timeout",
-                        None,
-                        Some(&op.id),
-                    )
-                    .await
-                {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        tracing::debug!(
-                            task_id = %task.id,
-                            op_id = %op.id,
-                            "scheduler sweep: expired dispatched task fail CAS lost; reconciling via spawn drive"
-                        );
-                        return DispatchedTimeoutAction::ReconcileSpawn;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            task_id = %task.id,
-                            op_id = %op.id,
-                            error = %e,
-                            "scheduler sweep: expired dispatched task fail tx failed"
-                        );
-                        return DispatchedTimeoutAction::Handled;
-                    }
-                }
-
-                match runtime
-                    .cancel_marked_dispatched_timeout_to_compensation(
-                        &op.id,
-                        DISPATCHED_LIVENESS_TIMEOUT_REASON,
-                    )
-                    .await
-                {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        tracing::warn!(
-                            task_id = %task.id,
-                            op_id = %op.id,
-                            "scheduler sweep: expired dispatched task fenced but op compensation claim missed"
-                        );
-                        return DispatchedTimeoutAction::Handled;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            task_id = %task.id,
-                            op_id = %op.id,
-                            error = %e,
-                            "scheduler sweep: expired dispatched op compensation failed"
-                        );
-                        return DispatchedTimeoutAction::Handled;
-                    }
-                }
-            }
-            Ok(None) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    "scheduler sweep: expired dispatched task has no worker operation; failing row"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    error = %e,
-                    "scheduler sweep: expired dispatched op lookup failed"
-                );
-                return DispatchedTimeoutAction::Handled;
-            }
-        }
-
-        if let Err(e) = self
-            .fail_task_liveness_timeout(
-                task,
-                wave,
-                DISPATCHED_LIVENESS_TIMEOUT_REASON,
-                "[auto] worker dispatch liveness timeout",
-                None,
-                None,
-            )
-            .await
-        {
-            tracing::warn!(
-                task_id = %task.id,
-                error = %e,
-                "scheduler sweep: expired dispatched task fail tx failed"
-            );
-        }
-        DispatchedTimeoutAction::Handled
     }
 
     /// Sweep `running`-terminal arm (§8/M2 downtime path): a `running`
@@ -2425,10 +1933,6 @@ pub async fn complete_terminal_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::{
-        AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, OperationRepo,
-        ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
-    };
 
     fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
         Task {
@@ -2451,7 +1955,6 @@ mod tests {
             gate_pid: None,
             gate_pid_starttime: None,
             gate_pid_boot_id: None,
-            dispatched_deadline_ms: None,
             running_deadline_ms: None,
             created_at_ms: 1,
             updated_at_ms: 1,
@@ -2627,7 +2130,6 @@ mod tests {
 
     #[test]
     fn task_liveness_timeout_env_fallback_paths() {
-        let saved_dispatch = std::env::var("NEIGE_TASK_DISPATCH_TIMEOUT_SECS").ok();
         let saved_run = std::env::var("NEIGE_TASK_RUN_TIMEOUT_SECS").ok();
         fn set(var: &str, v: &str) {
             // SAFETY: single-threaded test; no concurrent env reader.
@@ -2637,27 +2139,6 @@ mod tests {
             // SAFETY: see `set`.
             unsafe { std::env::remove_var(var) };
         }
-
-        remove("NEIGE_TASK_DISPATCH_TIMEOUT_SECS");
-        assert_eq!(
-            Scheduler::task_dispatch_timeout_from_env(),
-            Duration::from_secs(DEFAULT_TASK_DISPATCH_TIMEOUT_SECS)
-        );
-        set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", "31");
-        assert_eq!(
-            Scheduler::task_dispatch_timeout_from_env(),
-            Duration::from_secs(31)
-        );
-        set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", "nope");
-        assert_eq!(
-            Scheduler::task_dispatch_timeout_from_env(),
-            Duration::from_secs(DEFAULT_TASK_DISPATCH_TIMEOUT_SECS)
-        );
-        set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", "0");
-        assert_eq!(
-            Scheduler::task_dispatch_timeout_from_env(),
-            Duration::from_secs(DEFAULT_TASK_DISPATCH_TIMEOUT_SECS)
-        );
 
         remove("NEIGE_TASK_RUN_TIMEOUT_SECS");
         assert_eq!(
@@ -2675,10 +2156,6 @@ mod tests {
             Duration::from_secs(DEFAULT_TASK_RUN_TIMEOUT_SECS)
         );
 
-        match saved_dispatch {
-            Some(v) => set("NEIGE_TASK_DISPATCH_TIMEOUT_SECS", &v),
-            None => remove("NEIGE_TASK_DISPATCH_TIMEOUT_SECS"),
-        }
         match saved_run {
             Some(v) => set("NEIGE_TASK_RUN_TIMEOUT_SECS", &v),
             None => remove("NEIGE_TASK_RUN_TIMEOUT_SECS"),
@@ -2812,328 +2289,6 @@ mod tests {
         assert!(
             InflightGuard::acquire(&map, "w:a").is_some(),
             "slot frees on drop"
-        );
-    }
-
-    struct DispatchedTimeoutRaceAdapter {
-        compensation_calls: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl ProviderAdapter for DispatchedTimeoutRaceAdapter {
-        fn kind(&self) -> &'static str {
-            "codex-worker"
-        }
-
-        fn phases(&self) -> &'static [PhaseTag] {
-            &[PhaseTag::SpawnStarted]
-        }
-
-        async fn validate(&self, _input: &Value) -> Result<()> {
-            Ok(())
-        }
-
-        async fn prepare_tx<'tx>(
-            &self,
-            _tx: &mut Tx<'tx>,
-            _input: &Value,
-            _op: &Operation,
-        ) -> Result<TxOutput> {
-            Ok(TxOutput::new(
-                "card",
-                Some("card-race".into()),
-                json!({ "id": "card-race" }),
-            ))
-        }
-
-        async fn app_server_interact(
-            &self,
-            _output: &mut TxOutput,
-            _op: &Operation,
-            _ctx: &SpawnCtx,
-        ) -> Result<AppServerInteractOutcome> {
-            Ok(AppServerInteractOutcome::NotApplicable)
-        }
-
-        async fn spawn_side_effect(
-            &self,
-            _output: &TxOutput,
-            _op: &Operation,
-            _ctx: &SpawnCtx,
-        ) -> Result<SpawnOutcome> {
-            Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
-        }
-
-        async fn plan_compensation(
-            &self,
-            from_phase: PhaseTag,
-            reason: &str,
-            output: &TxOutput,
-            _op: &Operation,
-        ) -> Result<CompensationStateVersioned> {
-            Ok(CompensationStateVersioned {
-                version: 1,
-                from_phase,
-                reason: reason.to_string(),
-                steps: vec![CompensationStep {
-                    op: "release_workspace_lease".to_string(),
-                    args: json!({
-                        "lease_id": output
-                            .data
-                            .get("lease_id")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| CalmError::Internal(
-                                "race adapter tx_output missing lease_id".into()
-                            ))?,
-                    }),
-                    completed: false,
-                    attempts: 0,
-                    last_error: None,
-                }],
-            })
-        }
-
-        async fn compensate_step(
-            &self,
-            step: &CompensationStep,
-            _output: &TxOutput,
-            _op: &Operation,
-            ctx: &SpawnCtx,
-        ) -> Result<()> {
-            if step.completed {
-                return Ok(());
-            }
-            let lease_id = step
-                .args
-                .get("lease_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    CalmError::Internal("race adapter compensation step missing lease_id".into())
-                })?;
-            self.compensation_calls.fetch_add(1, Ordering::SeqCst);
-            let now = now_ms();
-            sqlx::query(
-                r#"UPDATE workspace_leases
-                   SET state = 'released',
-                       released_at_ms = COALESCE(released_at_ms, ?1),
-                       updated_at_ms = ?1
-                   WHERE lease_id = ?2
-                     AND state IN ('held','releasing')"#,
-            )
-            .bind(now)
-            .bind(lease_id)
-            .execute(&ctx.operation_repo.sqlite_pool())
-            .await?;
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatched_timeout_race_lost_does_not_compensate_or_release_lease() {
-        let concrete = Arc::new(
-            crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
-                .await
-                .expect("open repo"),
-        );
-        let repo: Arc<dyn Repo> = concrete.clone();
-        let cove = repo
-            .cove_create(crate::model::NewCove {
-                name: "dispatch-timeout-race".into(),
-                color: "#101010".into(),
-                sort: None,
-            })
-            .await
-            .expect("create cove");
-        let wave = repo
-            .wave_create(crate::model::NewWave {
-                cove_id: cove.id,
-                title: "dispatch-timeout-race".into(),
-                sort: None,
-                cwd: "/tmp".into(),
-                attach_folder: false,
-                theme: crate::routes::theme::RequestTheme::default_dark(),
-            })
-            .await
-            .expect("create wave");
-        let worker = repo
-            .card_create(crate::model::NewCard {
-                wave_id: wave.id.clone(),
-                kind: "codex".into(),
-                sort: None,
-                payload: Value::Null,
-            })
-            .await
-            .expect("create worker card");
-
-        let mut snapshot = task("race", TaskStatus::Dispatched, &[], 0);
-        snapshot.id = format!("{}:race", wave.id.as_str());
-        snapshot.wave_id = wave.id.as_str().to_string();
-        snapshot.dispatched_deadline_ms = Some(now_ms() - 1);
-        let mut tx = crate::db::sqlite::begin_immediate_tx(concrete.pool())
-            .await
-            .expect("begin task tx");
-        calm_truth::db::sqlite::task_insert_tx(&mut tx, &snapshot)
-            .await
-            .expect("insert dispatched task");
-        tx.commit().await.expect("commit task tx");
-
-        let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(
-            concrete.pool().clone(),
-        ));
-        let (op_kind, payload) = build_worker_payload(&snapshot).expect("worker payload");
-        let op_id = operation_repo
-            .insert_operation(
-                op_kind,
-                OperationKey {
-                    operation_key: new_id(),
-                    idempotency_key: Some(snapshot.id.clone()),
-                    payload_hash: stable_payload_hash(&payload).expect("payload hash"),
-                },
-                payload,
-            )
-            .await
-            .expect("insert worker op");
-        let lease_id = "lease-dispatch-timeout-race";
-        let mut output = TxOutput::new(
-            "card",
-            Some(worker.id.as_str().to_string()),
-            json!({ "id": worker.id.as_str() }),
-        );
-        output.data = json!({
-            "card_id": worker.id.as_str(),
-            "lease_id": lease_id,
-        });
-        let now = now_ms();
-        sqlx::query(
-            r#"UPDATE operations
-               SET phase = 'spawn_started',
-                   tx_output_json = ?1,
-                   target_type = 'card',
-                   target_id = ?2,
-                   target_json = ?3,
-                   lease_owner = NULL,
-                   lease_until_ms = NULL
-               WHERE id = ?4"#,
-        )
-        .bind(serde_json::to_string(&output).expect("tx output json"))
-        .bind(worker.id.as_str())
-        .bind(json!({ "type": "card", "id": worker.id.as_str() }).to_string())
-        .bind(&op_id)
-        .execute(concrete.pool())
-        .await
-        .expect("stamp spawn_started op");
-        sqlx::query(
-            r#"INSERT INTO workspace_leases (
-                   lease_id, card_id, wave_id, path, state, lease_owner, lease_until_ms,
-                   boot_id, created_at_ms, updated_at_ms
-               )
-               VALUES (?1, ?2, ?3, '/tmp/neige-dispatch-timeout-race',
-                       'held', 'test-owner', ?4, NULL, ?5, ?5)"#,
-        )
-        .bind(lease_id)
-        .bind(worker.id.as_str())
-        .bind(wave.id.as_str())
-        .bind(now + 60_000)
-        .bind(now)
-        .execute(concrete.pool())
-        .await
-        .expect("insert held lease");
-
-        let mut tx = crate::db::sqlite::begin_immediate_tx(concrete.pool())
-            .await
-            .expect("begin worker report tx");
-        let owns_key =
-            crate::db::sqlite::worker_op_targets_card_tx(&mut tx, &snapshot.id, worker.id.as_str())
-                .await
-                .expect("ownership proof");
-        assert!(owns_key, "worker op target should prove report ownership");
-        let reporter = TaskReporter::Card {
-            card_id: worker.id.as_str(),
-            owns_key,
-        };
-        let flip = task_report_success_from_worker_tx(
-            &mut tx,
-            &snapshot.id,
-            wave.id.as_str(),
-            reporter,
-            now_ms(),
-        )
-        .await
-        .expect("worker complete flips task");
-        assert_eq!(flip, SuccessReportFlip::Done);
-        tx.commit().await.expect("commit worker report tx");
-
-        let events = EventBus::new();
-        let write = WriteContext::new(
-            concrete.card_role_cache().clone(),
-            concrete.wave_cove_cache().clone(),
-        );
-        let completion = crate::operation::OperationCompletionBus::new();
-        let route_repo: Arc<dyn crate::db::RouteRepo> = concrete.clone();
-        let spawn_ctx = SpawnCtx::new(
-            route_repo,
-            operation_repo.clone(),
-            Arc::new(crate::state::DaemonClient {
-                data_dir: std::path::PathBuf::from("/tmp/neige-dispatch-timeout-race"),
-                proc_supervisor_sock: None,
-            }),
-            crate::terminal_renderer::TerminalRendererRegistry::new(),
-            events.clone(),
-            completion.clone(),
-        );
-        let compensation_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let adapter: Arc<dyn ProviderAdapter> = Arc::new(DispatchedTimeoutRaceAdapter {
-            compensation_calls: Arc::clone(&compensation_calls),
-        });
-        let runtime = Arc::new(OperationRuntime::new_unchecked(
-            operation_repo.clone(),
-            vec![adapter],
-            events.clone(),
-            completion,
-            spawn_ctx,
-        ));
-        let scheduler = Scheduler::new(
-            repo.clone(),
-            events,
-            write,
-            Arc::downgrade(&runtime),
-            Arc::new(Semaphore::new(1)),
-        );
-        let action = scheduler
-            .fail_dispatched_liveness_timeout(&snapshot, &wave)
-            .await;
-        assert_eq!(
-            action,
-            DispatchedTimeoutAction::ReconcileSpawn,
-            "0-row task CAS must skip teardown and resume normal spawn reconciliation"
-        );
-
-        let row = repo
-            .task_get(&snapshot.id)
-            .await
-            .expect("task lookup")
-            .expect("task row");
-        assert_eq!(row.status, TaskStatus::Done);
-        let lease_state: String =
-            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
-                .bind(lease_id)
-                .fetch_one(concrete.pool())
-                .await
-                .expect("lease state");
-        assert_eq!(
-            lease_state, "held",
-            "race-lost timeout must not release lease"
-        );
-        let op = operation_repo
-            .get_operation(&op_id)
-            .await
-            .expect("op lookup")
-            .expect("op row");
-        assert_eq!(op.phase.tag(), PhaseTag::SpawnStarted);
-        assert_eq!(
-            compensation_calls.load(Ordering::SeqCst),
-            0,
-            "race-lost timeout must not compensate the worker op"
         );
     }
 

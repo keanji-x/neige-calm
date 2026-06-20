@@ -381,7 +381,6 @@ pub struct Task {
     pub gate_pid: Option<i64>,
     pub gate_pid_starttime: Option<i64>,
     pub gate_pid_boot_id: Option<String>,
-    pub dispatched_deadline_ms: Option<i64>,
     pub running_deadline_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,

@@ -901,7 +901,7 @@ pub async fn wave_update_tx(
 const TASK_COLUMNS: &str = "id, wave_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     dispatched_deadline_ms, running_deadline_ms, created_at_ms, updated_at_ms, finished_at_ms";
+     running_deadline_ms, created_at_ms, updated_at_ms, finished_at_ms";
 
 /// In-tx read of a wave's full plan, in scheduler order
 /// (`priority DESC, created_at_ms ASC, key ASC` — design §5.2). Used by
@@ -933,10 +933,9 @@ pub async fn task_insert_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Resul
            (id, wave_id, key, kind, goal, context_json, acceptance_criteria, cwd,
                 depends_on_json, priority, gate_json, status, status_detail, worker_card_id,
                 gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id,
-                dispatched_deadline_ms, running_deadline_ms, created_at_ms, updated_at_ms,
-                finished_at_ms)
+                running_deadline_ms, created_at_ms, updated_at_ms, finished_at_ms)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                   ?18, ?19, ?20, ?21, ?22, ?23, ?24)"#,
+                   ?18, ?19, ?20, ?21, ?22, ?23)"#,
     )
     .bind(&t.id)
     .bind(&t.wave_id)
@@ -957,7 +956,6 @@ pub async fn task_insert_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Resul
     .bind(t.gate_pid)
     .bind(t.gate_pid_starttime)
     .bind(&t.gate_pid_boot_id)
-    .bind(t.dispatched_deadline_ms)
     .bind(t.running_deadline_ms)
     .bind(t.created_at_ms)
     .bind(t.updated_at_ms)
@@ -1107,16 +1105,13 @@ pub async fn task_claim_pending_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     now: i64,
-    dispatched_deadline_ms: i64,
 ) -> Result<u64> {
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'dispatched',
-               dispatched_deadline_ms = ?1,
-               updated_at_ms = ?2
-           WHERE id = ?3 AND status = 'pending'"#,
+               updated_at_ms = ?1
+           WHERE id = ?2 AND status = 'pending'"#,
     )
-    .bind(dispatched_deadline_ms)
     .bind(now)
     .bind(id)
     .execute(&mut **tx)
@@ -1142,38 +1137,11 @@ pub async fn task_mark_running_tx(
            SET status = 'running',
                worker_card_id = COALESCE(worker_card_id, ?1),
                running_deadline_ms = ?2,
-               dispatched_deadline_ms = NULL,
                updated_at_ms = ?3
            WHERE id = ?4 AND status = 'dispatched'"#,
     )
     .bind(worker_card_id)
     .bind(running_deadline_ms)
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(res.rows_affected())
-}
-
-/// Upgrade/lost-stamp backfill for codex tasks already in-flight when
-/// liveness deadlines were introduced. Guarded so terminal/non-codex
-/// rows and live-path stamped rows are untouched.
-pub async fn task_stamp_missing_dispatched_deadline_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    now: i64,
-    dispatched_deadline_ms: i64,
-) -> Result<u64> {
-    let res = sqlx::query(
-        r#"UPDATE tasks
-           SET dispatched_deadline_ms = ?1,
-               updated_at_ms = ?2
-           WHERE id = ?3
-             AND kind = 'codex'
-             AND status = 'dispatched'
-             AND dispatched_deadline_ms IS NULL"#,
-    )
-    .bind(dispatched_deadline_ms)
     .bind(now)
     .bind(id)
     .execute(&mut **tx)
@@ -6566,7 +6534,6 @@ mod task_liveness_deadline_tests {
             gate_pid: None,
             gate_pid_starttime: None,
             gate_pid_boot_id: None,
-            dispatched_deadline_ms: None,
             running_deadline_ms: None,
             created_at_ms: now,
             updated_at_ms: now,
@@ -6575,7 +6542,7 @@ mod task_liveness_deadline_tests {
     }
 
     #[tokio::test]
-    async fn migration_adds_task_liveness_columns_and_task_round_trips_them() {
+    async fn migration_adds_task_running_liveness_column_and_task_round_trips_it() {
         let repo = SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite repo");
@@ -6584,7 +6551,6 @@ mod task_liveness_deadline_tests {
                 .fetch_all(repo.pool())
                 .await
                 .expect("table info");
-        assert!(columns.iter().any(|c| c == "dispatched_deadline_ms"));
         assert!(columns.iter().any(|c| c == "running_deadline_ms"));
         let index_sql: Option<String> =
             sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = ?1")
@@ -6595,12 +6561,11 @@ mod task_liveness_deadline_tests {
         assert!(
             index_sql
                 .as_deref()
-                .is_some_and(|sql| sql.contains("WHERE status IN ('dispatched','running')")),
+                .is_some_and(|sql| sql.contains("WHERE status = 'running'")),
             "partial liveness index missing or drifted: {index_sql:?}"
         );
 
         let mut row = task("roundtrip", TaskStatus::Running);
-        row.dispatched_deadline_ms = Some(1234);
         row.running_deadline_ms = Some(5678);
         let id = row.id.clone();
         let mut tx = repo.pool().begin().await.expect("begin insert tx");
@@ -6610,12 +6575,11 @@ mod task_liveness_deadline_tests {
             .expect("read task")
             .expect("task row");
         tx.commit().await.expect("commit");
-        assert_eq!(read.dispatched_deadline_ms, Some(1234));
         assert_eq!(read.running_deadline_ms, Some(5678));
     }
 
     #[tokio::test]
-    async fn claim_and_mark_running_stamp_liveness_deadlines() {
+    async fn mark_running_stamps_running_liveness_deadline() {
         let repo = SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite repo");
@@ -6623,7 +6587,7 @@ mod task_liveness_deadline_tests {
         let id = row.id.clone();
         let mut tx = repo.pool().begin().await.expect("begin insert tx");
         task_insert_tx(&mut tx, &row).await.expect("insert task");
-        let rows = task_claim_pending_tx(&mut tx, &id, 1000, 1600)
+        let rows = task_claim_pending_tx(&mut tx, &id, 1000)
             .await
             .expect("claim pending");
         assert_eq!(rows, 1);
@@ -6632,7 +6596,6 @@ mod task_liveness_deadline_tests {
             .expect("read claimed")
             .expect("claimed row");
         assert_eq!(claimed.status, TaskStatus::Dispatched);
-        assert_eq!(claimed.dispatched_deadline_ms, Some(1600));
         assert_eq!(claimed.running_deadline_ms, None);
 
         let rows = task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
@@ -6646,7 +6609,6 @@ mod task_liveness_deadline_tests {
         tx.commit().await.expect("commit");
         assert_eq!(running.status, TaskStatus::Running);
         assert_eq!(running.worker_card_id.as_deref(), Some("worker-card"));
-        assert_eq!(running.dispatched_deadline_ms, None);
         assert_eq!(running.running_deadline_ms, Some(9200));
     }
 }
