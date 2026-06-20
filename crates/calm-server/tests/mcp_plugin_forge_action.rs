@@ -15,7 +15,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, CoveId, NewCove, NewPlugin, NewWave, WaveId, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
@@ -45,17 +45,43 @@ struct Fixture {
     _server: Arc<McpServer>,
     plugin_host: Arc<PluginHost>,
     repo: Arc<SqlxRepo>,
+    card_role_cache: CardRoleCache,
     socket_path: PathBuf,
     gate_logs_dir: PathBuf,
+    cove_id: String,
     raw_token: String,
     thread_id: String,
     card_id: String,
     wave_id: String,
-    lease_abs: PathBuf,
+    lease_abs: Option<PathBuf>,
     _runtime: Arc<OperationRuntime>,
-    _lease_tmp: TempDir,
+    _lease_tmp: Option<TempDir>,
     _tmp: TempDir,
 }
+
+struct Caller {
+    raw_token: String,
+    thread_id: String,
+    card_id: String,
+    wave_id: String,
+    lease_abs: Option<PathBuf>,
+    _lease_tmp: Option<TempDir>,
+}
+
+type EventRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Value,
+);
+type RawEventRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
 
 #[derive(Clone, Copy)]
 enum StubMode {
@@ -64,6 +90,7 @@ enum StubMode {
     Parked,
     Malformed,
     Override,
+    Scoped,
 }
 
 impl StubMode {
@@ -74,6 +101,7 @@ impl StubMode {
             Self::Parked => "stub-forge-parked",
             Self::Malformed => "stub-forge-malformed",
             Self::Override => "stub-forge-override",
+            Self::Scoped => "stub-forge-scoped",
         }
     }
 
@@ -94,6 +122,20 @@ impl StubMode {
             Self::AwaitFailure => r#"["/bin/false"]"#,
             Self::Parked => r#"["/bin/sh","-c","sleep 1"]"#,
             _ => r#"["/bin/true"]"#,
+        }
+    }
+
+    fn event_spec_json(self) -> &'static str {
+        match self {
+            Self::Scoped => r#"{"event_kind":"worktree.provisioned","fields":{}}"#,
+            _ => r#"{"event_kind":"forge.scan.completed","fields":{}}"#,
+        }
+    }
+
+    fn context_json(self) -> &'static str {
+        match self {
+            Self::Scoped => r#"{"path":"/tmp/shared-worktree"}"#,
+            _ => r#"{"overlapping_prs":[]}"#,
         }
     }
 }
@@ -127,9 +169,17 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         1,
         "awaited mode must persist the typed forge event"
     );
-    let awaited_payload = operation_payload_by_idem(&awaited.repo, StubMode::Awaited.idem_key())
-        .await
-        .expect("awaited op payload");
+    let awaited_payload = operation_payload_by_idem(
+        &awaited.repo,
+        &scoped_idem_key(
+            PLUGIN_ID,
+            &awaited.wave_id,
+            &awaited.card_id,
+            StubMode::Awaited.idem_key(),
+        ),
+    )
+    .await
+    .expect("awaited op payload");
     assert_result_path_under(
         &awaited_payload,
         results_dir.path(),
@@ -171,7 +221,29 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .await
         .expect("stop failed plugin");
 
-    let parked = boot_fixture(StubMode::Parked).await;
+    let parked_worker = boot_fixture_with_role(StubMode::Parked, CardRole::Worker).await;
+    let before_parked_ops = operation_count(&parked_worker.repo).await;
+    let parked_worker_resp = call_forge_tool(&parked_worker, 5).await;
+    assert_eq!(parked_worker_resp["error"]["code"], -32602);
+    assert!(
+        parked_worker_resp["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("workspace-lease fencing"),
+        "parked worker rejection should name lease fencing: {parked_worker_resp:#?}"
+    );
+    assert_eq!(
+        operation_count(&parked_worker.repo).await,
+        before_parked_ops,
+        "parked worker forge action must not submit an operation"
+    );
+    parked_worker
+        .plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop parked worker plugin");
+
+    let parked = boot_fixture_with_role(StubMode::Parked, CardRole::Spec).await;
     let parked_resp = call_forge_tool(&parked, 5).await;
     assert!(
         parked_resp.get("error").is_none(),
@@ -198,10 +270,17 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         override_resp.get("error").is_none(),
         "override forge tool errored: {override_resp:#?}"
     );
-    let override_payload =
-        operation_payload_by_idem(&override_fx.repo, StubMode::Override.idem_key())
-            .await
-            .expect("override op payload");
+    let override_payload = operation_payload_by_idem(
+        &override_fx.repo,
+        &scoped_idem_key(
+            PLUGIN_ID,
+            &override_fx.wave_id,
+            &override_fx.card_id,
+            StubMode::Override.idem_key(),
+        ),
+    )
+    .await
+    .expect("override op payload");
     assert_eq!(override_payload["wave_id"], override_fx.wave_id);
     assert_eq!(override_payload["card_id"], override_fx.card_id);
     assert_eq!(
@@ -210,7 +289,11 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
                 .as_str()
                 .expect("cwd_lease string")
         ),
-        override_fx.lease_abs
+        override_fx
+            .lease_abs
+            .as_ref()
+            .expect("override worker lease")
+            .clone()
     );
     assert_ne!(override_payload["wave_id"], "attacker-wave");
     assert_ne!(override_payload["card_id"], "attacker-card");
@@ -286,6 +369,108 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
 }
 
 #[tokio::test]
+async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let results_dir = short_tempdir("fr").expect("forge results tempdir");
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+
+    let fx = boot_fixture(StubMode::Scoped).await;
+    let first_resp = call_forge_tool(&fx, 20).await;
+    assert!(
+        first_resp.get("error").is_none(),
+        "first scoped forge tool errored: {first_resp:#?}"
+    );
+    let first_op_id = first_resp["result"]["structuredContent"]["op_id"]
+        .as_str()
+        .expect("first op_id")
+        .to_string();
+
+    let retry_resp = call_forge_tool(&fx, 21).await;
+    assert!(
+        retry_resp.get("error").is_none(),
+        "retry scoped forge tool errored: {retry_resp:#?}"
+    );
+    assert_eq!(
+        retry_resp["result"]["structuredContent"]["op_id"]
+            .as_str()
+            .expect("retry op_id"),
+        first_op_id,
+        "same wave/card/key/payload must remain idempotent"
+    );
+    assert_eq!(
+        operation_count(&fx.repo).await,
+        1,
+        "same scoped key retry must not add an operation"
+    );
+    assert_eq!(
+        event_count(&fx.repo, "worktree.provisioned").await,
+        1,
+        "same scoped key retry must not replay the event"
+    );
+
+    let second = create_wave_caller(&fx, CardRole::Spec).await;
+    let second_resp = call_forge_tool_for_caller(&fx, &second, 22).await;
+    assert!(
+        second_resp.get("error").is_none(),
+        "second scoped forge tool errored: {second_resp:#?}"
+    );
+    let second_op_id = second_resp["result"]["structuredContent"]["op_id"]
+        .as_str()
+        .expect("second op_id");
+    assert_ne!(
+        second_op_id, first_op_id,
+        "different wave/card must not reuse the first operation"
+    );
+    assert_eq!(
+        operation_count(&fx.repo).await,
+        2,
+        "different wave/card with same plugin key/payload must submit a distinct operation"
+    );
+
+    let first_key = scoped_idem_key(
+        PLUGIN_ID,
+        &fx.wave_id,
+        &fx.card_id,
+        StubMode::Scoped.idem_key(),
+    );
+    let second_key = scoped_idem_key(
+        PLUGIN_ID,
+        &second.wave_id,
+        &second.card_id,
+        StubMode::Scoped.idem_key(),
+    );
+    assert!(
+        operation_payload_by_idem(&fx.repo, StubMode::Scoped.idem_key())
+            .await
+            .is_none()
+    );
+    let first_payload = operation_payload_by_idem(&fx.repo, &first_key)
+        .await
+        .expect("first scoped op payload");
+    let second_payload = operation_payload_by_idem(&fx.repo, &second_key)
+        .await
+        .expect("second scoped op payload");
+    assert_eq!(first_payload["wave_id"], fx.wave_id);
+    assert_eq!(first_payload["card_id"], fx.card_id);
+    assert_eq!(second_payload["wave_id"], second.wave_id);
+    assert_eq!(second_payload["card_id"], second.card_id);
+
+    let rows = event_rows(&fx.repo, "worktree.provisioned").await;
+    assert_eq!(rows.len(), 2, "both scoped operations must persist events");
+    assert_worktree_event(&rows[0], &fx.wave_id, &fx.card_id);
+    assert_worktree_event(&rows[1], &second.wave_id, &second.card_id);
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop scoped plugin");
+}
+
+#[tokio::test]
 async fn forge_action_default_result_dir_is_gate_logs_sibling() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
@@ -300,9 +485,17 @@ async fn forge_action_default_result_dir_is_gate_logs_sibling() {
         resp.get("error").is_none(),
         "default-dir forge tool errored: {resp:#?}"
     );
-    let payload = operation_payload_by_idem(&fx.repo, StubMode::Awaited.idem_key())
-        .await
-        .expect("default-dir op payload");
+    let payload = operation_payload_by_idem(
+        &fx.repo,
+        &scoped_idem_key(
+            PLUGIN_ID,
+            &fx.wave_id,
+            &fx.card_id,
+            StubMode::Awaited.idem_key(),
+        ),
+    )
+    .await
+    .expect("default-dir op payload");
     let expected_results_dir = fx
         .gate_logs_dir
         .parent()
@@ -324,16 +517,16 @@ async fn forge_action_default_result_dir_is_gate_logs_sibling() {
 }
 
 async fn boot_fixture(mode: StubMode) -> Fixture {
+    boot_fixture_with_role(mode, CardRole::Worker).await
+}
+
+async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     let tmp = short_tempdir("mfa").expect("tempdir");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     let wave_cwd = tmp.path().join("wave-cwd");
     std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
-    let lease_tmp = tempfile::Builder::new()
-        .prefix(".forge-action-lease-")
-        .tempdir_in(std::env::current_dir().expect("current dir"))
-        .expect("server-cwd-relative lease tempdir");
 
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -368,59 +561,7 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
         .await
         .expect("seed wave/cove cache");
 
-    let card_id = calm_server::model::new_id();
-    let runtime_id = calm_server::model::new_id();
-    let lease_rel = format!(
-        "{}/leases/{card_id}",
-        lease_tmp
-            .path()
-            .file_name()
-            .expect("lease tempdir basename")
-            .to_string_lossy()
-    );
-    let lease_abs = std::env::current_dir()
-        .expect("current dir")
-        .join(&lease_rel);
-    std::fs::create_dir_all(&lease_abs).expect("create lease dir");
-    let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
-    let (_card, _term, mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &runtime_id,
-        None,
-        wave.id.clone(),
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Worker,
-        true,
-        &card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint worker card");
-    let raw_token = match mcp_token {
-        Some(token) => token,
-        None => {
-            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-            let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-            card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
-                .await
-                .expect("mint card MCP token");
-            session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
-                .await
-                .expect("mint session MCP token");
-            token.into_inner()
-        }
-    };
-    insert_workspace_lease(&mut tx, &card_id, wave.id.as_str(), &lease_rel).await;
-    tx.commit().await.expect("commit card tx");
-
-    let thread_id = format!("thread-{card_id}");
-    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+    let caller = create_card_caller(&sqlx_repo, &card_role_cache, wave.id.clone(), role).await;
 
     let plugin_host = boot_plugin_host(
         repo.clone(),
@@ -465,7 +606,7 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -481,16 +622,121 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
         _server: server,
         plugin_host,
         repo: sqlx_repo,
+        card_role_cache,
         socket_path,
         gate_logs_dir,
+        cove_id: cove.id.to_string(),
+        raw_token: caller.raw_token,
+        thread_id: caller.thread_id,
+        card_id: caller.card_id,
+        wave_id: caller.wave_id,
+        lease_abs: caller.lease_abs,
+        _runtime: runtime,
+        _lease_tmp: caller._lease_tmp,
+        _tmp: tmp,
+    }
+}
+
+async fn create_wave_caller(fx: &Fixture, role: CardRole) -> Caller {
+    let wave_cwd = fx
+        ._tmp
+        .path()
+        .join(format!("wave-cwd-{}", calm_server::model::new_id()));
+    std::fs::create_dir_all(&wave_cwd).expect("create additional wave cwd");
+    let wave = fx
+        .repo
+        .wave_create(NewWave {
+            cove_id: CoveId::from(fx.cove_id.clone()),
+            title: "mcp-plugin-forge-action-extra".into(),
+            sort: None,
+            cwd: wave_cwd.display().to_string(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create additional wave");
+    create_card_caller(&fx.repo, &fx.card_role_cache, wave.id, role).await
+}
+
+async fn create_card_caller(
+    sqlx_repo: &Arc<SqlxRepo>,
+    card_role_cache: &CardRoleCache,
+    wave_id: WaveId,
+    role: CardRole,
+) -> Caller {
+    let card_id = calm_server::model::new_id();
+    let runtime_id = calm_server::model::new_id();
+    let (lease_tmp, lease_rel, lease_abs) = if role == CardRole::Worker {
+        let lease_tmp = tempfile::Builder::new()
+            .prefix(".forge-action-lease-")
+            .tempdir_in(std::env::current_dir().expect("current dir"))
+            .expect("server-cwd-relative lease tempdir");
+        let lease_rel = format!(
+            "{}/leases/{card_id}",
+            lease_tmp
+                .path()
+                .file_name()
+                .expect("lease tempdir basename")
+                .to_string_lossy()
+        );
+        let lease_abs = std::env::current_dir()
+            .expect("current dir")
+            .join(&lease_rel);
+        std::fs::create_dir_all(&lease_abs).expect("create lease dir");
+        (Some(lease_tmp), Some(lease_rel), Some(lease_abs))
+    } else {
+        (None, None, None)
+    };
+
+    let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
+    let (_card, _term, mcp_token) = card_with_codex_create_tx(
+        &mut tx,
+        card_id.clone(),
+        &runtime_id,
+        None,
+        wave_id.clone(),
+        None,
+        "/workspace".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        role,
+        true,
+        card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .expect("mint codex card");
+    let raw_token = match mcp_token {
+        Some(token) => token,
+        None => {
+            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+            let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+            card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+                .await
+                .expect("mint card MCP token");
+            session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+                .await
+                .expect("mint session MCP token");
+            token.into_inner()
+        }
+    };
+    if let Some(lease_rel) = lease_rel.as_deref() {
+        insert_workspace_lease(&mut tx, &card_id, wave_id.as_str(), lease_rel).await;
+    }
+    tx.commit().await.expect("commit card tx");
+
+    let thread_id = format!("thread-{card_id}");
+    seed_runtime_thread(sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+
+    Caller {
         raw_token,
         thread_id,
         card_id,
-        wave_id: wave.id.to_string(),
+        wave_id: wave_id.to_string(),
         lease_abs,
-        _runtime: runtime,
         _lease_tmp: lease_tmp,
-        _tmp: tmp,
     }
 }
 
@@ -514,12 +760,9 @@ async fn boot_plugin_host(
     env.insert("STUB_FORGE_PARKED".into(), json!(mode.parked().to_string()));
     env.insert(
         "STUB_FORGE_EVENT_SPEC_JSON".into(),
-        json!(r#"{"event_kind":"forge.scan.completed","fields":{}}"#),
+        json!(mode.event_spec_json()),
     );
-    env.insert(
-        "STUB_FORGE_CONTEXT_JSON".into(),
-        json!(r#"{"overlapping_prs":[]}"#),
-    );
+    env.insert("STUB_FORGE_CONTEXT_JSON".into(), json!(mode.context_json()));
     env.insert("STUB_FORGE_ARGV_JSON".into(), json!(mode.argv_json()));
     if let Some(stub_mode) = mode.stub_mode() {
         env.insert("STUB_FORGE_MODE".into(), json!(stub_mode));
@@ -676,11 +919,19 @@ async fn assert_tool_is_discoverable(fx: &Fixture) {
 }
 
 async fn call_forge_tool(fx: &Fixture, id: i64) -> Value {
+    call_forge_tool_as(fx, &fx.raw_token, &fx.thread_id, id).await
+}
+
+async fn call_forge_tool_for_caller(fx: &Fixture, caller: &Caller, id: i64) -> Value {
+    call_forge_tool_as(fx, &caller.raw_token, &caller.thread_id, id).await
+}
+
+async fn call_forge_tool_as(fx: &Fixture, raw_token: &str, thread_id: &str, id: i64) -> Value {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
-    handshake(&mut rd, &mut wr, &fx.raw_token).await;
+    handshake(&mut rd, &mut wr, raw_token).await;
     send_frame(
         &mut wr,
-        tools_call_frame(id, EXPOSED_NAME, &fx.thread_id, json!({ "from": "test" })),
+        tools_call_frame(id, EXPOSED_NAME, thread_id, json!({ "from": "test" })),
     )
     .await;
     recv_frame(&mut rd).await
@@ -726,6 +977,44 @@ async fn operation_payload_by_idem(repo: &SqlxRepo, idem_key: &str) -> Option<Va
     .await
     .expect("operation payload lookup");
     payload.map(|payload| serde_json::from_str(&payload).expect("operation payload json"))
+}
+
+fn scoped_idem_key(plugin_id: &str, wave_id: &str, card_id: &str, idem_key: &str) -> String {
+    format!("{plugin_id}:{wave_id}:{card_id}:{idem_key}")
+}
+
+async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
+    let rows: Vec<RawEventRow> = sqlx::query_as(
+        "SELECT scope_kind, scope_cove, scope_wave, scope_card, payload \
+             FROM events WHERE kind = ?1 ORDER BY id ASC",
+    )
+    .bind(kind)
+    .fetch_all(repo.pool())
+    .await
+    .expect("event rows");
+    rows.into_iter()
+        .map(
+            |(scope_kind, scope_cove, scope_wave, scope_card, payload)| {
+                (
+                    scope_kind,
+                    scope_cove,
+                    scope_wave,
+                    scope_card,
+                    serde_json::from_str(&payload).expect("event payload json"),
+                )
+            },
+        )
+        .collect()
+}
+
+fn assert_worktree_event(row: &EventRow, wave_id: &str, card_id: &str) {
+    let (scope_kind, _scope_cove, scope_wave, scope_card, payload) = row;
+    assert_eq!(scope_kind, "card");
+    assert_eq!(scope_wave.as_deref(), Some(wave_id));
+    assert_eq!(scope_card.as_deref(), Some(card_id));
+    assert_eq!(payload["wave_id"], wave_id);
+    assert_eq!(payload["card_id"], card_id);
+    assert_eq!(payload["path"], "/tmp/shared-worktree");
 }
 
 fn assert_result_path_under(payload: &Value, results_dir: &Path, message: &str) {
