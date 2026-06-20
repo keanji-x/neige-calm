@@ -761,11 +761,11 @@ async fn dispatch_forge_action_plugin_tool(
             "parked worker forge actions require workspace-lease fencing (slice ③-c); use await-synchronous mode (parked:false) for worker forge actions",
         ));
     }
-    let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;
-    let result_path = forge_result_path(&ctx.gate_logs_dir, &payload.idem_key)?;
-    let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
     let card_id = identity.card_id.clone();
     let idempotency_key = format!("{plugin_id}:{wave_id}:{card_id}:{}", payload.idem_key);
+    let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;
+    let result_path = forge_result_path(&ctx.gate_logs_dir, &idempotency_key)?;
+    let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
 
     let key = OperationKey {
         operation_key: new_id(),

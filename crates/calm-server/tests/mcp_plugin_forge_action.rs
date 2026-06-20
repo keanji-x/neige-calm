@@ -379,6 +379,12 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
 
     let fx = boot_fixture(StubMode::Scoped).await;
+    let first_key = scoped_idem_key(
+        PLUGIN_ID,
+        &fx.wave_id,
+        &fx.card_id,
+        StubMode::Scoped.idem_key(),
+    );
     let first_resp = call_forge_tool(&fx, 20).await;
     assert!(
         first_resp.get("error").is_none(),
@@ -387,6 +393,13 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
     let first_op_id = first_resp["result"]["structuredContent"]["op_id"]
         .as_str()
         .expect("first op_id")
+        .to_string();
+    let first_payload = operation_payload_by_idem(&fx.repo, &first_key)
+        .await
+        .expect("first scoped op payload after initial submit");
+    let first_result_path = first_payload["result_path"]
+        .as_str()
+        .expect("first result_path")
         .to_string();
 
     let retry_resp = call_forge_tool(&fx, 21).await;
@@ -411,6 +424,16 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         1,
         "same scoped key retry must not replay the event"
     );
+    let retry_payload = operation_payload_by_idem(&fx.repo, &first_key)
+        .await
+        .expect("first scoped op payload after retry");
+    let retry_result_path = retry_payload["result_path"]
+        .as_str()
+        .expect("retry result_path");
+    assert_eq!(
+        retry_result_path, first_result_path,
+        "same wave/card/key retry must reuse the scoped result_path"
+    );
 
     let second = create_wave_caller(&fx, CardRole::Spec).await;
     let second_resp = call_forge_tool_for_caller(&fx, &second, 22).await;
@@ -431,12 +454,6 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         "different wave/card with same plugin key/payload must submit a distinct operation"
     );
 
-    let first_key = scoped_idem_key(
-        PLUGIN_ID,
-        &fx.wave_id,
-        &fx.card_id,
-        StubMode::Scoped.idem_key(),
-    );
     let second_key = scoped_idem_key(
         PLUGIN_ID,
         &second.wave_id,
@@ -458,6 +475,20 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
     assert_eq!(first_payload["card_id"], fx.card_id);
     assert_eq!(second_payload["wave_id"], second.wave_id);
     assert_eq!(second_payload["card_id"], second.card_id);
+    let stable_first_result_path = first_payload["result_path"]
+        .as_str()
+        .expect("stable first result_path");
+    let second_result_path = second_payload["result_path"]
+        .as_str()
+        .expect("second result_path");
+    assert_eq!(
+        stable_first_result_path, first_result_path,
+        "first scoped op result_path must remain stable after second submit"
+    );
+    assert_ne!(
+        second_result_path, first_result_path,
+        "different scoped operations with the same raw plugin key must not share result_path"
+    );
 
     let rows = event_rows(&fx.repo, "worktree.provisioned").await;
     assert_eq!(rows.len(), 2, "both scoped operations must persist events");
