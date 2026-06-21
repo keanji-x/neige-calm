@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -40,7 +41,7 @@ pub const FORGE_ACTION_KIND: &str = "forge-action";
 /// and persist. validate_payload rejects any other event_kind BEFORE the irreversible
 /// action can run, so a typo'd/unsupported kind can never execute the side effect and
 /// then fail to record its authoritative event. Slice ③ appends its forge.* kinds here.
-pub(crate) const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
+pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.pr.merged",
     "forge.scan.completed",
     "forge.pr.opened",
@@ -54,6 +55,7 @@ pub(crate) const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+static NEXT_DIFF_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
 const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
     "GH_TOKEN",
@@ -228,6 +230,18 @@ mod tests {
             None, "wave", "card", "idem"
         ));
     }
+
+    #[test]
+    fn diff_artifact_tmp_path_is_unique_per_attempt() {
+        let result_path = Path::new("/tmp/forge-result.patch");
+        let first = diff_artifact_tmp_path(result_path);
+        let second = diff_artifact_tmp_path(result_path);
+        let prefix = format!("{}.tmp.{}.", result_path.display(), std::process::id());
+
+        assert_ne!(first, second);
+        assert!(first.display().to_string().starts_with(&prefix));
+        assert!(second.display().to_string().starts_with(&prefix));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -339,6 +353,14 @@ fn result_code_path(result_path: &Path) -> PathBuf {
 
 fn result_stdout_path(result_path: &Path) -> PathBuf {
     path_with_suffix(result_path, ".stdout")
+}
+
+fn diff_artifact_tmp_path(result_path: &Path) -> PathBuf {
+    let attempt = NEXT_DIFF_ARTIFACT_TMP.fetch_add(1, Ordering::Relaxed);
+    path_with_suffix(
+        result_path,
+        &format!(".tmp.{}.{}", std::process::id(), attempt),
+    )
 }
 
 fn result_tmp_prefixes(result_path: &Path) -> Vec<PathBuf> {
@@ -509,6 +531,7 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
 fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
     match event_kind {
         "forge.pr.merged" => &["wave_id", "subject"],
+        "forge.pr.diff.read" => &["wave_id", "artifact_path"],
         "worktree.provisioned" | "worktree.removed" => &["wave_id", "card_id"],
         _ => &["wave_id"],
     }
@@ -598,6 +621,9 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             }
         }
         for (field, field_type) in new_kind_required_fields(&spec.event_kind) {
+            if kernel_injected_fields(&spec.event_kind).contains(field) {
+                continue;
+            }
             if let Some(source) = spec.fields.get(*field) {
                 if !matches!(source, FieldSource::JsonField { .. }) {
                     return Err(CalmError::BadRequest(format!(
@@ -778,6 +804,12 @@ fn build_forge_event(
                     })?,
                 );
             }
+            "artifact_path" if spec.event_kind == "forge.pr.diff.read" => {
+                payload.insert(
+                    "artifact_path".into(),
+                    Value::String(frozen.result_path.display().to_string()),
+                );
+            }
             _ => {}
         }
     }
@@ -824,6 +856,32 @@ async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {
     Ok(ForgeActionResultFile { exit_code, stdout })
 }
 
+fn is_forge_pr_diff_read(frozen: &FrozenForge) -> bool {
+    frozen
+        .event_spec
+        .as_ref()
+        .is_some_and(|spec| spec.event_kind == "forge.pr.diff.read")
+}
+
+async fn persist_diff_artifact_if_needed(
+    frozen: &FrozenForge,
+    exit_code: i32,
+    stdout: &str,
+) -> Result<()> {
+    if exit_code != 0 || !is_forge_pr_diff_read(frozen) {
+        return Ok(());
+    }
+    if let Some(parent) = frozen.result_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let tmp_path = diff_artifact_tmp_path(&frozen.result_path);
+    tokio::fs::write(&tmp_path, stdout.as_bytes()).await?;
+    tokio::fs::rename(&tmp_path, &frozen.result_path).await?;
+    Ok(())
+}
+
 async fn complete_forge_op_failed(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
@@ -862,6 +920,16 @@ pub(crate) async fn complete_forge_op_with_result(
     exit_code: i32,
     stdout: &str,
 ) -> Result<()> {
+    if let Err(e) = persist_diff_artifact_if_needed(frozen, exit_code, stdout).await {
+        return complete_forge_op_failed(
+            pool,
+            completion,
+            op_id,
+            format!("gate-infra: forge.pr.diff.read artifact write failed: {e}"),
+            Some("gate-infra".into()),
+        )
+        .await;
+    }
     let (event, result) = match build_forge_event(frozen, exit_code, stdout) {
         Ok(ok) => ok,
         Err(ForgeEventBuildError::ActionFailed { reason }) => {
@@ -896,6 +964,16 @@ async fn complete_forge_op_from_live_result(
     exit_code: i32,
     stdout: &str,
 ) -> Result<()> {
+    if let Err(e) = persist_diff_artifact_if_needed(frozen, exit_code, stdout).await {
+        return complete_forge_op_failed(
+            refs.pool,
+            refs.completion,
+            op_id,
+            format!("gate-infra: forge.pr.diff.read artifact write failed: {e}"),
+            Some("gate-infra".into()),
+        )
+        .await;
+    }
     let (event, result) = match build_forge_event(frozen, exit_code, stdout) {
         Ok(ok) => ok,
         Err(ForgeEventBuildError::ActionFailed { reason }) => {

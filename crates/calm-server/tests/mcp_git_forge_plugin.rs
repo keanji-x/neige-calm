@@ -87,7 +87,25 @@ type RawEventRow = (
 fn real_manifest_parses() {
     let manifest = read_manifest();
     assert_eq!(manifest.id, PLUGIN_ID);
-    assert_eq!(manifest.exposes_tools.len(), 3);
+    let tool_names = manifest
+        .exposes_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "git.worktree.add",
+            "git.commit",
+            "gh.pr.create",
+            "gh.pr.list",
+            "gh.pr.diff",
+            "gh.pr.checks",
+            "gh.pr.merge",
+            "gh.issue.view",
+            "gh.issue.close",
+        ]
+    );
 }
 
 #[tokio::test]

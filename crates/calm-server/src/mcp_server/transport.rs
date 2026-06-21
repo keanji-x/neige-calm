@@ -763,15 +763,6 @@ async fn dispatch_forge_action_plugin_tool(
         .clone()
         .ok_or_else(|| RpcError::invalid_params("forge action requires a wave-scoped caller"))?;
     let parked = payload.parked;
-    if identity.role == CardRole::Worker && parked {
-        // A parked worker forge op would inherit the worker card lease path
-        // while the lease remains owned by the card. Until ③-c fences that
-        // lease against normal worker completion/reaper release, the op could
-        // be rug-pulled out from under a deleted workspace.
-        return Err(RpcError::invalid_params(
-            "parked worker forge actions require workspace-lease fencing (slice ③-c); use await-synchronous mode (parked:false) for worker forge actions",
-        ));
-    }
     let card_id = identity.card_id.clone();
     let idempotency_key = format!("{plugin_id}:{wave_id}:{card_id}:{}", payload.idem_key);
     let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;

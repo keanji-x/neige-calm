@@ -122,6 +122,12 @@ fn lower(tool: &str, args: &Value) -> Result<Value, String> {
         "git.worktree.add" => lower_git_worktree_add(args),
         "git.commit" => lower_git_commit(args),
         "gh.pr.create" => lower_gh_pr_create(args),
+        "gh.pr.list" => lower_gh_pr_list(args),
+        "gh.pr.diff" => lower_gh_pr_diff(args),
+        "gh.pr.checks" => lower_gh_pr_checks(args),
+        "gh.pr.merge" => lower_gh_pr_merge(args),
+        "gh.issue.view" => lower_gh_issue_view(args),
+        "gh.issue.close" => lower_gh_issue_close(args),
         _ => Err(format!("unknown git-forge tool `{tool}`")),
     }
 }
@@ -230,6 +236,240 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
     )
 }
 
+fn lower_gh_pr_list(args: &Value) -> Result<Value, String> {
+    let repo = required_string(args, "repo")?;
+    let base = required_string(args, "base")?;
+    let head = required_string(args, "head")?;
+    let argv = vec![
+        "gh".into(),
+        "pr".into(),
+        "list".into(),
+        "--repo".into(),
+        repo.clone(),
+        "--base".into(),
+        base.clone(),
+        "--head".into(),
+        head.clone(),
+        "--state".into(),
+        "open".into(),
+        "--json".into(),
+        "number".into(),
+        "--jq".into(),
+        "[.[].number]".into(),
+    ];
+    forge_payload(
+        argv.clone(),
+        format!("gh.pr.list:{repo}:{base}:{head}"),
+        Some(event_spec(
+            "forge.scan.completed",
+            [(
+                "overlapping_prs",
+                FieldSource::JsonField {
+                    path: String::new(),
+                },
+            )],
+        )),
+        json!({}),
+        Some(json!({
+            "probe_argv": [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--limit",
+                "1"
+            ],
+            "output_probe_argv": argv
+        })),
+        true,
+    )
+}
+
+fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
+    let repo = required_string(args, "repo")?;
+    let pr = required_u64(args, "pr")?;
+    let base_sha = required_string(args, "base_sha")?;
+    let head_sha = required_string(args, "head_sha")?;
+    forge_payload(
+        vec![
+            "gh".into(),
+            "pr".into(),
+            "diff".into(),
+            pr.to_string(),
+            "--repo".into(),
+            repo.clone(),
+            "--patch".into(),
+        ],
+        format!("gh.pr.diff:{repo}:{pr}:{base_sha}:{head_sha}"),
+        Some(event_spec("forge.pr.diff.read", [])),
+        json!({
+            "pr_number": pr,
+            "base_sha": base_sha,
+            "head_sha": head_sha
+        }),
+        None,
+        true,
+    )
+}
+
+fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
+    let repo = required_string(args, "repo")?;
+    let pr = required_u64(args, "pr")?;
+    let attempt = optional_attempt(args)?;
+    let idem_key = match attempt {
+        Some(attempt) => format!("gh.pr.checks:{repo}:{pr}:{attempt}"),
+        None => format!("gh.pr.checks:{repo}:{pr}"),
+    };
+    let argv = vec![
+        "gh".into(),
+        "pr".into(),
+        "view".into(),
+        pr.to_string(),
+        "--repo".into(),
+        repo.clone(),
+        "--json".into(),
+        "statusCheckRollup".into(),
+        "--jq".into(),
+        "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // .status // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}".into(),
+    ];
+    forge_payload(
+        argv.clone(),
+        idem_key,
+        Some(event_spec(
+            "forge.pr.checks",
+            [(
+                "conclusion",
+                FieldSource::JsonField {
+                    path: "/conclusion".into(),
+                },
+            )],
+        )),
+        json!({ "pr_number": pr }),
+        Some(json!({
+            "probe_argv": [
+                "gh",
+                "pr",
+                "view",
+                pr.to_string(),
+                "--repo",
+                repo,
+                "--json",
+                "state"
+            ],
+            "output_probe_argv": argv
+        })),
+        true,
+    )
+}
+
+fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
+    let repo = required_string(args, "repo")?;
+    let pr = required_u64(args, "pr")?;
+    let phase = required_string(args, "phase")?;
+    let slice_id = required_string(args, "slice_id")?;
+    let mut payload = forge_payload(
+        vec![
+            "gh".into(),
+            "pr".into(),
+            "merge".into(),
+            pr.to_string(),
+            "--repo".into(),
+            repo.clone(),
+            "--squash".into(),
+            "--delete-branch".into(),
+        ],
+        format!("gh.pr.merge:{repo}:{pr}"),
+        Some(event_spec(
+            "forge.pr.merged",
+            [
+                (
+                    "head_sha",
+                    FieldSource::JsonField {
+                        path: "/headRefOid".into(),
+                    },
+                ),
+                (
+                    "merge_sha",
+                    FieldSource::JsonField {
+                        path: "/mergeCommit/oid".into(),
+                    },
+                ),
+            ],
+        )),
+        json!({}),
+        Some(json!({
+            "probe_argv": [
+                "gh",
+                "pr",
+                "view",
+                pr.to_string(),
+                "--repo",
+                repo,
+                "--json",
+                "state"
+            ],
+            "output_probe_argv": [
+                "gh",
+                "pr",
+                "view",
+                pr.to_string(),
+                "--repo",
+                repo,
+                "--json",
+                "headRefOid,mergeCommit"
+            ]
+        })),
+        true,
+    )?;
+    payload["subject"] = json!({
+        "phase": phase,
+        "slice_id": slice_id,
+        "pr_number": pr
+    });
+    Ok(payload)
+}
+
+fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
+    let repo = required_string(args, "repo")?;
+    let issue = required_u64(args, "issue")?;
+    forge_payload(
+        vec![
+            "gh".into(),
+            "issue".into(),
+            "view".into(),
+            issue.to_string(),
+            "--repo".into(),
+            repo.clone(),
+        ],
+        format!("gh.issue.view:{repo}:{issue}"),
+        None,
+        json!({}),
+        None,
+        true,
+    )
+}
+
+fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
+    let repo = required_string(args, "repo")?;
+    let issue = required_u64(args, "issue")?;
+    forge_payload(
+        vec![
+            "gh".into(),
+            "issue".into(),
+            "close".into(),
+            issue.to_string(),
+            "--repo".into(),
+            repo.clone(),
+        ],
+        format!("gh.issue.close:{repo}:{issue}"),
+        Some(event_spec("forge.issue.closed", [])),
+        json!({ "issue_number": issue }),
+        None,
+        true,
+    )
+}
+
 fn forge_payload(
     argv: Vec<String>,
     idem_key: String,
@@ -281,6 +521,21 @@ fn required_string(args: &Value, key: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+fn required_u64(args: &Value, key: &str) -> Result<u64, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "tool arguments must be an object".to_string())?;
+    match object.get(key) {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .ok_or_else(|| format!("required argument `{key}` must be a u64")),
+        Some(Value::String(value)) if !value.is_empty() => value
+            .parse::<u64>()
+            .map_err(|_| format!("required argument `{key}` must be a u64")),
+        _ => Err(format!("missing required u64 argument `{key}`")),
+    }
+}
+
 fn optional_string(args: &Value, key: &str) -> Result<Option<String>, String> {
     let object = args
         .as_object()
@@ -292,9 +547,22 @@ fn optional_string(args: &Value, key: &str) -> Result<Option<String>, String> {
     }
 }
 
+fn optional_attempt(args: &Value) -> Result<Option<String>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "tool arguments must be an object".to_string())?;
+    match object.get("attempt") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        Some(Value::Number(number)) => Ok(Some(number.to_string())),
+        Some(_) => Err("optional argument `attempt` must be a string or number".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calm_server::operation::forge_action_adapter::SUPPORTED_FORGE_EVENT_KINDS;
 
     #[test]
     fn lowers_git_worktree_add() {
@@ -407,7 +675,343 @@ mod tests {
             })
         );
         assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_supported_event_kind(&payload);
         assert!(payload["probe"]["output_probe_argv"].is_array());
+    }
+
+    #[test]
+    fn lowers_gh_pr_list() {
+        let payload = lower(
+            "gh.pr.list",
+            &json!({
+                "repo": "owner/repo",
+                "base": "main",
+                "head": "feature"
+            }),
+        )
+        .expect("lower gh pr list");
+        assert_eq!(
+            payload,
+            json!({
+                "argv": [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    "owner/repo",
+                    "--base",
+                    "main",
+                    "--head",
+                    "feature",
+                    "--state",
+                    "open",
+                    "--json",
+                    "number",
+                    "--jq",
+                    "[.[].number]"
+                ],
+                "idem_key": "gh.pr.list:owner/repo:main:feature",
+                "event_spec": {
+                    "event_kind": "forge.scan.completed",
+                    "fields": {
+                        "overlapping_prs": { "json_field": { "path": "" } }
+                    }
+                },
+                "subject": null,
+                "context": {},
+                "probe": {
+                    "probe_argv": [
+                        "gh",
+                        "pr",
+                        "list",
+                        "--repo",
+                        "owner/repo",
+                        "--limit",
+                        "1"
+                    ],
+                    "output_probe_argv": [
+                        "gh",
+                        "pr",
+                        "list",
+                        "--repo",
+                        "owner/repo",
+                        "--base",
+                        "main",
+                        "--head",
+                        "feature",
+                        "--state",
+                        "open",
+                        "--json",
+                        "number",
+                        "--jq",
+                        "[.[].number]"
+                    ]
+                },
+                "parked": true
+            })
+        );
+        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_supported_event_kind(&payload);
+    }
+
+    #[test]
+    fn lowers_gh_pr_diff() {
+        let payload = lower(
+            "gh.pr.diff",
+            &json!({
+                "repo": "owner/repo",
+                "pr": "42",
+                "base_sha": "base123",
+                "head_sha": "head456"
+            }),
+        )
+        .expect("lower gh pr diff");
+        assert_eq!(
+            payload,
+            json!({
+                "argv": [
+                    "gh",
+                    "pr",
+                    "diff",
+                    "42",
+                    "--repo",
+                    "owner/repo",
+                    "--patch"
+                ],
+                "idem_key": "gh.pr.diff:owner/repo:42:base123:head456",
+                "event_spec": {
+                    "event_kind": "forge.pr.diff.read",
+                    "fields": {}
+                },
+                "subject": null,
+                "context": {
+                    "pr_number": 42,
+                    "base_sha": "base123",
+                    "head_sha": "head456"
+                },
+                "probe": null,
+                "parked": true
+            })
+        );
+        assert_no_reserved_context(&payload, &["wave_id", "artifact_path"]);
+        assert_supported_event_kind(&payload);
+    }
+
+    #[test]
+    fn lowers_gh_pr_checks() {
+        let payload = lower(
+            "gh.pr.checks",
+            &json!({
+                "repo": "owner/repo",
+                "pr": 42
+            }),
+        )
+        .expect("lower gh pr checks");
+        let attempt_payload = lower(
+            "gh.pr.checks",
+            &json!({
+                "repo": "owner/repo",
+                "pr": 42,
+                "attempt": 7
+            }),
+        )
+        .expect("lower gh pr checks with attempt");
+        let jq = "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // .status // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}";
+        let expected_payload = |idem_key: &str| {
+            json!({
+                "argv": [
+                    "gh",
+                    "pr",
+                    "view",
+                    "42",
+                    "--repo",
+                    "owner/repo",
+                    "--json",
+                    "statusCheckRollup",
+                    "--jq",
+                    jq
+                ],
+                "idem_key": idem_key,
+                "event_spec": {
+                    "event_kind": "forge.pr.checks",
+                    "fields": {
+                        "conclusion": { "json_field": { "path": "/conclusion" } }
+                    }
+                },
+                "subject": null,
+                "context": { "pr_number": 42 },
+                "probe": {
+                    "probe_argv": [
+                        "gh",
+                        "pr",
+                        "view",
+                        "42",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                        "state"
+                    ],
+                    "output_probe_argv": [
+                        "gh",
+                        "pr",
+                        "view",
+                        "42",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                        "statusCheckRollup",
+                        "--jq",
+                        jq
+                    ]
+                },
+                "parked": true
+            })
+        };
+        assert_eq!(payload, expected_payload("gh.pr.checks:owner/repo:42"));
+        assert_eq!(
+            attempt_payload,
+            expected_payload("gh.pr.checks:owner/repo:42:7")
+        );
+        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_no_reserved_context(&attempt_payload, &["wave_id"]);
+        assert_supported_event_kind(&payload);
+        assert_supported_event_kind(&attempt_payload);
+    }
+
+    #[test]
+    fn lowers_gh_pr_merge() {
+        let payload = lower(
+            "gh.pr.merge",
+            &json!({
+                "repo": "owner/repo",
+                "pr": 42,
+                "phase": "impl",
+                "slice_id": "809"
+            }),
+        )
+        .expect("lower gh pr merge");
+        assert_eq!(
+            payload,
+            json!({
+                "argv": [
+                    "gh",
+                    "pr",
+                    "merge",
+                    "42",
+                    "--repo",
+                    "owner/repo",
+                    "--squash",
+                    "--delete-branch"
+                ],
+                "idem_key": "gh.pr.merge:owner/repo:42",
+                "event_spec": {
+                    "event_kind": "forge.pr.merged",
+                    "fields": {
+                        "head_sha": { "json_field": { "path": "/headRefOid" } },
+                        "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
+                    }
+                },
+                "subject": {
+                    "phase": "impl",
+                    "slice_id": "809",
+                    "pr_number": 42
+                },
+                "context": {},
+                "probe": {
+                    "probe_argv": [
+                        "gh",
+                        "pr",
+                        "view",
+                        "42",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                        "state"
+                    ],
+                    "output_probe_argv": [
+                        "gh",
+                        "pr",
+                        "view",
+                        "42",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                        "headRefOid,mergeCommit"
+                    ]
+                },
+                "parked": true
+            })
+        );
+        assert_no_reserved_context(&payload, &["wave_id", "subject"]);
+        assert_supported_event_kind(&payload);
+    }
+
+    #[test]
+    fn lowers_gh_issue_view() {
+        let payload = lower(
+            "gh.issue.view",
+            &json!({
+                "repo": "owner/repo",
+                "issue": "808"
+            }),
+        )
+        .expect("lower gh issue view");
+        assert_eq!(
+            payload,
+            json!({
+                "argv": [
+                    "gh",
+                    "issue",
+                    "view",
+                    "808",
+                    "--repo",
+                    "owner/repo"
+                ],
+                "idem_key": "gh.issue.view:owner/repo:808",
+                "event_spec": null,
+                "subject": null,
+                "context": {},
+                "probe": null,
+                "parked": true
+            })
+        );
+        assert_no_reserved_context(&payload, &["wave_id"]);
+    }
+
+    #[test]
+    fn lowers_gh_issue_close() {
+        let payload = lower(
+            "gh.issue.close",
+            &json!({
+                "repo": "owner/repo",
+                "issue": 808
+            }),
+        )
+        .expect("lower gh issue close");
+        assert_eq!(
+            payload,
+            json!({
+                "argv": [
+                    "gh",
+                    "issue",
+                    "close",
+                    "808",
+                    "--repo",
+                    "owner/repo"
+                ],
+                "idem_key": "gh.issue.close:owner/repo:808",
+                "event_spec": {
+                    "event_kind": "forge.issue.closed",
+                    "fields": {}
+                },
+                "subject": null,
+                "context": { "issue_number": 808 },
+                "probe": null,
+                "parked": true
+            })
+        );
+        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_supported_event_kind(&payload);
     }
 
     #[test]
@@ -442,5 +1046,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn assert_supported_event_kind(payload: &Value) {
+        let event_kind = payload
+            .pointer("/event_spec/event_kind")
+            .and_then(Value::as_str)
+            .expect("payload carries event kind");
+        assert!(
+            SUPPORTED_FORGE_EVENT_KINDS.contains(&event_kind),
+            "unsupported event kind `{event_kind}`"
+        );
     }
 }

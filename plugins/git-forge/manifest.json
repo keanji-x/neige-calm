@@ -22,6 +22,36 @@
       "name": "gh.pr.create",
       "description": "Lower GitHub pull request creation into a forge action",
       "kind": "forge-action"
+    },
+    {
+      "name": "gh.pr.list",
+      "description": "Lower GitHub pull request overlap scans into a forge action",
+      "kind": "forge-action"
+    },
+    {
+      "name": "gh.pr.diff",
+      "description": "Lower GitHub pull request diff reads into a forge action",
+      "kind": "forge-action"
+    },
+    {
+      "name": "gh.pr.checks",
+      "description": "Lower GitHub pull request check reads into a forge action",
+      "kind": "forge-action"
+    },
+    {
+      "name": "gh.pr.merge",
+      "description": "Lower GitHub pull request merges into a forge action",
+      "kind": "forge-action"
+    },
+    {
+      "name": "gh.issue.view",
+      "description": "Lower GitHub issue views into a forge action",
+      "kind": "forge-action"
+    },
+    {
+      "name": "gh.issue.close",
+      "description": "Lower GitHub issue closes into a forge action",
+      "kind": "forge-action"
     }
   ],
   "permissions": {}
