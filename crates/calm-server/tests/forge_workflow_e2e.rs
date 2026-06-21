@@ -19,11 +19,13 @@ use calm_server::db::write_with_actor_events_typed;
 use calm_server::event::{EventBus, EventScope};
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveLifecycle, now_ms};
-use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
+use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveLifecycle, new_id, now_ms};
+use calm_server::operation::forge_action_adapter::{
+    FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
+};
 use calm_server::operation::{
-    OperationCompletionBus, OperationOutcome, OperationResult, OperationRuntime, ProviderAdapter,
-    RecoveryItem, SpawnArtifacts, SpawnCtx, SqlxOperationRepo,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationResult, OperationRuntime,
+    ProviderAdapter, RecoveryItem, SpawnArtifacts, SpawnCtx, SqlxOperationRepo,
 };
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::session_projection_repo::{
@@ -409,6 +411,171 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
     wait_for_result_code_file(&result_path).await;
     assert_event_count_stays(&fx.repo, "forge.pr.merged", 1).await;
     assert_eq!(shim_counter(&state.join("pr_merge_count")), 1);
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+#[tokio::test]
+async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let path_dir = short_tempdir("p").expect("gh shim PATH tempdir");
+    write_gh_shim(path_dir.path());
+    let path_value = prepend_to_path(path_dir.path());
+    let results_dir = short_tempdir("r").expect("forge results tempdir");
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let _path = EnvGuard::set("PATH", path_value);
+
+    let fx = boot_fixture().await;
+    let repo_arg = fx.origin_repo.display().to_string();
+    let base = "main";
+    let head = "slice-810-e2e-merge-never-ran";
+
+    run_git(&fx.lease_abs, ["checkout", "-b", head]);
+    stage_git_change(
+        &fx.lease_abs,
+        "merge-never-ran.txt",
+        "merge never ran e2e\n",
+    );
+    let commit_resp = call_tool(
+        &fx,
+        24,
+        COMMIT_TOOL,
+        json!({ "message": "merge never ran e2e", "idem": "slice-810-e2e-merge-never-ran-commit" }),
+    )
+    .await;
+    assert_tool_succeeded(&commit_resp, "git.commit");
+    run_git(&fx.lease_abs, ["push", "-u", "origin", head]);
+
+    let create_resp = call_tool(
+        &fx,
+        25,
+        PR_CREATE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "head": head,
+            "base": base,
+            "title": "Merge never ran E2E",
+            "body": "Created by forge merge never-ran E2E"
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
+    let pr_number = opened_rows[0].payload["pr_number"]
+        .as_u64()
+        .expect("pr number");
+    let head_sha = opened_rows[0].payload["head_sha"]
+        .as_str()
+        .expect("head sha")
+        .to_string();
+    let state = shim_state_dir(&fx.origin_repo);
+    assert!(!pr_is_merged(&state, pr_number), "PR must start open");
+
+    let result_path = results_dir.path().join("merge-never-ran.result");
+    let payload = ForgeActionPayload {
+        wave_id: fx.wave_id.clone(),
+        card_id: "card-1".into(),
+        subject: Some(
+            serde_json::from_value(json!({
+                "phase": "impl",
+                "slice_id": "810",
+                "pr_number": pr_number
+            }))
+            .expect("merge subject"),
+        ),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+        idem_key: format!("gh.pr.merge:{repo_arg}:{pr_number}"),
+        event_spec: Some(
+            serde_json::from_value(json!({
+                "event_kind": "forge.pr.merged",
+                "fields": {
+                    "head_sha": { "json_field": { "path": "/headRefOid" } },
+                    "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
+                }
+            }))
+            .expect("merge event spec"),
+        ),
+        context: serde_json::Map::new(),
+        probe: Some(ProbeSpec {
+            probe_argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "out=$(gh pr view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac".into(),
+                "sh".into(),
+                pr_number.to_string(),
+                repo_arg.clone(),
+            ],
+            output_probe_argv: Some(vec![
+                "gh".into(),
+                "pr".into(),
+                "view".into(),
+                pr_number.to_string(),
+                "--repo".into(),
+                repo_arg.clone(),
+                "--json".into(),
+                "headRefOid,mergeCommit".into(),
+            ]),
+        }),
+        cwd_lease: fx.lease_abs.clone(),
+        result_path: result_path.clone(),
+        deadline_ms: now_ms() + 60_000,
+    };
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(payload.idem_key.clone()),
+        payload_hash: "merge-never-ran-semantic-hash".into(),
+    };
+    let op_id = fx
+        ._runtime
+        .submit(
+            FORGE_ACTION_KIND,
+            key,
+            serde_json::to_value(payload).expect("payload json"),
+        )
+        .await
+        .expect("submit parked merge");
+    wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
+    let _sleep_guard = parked_process_group_guard(&fx.repo, &op_id).await;
+    assert_result_files_absent(&result_path);
+    assert!(
+        !pr_is_merged(&state, pr_number),
+        "parked never-ran merge must leave PR open"
+    );
+
+    mark_parked_artifacts_dead(&fx.repo, &op_id).await;
+    mark_workspace_lease_stale_for_boot(&fx.repo, &fx.lease_id).await;
+    let recovery = boot_recovery_runtime(&fx).await;
+    let plan = recovery.recover_on_boot().await.expect("recover on boot");
+    assert!(
+        plan.items
+            .iter()
+            .any(|item| matches!(item, RecoveryItem::VerifyParked { op_id: item_op_id } if item_op_id == &op_id)),
+        "never-ran merge should recover through parked verification: {:?}",
+        plan.items
+    );
+    recovery.apply_recovery(plan).await.expect("apply recovery");
+    let result = wait_for_recovery_result(&recovery, &op_id).await;
+    match result.outcome {
+        OperationOutcome::Failed {
+            last_error_class, ..
+        } => {
+            assert_eq!(last_error_class.as_deref(), Some("action-not-landed"));
+        }
+        other => panic!("never-ran merge should fail not-landed: {other:?}"),
+    }
+    assert_eq!(operation_phase(&fx.repo, &op_id).await, "failed");
+    assert_event_count_stays(&fx.repo, "forge.pr.merged", 0).await;
+    assert!(
+        !pr_is_merged(&state, pr_number),
+        "not-landed recovery must not mutate PR state; head was {head_sha}"
+    );
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -918,6 +1085,33 @@ async fn operation_result_path(repo: &SqlxRepo, op_id: &str) -> PathBuf {
     )
 }
 
+async fn parked_process_group_guard(repo: &SqlxRepo, op_id: &str) -> ProcessGroupGuard {
+    let raw: String =
+        sqlx::query_scalar("SELECT spawn_artifacts_json FROM operations WHERE id = ?1")
+            .bind(op_id)
+            .fetch_one(repo.pool())
+            .await
+            .expect("operation spawn_artifacts_json");
+    let artifacts: SpawnArtifacts = serde_json::from_str(&raw).expect("spawn artifacts json");
+    ProcessGroupGuard {
+        pgid: artifacts.pgid,
+    }
+}
+
+struct ProcessGroupGuard {
+    pgid: i32,
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if self.pgid > 0 {
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 fn assert_result_files_absent(result_path: &Path) {
     let code = path_with_suffix(result_path, ".code");
     let stdout = path_with_suffix(result_path, ".stdout");
@@ -1260,6 +1454,12 @@ fn write_gh_shim(dir: &Path) {
 
 fn shim_state_dir(repo: &Path) -> PathBuf {
     PathBuf::from(format!("{}.shimstate", repo.display()))
+}
+
+fn pr_is_merged(state: &Path, pr_number: u64) -> bool {
+    std::fs::read_to_string(state.join("prs").join(pr_number.to_string()).join("merged"))
+        .map(|raw| raw.trim() == "true")
+        .unwrap_or(false)
 }
 
 struct ShimBlock {
