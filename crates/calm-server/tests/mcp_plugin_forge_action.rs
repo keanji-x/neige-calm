@@ -225,19 +225,22 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
     let parked_worker = boot_fixture_with_role(StubMode::Parked, CardRole::Worker).await;
     let before_parked_ops = operation_count(&parked_worker.repo).await;
     let parked_worker_resp = call_forge_tool(&parked_worker, 5).await;
-    assert_eq!(parked_worker_resp["error"]["code"], -32602);
     assert!(
-        parked_worker_resp["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("workspace-lease fencing"),
-        "parked worker rejection should name lease fencing: {parked_worker_resp:#?}"
+        parked_worker_resp.get("error").is_none(),
+        "parked worker forge tool errored: {parked_worker_resp:#?}"
+    );
+    let parked_worker_structured = &parked_worker_resp["result"]["structuredContent"];
+    assert_eq!(parked_worker_structured["parked"], true);
+    assert!(
+        parked_worker_structured["op_id"].as_str().is_some(),
+        "parked worker response must carry op_id: {parked_worker_resp:#?}"
     );
     assert_eq!(
         operation_count(&parked_worker.repo).await,
-        before_parked_ops,
-        "parked worker forge action must not submit an operation"
+        before_parked_ops + 1,
+        "parked worker forge action must submit an operation"
     );
+    wait_for_event_count(&parked_worker.repo, "forge.scan.completed", 1).await;
     parked_worker
         .plugin_host
         .stop(PLUGIN_ID)

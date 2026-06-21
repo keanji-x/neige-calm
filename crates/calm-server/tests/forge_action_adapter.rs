@@ -1562,6 +1562,56 @@ async fn forge_action_persists_non_merge_event_from_context() -> CalmResult<()> 
 }
 
 #[tokio::test]
+async fn forge_action_pr_diff_persists_artifact_and_injects_path() -> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("pr-diff-action.sh");
+    let diff_body = "diff --git a/README.md b/README.md\n+new line\n";
+    write_script(
+        &action,
+        "#!/bin/sh\nprintf '%s' 'diff --git a/README.md b/README.md\n+new line\n'\n",
+    );
+
+    let result_path = boot.temp_path("pr-diff-result.patch");
+    let idem = "forge-pr-diff-artifact";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string()],
+        result_path.clone(),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = serde_json::to_value(event_spec_for("forge.pr.diff.read"))?;
+    input["context"] = json!({
+        "pr_number": 42,
+        "base_sha": "base123",
+        "head_sha": "head456"
+    });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+
+    let event = latest_event_payload(&boot.repo, "forge.pr.diff.read").await;
+    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["pr_number"], json!(42));
+    assert_eq!(event["base_sha"], json!("base123"));
+    assert_eq!(event["head_sha"], json!("head456"));
+    assert_eq!(
+        event["artifact_path"],
+        json!(result_path.display().to_string())
+    );
+    assert_eq!(fs::read_to_string(&result_path)?, diff_body);
+    Ok(())
+}
+
+#[tokio::test]
 async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("scoped-event-action.sh");
