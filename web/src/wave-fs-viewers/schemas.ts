@@ -131,6 +131,7 @@ export const waveFsWaveSchema = z.object({
   pinned_at: z.number().nullable(),
   lifecycle: waveFsWaveLifecycleSchema,
   cwd: z.string(),
+  workflow_id: z.string().nullable(),
   terminal_at: z.number().nullable(),
   created_at: z.number(),
   updated_at: z.number(),

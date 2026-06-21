@@ -338,6 +338,7 @@ describe('EventBridge', () => {
         // wire shape. The bridge doesn't care about either today;
         // future calendar/terminal-stamp subscribers will read them.
         cwd: '',
+        workflow_id: null,
         terminal_at: null,
         pinned_at: null,
         created_at: 1,

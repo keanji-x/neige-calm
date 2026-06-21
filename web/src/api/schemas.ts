@@ -92,6 +92,12 @@ export const waveSchema = z.object({
    */
   cwd: z.string().default(''),
   /**
+   * Issue #760 slice 4a — optional workflow descriptor backing this wave.
+   * Defaulted to `null` for replay of event-log rows written before the
+   * field existed; fresh rows serialize the field explicitly.
+   */
+  workflow_id: z.string().nullable().default(null),
+  /**
    * Issue #250 PR 2 — unix-ms stamp the wave most recently entered a
    * terminal lifecycle state (Done / Canceled / Failed), or `null`
    * while non-terminal. Defaulted to `null` so pre-#250 wire payloads
@@ -402,6 +408,19 @@ export const pluginToolRegisteredSchema = z.object({
   data: z.object({
     plugin_id: z.string(),
     tool_name: z.string(),
+  }),
+});
+
+/**
+ * `Event::WorkflowRegistered` — boot-time announcement for one plugin
+ * workflow descriptor. No frontend query consumes the workflow catalog yet;
+ * the event is still part of the exhaustive wire contract.
+ */
+export const workflowRegisteredSchema = z.object({
+  ev: z.literal('workflow.registered'),
+  data: z.object({
+    pluginId: z.string(),
+    workflowId: z.string(),
   }),
 });
 
@@ -745,6 +764,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalDeletedSchema,
   pluginStateSchema,
   pluginToolRegisteredSchema,
+  workflowRegisteredSchema,
   codexHookSchema,
   claudeHookSchema,
   codexWorkerRequestedSchema,
@@ -801,6 +821,7 @@ export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
 export type PluginToolRegisteredEvent = z.infer<typeof pluginToolRegisteredSchema>;
+export type WorkflowRegisteredEvent = z.infer<typeof workflowRegisteredSchema>;
 export type CodexHookEvent = z.infer<typeof codexHookSchema>;
 export type ClaudeHookEvent = z.infer<typeof claudeHookSchema>;
 export type CodexWorkerRequestedEvent = z.infer<typeof codexWorkerRequestedSchema>;
