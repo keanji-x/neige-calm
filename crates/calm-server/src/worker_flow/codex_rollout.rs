@@ -100,28 +100,53 @@ impl CodexRolloutFlowSource {
             return Ok(None);
         };
 
-        for _ in 0..self.options.lazy_retry_attempts {
+        let warn_after = self.options.lazy_retry_attempts;
+        let mut warned = false;
+        let mut attempt = 0_usize;
+        loop {
             if self.stop.is_cancelled() {
                 return Ok(None);
             }
             match find_thread_path_by_id_str(&self.codex_home, thread_id).await {
                 Ok(Some(path)) => return Ok(Some(path)),
-                Ok(None) => {
-                    sleep_or_cancel(self.options.lazy_retry_delay, &self.stop).await?;
-                }
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    sleep_or_cancel(self.options.lazy_retry_delay, &self.stop).await?;
-                }
+                Ok(None) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => return Err(CoreError::Io(err)),
             }
+
+            if !self.runtime_is_alive().await {
+                match find_thread_path_by_id_str(&self.codex_home, thread_id).await {
+                    Ok(Some(path)) => return Ok(Some(path)),
+                    Ok(None) => {}
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(CoreError::Io(err)),
+                }
+                tracing::info!(
+                    card_id = %self.runtime.card_id,
+                    runtime_id = %self.runtime.id,
+                    thread_id,
+                    "codex runtime reached terminal status without creating a rollout file; exiting source"
+                );
+                return Ok(None);
+            }
+
+            if !warned && attempt >= warn_after {
+                warned = true;
+                tracing::warn!(
+                    card_id = %self.runtime.card_id,
+                    runtime_id = %self.runtime.id,
+                    thread_id,
+                    "codex rollout file not found after lazy-create retry budget; continuing to poll while runtime is alive"
+                );
+            }
+            let delay = if attempt < warn_after {
+                self.options.lazy_retry_delay
+            } else {
+                Duration::from_secs(1)
+            };
+            sleep_or_cancel(delay, &self.stop).await?;
+            attempt = attempt.saturating_add(1);
         }
-        tracing::warn!(
-            card_id = %self.runtime.card_id,
-            runtime_id = %self.runtime.id,
-            thread_id,
-            "codex rollout file not found after lazy-create retry budget; pausing source until next status change"
-        );
-        Ok(None)
     }
 
     async fn run_tail(
