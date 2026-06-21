@@ -4,11 +4,6 @@ use std::{
     process::{Command, Output},
 };
 
-#[cfg(test)]
-use std::collections::BTreeSet;
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
-
 use sqlx::{Row, SqlitePool};
 
 use crate::db::sqlite::{append_decision_event_in_tx, begin_immediate_tx};
@@ -213,7 +208,22 @@ pub(crate) async fn release_workspace_lease_by_id(
     let Some(lease) = workspace_lease_by_id(pool, lease_id).await? else {
         return Ok(false);
     };
-    release_workspace_lease(pool, events, lease).await
+    complete_workspace_lease_release(pool, events, lease).await
+}
+
+pub(crate) async fn remove_workspace_artifact_for_lease_by_id(
+    pool: &SqlitePool,
+    events: &EventBus,
+    lease_id: &str,
+) -> Result<bool> {
+    let Some(lease) = workspace_lease_by_id(pool, lease_id).await? else {
+        return Ok(false);
+    };
+    let removed = remove_workspace_worktree_for_lease(&lease)?;
+    if removed {
+        persist_worktree_removed_for_lease(pool, events, &lease).await?;
+    }
+    Ok(removed)
 }
 
 pub(crate) async fn release_workspace_lease_for_card_repo(
@@ -221,64 +231,30 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
     events: &EventBus,
     card_id: &str,
 ) -> Result<bool> {
-    release_workspace_lease_for_card_repo_inner(
-        repo,
-        events,
-        card_id,
-        CardReleaseDisposition::Preserve,
-    )
-    .await
-}
-
-pub(crate) async fn reclaim_workspace_lease_for_card_repo(
-    repo: &dyn RepoEventWrite,
-    events: &EventBus,
-    card_id: &str,
-) -> Result<bool> {
-    release_workspace_lease_for_card_repo_inner(
-        repo,
-        events,
-        card_id,
-        CardReleaseDisposition::Reclaim,
-    )
-    .await
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CardReleaseDisposition {
-    Preserve,
-    Reclaim,
-}
-
-async fn release_workspace_lease_for_card_repo_inner(
-    repo: &dyn RepoEventWrite,
-    events: &EventBus,
-    card_id: &str,
-    disposition: CardReleaseDisposition,
-) -> Result<bool> {
-    let Some(lease) = mark_workspace_lease_releasing_for_card_repo(repo, card_id).await? else {
-        return Ok(false);
-    };
-    let worktree_removed = match disposition {
-        CardReleaseDisposition::Preserve => false,
-        CardReleaseDisposition::Reclaim => {
-            // Reclaim is best-effort: warn and mark released rather than wedge the reaper/sweeper.
-            match remove_workspace_worktree_for_lease(&lease) {
-                Ok(removed) => removed,
-                Err(error) => {
-                    tracing::warn!(
-                        lease_id = %lease.lease_id,
-                        card_id = %lease.card_id,
-                        path = %lease.path,
-                        error = %error,
-                        "workspace lease reclaim could not remove workspace worktree; marking lease released"
-                    );
-                    false
-                }
-            }
-        }
-    };
-    let envelopes = complete_workspace_lease_release_repo(repo, lease, worktree_removed).await?;
+    let card_id = card_id.to_string();
+    let envelopes = write_in_tx_typed(repo, move |tx| {
+        let card_id = card_id.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
+                   FROM workspace_leases
+                   WHERE card_id = ?1
+                     AND state IN ('held','releasing')
+                   ORDER BY created_at_ms DESC, lease_id DESC
+                   LIMIT 1"#,
+            )
+            .bind(&card_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            let Some(row) = row else {
+                return Ok(Vec::new());
+            };
+            let lease = row_to_workspace_lease(row)?;
+            let events = release_workspace_lease_tx(tx, lease).await?;
+            append_workspace_events_tx(tx, events).await
+        })
+    })
+    .await?;
     if envelopes.is_empty() {
         return Ok(false);
     }
@@ -357,16 +333,6 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
     Ok(reclaimed)
 }
 
-async fn release_workspace_lease(
-    pool: &SqlitePool,
-    events: &EventBus,
-    lease: WorkspaceLease,
-) -> Result<bool> {
-    // Spawn-failure compensation propagates removal failures rather than silently orphaning worktrees.
-    let worktree_removed = remove_workspace_worktree_for_lease(&lease)?;
-    complete_workspace_lease_release(pool, events, lease, worktree_removed).await
-}
-
 async fn release_workspace_lease_on_boot(
     pool: &SqlitePool,
     events: &EventBus,
@@ -376,28 +342,13 @@ async fn release_workspace_lease_on_boot(
         return Ok(false);
     };
 
-    // Boot reclaim is best-effort (#792): warn and mark released so startup stays resilient.
-    let worktree_removed = match remove_workspace_worktree_for_lease(&lease) {
-        Ok(removed) => removed,
-        Err(error) => {
-            tracing::warn!(
-                lease_id = %lease.lease_id,
-                path = %lease.path,
-                error = %error,
-                "boot workspace lease reclaim could not remove workspace directory; marking lease released"
-            );
-            false
-        }
-    };
-
-    complete_workspace_lease_release(pool, events, lease, worktree_removed).await
+    complete_workspace_lease_release(pool, events, lease).await
 }
 
 async fn complete_workspace_lease_release(
     pool: &SqlitePool,
     events: &EventBus,
     lease: WorkspaceLease,
-    worktree_removed: bool,
 ) -> Result<bool> {
     let mut tx = begin_immediate_tx(pool).await?;
     let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.wave_id).await?;
@@ -421,29 +372,6 @@ async fn complete_workspace_lease_release(
     }
 
     let mut envelopes = Vec::new();
-    if worktree_removed {
-        let removed_event = Event::WorktreeRemoved {
-            wave_id: WaveId::from(lease.wave_id.clone()),
-            card_id: CardId::from(lease.card_id.clone()),
-            path: lease.path.clone(),
-        };
-        let removed_event_id = append_decision_event_in_tx(
-            &mut tx,
-            &PermissiveGate,
-            &ActorId::KernelDispatcher,
-            &scope,
-            None,
-            &removed_event,
-        )
-        .await?;
-        envelopes.push(BroadcastEnvelope {
-            id: removed_event_id,
-            event_version: SYNC_EVENT_VERSION,
-            actor: ActorId::KernelDispatcher,
-            scope: scope.clone(),
-            event: removed_event,
-        });
-    }
     let event = Event::WorkspaceReleased {
         wave_id: WaveId::from(lease.wave_id.clone()),
         card_id: CardId::from(lease.card_id.clone()),
@@ -473,53 +401,11 @@ async fn complete_workspace_lease_release(
     Ok(true)
 }
 
-async fn mark_workspace_lease_releasing_for_card_repo(
-    repo: &dyn RepoEventWrite,
-    card_id: &str,
-) -> Result<Option<WorkspaceLease>> {
-    let card_id = card_id.to_string();
-    write_in_tx_typed(repo, move |tx| {
-        let card_id = card_id.clone();
-        Box::pin(async move {
-            let row = sqlx::query(
-                r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
-                   FROM workspace_leases
-                   WHERE card_id = ?1
-                     AND state IN ('held','releasing')
-                   ORDER BY created_at_ms DESC, lease_id DESC
-                   LIMIT 1"#,
-            )
-            .bind(&card_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            let Some(row) = row else {
-                return Ok(None);
-            };
-            let state: String = row.try_get("state")?;
-            let lease = row_to_workspace_lease(row)?;
-            if state == "held" {
-                sqlx::query(
-                    r#"UPDATE workspace_leases
-                       SET state = 'releasing',
-                           updated_at_ms = ?1
-                       WHERE lease_id = ?2
-                         AND state = 'held'"#,
-                )
-                .bind(now_ms())
-                .bind(&lease.lease_id)
-                .execute(&mut **tx)
-                .await?;
-            }
-            Ok(Some(lease))
-        })
-    })
-    .await
-}
-
 pub(crate) async fn release_workspace_leases_for_wave_tx(
     tx: &mut Tx<'_>,
     wave_id: &str,
-) -> Result<Vec<(ActorId, EventScope, Event)>> {
+) -> Result<WorkspaceWaveRelease> {
+    let sweep = workspace_wave_sweep_for_wave_tx(tx, wave_id).await;
     let rows = sqlx::query(
         r#"SELECT lease_id, card_id, wave_id, path, state, boot_id
            FROM workspace_leases
@@ -538,16 +424,13 @@ pub(crate) async fn release_workspace_leases_for_wave_tx(
     for lease in leases {
         events.extend(release_workspace_lease_tx(tx, lease).await?);
     }
-    sweep_preserved_workspace_worktrees_for_wave_tx(tx, wave_id).await;
-    Ok(events)
+    Ok(WorkspaceWaveRelease { events, sweep })
 }
 
 async fn release_workspace_lease_tx(
     tx: &mut Tx<'_>,
     lease: WorkspaceLease,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
-    // Wave teardown propagates removal failures rather than silently orphaning worktrees.
-    let worktree_removed = remove_workspace_worktree_for_lease(&lease)?;
     let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
     let now = now_ms();
     let rows = sqlx::query(
@@ -566,19 +449,7 @@ async fn release_workspace_lease_tx(
     if rows == 0 {
         return Ok(Vec::new());
     }
-    let mut events = Vec::new();
-    if worktree_removed {
-        events.push((
-            ActorId::KernelDispatcher,
-            scope.clone(),
-            Event::WorktreeRemoved {
-                wave_id: WaveId::from(lease.wave_id.clone()),
-                card_id: CardId::from(lease.card_id.clone()),
-                path: lease.path.clone(),
-            },
-        ));
-    }
-    events.push((
+    Ok(vec![(
         ActorId::KernelDispatcher,
         scope,
         Event::WorkspaceReleased {
@@ -586,56 +457,136 @@ async fn release_workspace_lease_tx(
             card_id: CardId::from(lease.card_id),
             lease_id: lease.lease_id,
         },
-    ));
-    Ok(events)
+    )])
 }
 
-async fn sweep_preserved_workspace_worktrees_for_wave_tx(tx: &mut Tx<'_>, wave_id: &str) {
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspaceWaveRelease {
+    pub(crate) events: Vec<(ActorId, EventScope, Event)>,
+    pub(crate) sweep: Option<WorkspaceWaveSweep>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspaceWaveSweep {
+    wave_id: String,
+    cove_id: String,
+    cwd: String,
+}
+
+async fn workspace_wave_sweep_for_wave_tx(
+    tx: &mut Tx<'_>,
+    wave_id: &str,
+) -> Option<WorkspaceWaveSweep> {
     if let Err(error) = validate_path_segment("wave_id", wave_id) {
         tracing::warn!(
             wave_id,
             error = %error,
             "workspace wave teardown skipped preserved worktree sweep for invalid wave id"
         );
-        return;
+        return None;
     }
-    let cwd = match sqlx::query_scalar::<_, String>("SELECT cwd FROM waves WHERE id = ?1")
+    let row = match sqlx::query("SELECT cwd, cove_id FROM waves WHERE id = ?1")
         .bind(wave_id)
         .fetch_optional(&mut **tx)
         .await
     {
-        Ok(Some(cwd)) => cwd,
-        Ok(None) => return,
+        Ok(Some(row)) => row,
+        Ok(None) => return None,
         Err(error) => {
             tracing::warn!(
                 wave_id,
                 error = %error,
                 "workspace wave teardown could not read cwd for preserved worktree sweep"
             );
-            return;
+            return None;
         }
     };
-    let repo_root = match git_repo_root_for_wave_cwd(wave_id, &cwd) {
-        Ok(repo_root) => repo_root,
+    let cwd: String = match row.try_get("cwd") {
+        Ok(cwd) => cwd,
         Err(error) => {
             tracing::warn!(
                 wave_id,
-                cwd,
                 error = %error,
-                "workspace wave teardown skipped preserved worktree sweep for non-git wave cwd"
+                "workspace wave teardown could not read cwd column for preserved worktree sweep"
             );
-            return;
+            return None;
         }
     };
-    sweep_workspace_worktree_root_for_wave(&repo_root, wave_id);
-    sweep_workspace_slice_branches_for_wave(&repo_root, wave_id);
+    let cove_id: String = match row.try_get("cove_id") {
+        Ok(cove_id) => cove_id,
+        Err(error) => {
+            tracing::warn!(
+                wave_id,
+                error = %error,
+                "workspace wave teardown could not read cove_id column for preserved worktree sweep"
+            );
+            return None;
+        }
+    };
+    Some(WorkspaceWaveSweep {
+        wave_id: wave_id.to_string(),
+        cove_id,
+        cwd,
+    })
 }
 
-fn sweep_workspace_worktree_root_for_wave(repo_root: &Path, wave_id: &str) {
+#[derive(Clone, Debug)]
+struct RemovedWorkspaceWorktree {
+    card_id: String,
+    path: String,
+}
+
+pub(crate) async fn sweep_workspace_worktrees_for_wave_repo(
+    repo: &dyn RepoEventWrite,
+    events: &EventBus,
+    sweep: WorkspaceWaveSweep,
+) -> Result<usize> {
+    let repo_root = match git_repo_root_for_wave_cwd(&sweep.wave_id, &sweep.cwd) {
+        Ok(repo_root) => repo_root,
+        Err(error) => {
+            tracing::warn!(
+                wave_id = %sweep.wave_id,
+                cwd = %sweep.cwd,
+                error = %error,
+                "workspace wave teardown skipped worktree sweep for non-git wave cwd"
+            );
+            return Ok(0);
+        }
+    };
+    let removed = sweep_workspace_worktree_root_for_wave(&repo_root, &sweep.wave_id);
+    sweep_workspace_slice_branches_for_wave(&repo_root, &sweep.wave_id);
+    let removed_count = removed.len();
+    if removed.is_empty() {
+        return Ok(0);
+    }
+    let envelopes = persist_wave_sweep_removed_events(repo, &sweep, removed).await?;
+    for envelope in envelopes {
+        events.emit_envelope(envelope);
+    }
+    Ok(removed_count)
+}
+
+pub(crate) async fn sweep_workspace_worktrees_for_waves_repo(
+    repo: &dyn RepoEventWrite,
+    events: &EventBus,
+    sweeps: Vec<WorkspaceWaveSweep>,
+) -> Result<usize> {
+    let mut removed = 0;
+    for sweep in sweeps {
+        removed += sweep_workspace_worktrees_for_wave_repo(repo, events, sweep).await?;
+    }
+    Ok(removed)
+}
+
+fn sweep_workspace_worktree_root_for_wave(
+    repo_root: &Path,
+    wave_id: &str,
+) -> Vec<RemovedWorkspaceWorktree> {
+    let mut removed = Vec::new();
     let wave_root = repo_root.join(".claude").join("worktrees").join(wave_id);
     let entries = match std::fs::read_dir(&wave_root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return removed,
         Err(error) => {
             tracing::warn!(
                 repo_root = %repo_root.display(),
@@ -644,7 +595,7 @@ fn sweep_workspace_worktree_root_for_wave(repo_root: &Path, wave_id: &str) {
                 error = %error,
                 "workspace wave teardown could not read preserved worktree root"
             );
-            return;
+            return removed;
         }
     };
     for entry in entries {
@@ -707,15 +658,22 @@ fn sweep_workspace_worktree_root_for_wave(repo_root: &Path, wave_id: &str) {
                 }
             },
         };
-        if let Err(error) = remove_workspace_worktree(&target) {
-            tracing::warn!(
-                repo_root = %repo_root.display(),
-                wave_id,
-                card_id = %parts.card_id,
-                path = %target.path.display(),
-                error = %error,
-                "workspace wave teardown could not remove preserved worktree"
-            );
+        match remove_workspace_worktree(&target) {
+            Ok(true) => removed.push(RemovedWorkspaceWorktree {
+                card_id: parts.card_id,
+                path: target.path_string(),
+            }),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(
+                    repo_root = %repo_root.display(),
+                    wave_id,
+                    card_id = %parts.card_id,
+                    path = %target.path.display(),
+                    error = %error,
+                    "workspace wave teardown could not remove preserved worktree"
+                );
+            }
         }
     }
     match std::fs::remove_dir(&wave_root) {
@@ -735,6 +693,7 @@ fn sweep_workspace_worktree_root_for_wave(repo_root: &Path, wave_id: &str) {
             );
         }
     }
+    removed
 }
 
 fn sweep_workspace_slice_branches_for_wave(repo_root: &Path, wave_id: &str) {
@@ -816,81 +775,90 @@ fn sweep_workspace_slice_branches_for_wave(repo_root: &Path, wave_id: &str) {
     }
 }
 
-async fn complete_workspace_lease_release_repo(
+async fn persist_wave_sweep_removed_events(
     repo: &dyn RepoEventWrite,
-    lease: WorkspaceLease,
-    worktree_removed: bool,
+    sweep: &WorkspaceWaveSweep,
+    removed: Vec<RemovedWorkspaceWorktree>,
 ) -> Result<Vec<BroadcastEnvelope>> {
+    let wave_id = sweep.wave_id.clone();
+    let cove_id = sweep.cove_id.clone();
     write_in_tx_typed(repo, move |tx| {
-        let lease = lease.clone();
+        let wave_id = wave_id.clone();
+        let cove_id = cove_id.clone();
+        let removed = removed.clone();
         Box::pin(async move {
-            let scope = workspace_scope_tx(tx, &lease.card_id, &lease.wave_id).await?;
-            let now = now_ms();
-            let rows = sqlx::query(
-                r#"UPDATE workspace_leases
-                   SET state = 'released',
-                       updated_at_ms = ?1,
-                       released_at_ms = COALESCE(released_at_ms, ?1)
-                   WHERE lease_id = ?2
-                     AND state IN ('held','releasing')"#,
-            )
-            .bind(now)
-            .bind(&lease.lease_id)
-            .execute(&mut **tx)
-            .await?
-            .rows_affected();
-            if rows == 0 {
-                return Ok(Vec::new());
-            }
-            let mut envelopes = Vec::new();
-            if worktree_removed {
-                let removed_event = Event::WorktreeRemoved {
-                    wave_id: WaveId::from(lease.wave_id.clone()),
-                    card_id: CardId::from(lease.card_id.clone()),
-                    path: lease.path.clone(),
+            let mut events = Vec::with_capacity(removed.len());
+            for removed in removed {
+                let scope = EventScope::Card {
+                    card: CardId::from(removed.card_id.clone()),
+                    wave: WaveId::from(wave_id.clone()),
+                    cove: CoveId::from(cove_id.clone()),
                 };
-                let removed_event_id = append_decision_event_in_tx(
-                    tx,
-                    &PermissiveGate,
-                    &ActorId::KernelDispatcher,
-                    &scope,
-                    None,
-                    &removed_event,
-                )
-                .await?;
-                envelopes.push(BroadcastEnvelope {
-                    id: removed_event_id,
-                    event_version: SYNC_EVENT_VERSION,
-                    actor: ActorId::KernelDispatcher,
-                    scope: scope.clone(),
-                    event: removed_event,
-                });
+                events.push((
+                    ActorId::KernelDispatcher,
+                    scope,
+                    Event::WorktreeRemoved {
+                        wave_id: WaveId::from(wave_id.clone()),
+                        card_id: CardId::from(removed.card_id),
+                        path: removed.path,
+                    },
+                ));
             }
-            let event = Event::WorkspaceReleased {
-                wave_id: WaveId::from(lease.wave_id.clone()),
-                card_id: CardId::from(lease.card_id.clone()),
-                lease_id: lease.lease_id.clone(),
-            };
-            let event_id = append_decision_event_in_tx(
-                tx,
-                &PermissiveGate,
-                &ActorId::KernelDispatcher,
-                &scope,
-                None,
-                &event,
-            )
-            .await?;
-            envelopes.push(BroadcastEnvelope {
-                id: event_id,
-                event_version: SYNC_EVENT_VERSION,
-                actor: ActorId::KernelDispatcher,
-                scope,
-                event,
-            });
-            Ok(envelopes)
+            append_workspace_events_tx(tx, events).await
         })
     })
     .await
+}
+
+async fn persist_worktree_removed_for_lease(
+    pool: &SqlitePool,
+    events: &EventBus,
+    lease: &WorkspaceLease,
+) -> Result<()> {
+    let mut tx = begin_immediate_tx(pool).await?;
+    let scope = workspace_scope_tx(&mut tx, &lease.card_id, &lease.wave_id).await?;
+    let event = Event::WorktreeRemoved {
+        wave_id: WaveId::from(lease.wave_id.clone()),
+        card_id: CardId::from(lease.card_id.clone()),
+        path: lease.path.clone(),
+    };
+    let event_id = append_decision_event_in_tx(
+        &mut tx,
+        &PermissiveGate,
+        &ActorId::KernelDispatcher,
+        &scope,
+        None,
+        &event,
+    )
+    .await?;
+    tx.commit().await?;
+    events.emit_envelope(BroadcastEnvelope {
+        id: event_id,
+        event_version: SYNC_EVENT_VERSION,
+        actor: ActorId::KernelDispatcher,
+        scope,
+        event,
+    });
+    Ok(())
+}
+
+async fn append_workspace_events_tx(
+    tx: &mut Tx<'_>,
+    events: Vec<(ActorId, EventScope, Event)>,
+) -> Result<Vec<BroadcastEnvelope>> {
+    let mut envelopes = Vec::with_capacity(events.len());
+    for (actor, scope, event) in events {
+        let event_id =
+            append_decision_event_in_tx(tx, &PermissiveGate, &actor, &scope, None, &event).await?;
+        envelopes.push(BroadcastEnvelope {
+            id: event_id,
+            event_version: SYNC_EVENT_VERSION,
+            actor,
+            scope,
+            event,
+        });
+    }
+    Ok(envelopes)
 }
 
 async fn workspace_scope_tx(tx: &mut Tx<'_>, card_id: &str, wave_id: &str) -> Result<EventScope> {
@@ -991,13 +959,6 @@ fn operation_phase_is_recoverable(phase: &str) -> bool {
 
 fn remove_workspace_dir_if_exists(path: &str) -> Result<bool> {
     let path = Path::new(path);
-    #[cfg(test)]
-    if take_forced_workspace_dir_remove_failure(path) {
-        return Err(CalmError::Internal(format!(
-            "remove workspace lease directory {}: forced removal failure for test",
-            path.display()
-        )));
-    }
     let existed = path.exists();
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(existed),
@@ -1107,14 +1068,6 @@ fn remove_workspace_worktree_for_lease(lease: &WorkspaceLease) -> Result<bool> {
 }
 
 pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result<bool> {
-    #[cfg(test)]
-    if take_forced_workspace_worktree_remove_failure(&target.path) {
-        return Err(CalmError::Internal(format!(
-            "remove workspace worktree {}: forced removal failure for test",
-            target.path.display()
-        )));
-    }
-
     if !git_repo_available(&target.repo_root) {
         return remove_workspace_dir_if_exists(&target.path_string());
     }
@@ -1255,53 +1208,6 @@ fn git_exclude_path(repo_root: &Path) -> Result<PathBuf> {
     } else {
         Ok(repo_root.join(exclude_path))
     }
-}
-
-#[cfg(test)]
-static FORCED_WORKSPACE_DIR_REMOVE_FAILURES: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
-
-#[cfg(test)]
-static FORCED_WORKSPACE_WORKTREE_REMOVE_FAILURES: OnceLock<Mutex<BTreeSet<String>>> =
-    OnceLock::new();
-
-#[cfg(test)]
-pub(crate) fn fail_next_workspace_dir_removal_for_test(path: &str) {
-    FORCED_WORKSPACE_DIR_REMOVE_FAILURES
-        .get_or_init(|| Mutex::new(BTreeSet::new()))
-        .lock()
-        .expect("forced workspace dir removal failures lock")
-        .insert(path.to_string());
-}
-
-#[cfg(test)]
-fn take_forced_workspace_dir_remove_failure(path: &Path) -> bool {
-    let Some(failures) = FORCED_WORKSPACE_DIR_REMOVE_FAILURES.get() else {
-        return false;
-    };
-    failures
-        .lock()
-        .expect("forced workspace dir removal failures lock")
-        .remove(path.to_string_lossy().as_ref())
-}
-
-#[cfg(test)]
-fn fail_next_workspace_worktree_removal_for_test(path: &Path) {
-    FORCED_WORKSPACE_WORKTREE_REMOVE_FAILURES
-        .get_or_init(|| Mutex::new(BTreeSet::new()))
-        .lock()
-        .expect("forced workspace worktree removal failures lock")
-        .insert(path.to_string_lossy().to_string());
-}
-
-#[cfg(test)]
-fn take_forced_workspace_worktree_remove_failure(path: &Path) -> bool {
-    let Some(failures) = FORCED_WORKSPACE_WORKTREE_REMOVE_FAILURES.get() else {
-        return false;
-    };
-    failures
-        .lock()
-        .expect("forced workspace worktree removal failures lock")
-        .remove(path.to_string_lossy().as_ref())
 }
 
 pub(crate) fn workspace_lease_path_for(
@@ -1708,11 +1614,11 @@ mod tests {
 
         let events = EventBus::new();
         assert!(
-            reclaim_workspace_lease_for_card_repo(&repo, &events, &card_id)
+            release_workspace_lease_for_card_repo(&repo, &events, &card_id)
                 .await
                 .unwrap()
         );
-        assert!(!path.exists(), "plain lease release removes the leaf");
+        assert!(path.exists(), "plain lease release preserves the leaf");
     }
 
     #[test]
@@ -1964,7 +1870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn card_reclaim_marks_released_when_worktree_remove_fails() {
+    async fn rollback_removes_worktree_before_releasing_lease_row() {
         let tmp = tempfile::tempdir().unwrap();
         init_git_repo(tmp.path());
         let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
@@ -1979,50 +1885,15 @@ mod tests {
                 .unwrap();
         tx.commit().await.unwrap();
         provision_workspace_worktree(&target).unwrap();
-        fail_next_workspace_worktree_removal_for_test(&target.path);
 
         let events = EventBus::new();
         assert!(
-            reclaim_workspace_lease_for_card_repo(&repo, &events, &card_id)
+            remove_workspace_artifact_for_lease_by_id(repo.pool(), &events, &lease.lease_id)
                 .await
                 .unwrap()
         );
-
-        let state: String =
-            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
-                .bind(&lease.lease_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(state, "released");
         assert!(
-            target.path.is_dir(),
-            "forced removal failure leaves the worktree on disk"
-        );
-        assert_eq!(event_kind_count(&repo, "workspace.released").await, 1);
-        assert_eq!(event_kind_count(&repo, "worktree.removed").await, 0);
-    }
-
-    #[tokio::test]
-    async fn card_reclaim_emits_removed_event_when_worktree_remove_succeeds() {
-        let tmp = tempfile::tempdir().unwrap();
-        init_git_repo(tmp.path());
-        let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
-
-        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-        let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-            .await
-            .unwrap();
-        let (lease, _event) =
-            acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
-                .await
-                .unwrap();
-        tx.commit().await.unwrap();
-        provision_workspace_worktree(&target).unwrap();
-
-        let events = EventBus::new();
-        assert!(
-            reclaim_workspace_lease_for_card_repo(&repo, &events, &card_id)
+            release_workspace_lease_by_id(repo.pool(), &events, &lease.lease_id)
                 .await
                 .unwrap()
         );
@@ -2036,14 +1907,18 @@ mod tests {
         assert_eq!(state, "released");
         assert!(
             !target.path.exists(),
-            "successful release removes the worktree"
+            "rollback removal deletes the just-provisioned worktree"
+        );
+        assert!(
+            !git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch)).unwrap(),
+            "rollback removal deletes the just-created slice branch"
         );
         assert_eq!(event_kind_count(&repo, "workspace.released").await, 1);
         assert_eq!(event_kind_count(&repo, "worktree.removed").await, 1);
     }
 
     #[tokio::test]
-    async fn wave_release_sweeps_preserved_worktree_and_branch_without_active_lease_row() {
+    async fn wave_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
         let tmp = tempfile::tempdir().unwrap();
         init_git_repo(tmp.path());
         let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
@@ -2071,24 +1946,69 @@ mod tests {
             git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch)).unwrap(),
             "preserved branch exists after normal release"
         );
+        let plain_card_id = "plain-card";
+        let plain_path = tmp
+            .path()
+            .join(".claude")
+            .join("worktrees")
+            .join(&wave_id)
+            .join(plain_card_id);
+        std::fs::create_dir_all(&plain_path).unwrap();
+        std::fs::write(plain_path.join("leftover.txt"), "plain leftover\n").unwrap();
+        let plain_branch = workspace_slice_branch_for(&wave_id, plain_card_id).unwrap();
+        run_git(tmp.path(), ["branch", &plain_branch]);
+        let branch_only = workspace_slice_branch_for(&wave_id, "branch-only").unwrap();
+        run_git(tmp.path(), ["branch", &branch_only]);
 
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-        let teardown_events = release_workspace_leases_for_wave_tx(&mut tx, &wave_id)
+        let release = release_workspace_leases_for_wave_tx(&mut tx, &wave_id)
             .await
             .unwrap();
         tx.commit().await.unwrap();
 
         assert!(
-            teardown_events.is_empty(),
+            release.events.is_empty(),
             "released lease rows do not emit another workspace release"
+        );
+        let sweep = release.sweep.expect("wave sweep plan");
+        assert_eq!(
+            sweep_workspace_worktrees_for_wave_repo(&repo, &events, sweep.clone())
+                .await
+                .unwrap(),
+            2
         );
         assert!(
             !target.path.exists(),
             "wave teardown sweeps preserved worktree paths"
         );
         assert!(
+            !plain_path.exists(),
+            "wave teardown sweeps leftover plain workspace dirs"
+        );
+        assert!(
             !git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch)).unwrap(),
             "wave teardown sweeps preserved slice branches"
+        );
+        assert!(
+            !git_ref_exists(&target.repo_root, &format!("refs/heads/{plain_branch}")).unwrap(),
+            "wave teardown sweeps plain-dir slice branches"
+        );
+        assert!(
+            !git_ref_exists(&target.repo_root, &format!("refs/heads/{branch_only}")).unwrap(),
+            "wave teardown sweeps branch-only slice branches"
+        );
+        assert_eq!(event_kind_count(&repo, "worktree.removed").await, 2);
+        assert_eq!(
+            sweep_workspace_worktrees_for_wave_repo(&repo, &events, sweep)
+                .await
+                .unwrap(),
+            0,
+            "wave sweep is idempotent after paths are gone"
+        );
+        assert_eq!(
+            event_kind_count(&repo, "worktree.removed").await,
+            2,
+            "idempotent sweep emits no duplicate removal events"
         );
     }
 

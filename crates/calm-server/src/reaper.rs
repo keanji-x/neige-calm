@@ -14,7 +14,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::WaveLifecycle;
 use crate::model::now_ms;
-use crate::operation::workspace_lease::reclaim_workspace_lease_for_card_repo;
+use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::scheduler::{is_race_lost, race_lost_err};
 use crate::state::WriteContext;
@@ -616,7 +616,7 @@ async fn release_reaped_worker_workspace_lease(
     session: &WorkerSession,
 ) -> Result<()> {
     if let Some(card_id) = session.card_id.as_ref() {
-        reclaim_workspace_lease_for_card_repo(repo, events, card_id.as_str()).await?;
+        release_workspace_lease_for_card_repo(repo, events, card_id.as_str()).await?;
     }
     Ok(())
 }
@@ -910,6 +910,23 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn git_stdout<const N: usize>(repo: &Path, args: [&str; N]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).to_string()
     }
 
     async fn task_failed_events(repo: &SqlxRepo, task_id: &str) -> Vec<Event> {
@@ -1677,8 +1694,17 @@ mod tests {
                 .expect("lease state");
         assert_eq!(state, "released");
         assert!(
-            !std::path::Path::new(&lease_path).exists(),
-            "reaper release removes leased cwd"
+            std::path::Path::new(&lease_path).is_dir(),
+            "reaper release preserves leased cwd"
+        );
+        assert_eq!(
+            git_stdout(
+                std::path::Path::new(&lease_path),
+                ["rev-parse", "--abbrev-ref", "HEAD"]
+            )
+            .trim(),
+            format!("neige/{}/{}", wave_id.as_str(), card.id.as_str()),
+            "reaper release preserves the slice branch"
         );
         let released_events: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
@@ -1686,6 +1712,12 @@ mod tests {
                 .await
                 .expect("released event count");
         assert_eq!(released_events, 1);
+        let removed_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")
+                .fetch_one(repo.pool())
+                .await
+                .expect("removed event count");
+        assert_eq!(removed_events, 0);
 
         reset_reaper_boot_gate_for_test();
     }
@@ -1724,8 +1756,17 @@ mod tests {
                 .expect("lease state");
         assert_eq!(state, "released");
         assert!(
-            !std::path::Path::new(&lease_path).exists(),
-            "spawn_op_id guard release removes leased cwd"
+            std::path::Path::new(&lease_path).is_dir(),
+            "spawn_op_id guard release preserves leased cwd"
+        );
+        assert_eq!(
+            git_stdout(
+                std::path::Path::new(&lease_path),
+                ["rev-parse", "--abbrev-ref", "HEAD"]
+            )
+            .trim(),
+            format!("neige/{}/{}", wave_id.as_str(), card.id.as_str()),
+            "spawn_op_id guard release preserves the slice branch"
         );
         let released_events: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
@@ -1733,6 +1774,12 @@ mod tests {
                 .await
                 .expect("released event count");
         assert_eq!(released_events, 1);
+        let removed_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")
+                .fetch_one(repo.pool())
+                .await
+                .expect("removed event count");
+        assert_eq!(removed_events, 0);
     }
 
     /// #741-3 (b): a resumable Exited whose arbiter returns `Alive` records a

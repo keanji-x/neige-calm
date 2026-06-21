@@ -27,6 +27,7 @@ use crate::operation::worker_cleanup::{
 use crate::operation::workspace_lease::{
     WorkspaceLeaseTarget, acquire_workspace_lease_tx, prepare_workspace_lease_target_tx,
     provision_workspace_worktree, release_workspace_lease_by_id,
+    remove_workspace_artifact_for_lease_by_id,
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
@@ -970,6 +971,10 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let mut steps = Vec::new();
         if let Some(lease_id) = output.output_optional_string("lease_id", "codex")? {
             steps.push(CompensationStep::new(
+                "remove_workspace_artifact",
+                json!({ "lease_id": lease_id.clone() }),
+            ));
+            steps.push(CompensationStep::new(
                 "release_workspace_lease",
                 json!({ "lease_id": lease_id }),
             ));
@@ -997,6 +1002,12 @@ impl ProviderAdapter for CodexWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
+            return Ok(());
+        }
+        if step.op == "remove_workspace_artifact" {
+            let lease_id = step.arg_string("lease_id", "codex")?;
+            let pool = ctx.operation_repo.sqlite_pool();
+            remove_workspace_artifact_for_lease_by_id(&pool, &ctx.events, &lease_id).await?;
             return Ok(());
         }
         if step.op == "release_workspace_lease" {
@@ -1848,9 +1859,7 @@ mod tests {
     use super::*;
     use crate::db::sqlite::begin_immediate_tx;
     use crate::event::EventBus;
-    use crate::operation::workspace_lease::{
-        reclaim_workspace_lease_for_card_repo, release_workspace_lease_for_card_repo,
-    };
+    use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
     use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
     use sqlx::Row;
     use std::path::Path;
@@ -2135,7 +2144,10 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert!(!std::path::Path::new(&cwd).exists(), "leased cwd absent");
+        assert!(
+            !std::path::Path::new(&cwd).exists(),
+            "lease acquisition leaves cwd leaf absent until provisioning"
+        );
     }
 
     #[tokio::test]
@@ -2213,7 +2225,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_worker_compensation_starts_with_workspace_lease_release() {
+    async fn codex_worker_compensation_removes_workspace_before_row_release() {
         let harness = worker_lease_harness().await;
         let (output, _) = prepare_worker(&harness, "a").await;
         let op = worker_op("op-a", Value::Null);
@@ -2223,18 +2235,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(state.steps[0].op, "release_workspace_lease");
-        assert_eq!(state.steps[1].op, "cleanup_codex_worker");
+        assert_eq!(state.steps[0].op, "remove_workspace_artifact");
+        assert_eq!(state.steps[1].op, "release_workspace_lease");
+        assert_eq!(state.steps[2].op, "cleanup_codex_worker");
         let lease_id = output.output_string("lease_id", "test").unwrap();
-        reclaim_workspace_lease_for_card_repo(
-            harness.repo.as_ref(),
-            &harness.events,
-            &output.output_string("card_id", "test").unwrap(),
-        )
-        .await
-        .unwrap();
         assert_eq!(
-            state.steps[0].arg_string("lease_id", "test").unwrap(),
+            state.steps[1].arg_string("lease_id", "test").unwrap(),
             lease_id
         );
     }

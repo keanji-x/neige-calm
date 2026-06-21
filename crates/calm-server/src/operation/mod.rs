@@ -1861,8 +1861,8 @@ mod tests {
                 .unwrap();
         assert_eq!(state, "released");
         assert!(
-            !std::path::Path::new(&path).exists(),
-            "boot reclaim removes dead lease directory"
+            std::path::Path::new(&path).exists(),
+            "boot reclaim releases only the lease row"
         );
         let released_events: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
@@ -1874,7 +1874,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn recover_on_boot_releases_workspace_lease_when_dir_removal_fails() {
+    async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
         let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
             .unwrap();
@@ -1965,13 +1965,11 @@ mod tests {
         .await
         .unwrap();
 
-        workspace_lease::fail_next_workspace_dir_removal_for_test(&path);
-
         let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
         let plan = runtime
             .recover_on_boot()
             .await
-            .expect("boot reclaim tolerates workspace dir removal failure");
+            .expect("boot reclaim releases the workspace lease row");
         assert!(plan.items.is_empty());
 
         let state: String =
@@ -1983,7 +1981,7 @@ mod tests {
         assert_eq!(state, "released");
         assert!(
             path_buf.exists(),
-            "failed boot cleanup leaves the orphaned workspace dir for manual cleanup"
+            "boot reclaim leaves workspace artifacts for wave cleanup"
         );
 
         let replacement = new_id();
@@ -2358,8 +2356,8 @@ mod tests {
                 .unwrap();
         assert_eq!(state, "released");
         assert!(
-            !std::path::Path::new(&path).exists(),
-            "boot reclaim finishes stale releasing lease cleanup"
+            std::path::Path::new(&path).exists(),
+            "boot reclaim finishes stale releasing row without workspace teardown"
         );
         let released_events: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")

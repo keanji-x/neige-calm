@@ -174,8 +174,11 @@ malformed payload is rejected without submit. **Size L. Deps: ③-a, ②, ⑥.**
 - (iii) **Worktree realize = a PLUGIN forge-action** (`git.worktree.add`), emitting
   `worktree.provisioned{wave_id,card_id,path}`. The real slice branch (`git checkout -b`), commits
   (`git.commit`, resultless), PR ops ride ③-b.
-- (iv) **Teardown/reclaim:** extend ①'s lease release/compensation/orphan-reclaim with a
-  `git worktree remove --force` + `git branch -D` step (emit `worktree.removed`).
+- (iv) **Teardown ownership:** worktree/branch teardown is owned by the slice/PR lifecycle (③-d),
+  operation-rollback compensation, and a wave-level final sweep. Per-task lease release
+  (`decision_sink`, reaper, scheduler-timeout) never touches git; it only frees the resource slot.
+  This decoupling means normal completion or dead-worker reclaim cannot destroy unmerged commits, and
+  there is no preserve/reclaim race at lease release.
 
 **THE ONE OPEN ③-c ITEM (provisioning ORDERING fork) — decide when implementing ③-c:** parent
 invariant-3 wants `worktree.provisioned < runtime.started`, but the lease/`card_id` are minted inside

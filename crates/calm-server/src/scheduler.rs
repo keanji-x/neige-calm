@@ -67,7 +67,7 @@ use crate::operation::task_verify_adapter::{
     apply_gate_result_in_tx, gate_attempt_key,
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
-use crate::operation::workspace_lease::reclaim_workspace_lease_for_card_repo;
+use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
@@ -1321,7 +1321,7 @@ impl Scheduler {
                 );
                 continue;
             }
-            if let Err(e) = reclaim_workspace_lease_for_card_repo(
+            if let Err(e) = release_workspace_lease_for_card_repo(
                 self.repo.as_ref(),
                 &self.events,
                 &cleanup.card_id,
@@ -1332,7 +1332,7 @@ impl Scheduler {
                     session_id = %cleanup.session_id,
                     card_id = %cleanup.card_id,
                     error = %e,
-                    "scheduler sweep: timed-out worker lease release failed; marker retained"
+                    "scheduler sweep: timed-out worker lease row release failed; marker retained"
                 );
                 continue;
             }
@@ -2376,7 +2376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sweep_running_claude_past_liveness_deadline_fails_and_tears_down() {
+    async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_row() {
         let concrete = Arc::new(
             crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
                 .await

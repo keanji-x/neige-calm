@@ -1117,26 +1117,25 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         )
         .await
         .unwrap();
-    assert_eq!(compensation.steps.len(), 2);
-    assert_eq!(compensation.steps[0].op, "release_workspace_lease");
-    assert_eq!(compensation.steps[1].op, "cleanup_codex_worker");
+    assert_eq!(compensation.steps.len(), 3);
+    assert_eq!(compensation.steps[0].op, "remove_workspace_artifact");
+    assert_eq!(compensation.steps[1].op, "release_workspace_lease");
+    assert_eq!(compensation.steps[2].op, "cleanup_codex_worker");
     assert_eq!(
-        compensation.steps[1].args["card_id"].as_str(),
+        compensation.steps[2].args["card_id"].as_str(),
         Some(card_id.as_str())
     );
     assert_eq!(
-        compensation.steps[1].args["terminal_id"].as_str(),
+        compensation.steps[2].args["terminal_id"].as_str(),
         Some(terminal_id.as_str())
     );
 
-    recovered_adapter
-        .compensate_step(&compensation.steps[0], &output, &op, &spawn_ctx)
-        .await
-        .unwrap();
-    recovered_adapter
-        .compensate_step(&compensation.steps[1], &output, &op, &spawn_ctx)
-        .await
-        .unwrap();
+    for step in &compensation.steps {
+        recovered_adapter
+            .compensate_step(step, &output, &op, &spawn_ctx)
+            .await
+            .unwrap();
+    }
     assert!(
         recovered_shared
             .interrupted_turns_for_test()
