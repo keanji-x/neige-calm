@@ -46,6 +46,7 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.scan.completed",
     "forge.pr.opened",
     "forge.pr.diff.read",
+    "forge.issue.read",
     "forge.pr.checks",
     "forge.issue.closed",
     "worktree.provisioned",
@@ -55,7 +56,7 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
-static NEXT_DIFF_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
+static NEXT_FORGE_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
 const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
     "GH_TOKEN",
@@ -244,10 +245,10 @@ mod tests {
     }
 
     #[test]
-    fn diff_artifact_tmp_path_is_unique_per_attempt() {
+    fn forge_artifact_tmp_path_is_unique_per_attempt() {
         let result_path = Path::new("/tmp/forge-result.patch");
-        let first = diff_artifact_tmp_path(result_path);
-        let second = diff_artifact_tmp_path(result_path);
+        let first = forge_artifact_tmp_path(result_path);
+        let second = forge_artifact_tmp_path(result_path);
         let prefix = format!("{}.tmp.{}.", result_path.display(), std::process::id());
 
         assert_ne!(first, second);
@@ -830,8 +831,8 @@ fn result_stdout_path(result_path: &Path) -> PathBuf {
     path_with_suffix(result_path, ".stdout")
 }
 
-fn diff_artifact_tmp_path(result_path: &Path) -> PathBuf {
-    let attempt = NEXT_DIFF_ARTIFACT_TMP.fetch_add(1, Ordering::Relaxed);
+fn forge_artifact_tmp_path(result_path: &Path) -> PathBuf {
+    let attempt = NEXT_FORGE_ARTIFACT_TMP.fetch_add(1, Ordering::Relaxed);
     path_with_suffix(
         result_path,
         &format!(".tmp.{}.{}", std::process::id(), attempt),
@@ -993,6 +994,7 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
             ("head_sha", Str),
             ("artifact_path", Str),
         ],
+        "forge.issue.read" => &[("issue_number", U64), ("artifact_path", Str)],
         "forge.pr.checks" => &[("pr_number", U64), ("conclusion", Str)],
         "forge.issue.closed" => &[("issue_number", U64)],
         "worktree.provisioned" | "worktree.removed" => &[("path", Str)],
@@ -1006,7 +1008,7 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
 fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
     match event_kind {
         "forge.pr.merged" => &["wave_id", "subject"],
-        "forge.pr.diff.read" => &["wave_id", "artifact_path"],
+        "forge.pr.diff.read" | "forge.issue.read" => &["wave_id", "artifact_path"],
         "worktree.provisioned" | "worktree.removed" => &["wave_id", "card_id"],
         _ => &["wave_id"],
     }
@@ -1279,7 +1281,7 @@ fn build_forge_event(
                     })?,
                 );
             }
-            "artifact_path" if spec.event_kind == "forge.pr.diff.read" => {
+            "artifact_path" if is_artifact_bearing_forge_event_kind(&spec.event_kind) => {
                 payload.insert(
                     "artifact_path".into(),
                     Value::String(frozen.result_path.display().to_string()),
@@ -1299,6 +1301,7 @@ fn build_forge_event(
         "exit_code": exit_code,
         "event_kind": spec.event_kind,
         "event": payload_value,
+        "stdout": stdout,
     });
     Ok((Some(event), result))
 }
@@ -1331,19 +1334,23 @@ async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {
     Ok(ForgeActionResultFile { exit_code, stdout })
 }
 
-fn is_forge_pr_diff_read(frozen: &FrozenForge) -> bool {
+fn is_artifact_bearing_forge_event_kind(event_kind: &str) -> bool {
+    matches!(event_kind, "forge.pr.diff.read" | "forge.issue.read")
+}
+
+fn is_artifact_bearing_forge_event(frozen: &FrozenForge) -> bool {
     frozen
         .event_spec
         .as_ref()
-        .is_some_and(|spec| spec.event_kind == "forge.pr.diff.read")
+        .is_some_and(|spec| is_artifact_bearing_forge_event_kind(&spec.event_kind))
 }
 
-async fn persist_diff_artifact_if_needed(
+async fn persist_forge_artifact_if_needed(
     frozen: &FrozenForge,
     exit_code: i32,
     stdout: &str,
 ) -> Result<()> {
-    if exit_code != 0 || !is_forge_pr_diff_read(frozen) {
+    if exit_code != 0 || !is_artifact_bearing_forge_event(frozen) {
         return Ok(());
     }
     if let Some(parent) = frozen.result_path.parent()
@@ -1351,7 +1358,7 @@ async fn persist_diff_artifact_if_needed(
     {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let tmp_path = diff_artifact_tmp_path(&frozen.result_path);
+    let tmp_path = forge_artifact_tmp_path(&frozen.result_path);
     tokio::fs::write(&tmp_path, stdout.as_bytes()).await?;
     tokio::fs::rename(&tmp_path, &frozen.result_path).await?;
     Ok(())
@@ -1395,12 +1402,12 @@ pub(crate) async fn complete_forge_op_with_result(
     exit_code: i32,
     stdout: &str,
 ) -> Result<()> {
-    if let Err(e) = persist_diff_artifact_if_needed(frozen, exit_code, stdout).await {
+    if let Err(e) = persist_forge_artifact_if_needed(frozen, exit_code, stdout).await {
         return complete_forge_op_failed(
             pool,
             completion,
             op_id,
-            format!("gate-infra: forge.pr.diff.read artifact write failed: {e}"),
+            format!("gate-infra: forge artifact write failed: {e}"),
             Some("gate-infra".into()),
         )
         .await;
@@ -1439,12 +1446,12 @@ async fn complete_forge_op_from_live_result(
     exit_code: i32,
     stdout: &str,
 ) -> Result<()> {
-    if let Err(e) = persist_diff_artifact_if_needed(frozen, exit_code, stdout).await {
+    if let Err(e) = persist_forge_artifact_if_needed(frozen, exit_code, stdout).await {
         return complete_forge_op_failed(
             refs.pool,
             refs.completion,
             op_id,
-            format!("gate-infra: forge.pr.diff.read artifact write failed: {e}"),
+            format!("gate-infra: forge artifact write failed: {e}"),
             Some("gate-infra".into()),
         )
         .await;

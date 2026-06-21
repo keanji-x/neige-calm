@@ -562,8 +562,8 @@ async fn forge_event_count(repo: &SqlxRepo) -> i64 {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM events WHERE kind IN (\
          'forge.pr.merged', 'forge.scan.completed', 'forge.pr.opened', \
-         'forge.pr.diff.read', 'forge.pr.checks', 'forge.issue.closed', \
-         'worktree.provisioned', 'worktree.removed')",
+         'forge.pr.diff.read', 'forge.pr.checks', 'forge.issue.read', \
+         'forge.issue.closed', 'worktree.provisioned', 'worktree.removed')",
     )
     .fetch_one(repo.pool())
     .await

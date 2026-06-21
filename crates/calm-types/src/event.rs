@@ -336,7 +336,9 @@ impl EventScope {
 ///   Adds 5 forge.* and 2 worktree.* events to the union.
 /// * `9` — workflow registration descriptor events (issue #760 slice ④-a).
 ///   Adds `workflow.registered` to the event union.
-pub const SYNC_EVENT_VERSION: u32 = 9;
+/// * `10` — issue body read events (issue #760 slice ④-b). Adds
+///   `forge.issue.read` to the event union.
+pub const SYNC_EVENT_VERSION: u32 = 10;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -803,6 +805,12 @@ pub enum Event {
         pr_number: u64,
         conclusion: String,
     },
+    #[serde(rename = "forge.issue.read")]
+    ForgeIssueRead {
+        wave_id: WaveId,
+        issue_number: u64,
+        artifact_path: String,
+    },
     #[serde(rename = "forge.issue.closed")]
     ForgeIssueClosed { wave_id: WaveId, issue_number: u64 },
     #[serde(rename = "worktree.provisioned")]
@@ -1135,6 +1143,7 @@ impl Event {
             | Event::ForgePrOpened { wave_id, .. }
             | Event::ForgePrDiffRead { wave_id, .. }
             | Event::ForgePrChecks { wave_id, .. }
+            | Event::ForgeIssueRead { wave_id, .. }
             | Event::ForgeIssueClosed { wave_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1204,6 +1213,7 @@ impl Event {
             Event::ForgePrOpened { .. } => "forge.pr.opened",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
+            Event::ForgeIssueRead { .. } => "forge.issue.read",
             Event::ForgeIssueClosed { .. } => "forge.issue.closed",
             Event::WorktreeProvisioned { .. } => "worktree.provisioned",
             Event::WorktreeRemoved { .. } => "worktree.removed",
@@ -1388,6 +1398,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::ForgePrOpened { wave_id, .. }
         | Event::ForgePrDiffRead { wave_id, .. }
         | Event::ForgePrChecks { wave_id, .. }
+        | Event::ForgeIssueRead { wave_id, .. }
         | Event::ForgeIssueClosed { wave_id, .. } => {
             vec![format!("wave:{}", wave_id), "*".into()]
         }
@@ -1696,6 +1707,13 @@ mod scope_tests {
             conclusion: "success".into(),
         };
         assert_eq!(forge_pr_checks.kind_tag(), "forge.pr.checks");
+
+        let forge_issue_read = Event::ForgeIssueRead {
+            wave_id: WaveId::from("wave-1"),
+            issue_number: 1,
+            artifact_path: "/tmp/neige/issue-body.md".into(),
+        };
+        assert_eq!(forge_issue_read.kind_tag(), "forge.issue.read");
 
         let forge_issue_closed = Event::ForgeIssueClosed {
             wave_id: WaveId::from("wave-1"),
@@ -2679,6 +2697,11 @@ mod scope_tests {
                 pr_number: 1,
                 conclusion: "success".into(),
             },
+            Event::ForgeIssueRead {
+                wave_id: WaveId::from("wave-1"),
+                issue_number: 1,
+                artifact_path: "/tmp/neige/issue-body.md".into(),
+            },
             Event::ForgeIssueClosed {
                 wave_id: WaveId::from("wave-1"),
                 issue_number: 1,
@@ -2907,6 +2930,15 @@ mod scope_tests {
                     "wave_id": "wave-1",
                     "pr_number": 1,
                     "conclusion": "success",
+                }),
+            ),
+            (
+                "forge.issue.read",
+                "forge.issue.read",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "issue_number": 1,
+                    "artifact_path": "/tmp/neige/issue-body.md",
                 }),
             ),
             (

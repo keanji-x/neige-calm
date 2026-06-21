@@ -257,6 +257,9 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'forge.pr.checks': noop(
     'Forge checks lifecycle is wave-scoped; no React Query cache consumes checks rows yet.',
   ),
+  'forge.issue.read': noop(
+    'Forge issue read artifacts are persisted for workflow ordering; no React Query cache consumes issue-read rows yet.',
+  ),
   'forge.issue.closed': noop(
     'Forge issue lifecycle is wave-scoped; no React Query cache consumes issue-close rows yet.',
   ),

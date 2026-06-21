@@ -538,6 +538,7 @@ pub async fn commit_events_with_author_in_tx(
                 | Event::ForgePrOpened { .. }
                 | Event::ForgePrDiffRead { .. }
                 | Event::ForgePrChecks { .. }
+                | Event::ForgeIssueRead { .. }
                 | Event::ForgeIssueClosed { .. }
                 | Event::WorktreeProvisioned { .. }
                 | Event::WorktreeRemoved { .. }
@@ -2210,6 +2211,7 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         | Event::ForgePrOpened { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgePrChecks { .. }
+        | Event::ForgeIssueRead { .. }
         | Event::ForgeIssueClosed { .. }
         | Event::WorktreeProvisioned { .. }
         | Event::WorktreeRemoved { .. } => {}

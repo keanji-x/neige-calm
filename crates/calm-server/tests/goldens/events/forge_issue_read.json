@@ -1,0 +1,11 @@
+{
+  "description": "forge.issue.read carries the wave routing id, issue number, and issue body artifact path",
+  "wire": {
+    "ev": "forge.issue.read",
+    "data": {
+      "wave_id": "wave-01",
+      "issue_number": 1,
+      "artifact_path": "/tmp/neige/issue-body.md"
+    }
+  }
+}

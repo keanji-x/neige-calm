@@ -775,6 +775,16 @@ golden_test!(
 );
 
 golden_test!(
+    forge_issue_read,
+    "forge_issue_read.json",
+    Event::ForgeIssueRead {
+        wave_id: WaveId::from("wave-01"),
+        issue_number: 1,
+        artifact_path: "/tmp/neige/issue-body.md".into(),
+    }
+);
+
+golden_test!(
     forge_issue_closed,
     "forge_issue_closed.json",
     Event::ForgeIssueClosed {
@@ -869,7 +879,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 41] = [
+const ALL_KIND_TAGS: [&str; 42] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -907,6 +917,7 @@ const ALL_KIND_TAGS: [&str; 41] = [
     "forge.pr.opened",
     "forge.pr.diff.read",
     "forge.pr.checks",
+    "forge.issue.read",
     "forge.issue.closed",
     "worktree.provisioned",
     "worktree.removed",
@@ -945,7 +956,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 60,
+        files, 61,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1003,6 +1014,7 @@ fn kind_tag_list_matches_enum() {
             Event::ForgePrOpened { .. } => "forge.pr.opened",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
+            Event::ForgeIssueRead { .. } => "forge.issue.read",
             Event::ForgeIssueClosed { .. } => "forge.issue.closed",
             Event::WorktreeProvisioned { .. } => "worktree.provisioned",
             Event::WorktreeRemoved { .. } => "worktree.removed",
@@ -1015,7 +1027,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        41,
+        42,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

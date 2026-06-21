@@ -477,6 +477,23 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
       expect(parsed.data.workflowId).toBe('daily-summary');
     }
   });
+
+  it('parses a valid forge.issue.read (#760 slice 4b)', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'forge.issue.read',
+      data: {
+        wave_id: 'wave-01',
+        issue_number: 813,
+        artifact_path: '/tmp/neige/issue-body.md',
+      },
+    });
+    expect(parsed.ev).toBe('forge.issue.read');
+    if (parsed.ev === 'forge.issue.read') {
+      expect(parsed.data.wave_id).toBe('wave-01');
+      expect(parsed.data.issue_number).toBe(813);
+      expect(parsed.data.artifact_path).toBe('/tmp/neige/issue-body.md');
+    }
+  });
 });
 
 // ---- PR2 of #247: wave.report_edited ----------------------------------
