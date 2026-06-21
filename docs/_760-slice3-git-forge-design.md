@@ -200,6 +200,11 @@ which intentionally relaxes §2.5-B only for automatic worker-spawn provisioning
 persists `worktree.provisioned{wave_id,card_id,path}` and then `runtime.started` for the worker path,
 so invariant-3 is asserted as durable event order before daemon spawn.
 
+Worktree/branch teardown is keyed to the slice/wave lifecycle, not normal per-task worker-lease
+release: worker `task.completed`/`task.failed` releases only the lease row and preserves the
+`neige/<wave>/<card>` branch for downstream PR operations. Timeout/dead-worker reclaim and wave
+teardown remove worktrees/branches; the precise PR-flow teardown point is finalized in ③-d.
+
 ---
 
 ## 4. ③-d — PR ops end-to-end + E2E (flips 2,3,9,13,14,15,16 + diff-source of 10)

@@ -1848,7 +1848,9 @@ mod tests {
     use super::*;
     use crate::db::sqlite::begin_immediate_tx;
     use crate::event::EventBus;
-    use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+    use crate::operation::workspace_lease::{
+        reclaim_workspace_lease_for_card_repo, release_workspace_lease_for_card_repo,
+    };
     use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
     use sqlx::Row;
     use std::path::Path;
@@ -2196,7 +2198,7 @@ mod tests {
                 .fetch_one(harness.repo.pool())
                 .await
                 .unwrap();
-        assert_eq!(removed_events, 1);
+        assert_eq!(removed_events, 0);
 
         assert!(
             !release_workspace_lease_for_card_repo(
@@ -2224,7 +2226,7 @@ mod tests {
         assert_eq!(state.steps[0].op, "release_workspace_lease");
         assert_eq!(state.steps[1].op, "cleanup_codex_worker");
         let lease_id = output.output_string("lease_id", "test").unwrap();
-        release_workspace_lease_for_card_repo(
+        reclaim_workspace_lease_for_card_repo(
             harness.repo.as_ref(),
             &harness.events,
             &output.output_string("card_id", "test").unwrap(),

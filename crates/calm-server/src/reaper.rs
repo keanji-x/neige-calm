@@ -14,7 +14,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::WaveLifecycle;
 use crate::model::now_ms;
-use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+use crate::operation::workspace_lease::reclaim_workspace_lease_for_card_repo;
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::scheduler::{is_race_lost, race_lost_err};
 use crate::state::WriteContext;
@@ -616,7 +616,7 @@ async fn release_reaped_worker_workspace_lease(
     session: &WorkerSession,
 ) -> Result<()> {
     if let Some(card_id) = session.card_id.as_ref() {
-        release_workspace_lease_for_card_repo(repo, events, card_id.as_str()).await?;
+        reclaim_workspace_lease_for_card_repo(repo, events, card_id.as_str()).await?;
     }
     Ok(())
 }

@@ -1347,7 +1347,7 @@ mod tests {
     use super::*;
     use crate::db::sqlite::begin_immediate_tx;
     use crate::event::EventBus;
-    use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+    use crate::operation::workspace_lease::reclaim_workspace_lease_for_card_repo;
     use crate::operation::{
         OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo,
     };
@@ -1564,7 +1564,7 @@ mod tests {
         );
 
         assert!(
-            release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+            reclaim_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
                 .await
                 .unwrap()
         );
@@ -1596,7 +1596,7 @@ mod tests {
             output.data.get("prompt").and_then(Value::as_str)
         );
 
-        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+        reclaim_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
             .await
             .unwrap();
     }
@@ -1678,7 +1678,7 @@ mod tests {
         assert_eq!(card_hash, token_hash);
         assert_eq!(session_hash.as_deref(), Some(card_hash.as_str()));
 
-        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+        reclaim_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
             .await
             .unwrap();
     }
@@ -1705,10 +1705,10 @@ mod tests {
                 .unwrap();
         assert_eq!(held, 2);
 
-        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &first_card)
+        reclaim_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &first_card)
             .await
             .unwrap();
-        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &second_card)
+        reclaim_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &second_card)
             .await
             .unwrap();
     }
