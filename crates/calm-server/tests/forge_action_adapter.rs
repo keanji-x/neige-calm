@@ -1460,7 +1460,7 @@ async fn forge_action_live_extraction_failure_without_probe_fails_gate_infra() -
 }
 
 #[tokio::test]
-async fn forge_action_nonzero_exit_fails_action_failed_without_probe() -> CalmResult<()> {
+async fn forge_action_nonzero_exit_uses_landed_probe_when_present() -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path("nonzero-action.sh");
     let action_counter = boot.temp_path("nonzero-action-counter");
@@ -1505,24 +1505,20 @@ exit 42
     observer.await.expect("observer joins");
     let result = wait_for_operation_result(&boot, &op_id).await;
     assert!(
-        matches!(
-            result.outcome,
-            OperationOutcome::Failed {
-                ref last_error,
-                from_phase: calm_server::operation::PhaseTag::Parked,
-                last_error_class: Some(ref class),
-            } if last_error == "forge action exited with code 42" && class == "action-failed"
-        ),
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
         "{:?}",
         result.outcome
     );
     assert_eq!(read_counter(&action_counter), 1);
     assert_eq!(
         read_counter(&probe_counter),
-        0,
-        "nonzero action exit must not consult probe"
+        2,
+        "nonzero action exit must run verdict and output probes"
     );
-    assert_eq!(forge_event_count(&boot.repo).await, 0);
+    assert_eq!(forge_event_count(&boot.repo).await, 1);
+    let event = latest_forge_event_payload(&boot.repo).await;
+    assert_eq!(event["merge_sha"], "probe-must-not-run");
+    assert_eq!(event["head_sha"], "probe-must-not-run-head");
     Ok(())
 }
 
@@ -2971,7 +2967,11 @@ async fn forge_action_boot_live_reattach_completes_via_probe_and_no_probe_fails(
     Ok(())
 }
 
-async fn assert_dead_probe_failure(verdict: i32, expected_error: &str) -> CalmResult<()> {
+async fn assert_dead_probe_failure(
+    verdict: i32,
+    expected_error: &str,
+    expected_class: &str,
+) -> CalmResult<()> {
     let boot = TestBoot::new().await;
     let action = boot.temp_path(&format!("probe-fail-{verdict}-action.sh"));
     let counter = boot.temp_path(&format!("probe-fail-{verdict}-counter"));
@@ -3015,7 +3015,7 @@ async fn assert_dead_probe_failure(verdict: i32, expected_error: &str) -> CalmRe
                 ref last_error,
                 from_phase: calm_server::operation::PhaseTag::Parked,
                 last_error_class: Some(ref class),
-            } if last_error == expected_error && class == "parked_dead"
+            } if last_error == expected_error && class == expected_class
         ),
         "{:?}",
         result.outcome
@@ -3032,12 +3032,22 @@ async fn assert_dead_probe_failure(verdict: i32, expected_error: &str) -> CalmRe
 
 #[tokio::test]
 async fn forge_action_probe_not_landed_fails_dead_parked_without_rerun() -> CalmResult<()> {
-    assert_dead_probe_failure(1, "forge action process dead and probe reports not landed").await
+    assert_dead_probe_failure(
+        1,
+        "forge action process dead and probe reports not landed",
+        "action-not-landed",
+    )
+    .await
 }
 
 #[tokio::test]
 async fn forge_action_probe_unknown_fails_dead_parked_without_rerun() -> CalmResult<()> {
-    assert_dead_probe_failure(2, "forge action probe verdict unknown; gate-infra").await
+    assert_dead_probe_failure(
+        2,
+        "forge action probe verdict unknown; gate-infra",
+        "gate-infra",
+    )
+    .await
 }
 
 #[tokio::test]
