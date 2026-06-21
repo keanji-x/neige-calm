@@ -364,7 +364,11 @@ lifecycle: WaveLifecycle,
  * Production wave-create paths inside this binary always stamp a
  * real path — the migration default is the "old data only" fallback.
  */
-cwd: string, workflow_id: string | null, 
+cwd: string, 
+/**
+ * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
+ */
+workflow_id: string | null, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
@@ -508,7 +512,11 @@ lifecycle: WaveLifecycle,
  * Production wave-create paths inside this binary always stamp a
  * real path — the migration default is the "old data only" fallback.
  */
-cwd: string, workflow_id: string | null, 
+cwd: string, 
+/**
+ * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
+ */
+workflow_id: string | null, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
