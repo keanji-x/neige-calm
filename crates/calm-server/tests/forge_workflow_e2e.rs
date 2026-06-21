@@ -22,7 +22,8 @@ use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveLifecycle, now_ms};
 use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
 use calm_server::operation::{
-    OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
+    OperationCompletionBus, OperationOutcome, OperationRuntime, ProviderAdapter, RecoveryItem,
+    SpawnArtifacts, SpawnCtx, SqlxOperationRepo,
 };
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::session_projection_repo::{
@@ -61,6 +62,7 @@ struct Fixture {
     thread_id: String,
     wave_id: String,
     cove_id: String,
+    lease_id: String,
     lease_abs: PathBuf,
     origin_repo: PathBuf,
     _runtime: Arc<OperationRuntime>,
@@ -72,6 +74,7 @@ struct Caller {
     raw_token: String,
     thread_id: String,
     wave_id: String,
+    lease_id: String,
     lease_abs: PathBuf,
     _lease_tmp: TempDir,
 }
@@ -273,6 +276,195 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
         .expect("stop git-forge plugin");
 }
 
+#[tokio::test]
+async fn git_forge_merge_crash_recovers_once_via_probe() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let path_dir = short_tempdir("gh-path").expect("gh shim PATH tempdir");
+    write_gh_shim(path_dir.path());
+    let path_value = prepend_to_path(path_dir.path());
+    let results_dir = short_tempdir("gwe-results").expect("forge results tempdir");
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let _path = EnvGuard::set("PATH", path_value);
+
+    let fx = boot_fixture().await;
+    let repo_arg = fx.origin_repo.display().to_string();
+    let base = "main";
+    let head = "slice-810-e2e-merge-crash";
+
+    run_git(&fx.lease_abs, ["checkout", "-b", head]);
+    stage_git_change(&fx.lease_abs, "merge-crash.txt", "merge crash e2e\n");
+    let commit_resp = call_tool(
+        &fx,
+        20,
+        COMMIT_TOOL,
+        json!({ "message": "merge crash e2e", "idem": "slice-810-e2e-merge-crash-commit" }),
+    )
+    .await;
+    assert_tool_succeeded(&commit_resp, "git.commit");
+    let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
+    run_git(&fx.lease_abs, ["push", "-u", "origin", head]);
+
+    let create_resp = call_tool(
+        &fx,
+        21,
+        PR_CREATE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "head": head,
+            "base": base,
+            "title": "Merge crash E2E",
+            "body": "Created by forge merge crash E2E"
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
+    let pr_number = opened_rows[0].payload["pr_number"]
+        .as_u64()
+        .expect("pr number");
+
+    let state = shim_state_dir(&fx.origin_repo);
+    let block = ShimBlock::new(&state, "pr_merge");
+    let merge_resp = call_tool(
+        &fx,
+        22,
+        PR_MERGE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "pr": pr_number,
+            "phase": "impl",
+            "slice_id": "810"
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    let op_id = op_id_from_response(&merge_resp);
+    wait_for_counter(&state.join("pr_merge_count"), 1).await;
+    wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
+    let result_path = operation_result_path(&fx.repo, &op_id).await;
+    assert_result_files_absent(&result_path);
+    assert_eq!(shim_counter(&state.join("pr_merge_count")), 1);
+    assert_eq!(workspace_lease_state(&fx.repo, &fx.lease_id).await, "held");
+
+    mark_parked_artifacts_dead(&fx.repo, &op_id).await;
+    mark_workspace_lease_stale_for_boot(&fx.repo, &fx.lease_id).await;
+    let recovery = boot_recovery_runtime(&fx).await;
+    let plan = recovery.recover_on_boot().await.expect("recover on boot");
+    assert!(
+        plan.items
+            .iter()
+            .any(|item| matches!(item, RecoveryItem::VerifyParked { op_id: item_op_id } if item_op_id == &op_id)),
+        "merge crash should recover through parked verification: {:?}",
+        plan.items
+    );
+    recovery.apply_recovery(plan).await.expect("apply recovery");
+    let result = recovery.wait(&op_id).await.expect("recovered op result");
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "merge recovery should succeed: {:?}",
+        result.outcome
+    );
+    assert_eq!(operation_phase(&fx.repo, &op_id).await, "succeeded");
+
+    let merged_rows = wait_for_event_count(&fx.repo, "forge.pr.merged", 1).await;
+    let merged = merged_rows[0].clone();
+    assert_wave_event(&merged, &fx.wave_id);
+    assert_eq!(merged.payload["head_sha"], head_sha);
+    assert_eq!(merged.payload["subject"]["pr_number"], pr_number);
+    let merge_sha = merged.payload["merge_sha"]
+        .as_str()
+        .expect("merge_sha string");
+    assert_eq!(merge_sha.len(), 40, "merge sha should be a git-shaped oid");
+    assert_eq!(shim_counter(&state.join("pr_merge_count")), 1);
+    assert_eq!(
+        workspace_lease_state(&fx.repo, &fx.lease_id).await,
+        "released"
+    );
+
+    block.release();
+    assert_event_count_stays(&fx.repo, "forge.pr.merged", 1).await;
+    assert_eq!(shim_counter(&state.join("pr_merge_count")), 1);
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+#[tokio::test]
+async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let path_dir = short_tempdir("gh-path").expect("gh shim PATH tempdir");
+    write_gh_shim(path_dir.path());
+    let path_value = prepend_to_path(path_dir.path());
+    let results_dir = short_tempdir("gwe-results").expect("forge results tempdir");
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let _path = EnvGuard::set("PATH", path_value);
+
+    let fx = boot_fixture().await;
+    let repo_arg = fx.origin_repo.display().to_string();
+    let issue_number = 810_u64;
+    let state = shim_state_dir(&fx.origin_repo);
+    let block = ShimBlock::new(&state, "issue_close");
+
+    let issue_resp = call_tool(
+        &fx,
+        30,
+        ISSUE_CLOSE_TOOL,
+        json!({ "repo": repo_arg, "issue": issue_number }),
+    )
+    .await;
+    assert_tool_succeeded(&issue_resp, "gh.issue.close");
+    let op_id = op_id_from_response(&issue_resp);
+    wait_for_counter(&state.join("issue_close_count"), 1).await;
+    wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
+    let result_path = operation_result_path(&fx.repo, &op_id).await;
+    assert_result_files_absent(&result_path);
+
+    mark_parked_artifacts_dead(&fx.repo, &op_id).await;
+    mark_workspace_lease_stale_for_boot(&fx.repo, &fx.lease_id).await;
+    let recovery = boot_recovery_runtime(&fx).await;
+    let plan = recovery.recover_on_boot().await.expect("recover on boot");
+    assert!(
+        plan.items
+            .iter()
+            .any(|item| matches!(item, RecoveryItem::VerifyParked { op_id: item_op_id } if item_op_id == &op_id)),
+        "issue close crash should recover through parked verification: {:?}",
+        plan.items
+    );
+    recovery.apply_recovery(plan).await.expect("apply recovery");
+    let result = recovery.wait(&op_id).await.expect("recovered op result");
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "issue close recovery should succeed: {:?}",
+        result.outcome
+    );
+    assert_eq!(operation_phase(&fx.repo, &op_id).await, "succeeded");
+
+    let issue_rows = wait_for_event_count(&fx.repo, "forge.issue.closed", 1).await;
+    let issue_closed = issue_rows[0].clone();
+    assert_wave_event(&issue_closed, &fx.wave_id);
+    assert_eq!(issue_closed.payload["issue_number"], issue_number);
+    assert_eq!(shim_counter(&state.join("issue_close_count")), 1);
+
+    block.release();
+    assert_event_count_stays(&fx.repo, "forge.issue.closed", 1).await;
+    assert_eq!(shim_counter(&state.join("issue_close_count")), 1);
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
 async fn boot_fixture() -> Fixture {
     let tmp = short_tempdir("gwe").expect("tempdir");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
@@ -386,6 +578,7 @@ async fn boot_fixture() -> Fixture {
         thread_id: caller.thread_id,
         wave_id: caller.wave_id,
         cove_id: cove.id.to_string(),
+        lease_id: caller.lease_id,
         lease_abs: caller.lease_abs,
         origin_repo,
         _runtime: runtime,
@@ -443,7 +636,7 @@ async fn create_worker_caller(
             token.into_inner()
         }
     };
-    insert_workspace_lease(&mut tx, &card_id, wave_id.as_str(), &lease_path).await;
+    let lease_id = insert_workspace_lease(&mut tx, &card_id, wave_id.as_str(), &lease_path).await;
     tx.commit().await.expect("commit card tx");
 
     let thread_id = format!("thread-{card_id}");
@@ -453,6 +646,7 @@ async fn create_worker_caller(
         raw_token,
         thread_id,
         wave_id: wave_id.to_string(),
+        lease_id,
         lease_abs,
         _lease_tmp: lease_tmp,
     }
@@ -503,8 +697,9 @@ async fn insert_workspace_lease(
     card_id: &str,
     wave_id: &str,
     path: &str,
-) {
+) -> String {
     let now = now_ms();
+    let lease_id = calm_server::model::new_id();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, wave_id, path, state, lease_owner,
@@ -512,7 +707,7 @@ async fn insert_workspace_lease(
            )
            VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
     )
-    .bind(calm_server::model::new_id())
+    .bind(&lease_id)
     .bind(card_id)
     .bind(wave_id)
     .bind(path)
@@ -522,6 +717,7 @@ async fn insert_workspace_lease(
     .execute(&mut **tx)
     .await
     .expect("insert workspace lease");
+    lease_id
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
@@ -621,6 +817,144 @@ async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
     recv_frame(&mut rd).await
 }
 
+async fn boot_recovery_runtime(fx: &Fixture) -> Arc<OperationRuntime> {
+    let operation_repo = Arc::new(SqlxOperationRepo::new(fx.repo.pool().clone()));
+    let completion = OperationCompletionBus::new();
+    let route_repo: Arc<dyn RouteRepo> = fx.repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    Arc::new(
+        OperationRuntime::new(
+            operation_repo.clone(),
+            vec![Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>],
+            fx.events.clone(),
+            completion.clone(),
+            SpawnCtx::new(
+                route_repo,
+                operation_repo,
+                Arc::new(DaemonClient::new_stub()),
+                terminal_renderer,
+                fx.events.clone(),
+                completion,
+            ),
+        )
+        .await
+        .expect("boot recovery operation runtime"),
+    )
+}
+
+fn op_id_from_response(resp: &Value) -> String {
+    resp["result"]["structuredContent"]["op_id"]
+        .as_str()
+        .expect("MCP response op_id")
+        .to_string()
+}
+
+async fn operation_phase(repo: &SqlxRepo, op_id: &str) -> String {
+    sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+        .bind(op_id)
+        .fetch_one(repo.pool())
+        .await
+        .expect("operation phase")
+}
+
+async fn wait_for_operation_phase(repo: &SqlxRepo, op_id: &str, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let phase = operation_phase(repo, op_id).await;
+        if phase == expected {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("expected operation {op_id} phase `{expected}`, got `{phase}`");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn operation_result_path(repo: &SqlxRepo, op_id: &str) -> PathBuf {
+    let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id = ?1")
+        .bind(op_id)
+        .fetch_one(repo.pool())
+        .await
+        .expect("operation tx_output_json");
+    let output: Value = serde_json::from_str(&raw).expect("tx_output_json parses");
+    PathBuf::from(
+        output["data"]["result_path"]
+            .as_str()
+            .expect("forge result_path in tx_output"),
+    )
+}
+
+fn assert_result_files_absent(result_path: &Path) {
+    let code = path_with_suffix(result_path, ".code");
+    let stdout = path_with_suffix(result_path, ".stdout");
+    assert!(
+        !code.exists(),
+        "forge result code file should not be complete before recovery: {}",
+        code.display()
+    );
+    assert!(
+        !stdout.exists(),
+        "forge result stdout file should not be complete before recovery: {}",
+        stdout.display()
+    );
+}
+
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut raw = path.as_os_str().to_os_string();
+    raw.push(suffix);
+    PathBuf::from(raw)
+}
+
+async fn mark_parked_artifacts_dead(repo: &SqlxRepo, op_id: &str) {
+    let artifacts = SpawnArtifacts {
+        pid: -424_242,
+        pgid: -424_242,
+        start_time: 0,
+        boot_id: "dead-boot-for-e2e".into(),
+        log_path: None,
+        extra: json!({ "source": "forge_workflow_e2e_crash" }),
+    };
+    sqlx::query(
+        r#"UPDATE operations
+           SET spawn_artifacts_json = ?1,
+               lease_owner = NULL,
+               lease_until_ms = NULL,
+               updated_at_ms = ?2
+           WHERE id = ?3
+             AND phase = 'parked'"#,
+    )
+    .bind(serde_json::to_string(&artifacts).expect("spawn artifacts json"))
+    .bind(now_ms())
+    .bind(op_id)
+    .execute(repo.pool())
+    .await
+    .expect("mark parked artifacts dead");
+}
+
+async fn mark_workspace_lease_stale_for_boot(repo: &SqlxRepo, lease_id: &str) {
+    sqlx::query(
+        r#"UPDATE workspace_leases
+           SET boot_id = 'stale-boot-for-forge-e2e',
+               updated_at_ms = ?1
+           WHERE lease_id = ?2
+             AND state = 'held'"#,
+    )
+    .bind(now_ms())
+    .bind(lease_id)
+    .execute(repo.pool())
+    .await
+    .expect("mark workspace lease stale");
+}
+
+async fn workspace_lease_state(repo: &SqlxRepo, lease_id: &str) -> String {
+    sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+        .bind(lease_id)
+        .fetch_one(repo.pool())
+        .await
+        .expect("workspace lease state")
+}
+
 fn assert_tool_succeeded(resp: &Value, label: &str) {
     assert!(
         resp.get("error").is_none(),
@@ -669,6 +1003,22 @@ async fn wait_for_event_count(repo: &SqlxRepo, kind: &str, expected: usize) -> V
         }
         if Instant::now() > deadline {
             panic!("expected {expected} `{kind}` events, got {}", rows.len());
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn assert_event_count_stays(repo: &SqlxRepo, kind: &str, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let rows = event_rows(repo, kind).await;
+        assert_eq!(
+            rows.len(),
+            expected,
+            "`{kind}` event count changed unexpectedly: {rows:#?}"
+        );
+        if Instant::now() > deadline {
+            return;
         }
         sleep(Duration::from_millis(25)).await;
     }
@@ -851,6 +1201,59 @@ fn write_gh_shim(dir: &Path) {
     std::fs::set_permissions(&path, perms).expect("chmod gh shim");
 }
 
+fn shim_state_dir(repo: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.shimstate", repo.display()))
+}
+
+struct ShimBlock {
+    release_path: PathBuf,
+}
+
+impl ShimBlock {
+    fn new(state: &Path, verb: &str) -> Self {
+        std::fs::create_dir_all(state).expect("create shim state dir");
+        let block_path = state.join(format!("block_{verb}"));
+        let release_path = state.join(format!("release_{verb}"));
+        let _ = std::fs::remove_file(&release_path);
+        std::fs::write(&block_path, "").expect("write shim block sentinel");
+        Self { release_path }
+    }
+
+    fn release(&self) {
+        std::fs::write(&self.release_path, "").expect("write shim release sentinel");
+    }
+}
+
+impl Drop for ShimBlock {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.release_path, "");
+    }
+}
+
+fn shim_counter(path: &Path) -> u64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+async fn wait_for_counter(path: &Path, expected: u64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let count = shim_counter(path);
+        if count == expected {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!(
+                "expected shim counter {} to reach {expected}, got {count}",
+                path.display()
+            );
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
 fn prepend_to_path(dir: &Path) -> OsString {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let mut value = OsString::from(dir.as_os_str());
@@ -922,6 +1325,32 @@ ensure_state() {
   state=$(state_dir_for "$repo")
   mkdir -p "$state/prs" "$state/issues"
   printf '%s\n' "$state"
+}
+
+inc_counter() {
+  file=$1
+  if [ -f "$file" ]; then
+    count=$(cat "$file")
+  else
+    count=0
+  fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$file"
+}
+
+block_if_requested() {
+  state=$1
+  verb=$2
+  block="$state/block_$verb"
+  release="$state/release_$verb"
+  [ -f "$block" ] || return 0
+  i=0
+  while [ "$i" -lt 200 ]; do
+    [ -f "$release" ] && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 0
 }
 
 find_pr() {
@@ -1097,6 +1526,8 @@ case "$area:$verb" in
       merge_sha=$(printf '%s' "merge:$number:$head_sha" | git hash-object --stdin)
       printf '%s\n' "$merge_sha" > "$pr_dir/merge_sha"
       printf 'true\n' > "$pr_dir/merged"
+      inc_counter "$state/pr_merge_count"
+      block_if_requested "$state" pr_merge
     fi
     printf '{"headRefOid":"%s","mergeCommit":{"oid":"%s"}}\n' "$head_sha" "$merge_sha"
     ;;
@@ -1126,7 +1557,11 @@ case "$area:$verb" in
     issue=$1
     repo=$(get_arg --repo "$@") || exit 2
     state=$(ensure_state "$repo")
-    printf 'closed\n' > "$state/issues/$issue.closed"
+    if [ ! -f "$state/issues/$issue.closed" ]; then
+      printf 'closed\n' > "$state/issues/$issue.closed"
+      inc_counter "$state/issue_close_count"
+      block_if_requested "$state" issue_close
+    fi
     printf 'closed issue %s\n' "$issue"
     ;;
   *)
