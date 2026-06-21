@@ -466,6 +466,9 @@ fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
         Some(event_spec("forge.issue.closed", [])),
         json!({ "issue_number": issue }),
         Some(json!({
+            // Real `gh --jq` maps a jq filter error to its generic exit 1; the
+            // hermetic E2E asserts that CLOSED => 0/Landed and OPEN => 1/NotLanded
+            // contract because exercising real `gh` here needs network/auth.
             "probe_argv": [
                 "gh",
                 "issue",

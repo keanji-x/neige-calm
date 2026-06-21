@@ -22,8 +22,8 @@ use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveLifecycle, now_ms};
 use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
 use calm_server::operation::{
-    OperationCompletionBus, OperationOutcome, OperationRuntime, ProviderAdapter, RecoveryItem,
-    SpawnArtifacts, SpawnCtx, SqlxOperationRepo,
+    OperationCompletionBus, OperationOutcome, OperationResult, OperationRuntime, ProviderAdapter,
+    RecoveryItem, SpawnArtifacts, SpawnCtx, SqlxOperationRepo,
 };
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::session_projection_repo::{
@@ -37,7 +37,7 @@ use support::mcp::{
 };
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, timeout};
 
 const FORGE_BIN: &str = env!("CARGO_BIN_EXE_git-forge");
 const PLUGIN_ID: &str = "dev.neige.git-forge";
@@ -47,7 +47,9 @@ const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
 const PR_DIFF_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.diff";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
 const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
+const ISSUE_VIEW_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.view";
 const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
+const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
@@ -118,6 +120,23 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
     let base = "main";
     let head = "slice-810-e2e";
 
+    let before_issue_view_events = forge_event_count(&fx.repo).await;
+    let issue_view_resp = call_tool(
+        &fx,
+        9,
+        ISSUE_VIEW_TOOL,
+        json!({ "repo": repo_arg, "issue": 810 }),
+    )
+    .await;
+    assert_tool_succeeded(&issue_view_resp, "gh.issue.view");
+    let issue_view_op_id = op_id_from_response(&issue_view_resp);
+    wait_for_operation_phase(&fx.repo, &issue_view_op_id, "succeeded").await;
+    assert_eq!(
+        forge_event_count(&fx.repo).await,
+        before_issue_view_events,
+        "gh.issue.view is resultless and must not persist forge events"
+    );
+
     let scan_resp = call_tool(
         &fx,
         10,
@@ -127,7 +146,7 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
     .await;
     assert_tool_succeeded(&scan_resp, "gh.pr.list");
     let scan = wait_for_event_count(&fx.repo, "forge.scan.completed", 1).await;
-    assert_eq!(scan[0].payload["wave_id"], fx.wave_id);
+    assert_wave_event(&scan[0], &fx.wave_id);
     assert_eq!(scan[0].payload["overlapping_prs"], json!([]));
 
     run_git(&fx.lease_abs, ["checkout", "-b", head]);
@@ -362,7 +381,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
         plan.items
     );
     recovery.apply_recovery(plan).await.expect("apply recovery");
-    let result = recovery.wait(&op_id).await.expect("recovered op result");
+    let result = wait_for_recovery_result(&recovery, &op_id).await;
     assert!(
         matches!(result.outcome, OperationOutcome::Succeeded { .. }),
         "merge recovery should succeed: {:?}",
@@ -386,6 +405,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
     );
 
     block.release();
+    wait_for_result_code_file(&result_path).await;
     assert_event_count_stays(&fx.repo, "forge.pr.merged", 1).await;
     assert_eq!(shim_counter(&state.join("pr_merge_count")), 1);
 
@@ -441,7 +461,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
         plan.items
     );
     recovery.apply_recovery(plan).await.expect("apply recovery");
-    let result = recovery.wait(&op_id).await.expect("recovered op result");
+    let result = wait_for_recovery_result(&recovery, &op_id).await;
     assert!(
         matches!(result.outcome, OperationOutcome::Succeeded { .. }),
         "issue close recovery should succeed: {:?}",
@@ -456,6 +476,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
     assert_eq!(shim_counter(&state.join("issue_close_count")), 1);
 
     block.release();
+    wait_for_result_code_file(&result_path).await;
     assert_event_count_stays(&fx.repo, "forge.issue.closed", 1).await;
     assert_eq!(shim_counter(&state.join("issue_close_count")), 1);
 
@@ -801,6 +822,7 @@ async fn assert_tools_are_discoverable(fx: &Fixture) {
         PR_DIFF_TOOL,
         PR_CHECKS_TOOL,
         PR_MERGE_TOOL,
+        ISSUE_VIEW_TOOL,
         ISSUE_CLOSE_TOOL,
     ] {
         assert!(
@@ -857,6 +879,14 @@ async fn operation_phase(repo: &SqlxRepo, op_id: &str) -> String {
         .expect("operation phase")
 }
 
+async fn wait_for_recovery_result(recovery: &OperationRuntime, op_id: &str) -> OperationResult {
+    let owned_op_id = op_id.to_owned();
+    timeout(RECOVERY_WAIT_TIMEOUT, recovery.wait(&owned_op_id))
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for recovered operation {op_id} within 5s"))
+        .expect("recovered op result")
+}
+
 async fn wait_for_operation_phase(repo: &SqlxRepo, op_id: &str, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -898,6 +928,23 @@ fn assert_result_files_absent(result_path: &Path) {
         "forge result stdout file should not be complete before recovery: {}",
         stdout.display()
     );
+}
+
+async fn wait_for_result_code_file(result_path: &Path) {
+    let code = path_with_suffix(result_path, ".code");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if code.exists() {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!(
+                "timed out waiting for released forge result code file {}",
+                code.display()
+            );
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
 }
 
 fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -992,6 +1039,13 @@ async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
             },
         )
         .collect()
+}
+
+async fn forge_event_count(repo: &SqlxRepo) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind LIKE 'forge.%'")
+        .fetch_one(repo.pool())
+        .await
+        .expect("forge event count")
 }
 
 async fn wait_for_event_count(repo: &SqlxRepo, kind: &str, expected: usize) -> Vec<EventRow> {
@@ -1347,7 +1401,8 @@ block_if_requested() {
   i=0
   while [ "$i" -lt 200 ]; do
     [ -f "$release" ] && return 0
-    sleep 0.1
+    # CI uses GNU coreutils; keep a real delay if fractional sleep is unavailable.
+    sleep 0.1 2>/dev/null || sleep 1
     i=$((i + 1))
   done
   return 0
