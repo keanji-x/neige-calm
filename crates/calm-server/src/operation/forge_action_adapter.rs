@@ -354,6 +354,14 @@ mod tests {
         };
         let mut output = TxOutput::new("wave", Some(frozen.wave_id.clone()), json!({}));
         output.data = serde_json::to_value(&frozen).expect("frozen json");
+        let artifacts = SpawnArtifacts {
+            pid: 1,
+            pgid: 1,
+            start_time: 1,
+            boot_id: "boot-test".into(),
+            log_path: None,
+            extra: json!({}),
+        };
         sqlx::query(
             r#"UPDATE operations
                SET tx_output_json = ?1,
@@ -366,17 +374,7 @@ mod tests {
         .bind(serde_json::to_string(&output).expect("tx output json"))
         .bind(now_ms())
         .bind(frozen.deadline_ms)
-        .bind(
-            serde_json::to_string(&SpawnArtifacts {
-                pid: 1,
-                pgid: 1,
-                start_time: 1,
-                boot_id: "boot-test".into(),
-                log_path: None,
-                extra: json!({}),
-            })
-            .expect("spawn artifacts json"),
-        )
+        .bind(serde_json::to_string(&artifacts).expect("spawn artifacts json"))
         .bind(&op_id)
         .execute(fx.repo.pool())
         .await
@@ -393,7 +391,7 @@ mod tests {
         .await
         .expect("install trigger");
 
-        resolve_post_release_via_probe(
+        let result = resolve_post_release_via_probe(
             fx.repo.pool(),
             &OperationCompletionBus::new(),
             &EventBus::new(),
@@ -403,6 +401,40 @@ mod tests {
             "test ambiguous outcome",
         )
         .await;
+        assert!(
+            result.is_err(),
+            "landed probe completion tx failure should propagate"
+        );
+        let recover_repo = Arc::new(SqlxOperationRepo::new(fx.repo.pool().clone()));
+        let route_repo: Arc<dyn RouteRepo> = fx.repo.clone();
+        let recover_events = EventBus::new();
+        let recover_completion = OperationCompletionBus::new();
+        let recover_ctx = SpawnCtx::new(
+            route_repo.clone(),
+            recover_repo.clone(),
+            Arc::new(DaemonClient::new_stub()),
+            TerminalRendererRegistry::new_with_repo(route_repo),
+            recover_events,
+            recover_completion,
+        );
+        let op = recover_repo
+            .get_operation(&op_id)
+            .await
+            .expect("get parked operation")
+            .expect("parked operation exists");
+        let recover_result = ForgeActionAdapter::new()
+            .recover_parked(
+                &op,
+                &artifacts,
+                false,
+                RecoveryMode::PastDeadline,
+                &recover_ctx,
+            )
+            .await;
+        assert!(
+            recover_result.is_err(),
+            "past-deadline landed probe completion tx failure should propagate"
+        );
 
         let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
             .bind(&op_id)
@@ -1421,7 +1453,7 @@ async fn complete_forge_op_from_live_result(
         Err(ForgeEventBuildError::ActionFailed { reason }) => {
             // Once the go-token is released, a nonzero exit is ambiguous,
             // not a verdict; the probe is authoritative for landed status.
-            resolve_post_release_via_probe(
+            return resolve_post_release_via_probe(
                 refs.pool,
                 refs.completion,
                 refs.events,
@@ -1431,10 +1463,9 @@ async fn complete_forge_op_from_live_result(
                 &format!("action-failed: {reason}"),
             )
             .await;
-            return Ok(());
         }
         Err(ForgeEventBuildError::ExtractionFailed { reason }) => {
-            resolve_post_release_via_probe(
+            return resolve_post_release_via_probe(
                 refs.pool,
                 refs.completion,
                 refs.events,
@@ -1444,7 +1475,6 @@ async fn complete_forge_op_from_live_result(
                 &format!("extraction failed: {reason}"),
             )
             .await;
-            return Ok(());
         }
     };
 
@@ -1618,7 +1648,7 @@ async fn resolve_post_release_via_probe(
     op_id: &str,
     frozen: &FrozenForge,
     ambiguous_reason: &str,
-) {
+) -> Result<()> {
     let Some(probe) = frozen.probe.as_ref() else {
         if let Some(reason) = ambiguous_reason.strip_prefix("action-failed: ") {
             let _ = complete_forge_op_failed(
@@ -1629,7 +1659,7 @@ async fn resolve_post_release_via_probe(
                 Some("action-failed".into()),
             )
             .await;
-            return;
+            return Ok(());
         }
         let _ = complete_forge_op_failed(
             pool,
@@ -1639,7 +1669,7 @@ async fn resolve_post_release_via_probe(
             Some("gate-infra".into()),
         )
         .await;
-        return;
+        return Ok(());
     };
 
     match complete_from_probe(pool, completion, events, repo, op_id, frozen, probe).await {
@@ -1657,15 +1687,10 @@ async fn resolve_post_release_via_probe(
                 Some(last_error_class.into()),
             )
             .await;
+            Ok(())
         }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!(
-                op_id,
-                error = %e,
-                "forge: landed-verdict completion tx failed transiently; leaving op parked for retry"
-            );
-        }
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -1706,7 +1731,7 @@ async fn resolve_dead_outcome(
             return;
         }
     }
-    resolve_post_release_via_probe(
+    if let Err(e) = resolve_post_release_via_probe(
         pool,
         completion,
         events,
@@ -1715,7 +1740,14 @@ async fn resolve_dead_outcome(
         frozen,
         ambiguous_reason,
     )
-    .await;
+    .await
+    {
+        tracing::error!(
+            op_id,
+            error = %e,
+            "forge: landed-verdict completion tx failed during dead recovery; leaving op parked"
+        );
+    }
 }
 
 #[async_trait]
@@ -1930,7 +1962,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                                 error = %e,
                                 "forge observer: result file unreadable after post-release wait"
                             );
-                            resolve_post_release_via_probe(
+                            if let Err(e) = resolve_post_release_via_probe(
                                 &pool,
                                 &completion,
                                 &events,
@@ -1939,12 +1971,19 @@ impl ProviderAdapter for ForgeActionAdapter {
                                 &observer_frozen,
                                 "result file unreadable",
                             )
-                            .await;
+                            .await
+                            {
+                                tracing::error!(
+                                    op_id = %op_id,
+                                    error = %e,
+                                    "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
+                                );
+                            }
                         }
                     }
                 }
                 Ok(_) => {
-                    resolve_post_release_via_probe(
+                    if let Err(e) = resolve_post_release_via_probe(
                         &pool,
                         &completion,
                         &events,
@@ -1953,7 +1992,14 @@ impl ProviderAdapter for ForgeActionAdapter {
                         &observer_frozen,
                         "forge wrapper killed by signal",
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::error!(
+                            op_id = %op_id,
+                            error = %e,
+                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1961,7 +2007,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                         error = %e,
                         "forge observer: wrapper wait failed"
                     );
-                    resolve_post_release_via_probe(
+                    if let Err(e) = resolve_post_release_via_probe(
                         &pool,
                         &completion,
                         &events,
@@ -1970,7 +2016,14 @@ impl ProviderAdapter for ForgeActionAdapter {
                         &observer_frozen,
                         "wrapper wait failed",
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::error!(
+                            op_id = %op_id,
+                            error = %e,
+                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
+                        );
+                    }
                 }
             }
         });
@@ -2080,7 +2133,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             &frozen,
             "forge action process dead",
         )
-        .await;
+        .await?;
         Ok(ParkedRecovery::LeaveParked)
     }
 
