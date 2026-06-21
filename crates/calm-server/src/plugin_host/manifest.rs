@@ -20,7 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::card_kind::CardKindRegistry;
-use crate::mcp_server::tools::plan::key_is_valid;
+use crate::mcp_server::tools::plan::{
+    GateInput, PlanTaskInput, key_is_valid, validate_gate_shape, validate_new_plan_batch,
+};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -222,45 +224,6 @@ pub struct WorkflowDescriptor {
     pub spec_instructions: String,
     #[serde(default)]
     pub card_kinds: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct PlanTaskInput {
-    pub key: String,
-    pub kind: String,
-    pub goal: String,
-    #[serde(default)]
-    pub context: Option<Value>,
-    #[serde(default)]
-    pub acceptance_criteria: Option<String>,
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub depends_on: Vec<String>,
-    #[serde(default)]
-    pub priority: Option<i64>,
-    #[serde(default)]
-    pub gate: Option<GateInput>,
-    #[serde(default)]
-    pub no_gate_reason: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct GateInput {
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub timeout_secs: Option<i64>,
-    pub steps: Vec<GateStepInput>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct GateStepInput {
-    pub name: String,
-    pub cmd: String,
 }
 
 /// Permissions the plugin requests. Kernel enforces at the callback dispatch
@@ -465,47 +428,20 @@ impl WorkflowDescriptor {
             ));
         }
 
-        let mut keys = HashSet::new();
-        for (task_idx, task) in self.plan_template.iter().enumerate() {
-            if !key_is_valid(&task.key) {
-                return Err(ManifestError::invalid(
-                    path(&format!("plan_template[{task_idx}].key")),
-                    "must match ^[a-z0-9][a-z0-9._-]{0,63}$",
-                ));
-            }
-            if !keys.insert(task.key.as_str()) {
-                return Err(ManifestError::invalid(
-                    path(&format!("plan_template[{task_idx}].key")),
-                    format!("duplicate task key `{}`", task.key),
-                ));
-            }
-            match task.kind.as_str() {
-                "codex" | "claude" | "terminal" => {}
-                other => {
-                    return Err(ManifestError::invalid(
-                        path(&format!("plan_template[{task_idx}].kind")),
-                        format!("unknown task kind `{other}`; expected codex, claude, or terminal"),
-                    ));
-                }
-            }
-            if let Some(gate) = task.gate.as_ref() {
-                validate_gate_steps(gate, path(&format!("plan_template[{task_idx}].gate.steps")))?;
-            }
-        }
-
-        for (task_idx, task) in self.plan_template.iter().enumerate() {
-            for (dep_idx, dep) in task.depends_on.iter().enumerate() {
-                if !keys.contains(dep.as_str()) {
-                    return Err(ManifestError::invalid(
-                        path(&format!("plan_template[{task_idx}].depends_on[{dep_idx}]")),
-                        format!("references missing task key `{dep}`"),
-                    ));
-                }
-            }
-        }
+        validate_new_plan_batch(&self.plan_template).map_err(|reason| {
+            ManifestError::invalid(
+                plan_template_error_field(idx, &self.plan_template, &reason),
+                reason,
+            )
+        })?;
 
         for (gate_idx, gate) in self.gates.iter().enumerate() {
-            validate_gate_steps(gate, path(&format!("gates[{gate_idx}].steps")))?;
+            validate_gate_shape(&self.id, gate).map_err(|reason| {
+                ManifestError::invalid(
+                    gate_error_field(path(&format!("gates[{gate_idx}]")), &reason),
+                    reason,
+                )
+            })?;
         }
 
         if self.spec_instructions.len() > 8192 {
@@ -539,14 +475,105 @@ impl WorkflowDescriptor {
     }
 }
 
-fn validate_gate_steps(gate: &GateInput, field: String) -> Result<(), ManifestError> {
-    if gate.steps.is_empty() {
-        return Err(ManifestError::invalid(
-            field,
-            "gate steps must be non-empty",
-        ));
+fn plan_template_error_field(workflow_idx: usize, tasks: &[PlanTaskInput], reason: &str) -> String {
+    let path = |s: &str| format!("workflows[{workflow_idx}].{s}");
+
+    if let Some(key) = backtick_value_after(reason, "invalid task key `") {
+        let task_idx = tasks
+            .iter()
+            .position(|task| task.key == key)
+            .or_else(|| tasks.iter().position(|task| !key_is_valid(&task.key)));
+        if let Some(task_idx) = task_idx {
+            return path(&format!("plan_template[{task_idx}].key"));
+        }
     }
-    Ok(())
+
+    if let Some(key) = backtick_value_after(reason, "duplicate key `") {
+        let mut seen = HashSet::new();
+        for (task_idx, task) in tasks.iter().enumerate() {
+            let duplicate = !seen.insert(task.key.as_str());
+            if duplicate && task.key == key {
+                return path(&format!("plan_template[{task_idx}].key"));
+            }
+        }
+    }
+
+    let Some(key) = task_key_from_plan_error(reason) else {
+        return path("plan_template");
+    };
+    let Some(task_idx) = tasks.iter().position(|task| task.key == key) else {
+        return path("plan_template");
+    };
+
+    if reason.contains("unknown kind") {
+        return path(&format!("plan_template[{task_idx}].kind"));
+    }
+    if reason.contains("`goal`") {
+        return path(&format!("plan_template[{task_idx}].goal"));
+    }
+    if reason.contains("gate.") {
+        return gate_error_field(path(&format!("plan_template[{task_idx}].gate")), reason);
+    }
+    if reason.contains("cwd") {
+        return path(&format!("plan_template[{task_idx}].cwd"));
+    }
+    if reason.contains("unknown dependency")
+        && let Some(dep) = backtick_value_after(reason, "unknown dependency `")
+        && let Some(dep_idx) = tasks[task_idx]
+            .depends_on
+            .iter()
+            .position(|candidate| candidate == dep)
+    {
+        return path(&format!("plan_template[{task_idx}].depends_on[{dep_idx}]"));
+    }
+    if reason.contains("`no_gate_reason`") {
+        return path(&format!("plan_template[{task_idx}].no_gate_reason"));
+    }
+    if reason.contains("requires `context`") {
+        return path(&format!("plan_template[{task_idx}].context"));
+    }
+
+    path(&format!("plan_template[{task_idx}]"))
+}
+
+fn task_key_from_plan_error(reason: &str) -> Option<&str> {
+    reason
+        .strip_prefix("task ")?
+        .split_once(':')
+        .map(|(key, _)| key)
+}
+
+fn backtick_value_after<'a>(reason: &'a str, prefix: &str) -> Option<&'a str> {
+    let start = reason.find(prefix)? + prefix.len();
+    reason[start..].split_once('`').map(|(value, _)| value)
+}
+
+fn gate_error_field(base: String, reason: &str) -> String {
+    if reason.contains("gate.steps must be non-empty") {
+        return format!("{base}.steps");
+    }
+    if let Some(step_idx) = indexed_field(reason, "gate.steps[") {
+        if reason.contains(&format!("gate.steps[{step_idx}].name")) {
+            return format!("{base}.steps[{step_idx}].name");
+        }
+        if reason.contains(&format!("gate.steps[{step_idx}].cmd")) {
+            return format!("{base}.steps[{step_idx}].cmd");
+        }
+        return format!("{base}.steps[{step_idx}]");
+    }
+    if reason.contains("gate.timeout_secs") {
+        return format!("{base}.timeout_secs");
+    }
+    if reason.contains("gate.cwd") {
+        return format!("{base}.cwd");
+    }
+    base
+}
+
+fn indexed_field(reason: &str, needle: &str) -> Option<usize> {
+    let start = reason.find(needle)? + needle.len();
+    let end = reason[start..].find(']')?;
+    reason[start..start + end].parse().ok()
 }
 
 impl Permissions {
@@ -774,6 +801,17 @@ mod tests {
     }
 
     #[test]
+    fn parses_shipped_issue_development_descriptor() {
+        let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        assert!(
+            m.workflows
+                .iter()
+                .any(|workflow| workflow.id == "issue-development")
+        );
+    }
+
+    #[test]
     fn workflow_descriptor_rejects_invalid_shapes() {
         let cases: Vec<(&str, Value, &str)> = vec![
             ("empty id", json!(""), "workflows[0].id"),
@@ -822,6 +860,80 @@ mod tests {
         let err = parse_manifest_value(v).expect_err("empty task gate");
         assert!(
             matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].gate.steps")
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_plan_template_cycles() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["depends_on"] = json!(["implement"]);
+        v["workflows"][0]["plan_template"][1]["depends_on"] = json!(["inspect"]);
+        let err = parse_manifest_value(v).expect_err("cycle");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template" && reason.contains("dependency cycle")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["depends_on"] = json!(["inspect"]);
+        let err = parse_manifest_value(v).expect_err("self dependency");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template" && reason.contains("dependency cycle: inspect -> inspect")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_plan_gate_content_like_plan_upsert() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["steps"][0]["cmd"] = json!("  ");
+        let err = parse_manifest_value(v).expect_err("blank task gate cmd");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.steps[0].cmd" && reason.contains("cmd must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["steps"][0]["name"] = json!("");
+        let err = parse_manifest_value(v).expect_err("blank task gate name");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.steps[0].name" && reason.contains("name must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["timeout_secs"] = json!(7201);
+        let err = parse_manifest_value(v).expect_err("task gate timeout too high");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.timeout_secs" && reason.contains("1..=7200")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_workflow_gate_content_like_plan_upsert() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["steps"][0]["cmd"] = json!("  ");
+        let err = parse_manifest_value(v).expect_err("blank workflow gate cmd");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].steps[0].cmd" && reason.contains("cmd must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["steps"][0]["name"] = json!("");
+        let err = parse_manifest_value(v).expect_err("blank workflow gate name");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].steps[0].name" && reason.contains("name must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["timeout_secs"] = json!(7201);
+        let err = parse_manifest_value(v).expect_err("workflow gate timeout too high");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].timeout_secs" && reason.contains("1..=7200")),
+            "got {err:?}"
         );
     }
 
