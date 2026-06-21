@@ -251,13 +251,17 @@ function parseMcpToolCall(row: HarnessItem, params: ParsedParams): ChatEntry {
   };
 }
 
-function parseReasoning(row: HarnessItem, params: ParsedParams): ChatEntry {
+function parseReasoning(row: HarnessItem, params: ParsedParams): ChatEntry | null {
   const item = itemObject(params);
+  const summary = joinedContent(item?.summary);
+  const detail = joinedContent(item?.content);
+  if (summary.trim() === '' && detail.trim() === '') return null;
+
   return {
     id: row.id,
     kind: 'reasoning',
-    summary: joinedContent(item?.summary),
-    detail: joinedContent(item?.content),
+    summary,
+    detail,
     atMs: completedAtMs(row, params),
   };
 }

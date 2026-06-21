@@ -224,18 +224,15 @@ function ConvoEntry({
   }
 
   if (entry.kind === 'reasoning') {
-    const hasReasoning =
-      entry.summary.trim() !== '' || entry.detail.trim() !== '';
+    const summary = entry.summary.trim();
+    const detail = entry.detail.trim();
     return (
       <section className="report-convo-entry report-convo-entry--reasoning">
         <EntryMeta author="Reasoning" atMs={entry.atMs} />
-        {!hasReasoning && (
-          <p className="report-convo-muted">(reasoning)</p>
-        )}
-        {entry.summary && (
+        {summary && (
           <p className="report-convo-reasoning-summary">{entry.summary}</p>
         )}
-        {entry.detail && (
+        {detail && (
           <details className="report-convo-details">
             <summary>Detail</summary>
             <div className="report-convo-reasoning-detail">

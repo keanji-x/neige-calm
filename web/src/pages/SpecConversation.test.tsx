@@ -215,7 +215,13 @@ function harnessPopulatedCommandRow(id: number) {
   };
 }
 
-function harnessReasoningRow(id: number) {
+function harnessReasoningRow(
+  id: number,
+  {
+    summary = [],
+    content = [],
+  }: { summary?: string[]; content?: string[] } = {},
+) {
   return {
     id,
     runtime_id: 'runtime',
@@ -231,8 +237,8 @@ function harnessReasoningRow(id: number) {
       item: {
         id: `reason_${id}`,
         type: 'reasoning',
-        summary: [],
-        content: [],
+        summary,
+        content,
       },
       threadId: 'thread',
       turnId: 'turn',
@@ -941,13 +947,38 @@ describe('SpecConversation', () => {
     expect(unknown.closest('.report-convo-entry--unknown')).not.toBeNull();
   });
 
-  it('renders empty reasoning rows with a marker', async () => {
-    mocks.listHarnessItems.mockResolvedValue([harnessReasoningRow(8)]);
+  it('renders populated reasoning rows with detail', async () => {
+    mocks.listHarnessItems.mockResolvedValue([
+      harnessReasoningRow(8, {
+        summary: ['Thinking about X'],
+        content: ['detail Y'],
+      }),
+    ]);
 
     await renderHarness();
 
-    const marker = await screen.findByText('(reasoning)');
-    expect(marker.closest('.report-convo-entry--reasoning')).not.toBeNull();
+    const summary = await screen.findByText('Thinking about X');
+    const reasoningEntry = summary.closest('.report-convo-entry--reasoning');
+    expect(reasoningEntry).not.toBeNull();
+    expect(
+      within(reasoningEntry as HTMLElement)
+        .getByText('Detail')
+        .closest('details'),
+    ).not.toBeNull();
+    expect(
+      within(reasoningEntry as HTMLElement).getByText('detail Y'),
+    ).toHaveClass('report-convo-reasoning-detail');
+  });
+
+  it('drops empty reasoning rows', async () => {
+    mocks.listHarnessItems.mockResolvedValue([harnessReasoningRow(8)]);
+
+    const { container } = await renderHarness();
+
+    await screen.findByText(/No messages yet/);
+    expect(
+      container.querySelector('.report-convo-entry--reasoning'),
+    ).toBeNull();
   });
 
   it('shows the typing indicator only while a turn is live on the wire', async () => {

@@ -276,7 +276,7 @@ describe('parseHarnessItem', () => {
     });
   });
 
-  it('parses empty reasoning rows', () => {
+  it('drops empty reasoning rows', () => {
     const entry = parseHarnessItem(
       harnessRow({
         item_type: 'reasoning',
@@ -292,10 +292,29 @@ describe('parseHarnessItem', () => {
       }),
     );
 
+    expect(entry).toBeNull();
+  });
+
+  it('parses populated reasoning rows', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'reasoning',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'reason_1',
+            type: 'reasoning',
+            summary: ['Thinking about X'],
+            content: ['detail Y'],
+          },
+        },
+      }),
+    );
+
     expect(entry).toMatchObject({
       kind: 'reasoning',
-      summary: '',
-      detail: '',
+      summary: 'Thinking about X',
+      detail: 'detail Y',
     });
   });
 
