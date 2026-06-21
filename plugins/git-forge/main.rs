@@ -195,7 +195,7 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
             "--head".into(),
             head.clone(),
             "--base".into(),
-            base,
+            base.clone(),
             "--title".into(),
             title,
             "--body".into(),
@@ -227,17 +227,25 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
                 PR_CREATE_PROBE_SCRIPT,
                 "sh",
                 head,
-                repo
+                repo,
+                base
             ],
             "output_probe_argv": [
                 "gh",
                 "pr",
-                "view",
-                head,
+                "list",
                 "--repo",
                 repo,
+                "--head",
+                head,
+                "--base",
+                base,
+                "--state",
+                "open",
                 "--json",
-                "number,headRefOid"
+                "number,headRefOid",
+                "--jq",
+                ".[0]"
             ]
         })),
         true,
@@ -464,8 +472,8 @@ const ISSUE_CLOSE_PROBE_SCRIPT: &str = "out=$(gh issue view \"$1\" --repo \"$2\"
      case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
 const PR_MERGE_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
      case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac";
-const PR_CREATE_PROBE_SCRIPT: &str = "if gh pr view \"$1\" --repo \"$2\" --json state >/dev/null 2>&1; then exit 0; fi; \
-     if gh repo view \"$2\" >/dev/null 2>&1; then exit 1; else exit 3; fi";
+const PR_CREATE_PROBE_SCRIPT: &str = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; \
+     case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
 const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
      if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
 
@@ -648,7 +656,7 @@ mod tests {
 
     #[test]
     fn lowers_gh_pr_create() {
-        let expected_probe_script = "if gh pr view \"$1\" --repo \"$2\" --json state >/dev/null 2>&1; then exit 0; fi; if gh repo view \"$2\" >/dev/null 2>&1; then exit 1; else exit 3; fi";
+        let expected_probe_script = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
         let payload = lower(
             "gh.pr.create",
             &json!({
@@ -695,17 +703,25 @@ mod tests {
                         expected_probe_script,
                         "sh",
                         "feature",
-                        "owner/repo"
+                        "owner/repo",
+                        "main"
                     ],
                     "output_probe_argv": [
                         "gh",
                         "pr",
-                        "view",
-                        "feature",
+                        "list",
                         "--repo",
                         "owner/repo",
+                        "--head",
+                        "feature",
+                        "--base",
+                        "main",
+                        "--state",
+                        "open",
                         "--json",
-                        "number,headRefOid"
+                        "number,headRefOid",
+                        "--jq",
+                        ".[0]"
                     ]
                 },
                 "parked": true

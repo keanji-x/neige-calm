@@ -728,6 +728,13 @@ struct PluginForgePayload {
 /// excluded so a legitimate retry with edited volatile argv dedups instead
 /// of permanently conflicting; the op still runs at most once and the
 /// verdict probe confirms whether the side effect landed.
+///
+/// Changing this hashed field set is a one-time idempotency-scheme boundary:
+/// pre-existing in-flight forge-action ops resubmitted with the same
+/// `idempotency_key` across that deploy may conflict once, while
+/// recovery-by-op-id remains unaffected. Any future field-set change should
+/// ship with a boot-time recompute migration for stored forge-action
+/// `payload_hash` values.
 #[derive(Serialize)]
 struct SemanticForgePayload<'a> {
     idem_key: &'a str,
