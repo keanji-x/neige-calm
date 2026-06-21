@@ -149,13 +149,166 @@ describe('parseHarnessItem', () => {
     });
   });
 
-  it('returns null for non-completed and unknown item types', () => {
+  it('returns null for non-completed rows', () => {
     expect(
       parseHarnessItem(harnessRow({ method: 'item/started' })),
     ).toBeNull();
-    expect(
-      parseHarnessItem(harnessRow({ item_type: 'commandExecution' })),
-    ).toBeNull();
+  });
+
+  it('parses completed command executions', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'commandExecution',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'cmd_1',
+            type: 'commandExecution',
+            command: 'npm test',
+            aggregatedOutput: 'ok',
+            exitCode: 0,
+            durationMs: 1234,
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'run',
+      command: 'npm test',
+      output: 'ok',
+      exitCode: 0,
+      durationMs: 1234,
+      atMs: 1780977421069,
+    });
+  });
+
+  it('parses errored MCP tool calls', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'mcpToolCall',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'tool_1',
+            type: 'mcpToolCall',
+            server: 'filesystem',
+            tool: 'read_file',
+            arguments: { path: 'src/app.ts' },
+            error: { message: 'denied' },
+            durationMs: 42,
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'tool',
+      server: 'filesystem',
+      tool: 'read_file',
+      args: JSON.stringify({ path: 'src/app.ts' }, null, 2),
+      result: JSON.stringify({ message: 'denied' }, null, 2),
+      isError: true,
+      durationMs: 42,
+    });
+  });
+
+  it('parses multi-file changes', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'fileChange',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'edit_1',
+            type: 'fileChange',
+            changes: [
+              {
+                path: 'src/a.ts',
+                diff: '--- a\n+++ b',
+                kind: { type: 'update' },
+              },
+              {
+                path: 'src/b.ts',
+                diff: 'new file',
+                kind: { type: 'add' },
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'edit',
+      changes: [
+        { path: 'src/a.ts', diff: '--- a\n+++ b', verb: 'update' },
+        { path: 'src/b.ts', diff: 'new file', verb: 'add' },
+      ],
+    });
+  });
+
+  it('parses empty reasoning rows', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'reasoning',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'reason_1',
+            type: 'reasoning',
+            summary: [],
+            content: [],
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'reasoning',
+      summary: '',
+      detail: '',
+    });
+  });
+
+  it('parses context compaction rows', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'contextCompaction',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'compact_1',
+            type: 'contextCompaction',
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'compact',
+      atMs: 1780977421069,
+    });
+  });
+
+  it('falls back for unknown completed item types', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: null,
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'legacy_1',
+            type: 'legacyThing',
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'unknown',
+      itemType: 'legacyThing',
+    });
   });
 
   it('joins multi-part user content before parsing', () => {

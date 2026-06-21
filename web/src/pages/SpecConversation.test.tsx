@@ -196,10 +196,43 @@ function harnessCommandRow(id: number) {
   };
 }
 
+function harnessReasoningRow(id: number) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `reason_${id}`,
+    item_type: 'reasoning',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `reason_${id}`,
+        type: 'reasoning',
+        summary: [],
+        content: [],
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
 function fullCommandPage(startId: number) {
   return Array.from({ length: PAGE_LIMIT }, (_, index) =>
     harnessCommandRow(startId + index),
   );
+}
+
+function fullStartedCommandPage(startId: number) {
+  return fullCommandPage(startId).map((row) => ({
+    ...row,
+    method: 'item/started',
+  }));
 }
 
 async function emitHarnessItemAdded(
@@ -654,6 +687,31 @@ describe('SpecConversation', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders fetched command executions as run blocks', async () => {
+    mocks.listHarnessItems.mockResolvedValue([harnessCommandRow(7)]);
+
+    await renderHarness();
+
+    const command = await screen.findByText('(command)');
+    const runEntry = command.closest('.report-convo-entry--run');
+    expect(runEntry).not.toBeNull();
+    expect(
+      within(runEntry as HTMLElement).getByText('Command'),
+    ).toBeInTheDocument();
+    expect(
+      within(runEntry as HTMLElement).getByText('exit n/a'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders empty reasoning rows with a marker', async () => {
+    mocks.listHarnessItems.mockResolvedValue([harnessReasoningRow(8)]);
+
+    await renderHarness();
+
+    const marker = await screen.findByText('(reasoning)');
+    expect(marker.closest('.report-convo-entry--reasoning')).not.toBeNull();
+  });
+
   it('shows the typing indicator only while a turn is live on the wire', async () => {
     await renderHarness();
 
@@ -1011,7 +1069,7 @@ describe('SpecConversation', () => {
     ).toEqual(['row', 'row', 'note']);
   });
 
-  it('continues fetching the tail after a full asc page with no messages', async () => {
+  it('continues fetching the tail after a full asc page of command items', async () => {
     mocks.listHarnessItems
       .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
       .mockResolvedValueOnce(fullCommandPage(2))
@@ -1026,6 +1084,7 @@ describe('SpecConversation', () => {
       item_uuid: 'msg_302',
     });
 
+    expect((await screen.findAllByText('(command)')).length).toBeGreaterThan(0);
     expect(await screen.findByText('Triggering message')).toBeInTheDocument();
     expect(mocks.listHarnessItems).toHaveBeenCalledWith('card_spec_1', {
       afterId: 301,
@@ -1043,7 +1102,7 @@ describe('SpecConversation', () => {
   });
 
   it('does not show the empty state while earlier history is available', async () => {
-    mocks.listHarnessItems.mockResolvedValue(fullCommandPage(1));
+    mocks.listHarnessItems.mockResolvedValue(fullStartedCommandPage(1));
 
     await renderHarness();
 
@@ -1053,6 +1112,30 @@ describe('SpecConversation', () => {
     expect(
       screen.queryByText('No messages yet — ask the Spec Agent below.'),
     ).not.toBeInTheDocument();
+  });
+
+  it('fetches and renders command rows from completed item events', async () => {
+    mocks.listHarnessItems
+      .mockResolvedValueOnce([harnessAgentRow(1, 'Initial')])
+      .mockResolvedValueOnce([harnessCommandRow(2)]);
+
+    await renderHarness();
+    expect(await screen.findByText('Initial')).toBeInTheDocument();
+
+    await emitHarnessItemAdded({
+      item_db_id: 2,
+      item_uuid: 'cmd_2',
+      item_type: 'commandExecution',
+      method: 'item/completed',
+    });
+
+    const command = await screen.findByText('(command)');
+    expect(command.closest('.report-convo-entry--run')).not.toBeNull();
+    expect(mocks.listHarnessItems).toHaveBeenCalledWith('card_spec_1', {
+      afterId: 1,
+      limit: PAGE_LIMIT,
+      direction: 'asc',
+    });
   });
 
   it('renders a queued local echo after submit resolves', async () => {

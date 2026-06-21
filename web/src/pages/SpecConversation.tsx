@@ -118,6 +118,11 @@ function EntryMeta({
   );
 }
 
+function durationText(durationMs: number | null): string | null {
+  if (durationMs == null) return null;
+  return `${durationMs}ms`;
+}
+
 function ConvoEntry({
   entry,
   expanded,
@@ -145,6 +150,155 @@ function ConvoEntry({
           </ReactMarkdown>
         </div>
       </section>
+    );
+  }
+
+  if (entry.kind === 'run') {
+    const exitFailed = entry.exitCode != null && entry.exitCode !== 0;
+    const duration = durationText(entry.durationMs);
+    return (
+      <section className="report-convo-entry report-convo-entry--run">
+        <EntryMeta author="Command" atMs={entry.atMs} />
+        <div className="report-convo-artifact-head">
+          <code className="report-convo-command">
+            {entry.command || '(command)'}
+          </code>
+          <span
+            className={
+              'report-convo-chip' +
+              (exitFailed ? ' report-convo-chip--fail' : '')
+            }
+          >
+            exit {entry.exitCode ?? 'n/a'}
+          </span>
+          {duration != null && (
+            <span className="report-convo-chip">{duration}</span>
+          )}
+        </div>
+        {entry.output && (
+          <details className="report-convo-details">
+            <summary>Output</summary>
+            <pre>{entry.output}</pre>
+          </details>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'tool') {
+    const duration = durationText(entry.durationMs);
+    const author =
+      [entry.server, entry.tool].filter(Boolean).join(' · ') || 'Tool';
+    return (
+      <section
+        className={
+          'report-convo-entry report-convo-entry--tool' +
+          (entry.isError ? ' report-convo-entry--warn' : '')
+        }
+      >
+        <EntryMeta author={author} atMs={entry.atMs} />
+        <div className="report-convo-artifact-head">
+          {entry.isError && (
+            <span className="report-convo-chip report-convo-chip--warn">
+              error
+            </span>
+          )}
+          {duration != null && (
+            <span className="report-convo-chip">{duration}</span>
+          )}
+        </div>
+        {entry.args && (
+          <details className="report-convo-details">
+            <summary>Arguments</summary>
+            <pre>{entry.args}</pre>
+          </details>
+        )}
+        {entry.result && (
+          <details className="report-convo-details">
+            <summary>{entry.isError ? 'Error' : 'Result'}</summary>
+            <pre>{entry.result}</pre>
+          </details>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'reasoning') {
+    const hasReasoning =
+      entry.summary.trim() !== '' || entry.detail.trim() !== '';
+    return (
+      <section className="report-convo-entry report-convo-entry--reasoning">
+        <EntryMeta author="Reasoning" atMs={entry.atMs} />
+        {!hasReasoning && (
+          <p className="report-convo-muted">(reasoning)</p>
+        )}
+        {entry.summary && (
+          <p className="report-convo-reasoning-summary">{entry.summary}</p>
+        )}
+        {entry.detail && (
+          <details className="report-convo-details">
+            <summary>Detail</summary>
+            <div className="report-convo-reasoning-detail">
+              {entry.detail}
+            </div>
+          </details>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'edit') {
+    return (
+      <section className="report-convo-entry report-convo-entry--edit">
+        <EntryMeta author="File changes" atMs={entry.atMs} />
+        {entry.changes.length === 0 ? (
+          <p className="report-convo-muted">(file changes)</p>
+        ) : (
+          <div className="report-convo-change-list">
+            {entry.changes.map((change, index) => (
+              <div
+                className="report-convo-change"
+                key={`${change.path}:${index}`}
+              >
+                <div className="report-convo-change-head">
+                  <code>{change.path || '(path)'}</code>
+                  <span className="report-convo-chip">
+                    {change.verb || 'change'}
+                  </span>
+                </div>
+                {change.diff && (
+                  <details className="report-convo-details">
+                    <summary>Diff</summary>
+                    <pre>{change.diff}</pre>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'compact') {
+    return (
+      <div
+        className="report-convo-entry report-convo-system report-convo-entry--compact"
+        title={entryTitle(entry.atMs)}
+      >
+        &middot; context compacted &middot;
+      </div>
+    );
+  }
+
+  if (entry.kind === 'unknown') {
+    return (
+      <div
+        className="report-convo-entry report-convo-system report-convo-entry--unknown"
+        title={entryTitle(entry.atMs)}
+      >
+        &middot; {entry.itemType} &middot;
+      </div>
     );
   }
 
