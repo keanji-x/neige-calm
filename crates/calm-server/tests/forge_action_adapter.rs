@@ -97,6 +97,7 @@ impl TestBoot {
                 title: "forge-action".into(),
                 sort: None,
                 cwd: tmp.path().display().to_string(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })

@@ -159,6 +159,7 @@ async fn card_delete_reaps_terminal_process() {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -257,6 +258,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -396,6 +398,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -510,6 +513,7 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

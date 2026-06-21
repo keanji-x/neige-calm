@@ -39,6 +39,7 @@ async fn boot() -> Boot {
             title: "items rest".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

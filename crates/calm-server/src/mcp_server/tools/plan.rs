@@ -162,7 +162,7 @@ struct NormalizedTask {
 /// Rule 1 key shape: `^[a-z0-9][a-z0-9._-]{0,63}$` (1..=64 chars).
 /// Hand-rolled — the crate has no regex dependency and the grammar is
 /// trivial.
-fn key_is_valid(key: &str) -> bool {
+pub(crate) fn key_is_valid(key: &str) -> bool {
     let bytes = key.as_bytes();
     if bytes.is_empty() || bytes.len() > 64 {
         return false;

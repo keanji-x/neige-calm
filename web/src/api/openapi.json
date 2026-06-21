@@ -4323,6 +4323,12 @@
           },
           "title": {
             "type": "string"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false
@@ -5060,6 +5066,12 @@
           "updated_at": {
             "type": "integer",
             "format": "int64"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

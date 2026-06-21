@@ -2268,6 +2268,7 @@ mod tests {
                 title: "lease fixture".into(),
                 sort: None,
                 cwd: wave_cwd.display().to_string(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             },

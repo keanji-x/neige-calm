@@ -190,6 +190,7 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

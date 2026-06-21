@@ -1417,6 +1417,7 @@ export interface components {
              */
             theme: components["schemas"]["RequestTheme"];
             title: string;
+            workflow_id?: string | null;
         };
         Overlay: {
             entity_id: string;
@@ -1807,6 +1808,7 @@ export interface components {
             title: string;
             /** Format: int64 */
             updated_at: number;
+            workflow_id?: string | null;
         };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and

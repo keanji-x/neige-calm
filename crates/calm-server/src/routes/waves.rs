@@ -38,6 +38,7 @@ use crate::db::sqlite::{
 use crate::db::{write_with_actor_events_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
+use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId};
 use crate::model::{
     CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewWave, Wave,
@@ -337,6 +338,14 @@ pub(crate) async fn create_wave(
     //    absolute-path shape → normalize → existing-claim resolution
     //    → optional folder attach. All branches that surface a 4xx
     //    short-circuit before any DB write.
+    if let Some(workflow_id) = p.workflow_id.as_deref()
+        && (workflow_id.trim().is_empty() || !registered_trusted_workflow(&s, workflow_id).await)
+    {
+        return Err(CalmError::BadRequest(format!(
+            "wave create: `workflow_id` must reference a registered trusted workflow; got `{workflow_id}`"
+        )));
+    }
+
     if !p.cwd.starts_with('/') {
         return Err(CalmError::BadRequest(format!(
             "wave create: `cwd` must be absolute (start with `/`); got `{}`",
@@ -439,6 +448,18 @@ pub(crate) async fn create_wave(
     }
 
     create_wave_with_spec_harness(s, actor, p, attach_folder, body_cove_id, normalized_cwd).await
+}
+
+async fn registered_trusted_workflow(s: &RouteState, workflow_id: &str) -> bool {
+    let running_plugin_ids = s.plugin.running_plugin_ids().await;
+    s.plugin.registry().list().into_iter().any(|manifest| {
+        running_plugin_ids.contains(&manifest.id)
+            && trusted_forge_plugin(&manifest.id)
+            && manifest
+                .workflows
+                .iter()
+                .any(|workflow| workflow.id == workflow_id)
+    })
 }
 
 #[allow(deprecated)]

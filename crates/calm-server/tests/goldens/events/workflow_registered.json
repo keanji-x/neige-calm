@@ -1,0 +1,10 @@
+{
+  "description": "workflow.registered boot discovery signal for one trusted manifest-declared workflow.",
+  "wire": {
+    "ev": "workflow.registered",
+    "data": {
+      "pluginId": "plugin-x",
+      "workflowId": "issue-development"
+    }
+  }
+}

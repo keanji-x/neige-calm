@@ -30,6 +30,7 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

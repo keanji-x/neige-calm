@@ -35,6 +35,7 @@ async fn seed_card(repo: &SqlxRepo) -> calm_server::model::Card {
             title: "goal".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

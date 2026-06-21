@@ -491,6 +491,7 @@ async fn seed_wave(repo: &Arc<dyn Repo>, cove_id: &str) -> calm_server::model::W
         title: "lifecycle-test".into(),
         sort: None,
         cwd: String::new(),
+        workflow_id: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })

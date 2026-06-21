@@ -80,6 +80,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

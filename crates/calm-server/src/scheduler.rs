@@ -2398,6 +2398,7 @@ mod tests {
                 title: "claude-timeout".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
@@ -2557,6 +2558,7 @@ mod tests {
                 title: "timeout-race".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })

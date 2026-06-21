@@ -224,6 +224,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

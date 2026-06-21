@@ -287,7 +287,7 @@ pub async fn backfill_existing_waves(pool: &SqlitePool) -> Result<usize> {
 async fn backfill_existing_waves_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<usize> {
     let waves: Vec<Wave> = sqlx::query_as::<_, crate::db::rows::WaveRow>(
         r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd,
-                  terminal_at, created_at, updated_at
+                  workflow_id, terminal_at, created_at, updated_at
            FROM waves
            WHERE id NOT IN (SELECT wave_id FROM wave_vcs_refs)
            ORDER BY created_at ASC, id ASC"#,
@@ -2185,7 +2185,8 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         | Event::OverlayDeleted { .. }
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
-        | Event::PluginToolRegistered { .. } => {}
+        | Event::PluginToolRegistered { .. }
+        | Event::WorkflowRegistered { .. } => {}
         // Issue #644 — the task plan has no wave-fs view yet (a
         // `plan/index.json` projection is a stated follow-up, design
         // §4.3); plan revisions therefore change no tracked path.
@@ -2413,7 +2414,7 @@ async fn load_wave_optional_tx(
 ) -> Result<Option<Wave>> {
     let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
         r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd,
-                  terminal_at, created_at, updated_at
+                  workflow_id, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(wave_id.as_str())
@@ -3406,6 +3407,7 @@ mod tests {
                 title: "wave".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })

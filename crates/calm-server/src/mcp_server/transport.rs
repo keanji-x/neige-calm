@@ -33,6 +33,7 @@
 //! adding an HTTP framework would only obscure the framing.
 
 use crate::db::{Repo, RouteRepo, SessionCardIdentity};
+use crate::forge_trust::trusted_forge_plugin;
 use crate::mcp_server::framing::{
     Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
@@ -960,15 +961,6 @@ fn forge_deadline_ms(parked: bool) -> i64 {
         .filter(|v| *v > 0)
         .unwrap_or(default_secs);
     secs.saturating_mul(1000)
-}
-
-fn trusted_forge_plugin(plugin_id: &str) -> bool {
-    let configured = std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS")
-        .unwrap_or_else(|_| "dev.neige.git-forge".to_string());
-    configured
-        .split(',')
-        .map(str::trim)
-        .any(|trusted| trusted == plugin_id)
 }
 
 fn operation_result_to_mcp_result(result: OperationResult) -> Value {

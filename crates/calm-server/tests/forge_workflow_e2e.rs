@@ -9,6 +9,8 @@ use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
@@ -16,7 +18,8 @@ use calm_server::db::sqlite::{
     session_mcp_token_set_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use calm_server::db::write_with_actor_events_typed;
-use calm_server::event::{EventBus, EventScope};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::forge_trust::trusted_forge_plugin;
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveLifecycle, now_ms};
@@ -29,8 +32,9 @@ use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRunti
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::state::{DaemonClient, WriteContext};
+use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
+use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::mcp::{
     connect, handshake, recv_frame, send_frame, tools_call_frame, tools_list_frame,
@@ -38,6 +42,7 @@ use support::mcp::{
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use tokio::time::{Instant, sleep, timeout};
+use tower::ServiceExt;
 
 const FORGE_BIN: &str = env!("CARGO_BIN_EXE_git-forge");
 const PLUGIN_ID: &str = "dev.neige.git-forge";
@@ -52,6 +57,7 @@ const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+const WORKFLOW_ID: &str = "issue-development";
 
 struct Fixture {
     _server: Arc<McpServer>,
@@ -99,6 +105,81 @@ type RawEventRow = (
     Option<String>,
     String,
 );
+
+#[tokio::test]
+async fn git_forge_workflow_registers_and_wave_create_binds() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+
+    let fx = boot_fixture().await;
+    let registered = wait_for_event_count(&fx.repo, "workflow.registered", 1).await;
+    assert_eq!(registered[0].payload["pluginId"], PLUGIN_ID);
+    assert_eq!(registered[0].payload["workflowId"], WORKFLOW_ID);
+
+    let app = wave_router_for_fixture(&fx);
+    let wave_dir = short_tempdir("wf").expect("workflow wave cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "bound workflow wave",
+            "cwd": wave_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["workflow_id"], WORKFLOW_ID);
+    let wave_id = body["id"].as_str().expect("created wave id");
+    let stored: Option<String> = sqlx::query_scalar("SELECT workflow_id FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_one(fx.repo.pool())
+        .await
+        .expect("select workflow_id");
+    assert_eq!(stored.as_deref(), Some(WORKFLOW_ID));
+
+    let missing_dir = short_tempdir("wf-missing").expect("missing workflow cwd");
+    let (status, _body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "missing workflow wave",
+            "cwd": missing_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": "missing-workflow",
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    drop(trusted);
+    let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "other.plugin");
+    let untrusted_dir = short_tempdir("wf-untrusted").expect("untrusted workflow cwd");
+    let (status, _body) = post_wave(
+        app,
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "untrusted workflow wave",
+            "cwd": untrusted_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
 
 #[tokio::test]
 async fn git_forge_happy_path_persists_ordered_workflow_events() {
@@ -525,6 +606,7 @@ async fn boot_fixture() -> Fixture {
             title: "forge-workflow-e2e".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -547,6 +629,14 @@ async fn boot_fixture() -> Fixture {
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
     wait_for_running(&plugin_host).await;
+    emit_workflow_registered_events_for_fixture(
+        &repo,
+        &events,
+        &card_role_cache,
+        &wave_cove_cache,
+        &plugin_host,
+    )
+    .await;
 
     let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
     let completion = OperationCompletionBus::new();
@@ -673,6 +763,74 @@ async fn create_worker_caller(
         lease_id,
         lease_abs,
         _lease_tmp: lease_tmp,
+    }
+}
+
+fn wave_router_for_fixture(fx: &Fixture) -> axum::Router {
+    let repo: Arc<dyn Repo> = fx.repo.clone();
+    let state = AppState::from_parts(
+        repo,
+        fx.events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        fx.plugin_host.clone(),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        None,
+    );
+    calm_server::routes::waves::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state)
+}
+
+async fn post_wave(app: axum::Router, body: Value) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/waves")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+async fn emit_workflow_registered_events_for_fixture(
+    repo: &Arc<dyn Repo>,
+    events: &EventBus,
+    card_role_cache: &CardRoleCache,
+    wave_cove_cache: &calm_server::wave_cove_cache::WaveCoveCache,
+    plugin_host: &Arc<PluginHost>,
+) {
+    let running_plugin_ids = plugin_host.running_plugin_ids().await;
+    for manifest in plugin_host.registry().list() {
+        let plugin_id = manifest.id.clone();
+        if !running_plugin_ids.contains(&plugin_id) || !trusted_forge_plugin(&plugin_id) {
+            continue;
+        }
+        for workflow in manifest.workflows {
+            repo.log_pure_event(
+                ActorId::Kernel,
+                EventScope::System,
+                None,
+                events,
+                card_role_cache,
+                wave_cove_cache,
+                Event::WorkflowRegistered {
+                    plugin_id: plugin_id.clone(),
+                    workflow_id: workflow.id,
+                },
+            )
+            .await
+            .expect("log workflow.registered");
+        }
     }
 }
 

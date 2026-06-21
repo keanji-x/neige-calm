@@ -1533,6 +1533,7 @@ mod tests {
                     pinned_at: None,
                     lifecycle: crate::model::WaveLifecycle::Working,
                     cwd: String::new(),
+                    workflow_id: None,
                     terminal_at: None,
                     created_at: 1,
                     updated_at: 1,

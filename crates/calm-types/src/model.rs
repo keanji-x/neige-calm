@@ -398,6 +398,7 @@ pub struct Wave {
     /// real path — the migration default is the "old data only" fallback.
     #[serde(default)]
     pub cwd: String,
+    pub workflow_id: Option<String>,
     /// Issue #250 PR 2 — unix-ms timestamp the wave most recently
     /// entered a terminal lifecycle state (Done / Canceled / Failed),
     /// or `None` while the wave is non-terminal. Stamped inside the

@@ -84,6 +84,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
             title: "prompt-shared".into(),
             sort: None,
             cwd: "/workspace".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

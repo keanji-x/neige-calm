@@ -357,6 +357,7 @@ async fn boot_with_counted_spawn() -> Boot {
             title: "operations-test".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -466,6 +467,7 @@ async fn boot_codex_with_counted_spawn() -> Boot {
             title: "codex-operations-test".into(),
             sort: None,
             cwd: "/workspace".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -595,6 +597,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             title: "claude-operations-test".into(),
             sort: None,
             cwd: "/workspace".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

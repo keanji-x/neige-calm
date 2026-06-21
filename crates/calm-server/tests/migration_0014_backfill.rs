@@ -120,6 +120,7 @@ async fn backfill_mints_report_card_per_wave() {
             title: "legacy".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -174,6 +175,7 @@ async fn backfill_skips_waves_that_already_have_a_report_card() {
             title: "already migrated".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -212,6 +214,7 @@ async fn backfill_seeds_layout_overlay_when_absent() {
             title: "no-layout-yet".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -263,6 +266,7 @@ async fn backfill_patches_existing_layout_overlay() {
             title: "already-has-layout".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

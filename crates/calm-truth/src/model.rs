@@ -103,6 +103,8 @@ pub struct NewWave {
     /// inner `wave_create_tx` writes whatever the route lands here
     /// verbatim.
     pub cwd: String,
+    #[serde(default)]
+    pub workflow_id: Option<String>,
     /// Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
     /// `cove_id` as a new folder, in the same transaction as the
     /// wave-create write". Default `false`: the cwd must already be

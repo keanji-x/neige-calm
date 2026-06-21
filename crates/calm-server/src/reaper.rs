@@ -681,6 +681,7 @@ mod tests {
                 title: "reaper-test".into(),
                 sort: None,
                 cwd: wave_cwd.display().to_string(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },

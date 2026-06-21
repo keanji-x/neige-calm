@@ -16,9 +16,11 @@
 //! NOTE: This file is Slice A only. Slice B will read the parsed `Manifest`
 //! to spawn the process; Slice C will consult `Permissions` on every callback.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use crate::card_kind::CardKindRegistry;
+use crate::mcp_server::tools::plan::key_is_valid;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,6 +76,13 @@ pub struct Manifest {
     /// routing; unrelated to iframe→kernel `permissions.tools`.
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
+
+    /// Trusted forge plugins may declare durable workflow descriptors. The
+    /// registry/binding layer ignores this field for untrusted plugins; the
+    /// manifest parser still validates the shape so broken descriptors fail
+    /// close to the authoring point.
+    #[serde(default)]
+    pub workflows: Vec<WorkflowDescriptor>,
 
     /// Missing block treated as the most-restrictive permission set.
     #[serde(default)]
@@ -200,6 +209,58 @@ pub struct ExposedTool {
     pub description: Option<String>,
     #[serde(default)]
     pub kind: Option<ToolKind>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkflowDescriptor {
+    pub id: String,
+    #[serde(default)]
+    pub plan_template: Vec<PlanTaskInput>,
+    #[serde(default)]
+    pub gates: Vec<GateInput>,
+    #[serde(default)]
+    pub spec_instructions: String,
+    #[serde(default)]
+    pub card_kinds: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PlanTaskInput {
+    pub key: String,
+    pub kind: String,
+    pub goal: String,
+    #[serde(default)]
+    pub context: Option<Value>,
+    #[serde(default)]
+    pub acceptance_criteria: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub gate: Option<GateInput>,
+    #[serde(default)]
+    pub no_gate_reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct GateInput {
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<i64>,
+    pub steps: Vec<GateStepInput>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct GateStepInput {
+    pub name: String,
+    pub cmd: String,
 }
 
 /// Permissions the plugin requests. Kernel enforces at the callback dispatch
@@ -340,6 +401,10 @@ impl Manifest {
             view.validate(i)?;
         }
 
+        for (i, workflow) in self.workflows.iter().enumerate() {
+            workflow.validate(i)?;
+        }
+
         self.permissions.validate()?;
 
         Ok(())
@@ -387,6 +452,101 @@ impl View {
         }
         Ok(())
     }
+}
+
+impl WorkflowDescriptor {
+    fn validate(&self, idx: usize) -> Result<(), ManifestError> {
+        let path = |s: &str| format!("workflows[{idx}].{s}");
+
+        if !key_is_valid(&self.id) {
+            return Err(ManifestError::invalid(
+                path("id"),
+                "must match ^[a-z0-9][a-z0-9._-]{0,63}$",
+            ));
+        }
+
+        let mut keys = HashSet::new();
+        for (task_idx, task) in self.plan_template.iter().enumerate() {
+            if !key_is_valid(&task.key) {
+                return Err(ManifestError::invalid(
+                    path(&format!("plan_template[{task_idx}].key")),
+                    "must match ^[a-z0-9][a-z0-9._-]{0,63}$",
+                ));
+            }
+            if !keys.insert(task.key.as_str()) {
+                return Err(ManifestError::invalid(
+                    path(&format!("plan_template[{task_idx}].key")),
+                    format!("duplicate task key `{}`", task.key),
+                ));
+            }
+            match task.kind.as_str() {
+                "codex" | "claude" | "terminal" => {}
+                other => {
+                    return Err(ManifestError::invalid(
+                        path(&format!("plan_template[{task_idx}].kind")),
+                        format!("unknown task kind `{other}`; expected codex, claude, or terminal"),
+                    ));
+                }
+            }
+            if let Some(gate) = task.gate.as_ref() {
+                validate_gate_steps(gate, path(&format!("plan_template[{task_idx}].gate.steps")))?;
+            }
+        }
+
+        for (task_idx, task) in self.plan_template.iter().enumerate() {
+            for (dep_idx, dep) in task.depends_on.iter().enumerate() {
+                if !keys.contains(dep.as_str()) {
+                    return Err(ManifestError::invalid(
+                        path(&format!("plan_template[{task_idx}].depends_on[{dep_idx}]")),
+                        format!("references missing task key `{dep}`"),
+                    ));
+                }
+            }
+        }
+
+        for (gate_idx, gate) in self.gates.iter().enumerate() {
+            validate_gate_steps(gate, path(&format!("gates[{gate_idx}].steps")))?;
+        }
+
+        if self.spec_instructions.len() > 8192 {
+            return Err(ManifestError::invalid(
+                path("spec_instructions"),
+                "must be at most 8192 bytes",
+            ));
+        }
+        if self
+            .spec_instructions
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+        {
+            return Err(ManifestError::invalid(
+                path("spec_instructions"),
+                "must not contain control characters other than newline or tab",
+            ));
+        }
+
+        let builtins = CardKindRegistry::builtins();
+        for (kind_idx, kind) in self.card_kinds.iter().enumerate() {
+            if builtins.claims_kind(kind) {
+                return Err(ManifestError::invalid(
+                    path(&format!("card_kinds[{kind_idx}]")),
+                    format!("card kind `{kind}` collides with a built-in card kind"),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_gate_steps(gate: &GateInput, field: String) -> Result<(), ManifestError> {
+    if gate.steps.is_empty() {
+        return Err(ManifestError::invalid(
+            field,
+            "gate steps must be non-empty",
+        ));
+    }
+    Ok(())
 }
 
 impl Permissions {
@@ -480,6 +640,7 @@ impl fmt::Display for Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn hello_world() -> &'static str {
         r#"{
@@ -552,6 +713,149 @@ mod tests {
         // Missing permissions block → default Permissions (no grants).
         assert!(!m.permissions.cards_create);
         assert!(m.permissions.overlays_write.is_empty());
+    }
+
+    fn workflow_manifest_value() -> Value {
+        json!({
+            "manifest_version": 1,
+            "id": "dev.neige.workflow-test",
+            "version": "1.0.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Workflow Test",
+            "entrypoint": { "command": "bin/workflow-test" },
+            "workflows": [
+                {
+                    "id": "issue-development",
+                    "plan_template": [
+                        {
+                            "key": "inspect",
+                            "kind": "codex",
+                            "goal": "Inspect the issue.",
+                            "depends_on": [],
+                            "gate": {
+                                "steps": [
+                                    { "name": "test", "cmd": "cargo test" }
+                                ]
+                            }
+                        },
+                        {
+                            "key": "implement",
+                            "kind": "claude",
+                            "goal": "Implement the change.",
+                            "depends_on": ["inspect"]
+                        }
+                    ],
+                    "gates": [
+                        {
+                            "steps": [
+                                { "name": "fmt", "cmd": "cargo fmt --all --check" }
+                            ]
+                        }
+                    ],
+                    "spec_instructions": "Use the workflow descriptor for wave {wave_id}.\nKeep it concise.",
+                    "card_kinds": ["plugin:dev.neige.workflow-test:custom"]
+                }
+            ],
+            "permissions": {}
+        })
+    }
+
+    fn parse_manifest_value(v: Value) -> Result<Manifest, ManifestError> {
+        Manifest::parse(&serde_json::to_string(&v).expect("serialize manifest value"))
+    }
+
+    #[test]
+    fn parses_workflow_descriptor() {
+        let m = parse_manifest_value(workflow_manifest_value()).expect("workflow manifest");
+        assert_eq!(m.workflows.len(), 1);
+        assert_eq!(m.workflows[0].id, "issue-development");
+        assert_eq!(m.workflows[0].plan_template.len(), 2);
+        assert_eq!(m.workflows[0].gates.len(), 1);
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_invalid_shapes() {
+        let cases: Vec<(&str, Value, &str)> = vec![
+            ("empty id", json!(""), "workflows[0].id"),
+            ("bad id", json!("Bad Id"), "workflows[0].id"),
+        ];
+        for (label, id, field) in cases {
+            let mut v = workflow_manifest_value();
+            v["workflows"][0]["id"] = id;
+            let err = parse_manifest_value(v).expect_err(label);
+            assert!(
+                matches!(err, ManifestError::Invalid { field: ref actual, .. } if actual == field),
+                "{label}: got {err:?}"
+            );
+        }
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["key"] = json!("Bad Key");
+        let err = parse_manifest_value(v).expect_err("bad plan key");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].key")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][1]["depends_on"] = json!(["missing"]);
+        let err = parse_manifest_value(v).expect_err("missing dependency");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[1].depends_on[0]")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["kind"] = json!("worker");
+        let err = parse_manifest_value(v).expect_err("unknown task kind");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].kind")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["steps"] = json!([]);
+        let err = parse_manifest_value(v).expect_err("empty workflow gate");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].gates[0].steps")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["steps"] = json!([]);
+        let err = parse_manifest_value(v).expect_err("empty task gate");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].gate.steps")
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_bad_spec_instructions() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["spec_instructions"] = json!("x".repeat(8193));
+        let err = parse_manifest_value(v).expect_err("oversized spec instructions");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].spec_instructions")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["spec_instructions"] = json!("bad\u{0007}");
+        let err = parse_manifest_value(v).expect_err("control char spec instructions");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].spec_instructions")
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_builtin_card_kind_collision() {
+        for (label, kind) in [
+            ("exact built-in", "terminal"),
+            ("builtin prefix", "ui://dev.neige.workflow-test/custom"),
+        ] {
+            let mut v = workflow_manifest_value();
+            v["workflows"][0]["card_kinds"] = json!([kind]);
+            let err = parse_manifest_value(v).expect_err(label);
+            assert!(
+                matches!(err, ManifestError::Invalid { ref field, .. } if field == "workflows[0].card_kinds[0]"),
+                "{label}: got {err:?}"
+            );
+        }
     }
 
     #[test]

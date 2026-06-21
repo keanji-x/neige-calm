@@ -106,6 +106,7 @@ async fn fallback_replay_posts_file_and_deletes_on_success() {
             title: "w".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

@@ -72,6 +72,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
             title: "mcp-test".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

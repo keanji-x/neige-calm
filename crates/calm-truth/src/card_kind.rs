@@ -135,6 +135,10 @@ impl CardKindRegistry {
         best.map(|(_, handler)| handler)
     }
 
+    pub fn claims_kind(&self, kind: &str) -> bool {
+        self.handler_for(kind).is_some()
+    }
+
     pub fn validate_payload(&self, kind: &str, payload: &Value) -> CardKindResult<()> {
         self.handler_for(kind)
             .map_or(Ok(()), |handler| handler.validate_payload(payload))

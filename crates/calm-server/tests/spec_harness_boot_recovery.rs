@@ -76,6 +76,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
             title: "boot".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -160,6 +161,7 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
             title: "boot-unavailable".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -241,6 +243,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
             title: "boot-deferred".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -337,6 +340,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             title: "boot-replay".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -479,6 +483,7 @@ async fn boot_recovery_skips_terminal_waves() {
             title: "boot-terminal".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -562,6 +567,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
             title: "boot-phantom".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -650,6 +656,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 title: "phase2 crash".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
             })
@@ -866,6 +873,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             title: "gate-replay".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
