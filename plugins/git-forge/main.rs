@@ -316,6 +316,11 @@ fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
 fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
     let pr = required_u64(args, "pr")?;
+    let attempt = optional_attempt(args)?;
+    let idem_key = match attempt {
+        Some(attempt) => format!("gh.pr.checks:{repo}:{pr}:{attempt}"),
+        None => format!("gh.pr.checks:{repo}:{pr}"),
+    };
     let argv = vec![
         "gh".into(),
         "pr".into(),
@@ -330,7 +335,7 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
     ];
     forge_payload(
         argv.clone(),
-        format!("gh.pr.checks:{repo}:{pr}"),
+        idem_key,
         Some(event_spec(
             "forge.pr.checks",
             [(
@@ -539,6 +544,18 @@ fn optional_string(args: &Value, key: &str) -> Result<Option<String>, String> {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
         Some(_) => Err(format!("optional argument `{key}` must be a string")),
+    }
+}
+
+fn optional_attempt(args: &Value) -> Result<Option<String>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "tool arguments must be an object".to_string())?;
+    match object.get("attempt") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        Some(Value::Number(number)) => Ok(Some(number.to_string())),
+        Some(_) => Err("optional argument `attempt` must be a string or number".to_string()),
     }
 }
 
@@ -790,9 +807,17 @@ mod tests {
             }),
         )
         .expect("lower gh pr checks");
+        let attempt_payload = lower(
+            "gh.pr.checks",
+            &json!({
+                "repo": "owner/repo",
+                "pr": 42,
+                "attempt": 7
+            }),
+        )
+        .expect("lower gh pr checks with attempt");
         let jq = "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}";
-        assert_eq!(
-            payload,
+        let expected_payload = |idem_key: &str| {
             json!({
                 "argv": [
                     "gh",
@@ -806,7 +831,7 @@ mod tests {
                     "--jq",
                     jq
                 ],
-                "idem_key": "gh.pr.checks:owner/repo:42",
+                "idem_key": idem_key,
                 "event_spec": {
                     "event_kind": "forge.pr.checks",
                     "fields": {
@@ -841,9 +866,16 @@ mod tests {
                 },
                 "parked": true
             })
+        };
+        assert_eq!(payload, expected_payload("gh.pr.checks:owner/repo:42"));
+        assert_eq!(
+            attempt_payload,
+            expected_payload("gh.pr.checks:owner/repo:42:7")
         );
         assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_no_reserved_context(&attempt_payload, &["wave_id"]);
         assert_supported_event_kind(&payload);
+        assert_supported_event_kind(&attempt_payload);
     }
 
     #[test]
