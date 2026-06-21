@@ -164,7 +164,16 @@ fn lower_git_commit(args: &Value) -> Result<Value, String> {
         format!("git.commit:{idem}"),
         None,
         json!({}),
-        None,
+        Some(json!({
+            // Idempotent contract: after a nonzero `git commit`, an empty index
+            // means the requested commit landed already or there was nothing to commit.
+            "probe_argv": [
+                "sh",
+                "-c",
+                GIT_COMMIT_PROBE_SCRIPT,
+                "sh"
+            ]
+        })),
         false,
     )
 }
@@ -175,6 +184,7 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
     let base = required_string(args, "base")?;
     let title = required_string(args, "title")?;
     let body = required_string(args, "body")?;
+    let idem_key = format!("gh.pr.create:{repo}:{base}:{head}");
     forge_payload(
         vec![
             "gh".into(),
@@ -185,13 +195,13 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
             "--head".into(),
             head.clone(),
             "--base".into(),
-            base,
+            base.clone(),
             "--title".into(),
             title,
             "--body".into(),
             body,
         ],
-        format!("gh.pr.create:{repo}:{head}"),
+        idem_key,
         Some(event_spec(
             "forge.pr.opened",
             [
@@ -212,24 +222,30 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
         json!({}),
         Some(json!({
             "probe_argv": [
-                "gh",
-                "pr",
-                "view",
+                "sh",
+                "-c",
+                PR_CREATE_PROBE_SCRIPT,
+                "sh",
                 head,
-                "--repo",
                 repo,
-                "--json",
-                "state"
+                base
             ],
             "output_probe_argv": [
                 "gh",
                 "pr",
-                "view",
-                head,
+                "list",
                 "--repo",
                 repo,
+                "--head",
+                head,
+                "--base",
+                base,
+                "--state",
+                "open",
                 "--json",
-                "number,headRefOid"
+                "number,headRefOid",
+                "--jq",
+                ".[0]"
             ]
         })),
         true,
@@ -237,6 +253,7 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
 }
 
 fn lower_gh_pr_list(args: &Value) -> Result<Value, String> {
+    // Idempotent read: no mutating landed-verdict probe is attached.
     let repo = required_string(args, "repo")?;
     let base = required_string(args, "base")?;
     let head = required_string(args, "head")?;
@@ -287,6 +304,7 @@ fn lower_gh_pr_list(args: &Value) -> Result<Value, String> {
 }
 
 fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
+    // Idempotent read: intentionally probe-free.
     let repo = required_string(args, "repo")?;
     let pr = required_u64(args, "pr")?;
     let base_sha = required_string(args, "base_sha")?;
@@ -314,6 +332,7 @@ fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
 }
 
 fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
+    // Idempotent read: no mutating landed-verdict probe is attached.
     let repo = required_string(args, "repo")?;
     let pr = required_u64(args, "pr")?;
     let attempt = optional_attempt(args)?;
@@ -400,14 +419,12 @@ fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
         json!({}),
         Some(json!({
             "probe_argv": [
-                "gh",
-                "pr",
-                "view",
+                "sh",
+                "-c",
+                PR_MERGE_PROBE_SCRIPT,
+                "sh",
                 pr.to_string(),
-                "--repo",
-                repo,
-                "--json",
-                "state"
+                repo
             ],
             "output_probe_argv": [
                 "gh",
@@ -431,6 +448,7 @@ fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
 }
 
 fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
+    // Idempotent read: intentionally probe-free.
     let repo = required_string(args, "repo")?;
     let issue = required_u64(args, "issue")?;
     forge_payload(
@@ -452,6 +470,12 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
 
 const ISSUE_CLOSE_PROBE_SCRIPT: &str = "out=$(gh issue view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
      case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
+const PR_MERGE_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
+     case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac";
+const PR_CREATE_PROBE_SCRIPT: &str = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; \
+     case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
+const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
+     if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
 
 fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
@@ -605,6 +629,7 @@ mod tests {
 
     #[test]
     fn lowers_git_commit() {
+        let expected_probe_script = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
         let payload = lower("git.commit", &json!({ "message": "m", "idem": "step-1" }))
             .expect("lower commit");
         assert_eq!(
@@ -615,7 +640,14 @@ mod tests {
                 "event_spec": null,
                 "subject": null,
                 "context": {},
-                "probe": null,
+                "probe": {
+                    "probe_argv": [
+                        "sh",
+                        "-c",
+                        expected_probe_script,
+                        "sh"
+                    ]
+                },
                 "parked": false
             })
         );
@@ -624,6 +656,7 @@ mod tests {
 
     #[test]
     fn lowers_gh_pr_create() {
+        let expected_probe_script = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
         let payload = lower(
             "gh.pr.create",
             &json!({
@@ -653,7 +686,7 @@ mod tests {
                     "--body",
                     "Body"
                 ],
-                "idem_key": "gh.pr.create:owner/repo:feature",
+                "idem_key": "gh.pr.create:owner/repo:main:feature",
                 "event_spec": {
                     "event_kind": "forge.pr.opened",
                     "fields": {
@@ -665,24 +698,30 @@ mod tests {
                 "context": {},
                 "probe": {
                     "probe_argv": [
-                        "gh",
-                        "pr",
-                        "view",
+                        "sh",
+                        "-c",
+                        expected_probe_script,
+                        "sh",
                         "feature",
-                        "--repo",
                         "owner/repo",
-                        "--json",
-                        "state"
+                        "main"
                     ],
                     "output_probe_argv": [
                         "gh",
                         "pr",
-                        "view",
-                        "feature",
+                        "list",
                         "--repo",
                         "owner/repo",
+                        "--head",
+                        "feature",
+                        "--base",
+                        "main",
+                        "--state",
+                        "open",
                         "--json",
-                        "number,headRefOid"
+                        "number,headRefOid",
+                        "--jq",
+                        ".[0]"
                     ]
                 },
                 "parked": true
@@ -894,6 +933,7 @@ mod tests {
 
     #[test]
     fn lowers_gh_pr_merge() {
+        let expected_probe_script = "out=$(gh pr view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac";
         let payload = lower(
             "gh.pr.merge",
             &json!({
@@ -933,14 +973,12 @@ mod tests {
                 "context": {},
                 "probe": {
                     "probe_argv": [
-                        "gh",
-                        "pr",
-                        "view",
+                        "sh",
+                        "-c",
+                        expected_probe_script,
+                        "sh",
                         "42",
-                        "--repo",
-                        "owner/repo",
-                        "--json",
-                        "state"
+                        "owner/repo"
                     ],
                     "output_probe_argv": [
                         "gh",

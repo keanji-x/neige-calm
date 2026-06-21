@@ -722,10 +722,22 @@ struct PluginForgePayload {
     parked: bool,
 }
 
+/// Semantic subset used for idempotency payload comparison.
+///
+/// The per-verb `idem_key` is the identity. `argv` is intentionally
+/// excluded so a legitimate retry with edited volatile argv dedups instead
+/// of permanently conflicting; the op still runs at most once and the
+/// verdict probe confirms whether the side effect landed.
+///
+/// Changing this hashed field set is a one-time idempotency-scheme boundary:
+/// pre-existing in-flight forge-action ops resubmitted with the same
+/// `idempotency_key` across that deploy may conflict once, while
+/// recovery-by-op-id remains unaffected. Any future field-set change should
+/// ship with a boot-time recompute migration for stored forge-action
+/// `payload_hash` values.
 #[derive(Serialize)]
 struct SemanticForgePayload<'a> {
     idem_key: &'a str,
-    argv: &'a [String],
     event_spec: Option<&'a ForgeEventSpec>,
     subject: Option<&'a ForgeMergeSubject>,
     context: &'a serde_json::Map<String, Value>,
@@ -906,7 +918,6 @@ async fn resolve_forge_cwd(
 fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, RpcError> {
     let semantic = SemanticForgePayload {
         idem_key: &payload.idem_key,
-        argv: &payload.argv,
         event_spec: payload.event_spec.as_ref(),
         subject: payload.subject.as_ref(),
         context: &payload.context,
@@ -1074,6 +1085,46 @@ mod tests {
                     .all(|component| matches!(component, Component::Normal(_)))
             );
         }
+    }
+
+    #[test]
+    fn semantic_forge_payload_hash_ignores_volatile_argv() {
+        fn payload(argv: Vec<&str>, idem_key: &str) -> PluginForgePayload {
+            PluginForgePayload {
+                argv: argv.into_iter().map(str::to_string).collect(),
+                idem_key: idem_key.into(),
+                event_spec: None,
+                subject: None,
+                context: serde_json::Map::new(),
+                probe: None,
+                parked: true,
+            }
+        }
+
+        let base = payload(vec!["gh", "pr", "merge", "42"], "gh.pr.merge:owner/repo:42");
+        let edited_argv = PluginForgePayload {
+            argv: vec!["gh", "pr", "merge", "42", "--squash", "--delete-branch"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            idem_key: "gh.pr.merge:owner/repo:42".into(),
+            event_spec: None,
+            subject: None,
+            context: serde_json::Map::new(),
+            probe: None,
+            parked: true,
+        };
+        let different_identity =
+            payload(vec!["gh", "pr", "merge", "43"], "gh.pr.merge:owner/repo:43");
+
+        assert_eq!(
+            semantic_payload_hash(&base).expect("hash base"),
+            semantic_payload_hash(&edited_argv).expect("hash edited argv")
+        );
+        assert_ne!(
+            semantic_payload_hash(&base).expect("hash base"),
+            semantic_payload_hash(&different_identity).expect("hash different identity")
+        );
     }
 }
 

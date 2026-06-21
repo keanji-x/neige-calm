@@ -149,6 +149,18 @@ impl FrozenForge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+    use std::sync::Arc;
+
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::model::{NewCove, NewWave, new_id, now_ms};
+    use crate::operation::{
+        OperationKey, OperationOutcome, OperationRepo, OperationResult, OperationRuntime,
+        ProviderAdapter, SpawnCtx, SqlxOperationRepo,
+    };
+    use crate::state::DaemonClient;
+    use crate::terminal_renderer::TerminalRendererRegistry;
 
     #[test]
     fn frozen_forge_six_shape_defaults_new_optional_fields() {
@@ -241,6 +253,468 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.display().to_string().starts_with(&prefix));
         assert!(second.display().to_string().starts_with(&prefix));
+    }
+
+    #[tokio::test]
+    async fn forge_action_live_nonzero_merge_probe_landed_succeeds_once() {
+        let fx = forge_runtime_fixture().await;
+        let payload = merge_payload(
+            &fx,
+            vec!["/bin/sh".into(), "-c".into(), "exit 7".into()],
+            ProbeSpec {
+                probe_argv: shell_probe("exit 0"),
+                output_probe_argv: Some(shell_probe(
+                    "printf '%s\n' '{\"headRefOid\":\"1111111111111111111111111111111111111111\",\"mergeCommit\":{\"oid\":\"2222222222222222222222222222222222222222\"}}'",
+                )),
+            },
+        );
+
+        let result = submit_and_wait(&fx, payload, "merge-landed-hash").await;
+
+        match result.outcome {
+            OperationOutcome::Succeeded { result } => {
+                assert_eq!(result["event_kind"], "forge.pr.merged");
+            }
+            other => panic!("merge should succeed after landed probe: {other:?}"),
+        }
+        assert_eq!(event_count(&fx.repo, "forge.pr.merged").await, 1);
+        assert_eq!(
+            event_count(&fx.repo, "forge.issue.closed").await,
+            0,
+            "unrelated forge events should not be emitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn forge_action_nonzero_merge_probe_not_landed_fails_without_merge_event() {
+        let fx = forge_runtime_fixture().await;
+        let payload = merge_payload(
+            &fx,
+            vec!["/bin/sh".into(), "-c".into(), "exit 7".into()],
+            ProbeSpec {
+                probe_argv: shell_probe("exit 1"),
+                output_probe_argv: Some(shell_probe(
+                    "printf '%s\n' '{\"headRefOid\":\"1111111111111111111111111111111111111111\",\"mergeCommit\":null}'",
+                )),
+            },
+        );
+
+        let result = submit_and_wait(&fx, payload, "merge-open-hash").await;
+
+        match result.outcome {
+            OperationOutcome::Failed {
+                last_error_class, ..
+            } => {
+                assert_eq!(last_error_class.as_deref(), Some("action-not-landed"));
+            }
+            other => panic!("merge should fail when probe reports open: {other:?}"),
+        }
+        assert_eq!(event_count(&fx.repo, "forge.pr.merged").await, 0);
+    }
+
+    #[tokio::test]
+    async fn landed_probe_completion_tx_error_leaves_operation_parked() {
+        let fx = forge_runtime_fixture().await;
+        let payload = merge_payload(
+            &fx,
+            vec!["/bin/sh".into(), "-c".into(), "exit 7".into()],
+            ProbeSpec {
+                probe_argv: shell_probe("exit 0"),
+                output_probe_argv: Some(shell_probe(
+                    "printf '%s\n' '{\"headRefOid\":\"1111111111111111111111111111111111111111\",\"mergeCommit\":{\"oid\":\"2222222222222222222222222222222222222222\"}}'",
+                )),
+            },
+        );
+        let operation_repo = SqlxOperationRepo::new(fx.repo.pool().clone());
+        let op_id = operation_repo
+            .insert_operation(
+                FORGE_ACTION_KIND,
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(payload.idem_key.clone()),
+                    payload_hash: "landed-probe-tx-error".into(),
+                },
+                serde_json::to_value(&payload).expect("payload json"),
+            )
+            .await
+            .expect("insert operation");
+        let frozen = FrozenForge {
+            wave_id: payload.wave_id,
+            cove_id: "cove-1".into(),
+            card_id: payload.card_id,
+            subject: payload.subject,
+            argv: payload.argv,
+            idem_key: payload.idem_key,
+            event_spec: payload.event_spec,
+            context: payload.context,
+            probe: payload.probe.clone(),
+            cwd_lease: payload.cwd_lease,
+            result_path: payload.result_path,
+            deadline_ms: payload.deadline_ms,
+        };
+        let mut output = TxOutput::new("wave", Some(frozen.wave_id.clone()), json!({}));
+        output.data = serde_json::to_value(&frozen).expect("frozen json");
+        let artifacts = SpawnArtifacts {
+            pid: 1,
+            pgid: 1,
+            start_time: 1,
+            boot_id: "boot-test".into(),
+            log_path: None,
+            extra: json!({}),
+        };
+        sqlx::query(
+            r#"UPDATE operations
+               SET tx_output_json = ?1,
+                   phase = 'parked',
+                   parked_at_ms = ?2,
+                   parked_deadline_ms = ?3,
+                   spawn_artifacts_json = ?4
+               WHERE id = ?5"#,
+        )
+        .bind(serde_json::to_string(&output).expect("tx output json"))
+        .bind(now_ms())
+        .bind(frozen.deadline_ms)
+        .bind(serde_json::to_string(&artifacts).expect("spawn artifacts json"))
+        .bind(&op_id)
+        .execute(fx.repo.pool())
+        .await
+        .expect("park operation");
+        sqlx::query(
+            r#"CREATE TRIGGER fail_forge_success_update
+               BEFORE UPDATE OF phase ON operations
+               WHEN NEW.phase = 'succeeded'
+               BEGIN
+                 SELECT RAISE(ABORT, 'injected success tx failure');
+               END"#,
+        )
+        .execute(fx.repo.pool())
+        .await
+        .expect("install trigger");
+
+        let result = resolve_post_release_via_probe(
+            fx.repo.pool(),
+            &OperationCompletionBus::new(),
+            &EventBus::new(),
+            fx.repo.as_ref(),
+            &op_id,
+            &frozen,
+            "test ambiguous outcome",
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "landed probe completion tx failure should propagate"
+        );
+        let recover_repo = Arc::new(SqlxOperationRepo::new(fx.repo.pool().clone()));
+        let route_repo: Arc<dyn RouteRepo> = fx.repo.clone();
+        let recover_events = EventBus::new();
+        let recover_completion = OperationCompletionBus::new();
+        let recover_ctx = SpawnCtx::new(
+            route_repo.clone(),
+            recover_repo.clone(),
+            Arc::new(DaemonClient::new_stub()),
+            TerminalRendererRegistry::new_with_repo(route_repo),
+            recover_events,
+            recover_completion,
+        );
+        let op = recover_repo
+            .get_operation(&op_id)
+            .await
+            .expect("get parked operation")
+            .expect("parked operation exists");
+        let recover_result = ForgeActionAdapter::new()
+            .recover_parked(
+                &op,
+                &artifacts,
+                false,
+                RecoveryMode::PastDeadline,
+                &recover_ctx,
+            )
+            .await;
+        assert!(
+            recover_result.is_err(),
+            "past-deadline landed probe completion tx failure should propagate"
+        );
+
+        let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(fx.repo.pool())
+            .await
+            .expect("read phase");
+        assert_eq!(phase, "parked");
+        assert_eq!(event_count(&fx.repo, "forge.pr.merged").await, 0);
+    }
+
+    #[tokio::test]
+    async fn forge_action_nonzero_git_commit_clean_index_probe_succeeds() {
+        let fx = forge_runtime_fixture().await;
+        init_clean_git_repo(fx.cwd.path());
+        let payload = ForgeActionPayload {
+            wave_id: fx.wave_id.clone(),
+            card_id: "card-1".into(),
+            subject: None,
+            argv: vec!["git".into(), "commit".into(), "-m".into(), "nothing".into()],
+            idem_key: "git.commit:clean-index".into(),
+            event_spec: None,
+            context: Map::new(),
+            probe: Some(ProbeSpec {
+                probe_argv: shell_probe(
+                    "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi",
+                ),
+                output_probe_argv: None,
+            }),
+            cwd_lease: fx.cwd.path().to_path_buf(),
+            result_path: fx.result_path("commit-clean"),
+            deadline_ms: now_ms() + 60_000,
+        };
+
+        let result = submit_and_wait(&fx, payload, "commit-clean-hash").await;
+
+        assert!(
+            matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+            "clean-index commit should succeed via probe: {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn forge_action_idempotency_retry_with_different_argv_collapses_to_one_operation() {
+        let fx = forge_runtime_fixture().await;
+        let mut first = no_event_payload(
+            &fx,
+            "gh.pr.merge:owner/repo:42",
+            vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+            "idem-retry",
+        );
+        let mut second = no_event_payload(
+            &fx,
+            "gh.pr.merge:owner/repo:42",
+            vec!["/bin/sh".into(), "-c".into(), "exit 99".into()],
+            "idem-retry",
+        );
+        first.probe = None;
+        second.probe = None;
+
+        let first_op = submit_forge(&fx, first, "same-semantic-hash")
+            .await
+            .expect("first submit");
+        let first_result = fx.runtime.wait(&first_op).await.expect("first result");
+        assert!(
+            matches!(first_result.outcome, OperationOutcome::Succeeded { .. }),
+            "first op should succeed: {:?}",
+            first_result.outcome
+        );
+
+        let second_op = submit_forge(&fx, second, "same-semantic-hash")
+            .await
+            .expect("second submit should dedupe, not conflict");
+        assert_eq!(second_op, first_op);
+        assert_eq!(
+            operation_count_for_idem(&fx.repo, "gh.pr.merge:owner/repo:42").await,
+            1
+        );
+    }
+
+    struct ForgeRuntimeFixture {
+        repo: Arc<SqlxRepo>,
+        runtime: Arc<OperationRuntime>,
+        wave_id: String,
+        cwd: tempfile::TempDir,
+        results: tempfile::TempDir,
+    }
+
+    async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let results = tempfile::tempdir().expect("results tempdir");
+        let sqlx_repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let repo: Arc<dyn Repo> = sqlx_repo.clone();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "forge-action-adapter-test".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "forge-action-adapter-test".into(),
+                sort: None,
+                cwd: cwd.path().display().to_string(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let events = EventBus::new();
+        let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
+        let completion = OperationCompletionBus::new();
+        let route_repo: Arc<dyn RouteRepo> = sqlx_repo.clone();
+        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        let runtime = Arc::new(
+            OperationRuntime::new(
+                operation_repo.clone(),
+                vec![Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>],
+                events.clone(),
+                completion.clone(),
+                SpawnCtx::new(
+                    route_repo,
+                    operation_repo,
+                    Arc::new(DaemonClient::new_stub()),
+                    terminal_renderer,
+                    events,
+                    completion,
+                ),
+            )
+            .await
+            .expect("operation runtime"),
+        );
+
+        ForgeRuntimeFixture {
+            repo: sqlx_repo,
+            runtime,
+            wave_id: wave.id.to_string(),
+            cwd,
+            results,
+        }
+    }
+
+    impl ForgeRuntimeFixture {
+        fn result_path(&self, label: &str) -> PathBuf {
+            self.results.path().join(format!("{label}.result"))
+        }
+    }
+
+    fn merge_payload(
+        fx: &ForgeRuntimeFixture,
+        argv: Vec<String>,
+        probe: ProbeSpec,
+    ) -> ForgeActionPayload {
+        ForgeActionPayload {
+            wave_id: fx.wave_id.clone(),
+            card_id: "card-1".into(),
+            subject: Some(
+                serde_json::from_value(json!({
+                    "phase": "impl",
+                    "slice_id": "815",
+                    "pr_number": 42
+                }))
+                .expect("merge subject"),
+            ),
+            argv,
+            idem_key: "gh.pr.merge:owner/repo:42".into(),
+            event_spec: Some(
+                serde_json::from_value(json!({
+                    "event_kind": "forge.pr.merged",
+                    "fields": {
+                        "head_sha": { "json_field": { "path": "/headRefOid" } },
+                        "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
+                    }
+                }))
+                .expect("merge event spec"),
+            ),
+            context: Map::new(),
+            probe: Some(probe),
+            cwd_lease: fx.cwd.path().to_path_buf(),
+            result_path: fx.result_path("merge"),
+            deadline_ms: now_ms() + 60_000,
+        }
+    }
+
+    fn no_event_payload(
+        fx: &ForgeRuntimeFixture,
+        idem_key: &str,
+        argv: Vec<String>,
+        result_label: &str,
+    ) -> ForgeActionPayload {
+        ForgeActionPayload {
+            wave_id: fx.wave_id.clone(),
+            card_id: "card-1".into(),
+            subject: None,
+            argv,
+            idem_key: idem_key.into(),
+            event_spec: None,
+            context: Map::new(),
+            probe: None,
+            cwd_lease: fx.cwd.path().to_path_buf(),
+            result_path: fx.result_path(result_label),
+            deadline_ms: now_ms() + 60_000,
+        }
+    }
+
+    fn shell_probe(script: &str) -> Vec<String> {
+        vec!["/bin/sh".into(), "-c".into(), script.into()]
+    }
+
+    async fn submit_and_wait(
+        fx: &ForgeRuntimeFixture,
+        payload: ForgeActionPayload,
+        payload_hash: &str,
+    ) -> OperationResult {
+        let op_id = submit_forge(fx, payload, payload_hash)
+            .await
+            .expect("submit forge op");
+        fx.runtime.wait(&op_id).await.expect("forge op result")
+    }
+
+    async fn submit_forge(
+        fx: &ForgeRuntimeFixture,
+        payload: ForgeActionPayload,
+        payload_hash: &str,
+    ) -> Result<String> {
+        let key = OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(payload.idem_key.clone()),
+            payload_hash: payload_hash.into(),
+        };
+        let operation_payload = serde_json::to_value(payload)?;
+        fx.runtime
+            .submit(FORGE_ACTION_KIND, key, operation_payload)
+            .await
+    }
+
+    async fn event_count(repo: &SqlxRepo, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
+            .bind(kind)
+            .fetch_one(repo.pool())
+            .await
+            .expect("event count")
+    }
+
+    async fn operation_count_for_idem(repo: &SqlxRepo, idem_key: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE idempotency_key = ?1")
+            .bind(idem_key)
+            .fetch_one(repo.pool())
+            .await
+            .expect("operation count")
+    }
+
+    fn init_clean_git_repo(path: &Path) {
+        run_git(path, ["init"]);
+        run_git(path, ["config", "user.email", "forge-action@example.test"]);
+        run_git(path, ["config", "user.name", "Forge Action Test"]);
+        std::fs::write(path.join("README.md"), "initial\n").expect("write README");
+        run_git(path, ["add", "README.md"]);
+        run_git(path, ["commit", "-m", "initial"]);
+    }
+
+    fn run_git<const N: usize>(path: &Path, args: [&str; N]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
@@ -977,17 +1451,21 @@ async fn complete_forge_op_from_live_result(
     let (event, result) = match build_forge_event(frozen, exit_code, stdout) {
         Ok(ok) => ok,
         Err(ForgeEventBuildError::ActionFailed { reason }) => {
-            return complete_forge_op_failed(
+            // Once the go-token is released, a nonzero exit is ambiguous,
+            // not a verdict; the probe is authoritative for landed status.
+            return resolve_post_release_via_probe(
                 refs.pool,
                 refs.completion,
+                refs.events,
+                refs.repo,
                 op_id,
-                reason,
-                Some("action-failed".into()),
+                frozen,
+                &format!("action-failed: {reason}"),
             )
             .await;
         }
         Err(ForgeEventBuildError::ExtractionFailed { reason }) => {
-            resolve_post_release_via_probe(
+            return resolve_post_release_via_probe(
                 refs.pool,
                 refs.completion,
                 refs.events,
@@ -997,7 +1475,6 @@ async fn complete_forge_op_from_live_result(
                 &format!("extraction failed: {reason}"),
             )
             .await;
-            return Ok(());
         }
     };
 
@@ -1160,7 +1637,9 @@ async fn complete_from_probe(
 /// Resolve an ambiguous post-release outcome. Once the go-token has been
 /// released, the probe is authoritative for whether the irreversible action
 /// landed; gate-infra is only terminal when no probe exists or the probe cannot
-/// produce a landed/not-landed verdict.
+/// produce a landed/not-landed verdict. If `complete_from_probe` returns `Err`,
+/// the probe has already reported `Landed`; only the typed-event completion tx
+/// failed, so the parked row must remain available for a later retry.
 async fn resolve_post_release_via_probe(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
@@ -1169,8 +1648,19 @@ async fn resolve_post_release_via_probe(
     op_id: &str,
     frozen: &FrozenForge,
     ambiguous_reason: &str,
-) {
+) -> Result<()> {
     let Some(probe) = frozen.probe.as_ref() else {
+        if let Some(reason) = ambiguous_reason.strip_prefix("action-failed: ") {
+            let _ = complete_forge_op_failed(
+                pool,
+                completion,
+                op_id,
+                reason.to_string(),
+                Some("action-failed".into()),
+            )
+            .await;
+            return Ok(());
+        }
         let _ = complete_forge_op_failed(
             pool,
             completion,
@@ -1179,7 +1669,7 @@ async fn resolve_post_release_via_probe(
             Some("gate-infra".into()),
         )
         .await;
-        return;
+        return Ok(());
     };
 
     match complete_from_probe(pool, completion, events, repo, op_id, frozen, probe).await {
@@ -1197,18 +1687,10 @@ async fn resolve_post_release_via_probe(
                 Some(last_error_class.into()),
             )
             .await;
+            Ok(())
         }
-        Ok(_) => {}
-        Err(e) => {
-            let _ = complete_forge_op_failed(
-                pool,
-                completion,
-                op_id,
-                e.to_string(),
-                Some("gate-infra".into()),
-            )
-            .await;
-        }
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -1249,7 +1731,7 @@ async fn resolve_dead_outcome(
             return;
         }
     }
-    resolve_post_release_via_probe(
+    if let Err(e) = resolve_post_release_via_probe(
         pool,
         completion,
         events,
@@ -1258,7 +1740,14 @@ async fn resolve_dead_outcome(
         frozen,
         ambiguous_reason,
     )
-    .await;
+    .await
+    {
+        tracing::error!(
+            op_id,
+            error = %e,
+            "forge: landed-verdict completion tx failed during dead recovery; leaving op parked"
+        );
+    }
 }
 
 #[async_trait]
@@ -1473,7 +1962,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                                 error = %e,
                                 "forge observer: result file unreadable after post-release wait"
                             );
-                            resolve_post_release_via_probe(
+                            if let Err(e) = resolve_post_release_via_probe(
                                 &pool,
                                 &completion,
                                 &events,
@@ -1482,12 +1971,19 @@ impl ProviderAdapter for ForgeActionAdapter {
                                 &observer_frozen,
                                 "result file unreadable",
                             )
-                            .await;
+                            .await
+                            {
+                                tracing::error!(
+                                    op_id = %op_id,
+                                    error = %e,
+                                    "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
+                                );
+                            }
                         }
                     }
                 }
                 Ok(_) => {
-                    resolve_post_release_via_probe(
+                    if let Err(e) = resolve_post_release_via_probe(
                         &pool,
                         &completion,
                         &events,
@@ -1496,7 +1992,14 @@ impl ProviderAdapter for ForgeActionAdapter {
                         &observer_frozen,
                         "forge wrapper killed by signal",
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::error!(
+                            op_id = %op_id,
+                            error = %e,
+                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1504,7 +2007,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                         error = %e,
                         "forge observer: wrapper wait failed"
                     );
-                    resolve_post_release_via_probe(
+                    if let Err(e) = resolve_post_release_via_probe(
                         &pool,
                         &completion,
                         &events,
@@ -1513,7 +2016,14 @@ impl ProviderAdapter for ForgeActionAdapter {
                         &observer_frozen,
                         "wrapper wait failed",
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::error!(
+                            op_id = %op_id,
+                            error = %e,
+                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
+                        );
+                    }
                 }
             }
         });
@@ -1606,24 +2116,25 @@ impl ProviderAdapter for ForgeActionAdapter {
         // truth for whether the irreversible action landed, so run it regardless of
         // the deadline -- a dead-but-landed action past deadline MUST still emit its
         // typed event (exactly-once recovery). Fail only when no probe is available.
-        let Some(probe) = frozen.probe.as_ref() else {
+        if frozen.probe.is_none() {
             return Ok(ParkedRecovery::Fail {
                 reason: match mode {
                     RecoveryMode::PastDeadline => "action-timeout".into(),
                     _ => "forge action process dead with no probe; gate-infra".into(),
                 },
             });
-        };
-        complete_from_probe(
+        }
+        resolve_post_release_via_probe(
             &ctx.operation_repo.sqlite_pool(),
             &ctx.completion,
             &ctx.events,
             ctx.repo.as_ref(),
             &op.id,
             &frozen,
-            probe,
+            "forge action process dead",
         )
-        .await
+        .await?;
+        Ok(ParkedRecovery::LeaveParked)
     }
 
     async fn plan_compensation(
