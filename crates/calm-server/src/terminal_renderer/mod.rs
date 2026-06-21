@@ -11,6 +11,7 @@ use calm_session::control::{
 use calm_session::terminal_session::{OwnerRegistry, RenderPlane};
 use calm_session::{DaemonMsg, read_frame, write_frame};
 use thiserror::Error;
+use tokio::io::AsyncRead;
 use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -34,6 +35,7 @@ pub type SharedExitState = Arc<StdMutex<Option<TerminalExitInfo>>>;
 // local ring isn't smaller than the server cap (which would silently
 // trim daemon-retained history on the way to the user's screen).
 pub(crate) const SCROLLBACK_MAX_LINES: usize = 2000;
+const SPAWN_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One work item on the PTY-writer channel. Carries the bytes to write
 /// plus the metadata needed to ack the originating connection after the
@@ -323,7 +325,20 @@ async fn ensure_entry(
         }),
     )
     .await?;
-    match read_frame(&mut control_conn).await? {
+    // Kill-by-proc_id is only needed before Spawned{pid} is persisted: the
+    // compensation/sweeper paths reap by persisted pid, so they cannot reach an
+    // orphaned unacknowledged child. After this point, those existing
+    // reconciliation paths handle ready/attach abandonment; killing here would
+    // leave a dead-but-row-live terminal with no attach reader to observe exit.
+    match read_control_reply_or_kill(
+        &mut control_conn,
+        SPAWN_CONTROL_READ_TIMEOUT,
+        "spawn",
+        &cfg.supervisor_sock,
+        &proc_id,
+    )
+    .await?
+    {
         ControlReply::Spawned { pid } => {
             if let Some(repo) = repo.as_ref()
                 && let Err(e) = repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await
@@ -339,7 +354,7 @@ async fn ensure_entry(
         ControlReply::SpawnFailed { error, .. } => anyhow::bail!("{error}"),
         other => anyhow::bail!("unexpected proc-supervisor spawn reply: {other:?}"),
     }
-    match read_frame(&mut control_conn).await? {
+    match read_control_reply(&mut control_conn, SPAWN_CONTROL_READ_TIMEOUT, "ready").await? {
         ControlReply::Ready => {}
         ControlReply::ReadyFailed { error, .. } => anyhow::bail!("{error}"),
         other => anyhow::bail!("unexpected proc-supervisor ready reply: {other:?}"),
@@ -383,7 +398,7 @@ async fn ensure_entry(
         }),
     )
     .await?;
-    match read_frame(&mut attach_conn).await? {
+    match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await? {
         ControlReply::AttachOk(Attached { replay, .. }) => {
             if !replay.is_empty() {
                 let effects = match render_plane.lock() {
@@ -432,6 +447,42 @@ async fn ensure_entry(
     })
 }
 
+async fn read_control_reply_or_kill<R>(
+    conn: &mut R,
+    read_timeout: Duration,
+    what: &str,
+    supervisor_sock: &Path,
+    proc_id: &str,
+) -> anyhow::Result<ControlReply>
+where
+    R: AsyncRead + Unpin,
+{
+    match read_control_reply(conn, read_timeout, what).await {
+        Ok(reply) => Ok(reply),
+        Err(e) => {
+            signal_child_direct(supervisor_sock, proc_id, ProcSignal::Kill).await;
+            Err(e)
+        }
+    }
+}
+
+async fn read_control_reply<R>(
+    conn: &mut R,
+    read_timeout: Duration,
+    what: &str,
+) -> anyhow::Result<ControlReply>
+where
+    R: AsyncRead + Unpin,
+{
+    match timeout(read_timeout, read_frame::<ControlReply, _>(conn)).await {
+        Ok(Ok(reply)) => Ok(reply),
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => {
+            anyhow::bail!("proc-supervisor {what} reply timed out after {read_timeout:?}")
+        }
+    }
+}
+
 // Copied from crates/calm-session/src/bin/daemon.rs::signal_child_direct as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSignal) {
     let mut conn = match UnixStream::connect(supervisor_sock).await {
@@ -477,5 +528,98 @@ async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSig
         Err(_) => {
             tracing::debug!(?sig, "timed out reading direct supervisor signal reply");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn read_control_reply_or_kill_sends_kill_on_timeout() {
+        let dir = tempdir().expect("tempdir");
+        let sock = dir.path().join("supervisor.sock");
+        let listener = UnixListener::bind(&sock).expect("bind listener");
+        let proc_id = "term:test-timeout".to_string();
+        let expected_proc_id = proc_id.clone();
+        let accept_task = tokio::spawn(async move {
+            let (_silent_stream, _) = listener.accept().await.expect("accept silent connection");
+            let (mut signal_conn, _) = listener.accept().await.expect("accept signal connection");
+            let msg = timeout(
+                Duration::from_millis(500),
+                read_frame::<ControlMsg, _>(&mut signal_conn),
+            )
+            .await
+            .expect("signal frame should arrive")
+            .expect("read signal frame");
+            match msg {
+                ControlMsg::Signal(SignalRequest { proc_id, sig }) => {
+                    assert_eq!(proc_id, expected_proc_id);
+                    assert_eq!(sig, ProcSignal::Kill);
+                }
+                other => panic!("unexpected control message: {other:?}"),
+            }
+            write_frame(&mut signal_conn, &ControlReply::SignalOk)
+                .await
+                .expect("write signal ack");
+        });
+
+        let mut conn = UnixStream::connect(&sock).await.expect("connect");
+        let err = timeout(
+            Duration::from_millis(1000),
+            read_control_reply_or_kill(
+                &mut conn,
+                Duration::from_millis(50),
+                "spawn",
+                &sock,
+                &proc_id,
+            ),
+        )
+        .await
+        .expect("read helper should return before outer timeout")
+        .expect_err("silent supervisor should time out");
+
+        assert!(
+            err.to_string()
+                .contains("proc-supervisor spawn reply timed out after 50ms"),
+            "unexpected error: {err}"
+        );
+
+        timeout(Duration::from_millis(1000), accept_task)
+            .await
+            .expect("supervisor task should finish")
+            .expect("supervisor task should not panic");
+    }
+
+    #[tokio::test]
+    async fn read_control_reply_times_out_when_supervisor_is_silent() {
+        let dir = tempdir().expect("tempdir");
+        let sock = dir.path().join("supervisor.sock");
+        let listener = UnixListener::bind(&sock).expect("bind listener");
+        let accept_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            drop(stream);
+        });
+
+        let mut conn = UnixStream::connect(&sock).await.expect("connect");
+        let err = timeout(
+            Duration::from_millis(500),
+            read_control_reply(&mut conn, Duration::from_millis(50), "spawn"),
+        )
+        .await
+        .expect("read helper should return before outer timeout")
+        .expect_err("silent supervisor should time out");
+
+        assert!(
+            err.to_string()
+                .contains("proc-supervisor spawn reply timed out after 50ms"),
+            "unexpected error: {err}"
+        );
+
+        accept_task.abort();
+        let _ = accept_task.await;
     }
 }
