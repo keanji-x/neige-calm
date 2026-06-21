@@ -110,6 +110,29 @@ describe('WaveInfoViewer', () => {
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
+  it('defaults missing workflow_id on legacy wave.json snapshots', () => {
+    const raw = JSON.stringify({
+      title: 'Legacy wave',
+      id: 'wave_legacy',
+      cove_id: 'cove_legacy',
+      lifecycle: 'working',
+      cwd: '/repo/neige-calm',
+      sort: 0,
+      archived_at: null,
+      pinned_at: null,
+      terminal_at: null,
+      created_at: 0,
+      updated_at: 0,
+    });
+    registerWaveFsViewer(WaveInfoViewer);
+
+    render(<ResolvedWaveFsViewer path="wave.json" raw={raw} />);
+
+    expect(screen.getByRole('heading', { name: 'Legacy wave' })).toBeTruthy();
+    expect(screen.getByText('wave_legacy')).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
   it('falls back to raw when wave.json is missing lifecycle', () => {
     const raw = JSON.stringify({
       title: 'Legacy wave',
