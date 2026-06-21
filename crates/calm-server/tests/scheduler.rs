@@ -1687,12 +1687,13 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
 }
 
 #[tokio::test]
-async fn sweep_running_codex_past_liveness_deadline_fails_and_tears_down() {
+async fn sweep_running_codex_past_liveness_deadline_fails_and_releases_lease_row() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired").await;
     let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired").await;
+    let lease_path = workspace_lease_path(&boot, &lease_id).await;
 
     let mut task = plan_task(&boot.wave_id, "expired", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
@@ -1710,6 +1711,10 @@ async fn sweep_running_codex_past_liveness_deadline_fails_and_tears_down() {
         workspace_lease_state(&boot, &lease_id).await,
         "released",
         "CAS-success timeout releases the workspace lease"
+    );
+    assert!(
+        std::path::Path::new(&lease_path).is_dir(),
+        "scheduler timeout release preserves the workspace artifact"
     );
     let runtime = boot
         .repo
@@ -1763,7 +1768,7 @@ async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
 }
 
 #[tokio::test]
-async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure() {
+async fn sweep_running_codex_timeout_cleanup_releases_row_without_touching_lease_path() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
@@ -1780,9 +1785,6 @@ async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure
     seed_task(&boot, task).await;
 
     let lease_path = workspace_lease_path(&boot, &lease_id).await;
-    std::fs::remove_dir_all(&lease_path).expect("remove lease dir before failure fixture");
-    std::fs::write(&lease_path, "not a directory").expect("lease path file fixture");
-
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     scheduler.sweep_all().await;
 
@@ -1809,22 +1811,25 @@ async fn sweep_running_codex_timeout_cleanup_retries_after_lease_release_failure
     assert_eq!(runtime.status, WorkerSessionState::Failed);
     assert_eq!(
         workspace_lease_state(&boot, &lease_id).await,
-        "releasing",
-        "failed release attempt must not mark the lease released"
+        "released",
+        "timeout cleanup releases the lease row"
     );
     assert!(
-        timeout_cleanup_marker_exists(&boot, &card_id).await,
-        "cleanup marker survives the failed first attempt"
+        std::path::Path::new(&lease_path).is_dir(),
+        "timeout cleanup preserves the lease path"
+    );
+    assert!(
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker clears once the lease row is released"
     );
     assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
 
-    std::fs::remove_file(&lease_path).expect("clear failed lease path fixture");
     scheduler.sweep_all().await;
 
     assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
     assert!(
         !timeout_cleanup_marker_exists(&boot, &card_id).await,
-        "cleanup marker clears only after lease release succeeds"
+        "cleanup retry remains cleared after row release"
     );
     assert_eq!(
         event_rows(&boot, "task.failed").await.len(),
@@ -1853,8 +1858,6 @@ async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_re
     seed_task(&boot, task).await;
 
     let lease_path = workspace_lease_path(&boot, &lease_id).await;
-    std::fs::remove_dir_all(&lease_path).expect("remove lease dir before failure fixture");
-    std::fs::write(&lease_path, "not a directory").expect("lease path file fixture");
 
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     scheduler.sweep_all().await;
@@ -1869,10 +1872,14 @@ async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_re
         .expect("runtime lookup")
         .expect("runtime row");
     assert_eq!(runtime.status, WorkerSessionState::Failed);
-    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "releasing");
+    assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");
     assert!(
-        timeout_cleanup_marker_exists(&boot, &card_id).await,
-        "cleanup marker survives the failed first release"
+        std::path::Path::new(&lease_path).is_dir(),
+        "timeout cleanup preserves the lease path when releasing the row"
+    );
+    assert!(
+        !timeout_cleanup_marker_exists(&boot, &card_id).await,
+        "cleanup marker clears once row release marks the lease released"
     );
 
     boot.repo
@@ -1887,8 +1894,6 @@ async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_re
             .is_none(),
         "retry fixture starts with the terminal row already gone"
     );
-    std::fs::remove_file(&lease_path).expect("clear failed lease path fixture");
-
     scheduler.sweep_all().await;
 
     assert_eq!(workspace_lease_state(&boot, &lease_id).await, "released");

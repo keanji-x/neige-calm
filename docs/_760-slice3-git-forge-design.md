@@ -174,8 +174,11 @@ malformed payload is rejected without submit. **Size L. Deps: ③-a, ②, ⑥.**
 - (iii) **Worktree realize = a PLUGIN forge-action** (`git.worktree.add`), emitting
   `worktree.provisioned{wave_id,card_id,path}`. The real slice branch (`git checkout -b`), commits
   (`git.commit`, resultless), PR ops ride ③-b.
-- (iv) **Teardown/reclaim:** extend ①'s lease release/compensation/orphan-reclaim with a
-  `git worktree remove --force` + `git branch -D` step (emit `worktree.removed`).
+- (iv) **Teardown ownership:** worktree/branch teardown is owned by the slice/PR lifecycle (③-d),
+  operation-rollback compensation, and a wave-level final sweep. Per-task lease release
+  (`decision_sink`, reaper, scheduler-timeout) never touches git; it only frees the resource slot.
+  This decoupling means normal completion or dead-worker reclaim cannot destroy unmerged commits, and
+  there is no preserve/reclaim race at lease release.
 
 **THE ONE OPEN ③-c ITEM (provisioning ORDERING fork) — decide when implementing ③-c:** parent
 invariant-3 wants `worktree.provisioned < runtime.started`, but the lease/`card_id` are minted inside
@@ -188,6 +191,22 @@ when ③-c lands.
 **Acceptance (flips row 8).** A claimed Codex task runs in a REAL git worktree under
 `.claude/worktrees/` (absolute, anchored under `repo_root`); branch ref exists with ≥1 commit;
 collision + teardown handled; ordering per the chosen (α/β/γ). **Size M→L. Deps: ③-a, ③-b, ①.**
+
+**③-c implementation note.** Literal α was rejected: the codex-worker op mints the lease/card inside
+`prepare_tx`, while daemon spawn happens later, and `OperationRuntime::submit`/`wait` drive under the
+same mutex; submitting a nested forge-action op from the worker adapter would deadlock. ③-c uses
+α-prime instead: codex-worker opts into the existing durable `AppServerInteract` phase and provisions
+between `TxCommitted` and `SpawnStarted` in a separate drive cycle. No new phase enum/migration was
+needed. This phase runs kernel-internal `git worktree add` directly via shared lease-core helpers,
+which intentionally relaxes §2.5-B only for automatic worker-spawn provisioning; the
+`dev.neige.git-forge` `git.worktree.add` verb remains the explicit agent-driven path. The phase
+persists `worktree.provisioned{wave_id,card_id,path}` and then `runtime.started` for the worker path,
+so invariant-3 is asserted as durable event order before daemon spawn.
+
+Worktree/branch teardown is keyed to the slice/wave lifecycle, not normal per-task worker-lease
+release: worker `task.completed`/`task.failed` releases only the lease row and preserves the
+`neige/<wave>/<card>` branch for downstream PR operations. Timeout/dead-worker reclaim and wave
+teardown remove worktrees/branches; the precise PR-flow teardown point is finalized in ③-d.
 
 ---
 

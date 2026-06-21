@@ -271,6 +271,8 @@ impl CardDecisionSink {
         .await?;
 
         if release_workspace {
+            // Normal worker reports release only the lease row; downstream PR
+            // flow still needs the worker worktree and slice branch.
             release_workspace_lease_for_card_repo(self.repo.as_ref(), &self.events, &card_id_str)
                 .await?;
         }
@@ -520,8 +522,13 @@ mod tests {
     use super::*;
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
-    use crate::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
+    use crate::db::sqlite::{
+        SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_wave_root_tx,
+    };
     use crate::model::{CardRole, NewCard, NewCove, NewWave, WavePatch};
+    use crate::operation::workspace_lease::{
+        acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, provision_workspace_worktree,
+    };
     use crate::recorder_shadow::divergence_count_for_test;
     use crate::wave_cove_cache::WaveCoveCache;
     use calm_types::worker::{
@@ -529,6 +536,8 @@ mod tests {
         WorkerSessionState,
     };
     use serde_json::Value;
+    use std::path::Path;
+    use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tracing_subscriber::layer::Context as TracingContext;
     use tracing_subscriber::prelude::*;
@@ -603,6 +612,134 @@ mod tests {
         })
         .await
         .expect("seed wave root session");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worker_task_report_releases_lease_but_preserves_git_worktree_branch() {
+        let repo_root = tempfile::tempdir().expect("repo tempdir");
+        init_git_repo(repo_root.path());
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let cove = repo
+            .cove_create(NewCove {
+                name: "worker report preserve".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "worker report preserve".into(),
+                sort: None,
+                cwd: repo_root.path().display().to_string(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let worker_card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            })
+            .await
+            .expect("create worker card");
+        let session_id = WorkerSessionId::from("worker-session");
+        let session = worker_session(session_id.as_str(), wave.id.clone(), worker_card.id.clone());
+        crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                session_insert_tx(tx, session)
+                    .await
+                    .map_err(CalmError::from)?;
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed worker session");
+
+        let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+        let target =
+            prepare_workspace_lease_target_tx(&mut tx, wave.id.as_str(), worker_card.id.as_str())
+                .await
+                .expect("prepare lease target");
+        let (lease, _event) = acquire_workspace_lease_tx(
+            &mut tx,
+            worker_card.id.as_str(),
+            wave.id.as_str(),
+            "op-worker-report-preserve",
+            &target,
+        )
+        .await
+        .expect("acquire lease");
+        tx.commit().await.expect("commit lease");
+        provision_workspace_worktree(&target).expect("provision worktree");
+        std::fs::write(target.path.join("worker-output.txt"), "worker commit\n")
+            .expect("write worker output");
+        run_git(&target.path, ["add", "worker-output.txt"]);
+        run_git(&target.path, ["commit", "-m", "worker output"]);
+
+        let card_role_cache = CardRoleCache::new();
+        card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
+        let wave_cove_cache = WaveCoveCache::new();
+        repo.seed_wave_cove_cache(&wave_cove_cache)
+            .await
+            .expect("seed wave cove cache");
+        let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        let sink = CardDecisionSink {
+            repo: route_repo,
+            events: EventBus::new(),
+            write: WriteContext::new(card_role_cache, wave_cove_cache),
+        };
+        let identity = ToolCallIdentity {
+            card_id: worker_card.id.as_str().to_string(),
+            role: CardRole::Worker,
+            provider: crate::session_projection_repo::AgentProvider::Codex,
+            session_id: session_id.as_str().to_string(),
+            wave_id: Some(wave.id.as_str().to_string()),
+            cove_id: cove.id.as_str().to_string(),
+            thread_id: "worker-thread".to_string(),
+        };
+
+        sink.commit_worker_task_report(
+            &identity,
+            Event::TaskCompleted {
+                idempotency_key: "worker-report-preserve".into(),
+                result: Value::Null,
+                artifacts: Vec::new(),
+                agent_message: None,
+            },
+        )
+        .await
+        .expect("commit worker report");
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                .bind(&lease.lease_id)
+                .fetch_one(repo.pool())
+                .await
+                .expect("lease state");
+        assert_eq!(state, "released");
+        assert!(
+            target.path.is_dir(),
+            "DecisionSink task completion preserves worker worktree"
+        );
+        assert!(
+            git_ref_exists(repo_root.path(), &format!("refs/heads/{}", target.branch)),
+            "DecisionSink task completion preserves slice branch"
+        );
+        let removed_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")
+                .fetch_one(repo.pool())
+                .await
+                .expect("removed event count");
+        assert_eq!(removed_events, 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -883,5 +1020,40 @@ mod tests {
             .await
             .expect("react succeeds");
         assert!(intents.is_empty());
+    }
+
+    fn init_git_repo(path: &Path) {
+        std::fs::create_dir_all(path).expect("create git repo dir");
+        run_git(path, ["init"]);
+        run_git(path, ["config", "user.email", "sink@example.test"]);
+        run_git(path, ["config", "user.name", "Sink Test"]);
+        std::fs::write(path.join("README.md"), "initial\n").expect("write readme");
+        run_git(path, ["add", "README.md"]);
+        run_git(path, ["commit", "-m", "initial"]);
+    }
+
+    fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("spawn git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_ref_exists(repo: &Path, full_ref: &str) -> bool {
+        Command::new("git")
+            .args(["show-ref", "--verify", "--quiet", full_ref])
+            .current_dir(repo)
+            .status()
+            .expect("spawn git show-ref")
+            .success()
     }
 }

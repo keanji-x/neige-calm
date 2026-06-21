@@ -1332,7 +1332,7 @@ impl Scheduler {
                     session_id = %cleanup.session_id,
                     card_id = %cleanup.card_id,
                     error = %e,
-                    "scheduler sweep: timed-out worker lease release failed; marker retained"
+                    "scheduler sweep: timed-out worker lease row release failed; marker retained"
                 );
                 continue;
             }
@@ -2376,7 +2376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sweep_running_claude_past_liveness_deadline_fails_and_tears_down() {
+    async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_row() {
         let concrete = Arc::new(
             crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
                 .await

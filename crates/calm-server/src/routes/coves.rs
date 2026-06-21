@@ -28,7 +28,9 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Cove, CoveKind, CovePatch, NewCove};
-use crate::operation::workspace_lease::release_workspace_leases_for_wave_tx;
+use crate::operation::workspace_lease::{
+    release_workspace_leases_for_wave_tx, sweep_workspace_worktrees_for_waves_repo,
+};
 use crate::state::{AppState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use axum::{
@@ -334,7 +336,7 @@ pub(crate) async fn delete_cove(
         cove: id.clone().into(),
     };
     let delete_actor = actor.to_actor_id();
-    let (_unit, _ids) =
+    let (sweeps, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first; tolerate NotFound on each
@@ -349,20 +351,26 @@ pub(crate) async fn delete_cove(
                 overlay_delete_subtree_by_cove_tx(tx, &id).await?;
                 overlay_delete_by_entity_tx(tx, "cove", &id).await?;
                 let mut events = Vec::new();
+                let mut sweeps = Vec::new();
                 let wave_ids: Vec<String> =
                     sqlx::query_scalar("SELECT id FROM waves WHERE cove_id = ?1")
                         .bind(&id)
                         .fetch_all(&mut **tx)
                         .await?;
                 for wave_id in &wave_ids {
-                    events
-                        .extend(release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?);
+                    let release =
+                        release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?;
+                    events.extend(release.events);
+                    if let Some(sweep) = release.sweep {
+                        sweeps.push(sweep);
+                    }
                 }
                 cove_delete_tx(tx, &id).await?;
                 events.push((delete_actor, scope, Event::CoveDeleted { id: id.into() }));
-                Ok(((), events))
+                Ok((sweeps, events))
             })
         })
         .await?;
+    sweep_workspace_worktrees_for_waves_repo(s.repo.as_ref(), &s.events, sweeps).await?;
     Ok(StatusCode::NO_CONTENT)
 }

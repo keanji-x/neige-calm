@@ -22,7 +22,8 @@ use crate::model::{Card, CardRole, new_id};
 use crate::operation::codex_adapter::render_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, release_workspace_lease_by_id, workspace_lease_path_for,
+    acquire_plain_workspace_lease_tx, plain_workspace_lease_path_for,
+    release_workspace_lease_by_id, remove_workspace_artifact_for_lease_by_id,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -767,7 +768,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let runtime_id = new_id();
         let claude_session_id = uuid::Uuid::new_v4().to_string();
         let wave_id = WaveId::from(payload.wave_id.clone());
-        let cwd = workspace_lease_path_for(wave_id.as_str(), &card_id)?;
+        let cwd_path = plain_workspace_lease_path_for(wave_id.as_str(), &card_id)?;
+        let cwd = cwd_path.to_string_lossy().to_string();
         let settings_path = self
             .codex
             .claude_settings_dir
@@ -814,8 +816,14 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &card_id, card.wave_id.as_str(), &op.id).await?;
+        let (lease, lease_event) = acquire_plain_workspace_lease_tx(
+            tx,
+            &card_id,
+            card.wave_id.as_str(),
+            &op.id,
+            &cwd_path,
+        )
+        .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -1123,6 +1131,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let mut steps = Vec::new();
         if let Some(lease_id) = output.output_optional_string("lease_id", "claude worker")? {
             steps.push(CompensationStep::new(
+                "remove_workspace_artifact",
+                json!({ "lease_id": lease_id.clone() }),
+            ));
+            steps.push(CompensationStep::new(
                 "release_workspace_lease",
                 json!({ "lease_id": lease_id }),
             ));
@@ -1163,6 +1175,12 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             return Ok(());
         }
         match step.op.as_str() {
+            "remove_workspace_artifact" => {
+                let lease_id = step_arg_string(step, "lease_id")?;
+                let pool = ctx.operation_repo.sqlite_pool();
+                remove_workspace_artifact_for_lease_by_id(&pool, &ctx.events, &lease_id).await?;
+                Ok(())
+            }
             "release_workspace_lease" => {
                 let lease_id = step_arg_string(step, "lease_id")?;
                 let pool = ctx.operation_repo.sqlite_pool();
@@ -1506,7 +1524,16 @@ mod tests {
         let lease_id = output.output_string("lease_id", "test").unwrap();
         let cwd = output.output_string("cwd", "test").unwrap();
 
-        assert!(cwd.starts_with(".claude/worktrees/"));
+        let wave_cwd: String = sqlx::query_scalar("SELECT cwd FROM waves WHERE id = ?1")
+            .bind(&harness.wave_id)
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(wave_cwd, "", "regression guard: wave cwd is not a git repo");
+        assert_eq!(
+            cwd,
+            format!(".claude/worktrees/{}/{}", harness.wave_id, card_id)
+        );
         assert!(std::path::Path::new(&cwd).is_dir(), "leased cwd exists");
         let lease = sqlx::query(
             "SELECT state, path, card_id, wave_id FROM workspace_leases WHERE lease_id = ?1",
@@ -1521,6 +1548,17 @@ mod tests {
         assert_eq!(lease.get::<String, _>("wave_id"), harness.wave_id);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event, Event::WorkspaceLeased { .. }));
+        assert!(
+            events
+                .iter()
+                .all(|envelope| envelope.event.kind_tag() != "worktree.provisioned")
+        );
+        let provisioned_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.provisioned'")
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(provisioned_events, 0);
 
         let session =
             sqlx::query("SELECT provider, spawn_op_id FROM worker_sessions WHERE id = ?1")
@@ -1541,7 +1579,10 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert!(!std::path::Path::new(&cwd).exists(), "leased cwd removed");
+        assert!(
+            std::path::Path::new(&cwd).exists(),
+            "normal lease release preserves leased cwd"
+        );
     }
 
     #[tokio::test]
@@ -1694,6 +1735,7 @@ mod tests {
         let terminal_id = output.output_string("terminal_id", "test").unwrap();
         let runtime_id = output.output_string("runtime_id", "test").unwrap();
         let lease_id = output.output_string("lease_id", "test").unwrap();
+        let cwd = output.output_string("cwd", "test").unwrap();
         let settings_path = output.output_string("settings_path", "test").unwrap();
         let settings_dir = settings_path_parent(Path::new(&settings_path)).unwrap();
         std::fs::create_dir_all(&settings_dir).unwrap();
@@ -1740,19 +1782,20 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(state.steps[0].op, "release_workspace_lease");
-        assert_eq!(state.steps[1].op, "cleanup_claude_worker");
-        assert_eq!(state.steps[2].op, "delete_claude_settings_dir");
+        assert_eq!(state.steps[0].op, "remove_workspace_artifact");
+        assert_eq!(state.steps[1].op, "release_workspace_lease");
+        assert_eq!(state.steps[2].op, "cleanup_claude_worker");
+        assert_eq!(state.steps[3].op, "delete_claude_settings_dir");
         assert_eq!(
-            state.steps[0].arg_string("lease_id", "test").unwrap(),
+            state.steps[1].arg_string("lease_id", "test").unwrap(),
             lease_id
         );
         assert_eq!(
-            state.steps[1].arg_string("card_id", "test").unwrap(),
+            state.steps[2].arg_string("card_id", "test").unwrap(),
             card_id
         );
         assert_eq!(
-            state.steps[1].arg_string("terminal_id", "test").unwrap(),
+            state.steps[2].arg_string("terminal_id", "test").unwrap(),
             terminal_id
         );
 
@@ -1794,6 +1837,16 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(lease_state, "released");
+        assert!(
+            !std::path::Path::new(&cwd).exists(),
+            "compensation removes the just-created workspace artifact"
+        );
+        let removed_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(removed_events, 1);
         assert!(!settings_dir.exists());
     }
 

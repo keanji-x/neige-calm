@@ -431,7 +431,7 @@ async fn delete_card_returns_204_for_deletable_worker_card() {
 }
 
 #[tokio::test]
-async fn delete_card_releases_active_workspace_lease_before_card_row_delete() {
+async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -462,8 +462,8 @@ async fn delete_card_releases_active_workspace_lease_before_card_row_delete() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     assert!(
-        !std::path::Path::new(&lease_path).exists(),
-        "card delete removes active lease directory before card row delete"
+        std::path::Path::new(&lease_path).is_dir(),
+        "card delete releases the row without removing lease artifacts"
     );
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let state: String =
@@ -524,7 +524,7 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
 }
 
 #[tokio::test]
-async fn wave_delete_releases_active_workspace_leases_before_cascade() {
+async fn wave_delete_releases_active_workspace_lease_rows_before_cascade() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -545,8 +545,8 @@ async fn wave_delete_releases_active_workspace_leases_before_cascade() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     assert!(
-        !std::path::Path::new(&lease_path).exists(),
-        "wave delete removes active lease directory before cascade"
+        std::path::Path::new(&lease_path).is_dir(),
+        "wave delete does not remove non-wave-root lease artifacts"
     );
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE wave_id = ?1")
@@ -564,7 +564,7 @@ async fn wave_delete_releases_active_workspace_leases_before_cascade() {
 }
 
 #[tokio::test]
-async fn cove_delete_releases_wave_workspace_leases_before_cascade() {
+async fn cove_delete_releases_wave_workspace_lease_rows_before_cascade() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -586,8 +586,8 @@ async fn cove_delete_releases_wave_workspace_leases_before_cascade() {
     assert_eq!(status, StatusCode::NO_CONTENT, "delete body: {body}");
 
     assert!(
-        !std::path::Path::new(&lease_path).exists(),
-        "cove delete removes active lease directory before wave cascade"
+        std::path::Path::new(&lease_path).is_dir(),
+        "cove delete does not remove non-wave-root lease artifacts"
     );
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE lease_id = ?1")
