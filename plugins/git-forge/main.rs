@@ -301,7 +301,7 @@ fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
             repo.clone(),
             "--patch".into(),
         ],
-        format!("gh.pr.diff:{repo}:{pr}:{head_sha}"),
+        format!("gh.pr.diff:{repo}:{pr}:{base_sha}:{head_sha}"),
         Some(event_spec("forge.pr.diff.read", [])),
         json!({
             "pr_number": pr,
@@ -331,7 +331,7 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         "--json".into(),
         "statusCheckRollup".into(),
         "--jq".into(),
-        "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}".into(),
+        "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // .status // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}".into(),
     ];
     forge_payload(
         argv.clone(),
@@ -778,7 +778,7 @@ mod tests {
                     "owner/repo",
                     "--patch"
                 ],
-                "idem_key": "gh.pr.diff:owner/repo:42:head456",
+                "idem_key": "gh.pr.diff:owner/repo:42:base123:head456",
                 "event_spec": {
                     "event_kind": "forge.pr.diff.read",
                     "fields": {}
@@ -816,7 +816,7 @@ mod tests {
             }),
         )
         .expect("lower gh pr checks with attempt");
-        let jq = "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}";
+        let jq = "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // .status // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}";
         let expected_payload = |idem_key: &str| {
             json!({
                 "argv": [

@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -54,6 +55,7 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+static NEXT_DIFF_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
 const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
     "GH_TOKEN",
@@ -228,6 +230,18 @@ mod tests {
             None, "wave", "card", "idem"
         ));
     }
+
+    #[test]
+    fn diff_artifact_tmp_path_is_unique_per_attempt() {
+        let result_path = Path::new("/tmp/forge-result.patch");
+        let first = diff_artifact_tmp_path(result_path);
+        let second = diff_artifact_tmp_path(result_path);
+        let prefix = format!("{}.tmp.{}.", result_path.display(), std::process::id());
+
+        assert_ne!(first, second);
+        assert!(first.display().to_string().starts_with(&prefix));
+        assert!(second.display().to_string().starts_with(&prefix));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -339,6 +353,14 @@ fn result_code_path(result_path: &Path) -> PathBuf {
 
 fn result_stdout_path(result_path: &Path) -> PathBuf {
     path_with_suffix(result_path, ".stdout")
+}
+
+fn diff_artifact_tmp_path(result_path: &Path) -> PathBuf {
+    let attempt = NEXT_DIFF_ARTIFACT_TMP.fetch_add(1, Ordering::Relaxed);
+    path_with_suffix(
+        result_path,
+        &format!(".tmp.{}.{}", std::process::id(), attempt),
+    )
 }
 
 fn result_tmp_prefixes(result_path: &Path) -> Vec<PathBuf> {
@@ -854,7 +876,7 @@ async fn persist_diff_artifact_if_needed(
     {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let tmp_path = path_with_suffix(&frozen.result_path, ".tmp");
+    let tmp_path = diff_artifact_tmp_path(&frozen.result_path);
     tokio::fs::write(&tmp_path, stdout.as_bytes()).await?;
     tokio::fs::rename(&tmp_path, &frozen.result_path).await?;
     Ok(())
