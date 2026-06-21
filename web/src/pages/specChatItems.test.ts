@@ -149,6 +149,32 @@ describe('parseHarnessItem', () => {
     });
   });
 
+  it('drops empty completed known message rows', () => {
+    expect(
+      parseHarnessItem(
+        harnessRow({
+          params: userParams('User says:\n   '),
+        }),
+      ),
+    ).toBeNull();
+
+    expect(
+      parseHarnessItem(
+        harnessRow({
+          item_type: 'agentMessage',
+          params: {
+            completedAtMs: 1780977421069,
+            item: {
+              id: 'msg_agent',
+              text: '   ',
+              type: 'agentMessage',
+            },
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it('returns null for non-completed rows', () => {
     expect(
       parseHarnessItem(harnessRow({ method: 'item/started' })),
@@ -222,6 +248,7 @@ describe('parseHarnessItem', () => {
           item: {
             id: 'edit_1',
             type: 'fileChange',
+            status: 'declined',
             changes: [
               {
                 path: 'src/a.ts',
@@ -241,6 +268,7 @@ describe('parseHarnessItem', () => {
 
     expect(entry).toMatchObject({
       kind: 'edit',
+      status: 'declined',
       changes: [
         { path: 'src/a.ts', diff: '--- a\n+++ b', verb: 'update' },
         { path: 'src/b.ts', diff: 'new file', verb: 'add' },

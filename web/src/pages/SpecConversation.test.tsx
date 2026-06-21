@@ -196,6 +196,25 @@ function harnessCommandRow(id: number) {
   };
 }
 
+function harnessPopulatedCommandRow(id: number) {
+  return {
+    ...harnessCommandRow(id),
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `cmd_${id}`,
+        type: 'commandExecution',
+        command: 'npx vitest run src/pages/SpecConversation.test.tsx',
+        aggregatedOutput: '1 failed\n2 passed',
+        exitCode: 1,
+        durationMs: 4321,
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+  };
+}
+
 function harnessReasoningRow(id: number) {
   return {
     id,
@@ -214,6 +233,126 @@ function harnessReasoningRow(id: number) {
         type: 'reasoning',
         summary: [],
         content: [],
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
+function harnessToolRow(
+  id: number,
+  {
+    errored = false,
+    server = 'filesystem',
+    tool = 'read_file',
+  }: { errored?: boolean; server?: string; tool?: string } = {},
+) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `tool_${id}`,
+    item_type: 'mcpToolCall',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `tool_${id}`,
+        type: 'mcpToolCall',
+        server,
+        tool,
+        arguments: { path: 'src/app.ts' },
+        ...(errored
+          ? { error: { message: 'denied' } }
+          : { result: { ok: true } }),
+        durationMs: 42,
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
+function harnessFileChangeRow(
+  id: number,
+  status: string,
+  changes: Array<{ path: string; diff: string; verb: string }>,
+) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `edit_${id}`,
+    item_type: 'fileChange',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `edit_${id}`,
+        type: 'fileChange',
+        status,
+        changes: changes.map((change) => ({
+          path: change.path,
+          diff: change.diff,
+          kind: { type: change.verb },
+        })),
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
+function harnessCompactRow(id: number) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `compact_${id}`,
+    item_type: 'contextCompaction',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `compact_${id}`,
+        type: 'contextCompaction',
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
+function harnessUnknownRow(id: number) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec_1',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `legacy_${id}`,
+    item_type: null,
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `legacy_${id}`,
+        type: 'legacyThing',
       },
       threadId: 'thread',
       turnId: 'turn',
@@ -688,19 +827,118 @@ describe('SpecConversation', () => {
   });
 
   it('renders fetched command executions as run blocks', async () => {
-    mocks.listHarnessItems.mockResolvedValue([harnessCommandRow(7)]);
+    mocks.listHarnessItems.mockResolvedValue([harnessPopulatedCommandRow(7)]);
 
     await renderHarness();
 
-    const command = await screen.findByText('(command)');
+    const command = await screen.findByText(
+      'npx vitest run src/pages/SpecConversation.test.tsx',
+    );
     const runEntry = command.closest('.report-convo-entry--run');
     expect(runEntry).not.toBeNull();
+    expect(command.closest('code')).toHaveClass('report-convo-command');
     expect(
       within(runEntry as HTMLElement).getByText('Command'),
     ).toBeInTheDocument();
+    expect(within(runEntry as HTMLElement).getByText('exit 1')).toHaveClass(
+      'report-convo-chip--fail',
+    );
+    expect(within(runEntry as HTMLElement).getByText('4321ms')).toHaveClass(
+      'report-convo-chip',
+    );
     expect(
-      within(runEntry as HTMLElement).getByText('exit n/a'),
+      within(runEntry as HTMLElement).getByText('Output').closest('details'),
+    ).not.toBeNull();
+    expect(
+      within(runEntry as HTMLElement).getByText(/1 failed\s+2 passed/),
     ).toBeInTheDocument();
+  });
+
+  it('renders tool calls with warning and details blocks', async () => {
+    mocks.listHarnessItems.mockResolvedValue([
+      harnessToolRow(9, { errored: true }),
+      harnessToolRow(10, {
+        server: 'github',
+        tool: 'list_issues',
+      }),
+    ]);
+
+    await renderHarness();
+
+    const erroredAuthor = await screen.findByText('filesystem · read_file');
+    const erroredEntry = erroredAuthor.closest('.report-convo-entry--tool');
+    expect(erroredEntry).not.toBeNull();
+    expect(erroredEntry).toHaveClass('report-convo-entry--warn');
+    expect(within(erroredEntry as HTMLElement).getByText('error')).toHaveClass(
+      'report-convo-chip--warn',
+    );
+    expect(
+      within(erroredEntry as HTMLElement).getByText('Arguments').closest('details'),
+    ).not.toBeNull();
+    expect(
+      within(erroredEntry as HTMLElement).getByText('Error').closest('details'),
+    ).not.toBeNull();
+    expect(
+      within(erroredEntry as HTMLElement).getByText(/"message": "denied"/),
+    ).toBeInTheDocument();
+
+    const resultAuthor = await screen.findByText('github · list_issues');
+    const resultEntry = resultAuthor.closest('.report-convo-entry--tool');
+    expect(resultEntry).not.toBeNull();
+    expect(
+      within(resultEntry as HTMLElement).getByText('Result').closest('details'),
+    ).not.toBeNull();
+  });
+
+  it('renders file changes with status warnings and empty fallbacks', async () => {
+    mocks.listHarnessItems.mockResolvedValue([
+      harnessFileChangeRow(11, 'declined', [
+        {
+          path: 'src/pages/specChatItems.ts',
+          diff: '--- a\n+++ b',
+          verb: 'update',
+        },
+      ]),
+      harnessFileChangeRow(12, 'failed', []),
+    ]);
+
+    await renderHarness();
+
+    const path = await screen.findByText('src/pages/specChatItems.ts');
+    const editEntry = path.closest('.report-convo-entry--edit');
+    expect(editEntry).not.toBeNull();
+    expect(editEntry).toHaveClass('report-convo-entry--warn');
+    expect(within(editEntry as HTMLElement).getByText('declined')).toHaveClass(
+      'report-convo-chip--warn',
+    );
+    expect(within(editEntry as HTMLElement).getByText('update')).toHaveClass(
+      'report-convo-chip',
+    );
+
+    const fallback = await screen.findByText('(file changes)');
+    const emptyEditEntry = fallback.closest('.report-convo-entry--edit');
+    expect(emptyEditEntry).not.toBeNull();
+    expect(
+      within(emptyEditEntry as HTMLElement).getByText('failed'),
+    ).toHaveClass('report-convo-chip--warn');
+  });
+
+  it('renders context compaction dividers', async () => {
+    mocks.listHarnessItems.mockResolvedValue([harnessCompactRow(13)]);
+
+    await renderHarness();
+
+    const compact = await screen.findByText('· context compacted ·');
+    expect(compact.closest('.report-convo-entry--compact')).not.toBeNull();
+  });
+
+  it('renders unknown item dividers for legacy item types', async () => {
+    mocks.listHarnessItems.mockResolvedValue([harnessUnknownRow(14)]);
+
+    await renderHarness();
+
+    const unknown = await screen.findByText('· legacyThing ·');
+    expect(unknown.closest('.report-convo-entry--unknown')).not.toBeNull();
   });
 
   it('renders empty reasoning rows with a marker', async () => {

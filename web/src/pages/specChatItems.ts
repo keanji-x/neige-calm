@@ -53,6 +53,7 @@ export type ChatEntry =
     })
   | (ChatEntryBase & {
       kind: 'edit';
+      status: string;
       changes: Array<{ path: string; diff: string; verb: string }>;
     })
   | (ChatEntryBase & {
@@ -267,6 +268,7 @@ function parseFileChange(row: HarnessItem, params: ParsedParams): ChatEntry {
   return {
     id: row.id,
     kind: 'edit',
+    status: stringField(item?.status),
     changes: changes.map((change) => {
       const record =
         change !== null && typeof change === 'object'
@@ -320,9 +322,9 @@ export function parseHarnessItem(row: HarnessItem): ChatEntry | null {
 
   switch (row.item_type) {
     case 'userMessage':
-      return parseUserMessage(row, params) ?? parseUnknownItem(row, params);
+      return parseUserMessage(row, params);
     case 'agentMessage':
-      return parseAgentMessage(row, params) ?? parseUnknownItem(row, params);
+      return parseAgentMessage(row, params);
     case 'commandExecution':
       return parseCommandExecution(row, params);
     case 'mcpToolCall':

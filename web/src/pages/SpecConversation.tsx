@@ -248,9 +248,22 @@ function ConvoEntry({
   }
 
   if (entry.kind === 'edit') {
+    const statusWarn = entry.status !== '' && entry.status !== 'completed';
     return (
-      <section className="report-convo-entry report-convo-entry--edit">
+      <section
+        className={
+          'report-convo-entry report-convo-entry--edit' +
+          (statusWarn ? ' report-convo-entry--warn' : '')
+        }
+      >
         <EntryMeta author="File changes" atMs={entry.atMs} />
+        {statusWarn && (
+          <div className="report-convo-artifact-head">
+            <span className="report-convo-chip report-convo-chip--warn">
+              {entry.status}
+            </span>
+          </div>
+        )}
         {entry.changes.length === 0 ? (
           <p className="report-convo-muted">(file changes)</p>
         ) : (
