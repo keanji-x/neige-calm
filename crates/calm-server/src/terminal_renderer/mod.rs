@@ -325,6 +325,11 @@ async fn ensure_entry(
         }),
     )
     .await?;
+    // Kill-by-proc_id is only needed before Spawned{pid} is persisted: the
+    // compensation/sweeper paths reap by persisted pid, so they cannot reach an
+    // orphaned unacknowledged child. After this point, those existing
+    // reconciliation paths handle ready/attach abandonment; killing here would
+    // leave a dead-but-row-live terminal with no attach reader to observe exit.
     match read_control_reply_or_kill(
         &mut control_conn,
         SPAWN_CONTROL_READ_TIMEOUT,
@@ -349,15 +354,7 @@ async fn ensure_entry(
         ControlReply::SpawnFailed { error, .. } => anyhow::bail!("{error}"),
         other => anyhow::bail!("unexpected proc-supervisor spawn reply: {other:?}"),
     }
-    match read_control_reply_or_kill(
-        &mut control_conn,
-        SPAWN_CONTROL_READ_TIMEOUT,
-        "ready",
-        &cfg.supervisor_sock,
-        &proc_id,
-    )
-    .await?
-    {
+    match read_control_reply(&mut control_conn, SPAWN_CONTROL_READ_TIMEOUT, "ready").await? {
         ControlReply::Ready => {}
         ControlReply::ReadyFailed { error, .. } => anyhow::bail!("{error}"),
         other => anyhow::bail!("unexpected proc-supervisor ready reply: {other:?}"),
@@ -401,15 +398,7 @@ async fn ensure_entry(
         }),
     )
     .await?;
-    match read_control_reply_or_kill(
-        &mut attach_conn,
-        SPAWN_CONTROL_READ_TIMEOUT,
-        "attach",
-        &cfg.supervisor_sock,
-        &proc_id,
-    )
-    .await?
-    {
+    match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await? {
         ControlReply::AttachOk(Attached { replay, .. }) => {
             if !replay.is_empty() {
                 let effects = match render_plane.lock() {
