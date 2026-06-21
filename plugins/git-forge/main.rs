@@ -465,7 +465,20 @@ fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
         format!("gh.issue.close:{repo}:{issue}"),
         Some(event_spec("forge.issue.closed", [])),
         json!({ "issue_number": issue }),
-        None,
+        Some(json!({
+            "probe_argv": [
+                "gh",
+                "issue",
+                "view",
+                issue.to_string(),
+                "--repo",
+                repo,
+                "--json",
+                "state",
+                "--jq",
+                "if .state==\"CLOSED\" then empty else error end"
+            ]
+        })),
         true,
     )
 }
@@ -1006,10 +1019,24 @@ mod tests {
                 },
                 "subject": null,
                 "context": { "issue_number": 808 },
-                "probe": null,
+                "probe": {
+                    "probe_argv": [
+                        "gh",
+                        "issue",
+                        "view",
+                        "808",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                        "state",
+                        "--jq",
+                        "if .state==\"CLOSED\" then empty else error end"
+                    ]
+                },
                 "parked": true
             })
         );
+        assert!(payload["probe"]["output_probe_argv"].is_null());
         assert_no_reserved_context(&payload, &["wave_id"]);
         assert_supported_event_kind(&payload);
     }

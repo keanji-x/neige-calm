@@ -1,0 +1,1137 @@
+#![cfg(unix)]
+
+mod support;
+
+use std::ffi::{OsStr, OsString};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use calm_server::card_role_cache::CardRoleCache;
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::{
+    SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    session_mcp_token_set_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
+};
+use calm_server::db::write_with_actor_events_typed;
+use calm_server::event::{EventBus, EventScope};
+use calm_server::ids::{ActorId, CoveId, WaveId};
+use calm_server::mcp_server::{McpServer, build_default_registry};
+use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveLifecycle, now_ms};
+use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
+use calm_server::operation::{
+    OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
+};
+use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
+use calm_server::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
+use calm_server::state::{DaemonClient, WriteContext};
+use calm_server::terminal_renderer::TerminalRendererRegistry;
+use serde_json::{Value, json};
+use support::mcp::{
+    connect, handshake, recv_frame, send_frame, tools_call_frame, tools_list_frame,
+};
+use tempfile::TempDir;
+use tokio::sync::OnceCell;
+use tokio::time::{Instant, sleep};
+
+const FORGE_BIN: &str = env!("CARGO_BIN_EXE_git-forge");
+const PLUGIN_ID: &str = "dev.neige.git-forge";
+const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
+const PR_LIST_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.list";
+const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
+const PR_DIFF_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.diff";
+const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
+const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
+const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
+
+static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+struct Fixture {
+    _server: Arc<McpServer>,
+    plugin_host: Arc<PluginHost>,
+    repo: Arc<SqlxRepo>,
+    events: EventBus,
+    write: WriteContext,
+    socket_path: PathBuf,
+    raw_token: String,
+    thread_id: String,
+    wave_id: String,
+    cove_id: String,
+    lease_abs: PathBuf,
+    origin_repo: PathBuf,
+    _runtime: Arc<OperationRuntime>,
+    _lease_tmp: TempDir,
+    _tmp: TempDir,
+}
+
+struct Caller {
+    raw_token: String,
+    thread_id: String,
+    wave_id: String,
+    lease_abs: PathBuf,
+    _lease_tmp: TempDir,
+}
+
+#[derive(Clone, Debug)]
+struct EventRow {
+    id: i64,
+    scope_kind: String,
+    scope_wave: Option<String>,
+    scope_card: Option<String>,
+    payload: Value,
+}
+
+type RawEventRow = (
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+#[tokio::test]
+async fn git_forge_happy_path_persists_ordered_workflow_events() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let path_dir = short_tempdir("gh-path").expect("gh shim PATH tempdir");
+    write_gh_shim(path_dir.path());
+    let path_value = prepend_to_path(path_dir.path());
+    let results_dir = short_tempdir("gwe-results").expect("forge results tempdir");
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let _path = EnvGuard::set("PATH", path_value);
+
+    let fx = boot_fixture().await;
+    assert_tools_are_discoverable(&fx).await;
+
+    let repo_arg = fx.origin_repo.display().to_string();
+    let base = "main";
+    let head = "slice-810-e2e";
+
+    let scan_resp = call_tool(
+        &fx,
+        10,
+        PR_LIST_TOOL,
+        json!({ "repo": repo_arg, "base": base, "head": head }),
+    )
+    .await;
+    assert_tool_succeeded(&scan_resp, "gh.pr.list");
+    let scan = wait_for_event_count(&fx.repo, "forge.scan.completed", 1).await;
+    assert_eq!(scan[0].payload["wave_id"], fx.wave_id);
+    assert_eq!(scan[0].payload["overlapping_prs"], json!([]));
+
+    run_git(&fx.lease_abs, ["checkout", "-b", head]);
+    stage_git_change(&fx.lease_abs, "feature.txt", "hello from e2e\n");
+    let commit_resp = call_tool(
+        &fx,
+        11,
+        COMMIT_TOOL,
+        json!({ "message": "e2e feature", "idem": "slice-810-e2e-commit" }),
+    )
+    .await;
+    assert_tool_succeeded(&commit_resp, "git.commit");
+    let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
+    let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
+    run_git(&fx.lease_abs, ["push", "-u", "origin", head]);
+
+    let create_resp = call_tool(
+        &fx,
+        12,
+        PR_CREATE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "head": head,
+            "base": base,
+            "title": "E2E feature",
+            "body": "Created by forge workflow E2E"
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
+    let opened = opened_rows[0].clone();
+    assert_wave_event(&opened, &fx.wave_id);
+    assert_eq!(opened.payload["pr_number"], 1);
+    assert_eq!(opened.payload["head_sha"], head_sha);
+    let pr_number = opened.payload["pr_number"].as_u64().expect("pr number");
+
+    let diff_resp = call_tool(
+        &fx,
+        13,
+        PR_DIFF_TOOL,
+        json!({
+            "repo": repo_arg,
+            "pr": pr_number,
+            "base_sha": base_sha,
+            "head_sha": head_sha
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&diff_resp, "gh.pr.diff");
+    let diff_rows = wait_for_event_count(&fx.repo, "forge.pr.diff.read", 1).await;
+    let diff = diff_rows[0].clone();
+    assert_wave_event(&diff, &fx.wave_id);
+    assert_eq!(diff.payload["pr_number"], pr_number);
+    assert_eq!(diff.payload["base_sha"], base_sha);
+    assert_eq!(diff.payload["head_sha"], head_sha);
+    let artifact_path = diff.payload["artifact_path"]
+        .as_str()
+        .expect("artifact_path")
+        .to_string();
+    assert!(
+        !artifact_path.is_empty(),
+        "diff artifact_path must be non-empty"
+    );
+    let artifact = std::fs::read_to_string(&artifact_path).expect("read diff artifact");
+    assert!(
+        artifact.contains("diff --git") && artifact.contains("feature.txt"),
+        "diff artifact must contain the shim patch body: {artifact}"
+    );
+
+    let checks_resp = call_tool(
+        &fx,
+        14,
+        PR_CHECKS_TOOL,
+        json!({ "repo": repo_arg, "pr": pr_number }),
+    )
+    .await;
+    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+    let checks_rows = wait_for_event_count(&fx.repo, "forge.pr.checks", 1).await;
+    let checks = checks_rows[0].clone();
+    assert_wave_event(&checks, &fx.wave_id);
+    assert_eq!(checks.payload["pr_number"], pr_number);
+    assert_eq!(checks.payload["conclusion"], "success");
+
+    let merge_resp = call_tool(
+        &fx,
+        15,
+        PR_MERGE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "pr": pr_number,
+            "phase": "impl",
+            "slice_id": "810"
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    let merged_rows = wait_for_event_count(&fx.repo, "forge.pr.merged", 1).await;
+    let merged = merged_rows[0].clone();
+    assert_wave_event(&merged, &fx.wave_id);
+    assert_eq!(merged.payload["head_sha"], head_sha);
+    assert_eq!(merged.payload["subject"]["pr_number"], pr_number);
+    let merge_sha = merged.payload["merge_sha"]
+        .as_str()
+        .expect("merge_sha string");
+    assert_eq!(merge_sha.len(), 40, "merge sha should be a git-shaped oid");
+
+    let issue_resp = call_tool(
+        &fx,
+        16,
+        ISSUE_CLOSE_TOOL,
+        json!({ "repo": repo_arg, "issue": 810 }),
+    )
+    .await;
+    assert_tool_succeeded(&issue_resp, "gh.issue.close");
+    let issue_rows = wait_for_event_count(&fx.repo, "forge.issue.closed", 1).await;
+    let issue_closed = issue_rows[0].clone();
+    assert_wave_event(&issue_closed, &fx.wave_id);
+    assert_eq!(issue_closed.payload["issue_number"], 810);
+
+    transition_wave_to_done(&fx).await;
+    let done = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["to"] == "done"
+    })
+    .await;
+    assert_eq!(done.payload["from"], "reviewing");
+    assert_eq!(done.payload["to"], "done");
+
+    assert!(opened.id < diff.id, "PR opened must precede diff read");
+    assert!(
+        checks.id < merged.id,
+        "successful checks must precede merge"
+    );
+    assert!(
+        merged.id < issue_closed.id,
+        "merge must precede issue close"
+    );
+    assert!(
+        issue_closed.id < done.id,
+        "issue close must precede done lifecycle transition"
+    );
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+async fn boot_fixture() -> Fixture {
+    let tmp = short_tempdir("gwe").expect("tempdir");
+    let socket_path = tmp.path().join("mcp").join("kernel.sock");
+    let plugins_dir = tmp.path().join("plugins");
+    let plugins_data_dir = tmp.path().join("plugins-data");
+    let wave_cwd = tmp.path().join("wave-cwd");
+    std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
+
+    let origin_repo = tmp.path().join("origin.git");
+    init_bare_origin(&origin_repo, &tmp.path().join("seed"));
+    clone_for_wave(&origin_repo, &wave_cwd);
+
+    let sqlx_repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let events = EventBus::new();
+    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+
+    let cove = repo
+        .cove_create(NewCove {
+            name: "forge-workflow-e2e".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .expect("create cove");
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "forge-workflow-e2e".into(),
+            sort: None,
+            cwd: wave_cwd.display().to_string(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create wave");
+    repo.seed_wave_cove_cache(&wave_cove_cache)
+        .await
+        .expect("seed wave/cove cache");
+
+    let caller = create_worker_caller(&sqlx_repo, &card_role_cache, wave.id.clone()).await;
+    clone_for_worker(&origin_repo, &caller.lease_abs);
+
+    let plugin_host = boot_plugin_host(
+        repo.clone(),
+        plugins_dir.clone(),
+        plugins_data_dir.clone(),
+        events.clone(),
+        write.clone(),
+    )
+    .await;
+    plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
+    wait_for_running(&plugin_host).await;
+
+    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
+    let completion = OperationCompletionBus::new();
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let runtime = Arc::new(
+        OperationRuntime::new(
+            operation_repo.clone(),
+            vec![Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>],
+            events.clone(),
+            completion.clone(),
+            SpawnCtx::new(
+                route_repo,
+                operation_repo,
+                Arc::new(DaemonClient::new_stub()),
+                terminal_renderer,
+                events.clone(),
+                completion,
+            ),
+        )
+        .await
+        .expect("operation runtime"),
+    );
+
+    let plugin_host_cell = Arc::new(OnceCell::new());
+    assert!(plugin_host_cell.set(plugin_host.clone()).is_ok());
+    let operation_runtime_cell = Arc::new(OnceCell::new());
+    assert!(operation_runtime_cell.set(runtime.clone()).is_ok());
+    let server = McpServer::spawn(
+        repo,
+        events.clone(),
+        write.clone(),
+        socket_path.clone(),
+        PathBuf::from("/nonexistent-shim-bin"),
+        build_default_registry(),
+        None,
+        plugin_host_cell,
+        operation_runtime_cell,
+        tmp.path().join("gate-logs"),
+    )
+    .await
+    .expect("spawn McpServer");
+
+    Fixture {
+        _server: server,
+        plugin_host,
+        repo: sqlx_repo,
+        events,
+        write,
+        socket_path,
+        raw_token: caller.raw_token,
+        thread_id: caller.thread_id,
+        wave_id: caller.wave_id,
+        cove_id: cove.id.to_string(),
+        lease_abs: caller.lease_abs,
+        origin_repo,
+        _runtime: runtime,
+        _lease_tmp: caller._lease_tmp,
+        _tmp: tmp,
+    }
+}
+
+async fn create_worker_caller(
+    sqlx_repo: &Arc<SqlxRepo>,
+    card_role_cache: &CardRoleCache,
+    wave_id: WaveId,
+) -> Caller {
+    let card_id = calm_server::model::new_id();
+    let runtime_id = calm_server::model::new_id();
+    let lease_tmp = tempfile::Builder::new()
+        .prefix(".forge-workflow-lease-")
+        .tempdir()
+        .expect("worker lease tempdir");
+    let lease_abs = lease_tmp.path().join("leases").join(&card_id);
+    std::fs::create_dir_all(&lease_abs).expect("create lease dir");
+    let lease_path = lease_abs.display().to_string();
+
+    let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
+    let (_card, _term, mcp_token) = card_with_codex_create_tx(
+        &mut tx,
+        card_id.clone(),
+        &runtime_id,
+        None,
+        wave_id.clone(),
+        None,
+        "/workspace".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Worker,
+        true,
+        card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .expect("mint codex card");
+    let raw_token = match mcp_token {
+        Some(token) => token,
+        None => {
+            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+            let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+            card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+                .await
+                .expect("mint card MCP token");
+            session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+                .await
+                .expect("mint session MCP token");
+            token.into_inner()
+        }
+    };
+    insert_workspace_lease(&mut tx, &card_id, wave_id.as_str(), &lease_path).await;
+    tx.commit().await.expect("commit card tx");
+
+    let thread_id = format!("thread-{card_id}");
+    seed_runtime_thread(sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+
+    Caller {
+        raw_token,
+        thread_id,
+        wave_id: wave_id.to_string(),
+        lease_abs,
+        _lease_tmp: lease_tmp,
+    }
+}
+
+async fn boot_plugin_host(
+    repo: Arc<dyn Repo>,
+    plugins_dir: PathBuf,
+    plugins_data_dir: PathBuf,
+    events: EventBus,
+    write: WriteContext,
+) -> Arc<PluginHost> {
+    let install_dir = plugins_dir.join(PLUGIN_ID);
+    let bin_dir = install_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create plugin bin dir");
+    std::fs::create_dir_all(&plugins_data_dir).expect("create plugin data dir");
+    std::os::unix::fs::symlink(Path::new(FORGE_BIN), bin_dir.join("git-forge"))
+        .expect("symlink git-forge plugin");
+
+    let manifest = read_manifest();
+    let manifest_json = manifest.to_json();
+    let registry = PluginRegistry::empty();
+    registry.insert(manifest, Some(install_dir.clone()));
+    repo.plugin_install(NewPlugin {
+        id: PLUGIN_ID.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: manifest_json,
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
+
+    Arc::new(PluginHost::new_full(
+        Arc::new(registry),
+        repo,
+        plugins_dir,
+        plugins_data_dir,
+        Vec::new(),
+        events,
+        write,
+    ))
+}
+
+async fn insert_workspace_lease(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+    wave_id: &str,
+    path: &str,
+) {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO workspace_leases (
+               lease_id, card_id, wave_id, path, state, lease_owner,
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
+    )
+    .bind(calm_server::model::new_id())
+    .bind(card_id)
+    .bind(wave_id)
+    .bind(path)
+    .bind("test-lease-owner")
+    .bind(now + 60_000)
+    .bind(now)
+    .execute(&mut **tx)
+    .await
+    .expect("insert workspace lease");
+}
+
+async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
+    let mut tx = repo.pool().begin().await.expect("begin runtime tx");
+    let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+        .await
+        .expect("active runtime lookup")
+    {
+        let runtime_id = runtime.id.clone();
+        session_bind_attribution_tx(
+            &mut tx,
+            &runtime_id,
+            ThreadAttribution {
+                runtime_id: runtime_id.clone(),
+                provider: AgentProvider::Codex,
+                thread_id: Some(thread_id.to_string()),
+                session_id: None,
+                active_turn_id: None,
+            },
+        )
+        .await
+        .expect("bind thread attribution");
+        runtime_id
+    } else {
+        let runtime = session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: calm_server::model::new_id(),
+                card_id: card_id.to_string(),
+                kind: WorkerSessionKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Running,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.to_string()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .expect("start runtime");
+        runtime.id
+    };
+    tx.commit().await.expect("commit runtime tx");
+    runtime_id
+}
+
+async fn wait_for_running(host: &Arc<PluginHost>) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(s) = host.status(PLUGIN_ID).await
+            && matches!(s.status, PluginRuntimeStatus::Running)
+        {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("plugin did not reach Running within 5s");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn assert_tools_are_discoverable(fx: &Fixture) {
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.raw_token).await;
+    send_frame(&mut wr, tools_list_frame(2, &fx.thread_id)).await;
+    let list = recv_frame(&mut rd).await;
+    assert!(list.get("error").is_none(), "tools/list errored: {list:#?}");
+    let names = list["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        COMMIT_TOOL,
+        PR_LIST_TOOL,
+        PR_CREATE_TOOL,
+        PR_DIFF_TOOL,
+        PR_CHECKS_TOOL,
+        PR_MERGE_TOOL,
+        ISSUE_CLOSE_TOOL,
+    ] {
+        assert!(
+            names.contains(&expected),
+            "git-forge plugin tool missing from discovery: {expected}; got {names:?}"
+        );
+    }
+}
+
+async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.raw_token).await;
+    send_frame(&mut wr, tools_call_frame(id, name, &fx.thread_id, args)).await;
+    recv_frame(&mut rd).await
+}
+
+fn assert_tool_succeeded(resp: &Value, label: &str) {
+    assert!(
+        resp.get("error").is_none(),
+        "{label} returned JSON-RPC error: {resp:#?}"
+    );
+    assert_eq!(
+        resp["result"]["isError"], false,
+        "{label} returned MCP tool error: {resp:#?}"
+    );
+    assert!(
+        resp["result"]["structuredContent"]["op_id"]
+            .as_str()
+            .is_some(),
+        "{label} response must carry op_id: {resp:#?}"
+    );
+}
+
+async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
+    let rows: Vec<RawEventRow> = sqlx::query_as(
+        "SELECT id, scope_kind, scope_cove, scope_wave, scope_card, payload \
+             FROM events WHERE kind = ?1 ORDER BY id ASC",
+    )
+    .bind(kind)
+    .fetch_all(repo.pool())
+    .await
+    .expect("event rows");
+    rows.into_iter()
+        .map(
+            |(id, scope_kind, _scope_cove, scope_wave, scope_card, payload)| EventRow {
+                id,
+                scope_kind,
+                scope_wave,
+                scope_card,
+                payload: serde_json::from_str(&payload).expect("event payload json"),
+            },
+        )
+        .collect()
+}
+
+async fn wait_for_event_count(repo: &SqlxRepo, kind: &str, expected: usize) -> Vec<EventRow> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rows = event_rows(repo, kind).await;
+        if rows.len() == expected {
+            return rows;
+        }
+        if Instant::now() > deadline {
+            panic!("expected {expected} `{kind}` events, got {}", rows.len());
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_event_matching(
+    repo: &SqlxRepo,
+    kind: &str,
+    predicate: impl Fn(&EventRow) -> bool,
+) -> EventRow {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rows = event_rows(repo, kind).await;
+        if let Some(row) = rows.iter().find(|row| predicate(row)) {
+            return row.clone();
+        }
+        if Instant::now() > deadline {
+            panic!("timed out waiting for matching `{kind}` event; rows: {rows:#?}");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn assert_wave_event(row: &EventRow, wave_id: &str) {
+    assert_eq!(row.scope_kind, "wave");
+    assert_eq!(row.scope_wave.as_deref(), Some(wave_id));
+    assert!(row.scope_card.is_none());
+    assert_eq!(row.payload["wave_id"], wave_id);
+}
+
+async fn transition_wave_to_done(fx: &Fixture) {
+    let wave_id = WaveId::from(fx.wave_id.clone());
+    let scope = EventScope::Wave {
+        wave: wave_id.clone(),
+        cove: CoveId::from(fx.cove_id.clone()),
+    };
+    let actor = ActorId::Kernel;
+    write_with_actor_events_typed::<(), _>(
+        fx.repo.as_ref(),
+        None,
+        &fx.events,
+        &fx.write,
+        move |tx| {
+            let wave_id = wave_id.clone();
+            let scope = scope.clone();
+            let actor = actor.clone();
+            Box::pin(async move {
+                let mut events = Vec::new();
+                for (target, message) in [
+                    (WaveLifecycle::Planning, "e2e planning"),
+                    (WaveLifecycle::Dispatching, "e2e dispatching"),
+                    (WaveLifecycle::Working, "e2e working"),
+                    (WaveLifecycle::Reviewing, "e2e reviewing"),
+                    (WaveLifecycle::Done, "e2e done"),
+                ] {
+                    if let Some(lifecycle_events) =
+                        calm_server::wave_lifecycle::apply_requested_transition_in_tx(
+                            tx,
+                            &wave_id,
+                            target,
+                            &actor,
+                            message.to_string(),
+                        )
+                        .await?
+                    {
+                        events.extend(
+                            lifecycle_events
+                                .into_iter()
+                                .map(|event| (actor.clone(), scope.clone(), event)),
+                        );
+                    }
+                }
+                Ok(((), events))
+            })
+        },
+    )
+    .await
+    .expect("transition wave to done");
+}
+
+fn manifest_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/git-forge/manifest.json")
+}
+
+fn read_manifest() -> Manifest {
+    let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
+    Manifest::parse(&raw).expect("git-forge manifest parses")
+}
+
+fn init_bare_origin(origin: &Path, seed: &Path) {
+    run_git_no_cwd(["init", "--bare", path_str(origin)]);
+    std::fs::create_dir_all(seed).expect("create seed repo");
+    run_git(seed, ["init"]);
+    run_git(
+        seed,
+        ["config", "user.email", "forge-workflow@example.test"],
+    );
+    run_git(seed, ["config", "user.name", "Forge Workflow Test"]);
+    run_git(seed, ["branch", "-M", "main"]);
+    std::fs::write(seed.join("README.md"), "initial\n").expect("write README");
+    run_git(seed, ["add", "README.md"]);
+    run_git(seed, ["commit", "-m", "initial"]);
+    run_git(seed, ["remote", "add", "origin", path_str(origin)]);
+    run_git(seed, ["push", "-u", "origin", "main"]);
+    run_git_no_cwd([
+        "--git-dir",
+        path_str(origin),
+        "symbolic-ref",
+        "HEAD",
+        "refs/heads/main",
+    ]);
+}
+
+fn clone_for_wave(origin: &Path, target: &Path) {
+    run_git_no_cwd(["clone", path_str(origin), path_str(target)]);
+    configure_repo_identity(target);
+}
+
+fn clone_for_worker(origin: &Path, target: &Path) {
+    run_git_no_cwd(["clone", path_str(origin), path_str(target)]);
+    configure_repo_identity(target);
+}
+
+fn configure_repo_identity(repo: &Path) {
+    run_git(
+        repo,
+        ["config", "user.email", "forge-workflow@example.test"],
+    );
+    run_git(repo, ["config", "user.name", "Forge Workflow Test"]);
+}
+
+fn stage_git_change(repo: &Path, name: &str, contents: &str) {
+    std::fs::write(repo.join(name), contents).expect("write git change");
+    run_git(repo, ["add", name]);
+}
+
+fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
+    run_git_inner(Some(repo), args);
+}
+
+fn run_git_no_cwd<const N: usize>(args: [&str; N]) {
+    run_git_inner(None, args);
+}
+
+fn run_git_capture<const N: usize>(repo: &Path, args: [&str; N]) -> String {
+    let output = run_git_output(Some(repo), args);
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn run_git_inner<const N: usize>(repo: Option<&Path>, args: [&str; N]) {
+    let output = run_git_output(repo, args);
+    assert!(
+        output.status.success(),
+        "git failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_git_output<const N: usize>(repo: Option<&Path>, args: [&str; N]) -> std::process::Output {
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    if let Some(repo) = repo {
+        cmd.current_dir(repo);
+    }
+    cmd.output().expect("run git")
+}
+
+fn path_str(path: &Path) -> &str {
+    path.to_str().expect("test paths are utf-8")
+}
+
+fn write_gh_shim(dir: &Path) {
+    let path = dir.join("gh");
+    std::fs::write(&path, GH_SHIM).expect("write gh shim");
+    let mut perms = std::fs::metadata(&path)
+        .expect("gh shim metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).expect("chmod gh shim");
+}
+
+fn prepend_to_path(dir: &Path) -> OsString {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut value = OsString::from(dir.as_os_str());
+    value.push(OsStr::new(":"));
+    value.push(current);
+    value
+}
+
+fn short_tempdir(prefix: &str) -> std::io::Result<TempDir> {
+    let base = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("forge-workflow-e2e-tmp");
+    std::fs::create_dir_all(&base)?;
+    tempfile::Builder::new().prefix(prefix).tempdir_in(base)
+}
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match self.previous.as_ref() {
+            Some(previous) => unsafe { std::env::set_var(self.key, previous) },
+            None => unsafe { std::env::remove_var(self.key) },
+        }
+    }
+}
+
+const GH_SHIM: &str = r#"#!/bin/sh
+# Hermetic gh shim for forge_workflow_e2e.
+# State is derived only from --repo so the kernel's env-cleared subprocess can
+# replay probes without test-only variables. The merge command is idempotent:
+# repeated merges for the same PR return the original recorded merge oid.
+
+get_arg() {
+  wanted=$1
+  shift
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "$wanted" ]; then
+      shift
+      if [ "$#" -gt 0 ]; then
+        printf '%s\n' "$1"
+        return 0
+      fi
+      return 1
+    fi
+    shift
+  done
+  return 1
+}
+
+state_dir_for() {
+  printf '%s.shimstate\n' "$1"
+}
+
+ensure_state() {
+  repo=$1
+  state=$(state_dir_for "$repo")
+  mkdir -p "$state/prs" "$state/issues"
+  printf '%s\n' "$state"
+}
+
+find_pr() {
+  selector=$1
+  state=$2
+  for pr_dir in "$state"/prs/*; do
+    [ -d "$pr_dir" ] || continue
+    number=$(cat "$pr_dir/number")
+    head=$(cat "$pr_dir/head")
+    if [ "$selector" = "$number" ] || [ "$selector" = "$head" ]; then
+      printf '%s\n' "$pr_dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_pr_by_head() {
+  wanted_head=$1
+  state=$2
+  for pr_dir in "$state"/prs/*; do
+    [ -d "$pr_dir" ] || continue
+    head=$(cat "$pr_dir/head")
+    if [ "$wanted_head" = "$head" ]; then
+      printf '%s\n' "$pr_dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+print_pr_json() {
+  pr_dir=$1
+  number=$(cat "$pr_dir/number")
+  head_sha=$(cat "$pr_dir/headRefOid")
+  printf '{"number":%s,"headRefOid":"%s"}\n' "$number" "$head_sha"
+}
+
+[ "$#" -ge 2 ] || {
+  echo "unsupported gh invocation" >&2
+  exit 2
+}
+
+area=$1
+verb=$2
+shift 2
+
+case "$area:$verb" in
+  pr:list)
+    repo=$(get_arg --repo "$@") || exit 2
+    base=$(get_arg --base "$@" || true)
+    head=$(get_arg --head "$@" || true)
+    state=$(ensure_state "$repo")
+    printf '['
+    sep=
+    for pr_dir in "$state"/prs/*; do
+      [ -d "$pr_dir" ] || continue
+      merged=$(cat "$pr_dir/merged")
+      pr_base=$(cat "$pr_dir/base")
+      pr_head=$(cat "$pr_dir/head")
+      if [ "$merged" = "true" ]; then
+        continue
+      fi
+      if [ -n "$base" ] && [ "$base" != "$pr_base" ]; then
+        continue
+      fi
+      if [ -n "$head" ] && [ "$head" != "$pr_head" ]; then
+        continue
+      fi
+      number=$(cat "$pr_dir/number")
+      printf '%s%s' "$sep" "$number"
+      sep=,
+    done
+    printf ']\n'
+    ;;
+  pr:create)
+    repo=$(get_arg --repo "$@") || exit 2
+    head=$(get_arg --head "$@") || exit 2
+    base=$(get_arg --base "$@") || exit 2
+    state=$(ensure_state "$repo")
+    if pr_dir=$(find_pr_by_head "$head" "$state"); then
+      print_pr_json "$pr_dir"
+      exit 0
+    fi
+    next_file="$state/next_pr"
+    if [ -f "$next_file" ]; then
+      number=$(cat "$next_file")
+    else
+      number=1
+    fi
+    next=$((number + 1))
+    printf '%s\n' "$next" > "$next_file"
+    head_sha=$(git --git-dir "$repo" rev-parse "$head")
+    pr_dir="$state/prs/$number"
+    mkdir -p "$pr_dir"
+    printf '%s\n' "$number" > "$pr_dir/number"
+    printf '%s\n' "$head" > "$pr_dir/head"
+    printf '%s\n' "$base" > "$pr_dir/base"
+    printf '%s\n' "$head_sha" > "$pr_dir/headRefOid"
+    printf 'false\n' > "$pr_dir/merged"
+    print_pr_json "$pr_dir"
+    ;;
+  pr:diff)
+    [ "$#" -ge 1 ] || exit 2
+    selector=$1
+    repo=$(get_arg --repo "$@") || exit 2
+    state=$(ensure_state "$repo")
+    pr_dir=$(find_pr "$selector" "$state") || exit 1
+    base=$(cat "$pr_dir/base")
+    head=$(cat "$pr_dir/head")
+    patch_file="$state/diff.$$"
+    if git --git-dir "$repo" diff --patch "$base...$head" > "$patch_file" && [ -s "$patch_file" ]; then
+      cat "$patch_file"
+    else
+      printf 'diff --git a/feature.txt b/feature.txt\n'
+      printf 'new file mode 100644\n'
+      printf '--- /dev/null\n'
+      printf '+++ b/feature.txt\n'
+      printf '@@ -0,0 +1 @@\n'
+      printf '+hello from e2e\n'
+    fi
+    rm -f "$patch_file"
+    ;;
+  pr:view)
+    [ "$#" -ge 1 ] || exit 2
+    selector=$1
+    repo=$(get_arg --repo "$@") || exit 2
+    json_fields=$(get_arg --json "$@" || true)
+    state=$(ensure_state "$repo")
+    pr_dir=$(find_pr "$selector" "$state") || exit 1
+    number=$(cat "$pr_dir/number")
+    head_sha=$(cat "$pr_dir/headRefOid")
+    merged=$(cat "$pr_dir/merged")
+    case "$json_fields" in
+      state)
+        if [ "$merged" = "true" ]; then
+          printf '{"state":"MERGED"}\n'
+        else
+          printf '{"state":"OPEN"}\n'
+        fi
+        ;;
+      number,headRefOid)
+        printf '{"number":%s,"headRefOid":"%s"}\n' "$number" "$head_sha"
+        ;;
+      headRefOid,mergeCommit)
+        if [ "$merged" = "true" ]; then
+          merge_sha=$(cat "$pr_dir/merge_sha")
+          printf '{"headRefOid":"%s","mergeCommit":{"oid":"%s"}}\n' "$head_sha" "$merge_sha"
+        else
+          printf '{"headRefOid":"%s","mergeCommit":null}\n' "$head_sha"
+        fi
+        ;;
+      statusCheckRollup)
+        printf '{"conclusion":"success"}\n'
+        ;;
+      *)
+        echo "unsupported gh pr view --json $json_fields" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  pr:merge)
+    [ "$#" -ge 1 ] || exit 2
+    selector=$1
+    repo=$(get_arg --repo "$@") || exit 2
+    state=$(ensure_state "$repo")
+    pr_dir=$(find_pr "$selector" "$state") || exit 1
+    head_sha=$(cat "$pr_dir/headRefOid")
+    if [ "$(cat "$pr_dir/merged")" = "true" ]; then
+      merge_sha=$(cat "$pr_dir/merge_sha")
+    else
+      number=$(cat "$pr_dir/number")
+      merge_sha=$(printf '%s' "merge:$number:$head_sha" | git hash-object --stdin)
+      printf '%s\n' "$merge_sha" > "$pr_dir/merge_sha"
+      printf 'true\n' > "$pr_dir/merged"
+    fi
+    printf '{"headRefOid":"%s","mergeCommit":{"oid":"%s"}}\n' "$head_sha" "$merge_sha"
+    ;;
+  issue:view)
+    [ "$#" -ge 1 ] || exit 2
+    issue=$1
+    repo=$(get_arg --repo "$@") || exit 2
+    json_fields=$(get_arg --json "$@" || true)
+    jq_expr=$(get_arg --jq "$@" || true)
+    state=$(ensure_state "$repo")
+    issue_state=OPEN
+    if [ -f "$state/issues/$issue.closed" ]; then
+      issue_state=CLOSED
+    fi
+    if [ "$json_fields" = "state" ]; then
+      if [ "$jq_expr" = 'if .state=="CLOSED" then empty else error end' ]; then
+        [ "$issue_state" = "CLOSED" ] && exit 0
+        exit 1
+      fi
+      printf '{"state":"%s"}\n' "$issue_state"
+    else
+      printf 'issue %s %s\n' "$issue" "$issue_state"
+    fi
+    ;;
+  issue:close)
+    [ "$#" -ge 1 ] || exit 2
+    issue=$1
+    repo=$(get_arg --repo "$@") || exit 2
+    state=$(ensure_state "$repo")
+    printf 'closed\n' > "$state/issues/$issue.closed"
+    printf 'closed issue %s\n' "$issue"
+    ;;
+  *)
+    echo "unsupported gh invocation: $area $verb" >&2
+    exit 2
+    ;;
+esac
+"#;
