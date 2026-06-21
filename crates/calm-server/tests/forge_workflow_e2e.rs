@@ -69,6 +69,7 @@ struct Fixture {
     origin_repo: PathBuf,
     _runtime: Arc<OperationRuntime>,
     _lease_tmp: TempDir,
+    _socket_tmp: TempDir,
     _tmp: TempDir,
 }
 
@@ -105,10 +106,10 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let path_dir = short_tempdir("gh-path").expect("gh shim PATH tempdir");
+    let path_dir = short_tempdir("p").expect("gh shim PATH tempdir");
     write_gh_shim(path_dir.path());
     let path_value = prepend_to_path(path_dir.path());
-    let results_dir = short_tempdir("gwe-results").expect("forge results tempdir");
+    let results_dir = short_tempdir("r").expect("forge results tempdir");
     let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
     let _path = EnvGuard::set("PATH", path_value);
@@ -301,10 +302,10 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let path_dir = short_tempdir("gh-path").expect("gh shim PATH tempdir");
+    let path_dir = short_tempdir("p").expect("gh shim PATH tempdir");
     write_gh_shim(path_dir.path());
     let path_value = prepend_to_path(path_dir.path());
-    let results_dir = short_tempdir("gwe-results").expect("forge results tempdir");
+    let results_dir = short_tempdir("r").expect("forge results tempdir");
     let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
     let _path = EnvGuard::set("PATH", path_value);
@@ -421,10 +422,10 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let path_dir = short_tempdir("gh-path").expect("gh shim PATH tempdir");
+    let path_dir = short_tempdir("p").expect("gh shim PATH tempdir");
     write_gh_shim(path_dir.path());
     let path_value = prepend_to_path(path_dir.path());
-    let results_dir = short_tempdir("gwe-results").expect("forge results tempdir");
+    let results_dir = short_tempdir("r").expect("forge results tempdir");
     let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
     let _path = EnvGuard::set("PATH", path_value);
@@ -487,8 +488,9 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
 }
 
 async fn boot_fixture() -> Fixture {
-    let tmp = short_tempdir("gwe").expect("tempdir");
-    let socket_path = tmp.path().join("mcp").join("kernel.sock");
+    let tmp = short_tempdir("w").expect("tempdir");
+    let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
+    let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     let wave_cwd = tmp.path().join("wave-cwd");
@@ -604,6 +606,7 @@ async fn boot_fixture() -> Fixture {
         origin_repo,
         _runtime: runtime,
         _lease_tmp: caller._lease_tmp,
+        _socket_tmp: socket_tmp,
         _tmp: tmp,
     }
 }
@@ -1320,9 +1323,15 @@ fn short_tempdir(prefix: &str) -> std::io::Result<TempDir> {
     let base = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("forge-workflow-e2e-tmp");
+        .join("fwe");
     std::fs::create_dir_all(&base)?;
     tempfile::Builder::new().prefix(prefix).tempdir_in(base)
+}
+
+fn socket_tempdir() -> std::io::Result<TempDir> {
+    let base = std::env::temp_dir().join("fwe-s");
+    std::fs::create_dir_all(&base)?;
+    tempfile::Builder::new().prefix("s").tempdir_in(base)
 }
 
 struct EnvGuard {
