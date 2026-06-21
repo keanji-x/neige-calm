@@ -115,11 +115,10 @@ impl CodexRolloutFlowSource {
             }
 
             if !self.runtime_is_alive().await {
-                match find_thread_path_by_id_str(&self.codex_home, thread_id).await {
-                    Ok(Some(path)) => return Ok(Some(path)),
-                    Ok(None) => {}
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                    Err(err) => return Err(CoreError::Io(err)),
+                if let Ok(Some(path)) =
+                    find_thread_path_by_id_str(&self.codex_home, thread_id).await
+                {
+                    return Ok(Some(path));
                 }
                 tracing::info!(
                     card_id = %self.runtime.card_id,
