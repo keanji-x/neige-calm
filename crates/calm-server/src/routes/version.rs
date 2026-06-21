@@ -128,7 +128,13 @@ pub const API_VERSION: &str = "1";
 ///   zod `WireEvent` union doesn't know the new discriminator, so its
 ///   workflow-registration frames would silently drop. The compat modal
 ///   forces a hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 10;
+/// * `11` — issue body read events (issue #760 slice ④-b):
+///   `forge.issue.read` joins the WS event union with
+///   `SYNC_EVENT_VERSION` bumped 9 → 10 in lockstep. A v10 frontend's
+///   zod `WireEvent` union doesn't know the new discriminator, so its
+///   issue-read frames would silently drop. The compat modal forces a
+///   hard refresh.
+pub const WEB_COMPAT_VERSION: u32 = 11;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,

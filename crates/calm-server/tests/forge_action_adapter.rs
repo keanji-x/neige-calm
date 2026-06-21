@@ -1589,11 +1589,13 @@ async fn forge_action_pr_diff_persists_artifact_and_injects_path() -> CalmResult
         .submit(FORGE_ACTION_KIND, op_key(idem), input)
         .await?;
     let result = boot.runtime.wait(&op_id).await?;
-    assert!(
-        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
-        "{:?}",
-        result.outcome
-    );
+    match result.outcome {
+        OperationOutcome::Succeeded { result } => {
+            assert_eq!(result["event_kind"], "forge.pr.diff.read");
+            assert!(result.get("stdout").is_none());
+        }
+        other => panic!("expected pr diff read success, got {other:?}"),
+    }
 
     let event = latest_event_payload(&boot.repo, "forge.pr.diff.read").await;
     assert_eq!(event["wave_id"], json!(boot.wave_id));
@@ -1605,6 +1607,58 @@ async fn forge_action_pr_diff_persists_artifact_and_injects_path() -> CalmResult
         json!(result_path.display().to_string())
     );
     assert_eq!(fs::read_to_string(&result_path)?, diff_body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn forge_action_issue_read_returns_body_inline_persists_artifact_and_emits_event()
+-> CalmResult<()> {
+    let boot = TestBoot::new().await;
+    let action = boot.temp_path("issue-read-action.sh");
+    let issue_body = "# Issue 813\n\nImplement the read path.\n";
+    write_script(
+        &action,
+        "#!/bin/sh\nprintf '%s' '# Issue 813\n\nImplement the read path.\n'\n",
+    );
+
+    let result_path = boot.temp_path("issue-read-result.md");
+    let idem = "forge-issue-read-artifact";
+    let mut input = payload(
+        &boot,
+        idem,
+        vec![action.display().to_string()],
+        result_path.clone(),
+    );
+    input["subject"] = Value::Null;
+    input["event_spec"] = serde_json::to_value(event_spec_for("forge.issue.read"))?;
+    input["context"] = json!({ "issue_number": 813 });
+
+    let op_id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key(idem), input)
+        .await?;
+    let result = boot.runtime.wait(&op_id).await?;
+    match result.outcome {
+        OperationOutcome::Succeeded { result } => {
+            assert_eq!(result["stdout"], issue_body);
+            assert_eq!(result["event_kind"], "forge.issue.read");
+            assert_eq!(result["event"]["issue_number"], 813);
+            assert_eq!(
+                result["event"]["artifact_path"],
+                result_path.display().to_string()
+            );
+        }
+        other => panic!("expected issue read success, got {other:?}"),
+    }
+
+    let event = latest_event_payload(&boot.repo, "forge.issue.read").await;
+    assert_eq!(event["wave_id"], json!(boot.wave_id));
+    assert_eq!(event["issue_number"], json!(813));
+    assert_eq!(
+        event["artifact_path"],
+        json!(result_path.display().to_string())
+    );
+    assert_eq!(fs::read_to_string(&result_path)?, issue_body);
     Ok(())
 }
 

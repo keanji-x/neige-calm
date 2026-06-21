@@ -657,6 +657,15 @@ export const forgePrChecksSchema = z.object({
   }),
 });
 
+export const forgeIssueReadSchema = z.object({
+  ev: z.literal('forge.issue.read'),
+  data: z.object({
+    wave_id: z.string(),
+    issue_number: z.number(),
+    artifact_path: z.string(),
+  }),
+});
+
 export const forgeIssueClosedSchema = z.object({
   ev: z.literal('forge.issue.closed'),
   data: z.object({
@@ -780,6 +789,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   forgePrOpenedSchema,
   forgePrDiffReadSchema,
   forgePrChecksSchema,
+  forgeIssueReadSchema,
   forgeIssueClosedSchema,
   worktreeProvisionedSchema,
   worktreeRemovedSchema,
@@ -837,6 +847,7 @@ export type ForgeScanCompletedEvent = z.infer<typeof forgeScanCompletedSchema>;
 export type ForgePrOpenedEvent = z.infer<typeof forgePrOpenedSchema>;
 export type ForgePrDiffReadEvent = z.infer<typeof forgePrDiffReadSchema>;
 export type ForgePrChecksEvent = z.infer<typeof forgePrChecksSchema>;
+export type ForgeIssueReadEvent = z.infer<typeof forgeIssueReadSchema>;
 export type ForgeIssueClosedEvent = z.infer<typeof forgeIssueClosedSchema>;
 export type WorktreeProvisionedEvent = z.infer<typeof worktreeProvisionedSchema>;
 export type WorktreeRemovedEvent = z.infer<typeof worktreeRemovedSchema>;

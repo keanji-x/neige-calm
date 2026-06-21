@@ -204,7 +204,6 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
     let base = "main";
     let head = "slice-810-e2e";
 
-    let before_issue_view_events = forge_event_count(&fx.repo).await;
     let issue_view_resp = call_tool(
         &fx,
         9,
@@ -215,10 +214,28 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
     assert_tool_succeeded(&issue_view_resp, "gh.issue.view");
     let issue_view_op_id = op_id_from_response(&issue_view_resp);
     wait_for_operation_phase(&fx.repo, &issue_view_op_id, "succeeded").await;
+    let issue_body = "# Issue 810\n\nFake issue body for issue-development ingestion.\n";
     assert_eq!(
-        forge_event_count(&fx.repo).await,
-        before_issue_view_events,
-        "gh.issue.view is resultless and must not persist forge events"
+        issue_view_resp["result"]["structuredContent"]["result"]["stdout"], issue_body,
+        "gh.issue.view must return the issue body inline"
+    );
+    let issue_read_rows = wait_for_event_count(&fx.repo, "forge.issue.read", 1).await;
+    let issue_read = issue_read_rows[0].clone();
+    assert_wave_event(&issue_read, &fx.wave_id);
+    assert_eq!(issue_read.payload["issue_number"], json!(810));
+    let issue_artifact_path = issue_read.payload["artifact_path"]
+        .as_str()
+        .expect("issue read artifact_path")
+        .to_string();
+    assert!(
+        !issue_artifact_path.is_empty(),
+        "issue read artifact_path must be non-empty"
+    );
+    let issue_artifact =
+        std::fs::read_to_string(&issue_artifact_path).expect("read issue body artifact");
+    assert_eq!(
+        issue_artifact, issue_body,
+        "issue read artifact must contain the shim issue body"
     );
 
     let scan_resp = call_tool(
@@ -281,6 +298,12 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
     )
     .await;
     assert_tool_succeeded(&diff_resp, "gh.pr.diff");
+    assert!(
+        diff_resp["result"]["structuredContent"]["result"]
+            .get("stdout")
+            .is_none(),
+        "gh.pr.diff must not inline patch stdout"
+    );
     let diff_rows = wait_for_event_count(&fx.repo, "forge.pr.diff.read", 1).await;
     let diff = diff_rows[0].clone();
     assert_wave_event(&diff, &fx.wave_id);
@@ -1396,13 +1419,6 @@ async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
         .collect()
 }
 
-async fn forge_event_count(repo: &SqlxRepo) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind LIKE 'forge.%'")
-        .fetch_one(repo.pool())
-        .await
-        .expect("forge event count")
-}
-
 async fn wait_for_event_count(repo: &SqlxRepo, kind: &str, expected: usize) -> Vec<EventRow> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -1958,16 +1974,24 @@ case "$area:$verb" in
     issue=$1
     repo=$(get_arg --repo "$@") || exit 2
     json_fields=$(get_arg --json "$@" || true)
+    jq_expr=$(get_arg --jq "$@" || true)
     state=$(ensure_state "$repo")
     issue_state=OPEN
     if [ -f "$state/issues/$issue.closed" ]; then
       issue_state=CLOSED
     fi
-    if [ "$json_fields" = "state" ]; then
-      printf '{"state":"%s"}\n' "$issue_state"
-    else
-      printf 'issue %s %s\n' "$issue" "$issue_state"
-    fi
+    case "$json_fields:$jq_expr" in
+      state:*)
+        printf '{"state":"%s"}\n' "$issue_state"
+        ;;
+      body:.body)
+        printf '# Issue %s\n\nFake issue body for issue-development ingestion.\n' "$issue"
+        ;;
+      *)
+        echo "unsupported gh issue view --json $json_fields --jq $jq_expr" >&2
+        exit 2
+        ;;
+    esac
     ;;
   issue:close)
     [ "$#" -ge 1 ] || exit 2

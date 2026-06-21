@@ -459,12 +459,16 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
             issue.to_string(),
             "--repo".into(),
             repo.clone(),
+            "--json".into(),
+            "body".into(),
+            "--jq".into(),
+            ".body".into(),
         ],
-        format!("gh.issue.view:{repo}:{issue}"),
+        format!("gh.issue.view:v2:{repo}:{issue}"),
+        Some(event_spec("forge.issue.read", [])),
+        json!({"issue_number": issue}),
         None,
-        json!({}),
-        None,
-        true,
+        false,
     )
 }
 
@@ -1017,17 +1021,27 @@ mod tests {
                     "view",
                     "808",
                     "--repo",
-                    "owner/repo"
+                    "owner/repo",
+                    "--json",
+                    "body",
+                    "--jq",
+                    ".body"
                 ],
-                "idem_key": "gh.issue.view:owner/repo:808",
-                "event_spec": null,
+                "idem_key": "gh.issue.view:v2:owner/repo:808",
+                "event_spec": {
+                    "event_kind": "forge.issue.read",
+                    "fields": {}
+                },
                 "subject": null,
-                "context": {},
+                "context": {
+                    "issue_number": 808
+                },
                 "probe": null,
-                "parked": true
+                "parked": false
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_no_reserved_context(&payload, &["wave_id", "artifact_path"]);
+        assert_supported_event_kind(&payload);
     }
 
     #[test]
