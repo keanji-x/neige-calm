@@ -155,14 +155,25 @@ function ConvoEntry({
 
   if (entry.kind === 'run') {
     const exitFailed = entry.exitCode != null && entry.exitCode !== 0;
+    const statusWarn = entry.status !== '' && entry.status !== 'completed';
     const duration = durationText(entry.durationMs);
     return (
-      <section className="report-convo-entry report-convo-entry--run">
+      <section
+        className={
+          'report-convo-entry report-convo-entry--run' +
+          (statusWarn ? ' report-convo-entry--warn' : '')
+        }
+      >
         <EntryMeta author="Command" atMs={entry.atMs} />
         <div className="report-convo-artifact-head">
           <code className="report-convo-command">
             {entry.command || '(command)'}
           </code>
+          {statusWarn && (
+            <span className="report-convo-chip report-convo-chip--warn">
+              {entry.status}
+            </span>
+          )}
           <span
             className={
               'report-convo-chip' +
@@ -189,11 +200,13 @@ function ConvoEntry({
     const duration = durationText(entry.durationMs);
     const author =
       [entry.server, entry.tool].filter(Boolean).join(' · ') || 'Tool';
+    const statusWarn = entry.status !== '' && entry.status !== 'completed';
+    const warn = entry.isError || statusWarn;
     return (
       <section
         className={
           'report-convo-entry report-convo-entry--tool' +
-          (entry.isError ? ' report-convo-entry--warn' : '')
+          (warn ? ' report-convo-entry--warn' : '')
         }
       >
         <EntryMeta author={author} atMs={entry.atMs} />
@@ -201,6 +214,11 @@ function ConvoEntry({
           {entry.isError && (
             <span className="report-convo-chip report-convo-chip--warn">
               error
+            </span>
+          )}
+          {!entry.isError && statusWarn && (
+            <span className="report-convo-chip report-convo-chip--warn">
+              {entry.status}
             </span>
           )}
           {duration != null && (

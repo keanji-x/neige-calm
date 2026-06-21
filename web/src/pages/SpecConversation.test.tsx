@@ -215,6 +215,23 @@ function harnessPopulatedCommandRow(id: number) {
   };
 }
 
+function harnessDeclinedCommandRow(id: number) {
+  return {
+    ...harnessCommandRow(id),
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `cmd_${id}`,
+        type: 'commandExecution',
+        status: 'declined',
+        command: 'npm test',
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+  };
+}
+
 function harnessReasoningRow(
   id: number,
   {
@@ -282,6 +299,25 @@ function harnessToolRow(
       turnId: 'turn',
     }),
     created_at_ms: 1780977420000 + id,
+  };
+}
+
+function harnessDeclinedToolRow(id: number) {
+  return {
+    ...harnessToolRow(id),
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        id: `tool_${id}`,
+        type: 'mcpToolCall',
+        status: 'declined',
+        server: 'filesystem',
+        tool: 'read_file',
+        arguments: { path: 'src/app.ts' },
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
   };
 }
 
@@ -860,6 +896,23 @@ describe('SpecConversation', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders declined command executions with status warnings', async () => {
+    mocks.listHarnessItems.mockResolvedValue([harnessDeclinedCommandRow(7)]);
+
+    await renderHarness();
+
+    const command = await screen.findByText('npm test');
+    const runEntry = command.closest('.report-convo-entry--run');
+    expect(runEntry).not.toBeNull();
+    expect(runEntry).toHaveClass('report-convo-entry--warn');
+    expect(within(runEntry as HTMLElement).getByText('declined')).toHaveClass(
+      'report-convo-chip--warn',
+    );
+    expect(within(runEntry as HTMLElement).getByText('exit n/a')).toHaveClass(
+      'report-convo-chip',
+    );
+  });
+
   it('renders tool calls with warning and details blocks', async () => {
     mocks.listHarnessItems.mockResolvedValue([
       harnessToolRow(9, { errored: true }),
@@ -894,6 +947,20 @@ describe('SpecConversation', () => {
     expect(
       within(resultEntry as HTMLElement).getByText('Result').closest('details'),
     ).not.toBeNull();
+  });
+
+  it('renders declined tool calls with status warnings', async () => {
+    mocks.listHarnessItems.mockResolvedValue([harnessDeclinedToolRow(9)]);
+
+    await renderHarness();
+
+    const author = await screen.findByText('filesystem · read_file');
+    const toolEntry = author.closest('.report-convo-entry--tool');
+    expect(toolEntry).not.toBeNull();
+    expect(toolEntry).toHaveClass('report-convo-entry--warn');
+    expect(within(toolEntry as HTMLElement).getByText('declined')).toHaveClass(
+      'report-convo-chip--warn',
+    );
   });
 
   it('renders file changes with status warnings and empty fallbacks', async () => {

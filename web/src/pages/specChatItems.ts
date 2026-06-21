@@ -32,6 +32,7 @@ export type ChatEntry =
   | SystemChatEntry
   | (ChatEntryBase & {
       kind: 'run';
+      status: string;
       command: string;
       output: string;
       exitCode: number | null;
@@ -44,6 +45,7 @@ export type ChatEntry =
       args: string;
       result: string;
       isError: boolean;
+      status: string;
       durationMs: number | null;
     })
   | (ChatEntryBase & {
@@ -227,6 +229,7 @@ function parseCommandExecution(
   return {
     id: row.id,
     kind: 'run',
+    status: stringField(item?.status),
     command: stringField(item?.command),
     output: stringField(item?.aggregatedOutput),
     exitCode: numberField(item?.exitCode),
@@ -246,6 +249,7 @@ function parseMcpToolCall(row: HarnessItem, params: ParsedParams): ChatEntry {
     args: displayJson(item?.arguments),
     result: displayJson(error ?? item?.result),
     isError: error != null,
+    status: stringField(item?.status),
     durationMs: numberField(item?.durationMs),
     atMs: completedAtMs(row, params),
   };

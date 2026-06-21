@@ -190,6 +190,7 @@ describe('parseHarnessItem', () => {
           item: {
             id: 'cmd_1',
             type: 'commandExecution',
+            status: 'completed',
             command: 'npm test',
             aggregatedOutput: 'ok',
             exitCode: 0,
@@ -201,11 +202,36 @@ describe('parseHarnessItem', () => {
 
     expect(entry).toMatchObject({
       kind: 'run',
+      status: 'completed',
       command: 'npm test',
       output: 'ok',
       exitCode: 0,
       durationMs: 1234,
       atMs: 1780977421069,
+    });
+  });
+
+  it('threads declined command execution status without an exit code', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'commandExecution',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'cmd_1',
+            type: 'commandExecution',
+            status: 'declined',
+            command: 'npm test',
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'run',
+      status: 'declined',
+      command: 'npm test',
+      exitCode: null,
     });
   });
 
@@ -218,6 +244,7 @@ describe('parseHarnessItem', () => {
           item: {
             id: 'tool_1',
             type: 'mcpToolCall',
+            status: 'failed',
             server: 'filesystem',
             tool: 'read_file',
             arguments: { path: 'src/app.ts' },
@@ -235,7 +262,34 @@ describe('parseHarnessItem', () => {
       args: JSON.stringify({ path: 'src/app.ts' }, null, 2),
       result: JSON.stringify({ message: 'denied' }, null, 2),
       isError: true,
+      status: 'failed',
       durationMs: 42,
+    });
+  });
+
+  it('threads declined MCP tool status without an error', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'mcpToolCall',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'tool_1',
+            type: 'mcpToolCall',
+            status: 'declined',
+            server: 'filesystem',
+            tool: 'read_file',
+            arguments: { path: 'src/app.ts' },
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'tool',
+      status: 'declined',
+      isError: false,
+      result: '',
     });
   });
 
