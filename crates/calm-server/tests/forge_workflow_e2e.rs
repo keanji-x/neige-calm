@@ -1600,17 +1600,12 @@ case "$area:$verb" in
     issue=$1
     repo=$(get_arg --repo "$@") || exit 2
     json_fields=$(get_arg --json "$@" || true)
-    jq_expr=$(get_arg --jq "$@" || true)
     state=$(ensure_state "$repo")
     issue_state=OPEN
     if [ -f "$state/issues/$issue.closed" ]; then
       issue_state=CLOSED
     fi
     if [ "$json_fields" = "state" ]; then
-      if [ "$jq_expr" = 'if .state=="CLOSED" then empty else error end' ]; then
-        [ "$issue_state" = "CLOSED" ] && exit 0
-        exit 1
-      fi
       printf '{"state":"%s"}\n' "$issue_state"
     else
       printf 'issue %s %s\n' "$issue" "$issue_state"

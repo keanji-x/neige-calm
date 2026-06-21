@@ -450,6 +450,9 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
     )
 }
 
+const ISSUE_CLOSE_PROBE_SCRIPT: &str = "out=$(gh issue view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
+     case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
+
 fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
     let issue = required_u64(args, "issue")?;
@@ -466,20 +469,15 @@ fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
         Some(event_spec("forge.issue.closed", [])),
         json!({ "issue_number": issue }),
         Some(json!({
-            // Real `gh --jq` maps a jq filter error to its generic exit 1; the
-            // hermetic E2E asserts that CLOSED => 0/Landed and OPEN => 1/NotLanded
-            // contract because exercising real `gh` here needs network/auth.
+            // Verdict-only recovery: CLOSED => 0/Landed, open => 1/NotLanded,
+            // and gh invocation failure => 3/Unknown so infra outages stay retryable.
             "probe_argv": [
-                "gh",
-                "issue",
-                "view",
+                "sh",
+                "-c",
+                ISSUE_CLOSE_PROBE_SCRIPT,
+                "sh",
                 issue.to_string(),
-                "--repo",
-                repo,
-                "--json",
-                "state",
-                "--jq",
-                "if .state==\"CLOSED\" then empty else error end"
+                repo
             ]
         })),
         true,
@@ -996,6 +994,7 @@ mod tests {
 
     #[test]
     fn lowers_gh_issue_close() {
+        let expected_probe_script = "out=$(gh issue view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
         let payload = lower(
             "gh.issue.close",
             &json!({
@@ -1024,16 +1023,12 @@ mod tests {
                 "context": { "issue_number": 808 },
                 "probe": {
                     "probe_argv": [
-                        "gh",
-                        "issue",
-                        "view",
+                        "sh",
+                        "-c",
+                        expected_probe_script,
+                        "sh",
                         "808",
-                        "--repo",
-                        "owner/repo",
-                        "--json",
-                        "state",
-                        "--jq",
-                        "if .state==\"CLOSED\" then empty else error end"
+                        "owner/repo"
                     ]
                 },
                 "parked": true
