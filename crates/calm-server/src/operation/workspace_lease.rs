@@ -763,6 +763,8 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
         GitWorktreeRegistration::Absent => {}
     }
 
+    clear_stale_unregistered_workspace_dir_before_add(target)?;
+
     let branch_ref = format!("refs/heads/{}", target.branch);
     let branch_exists = git_ref_exists(&target.repo_root, &branch_ref)?;
     let mut command = Command::new("git");
@@ -794,6 +796,36 @@ pub(crate) fn provision_workspace_worktree(target: &WorkspaceLeaseTarget) -> Res
         return Ok(());
     }
     Err(git_failed("git worktree add", &target.repo_root, &output))
+}
+
+fn clear_stale_unregistered_workspace_dir_before_add(target: &WorkspaceLeaseTarget) -> Result<()> {
+    if !workspace_dir_is_non_empty(&target.path)? {
+        return Ok(());
+    }
+    ensure_lease_owned_worktree_target(target)?;
+    remove_workspace_dir_if_exists(&target.path_string())?;
+    prune_stale_workspace_worktree_registration(target)?;
+    Ok(())
+}
+
+fn workspace_dir_is_non_empty(path: &Path) -> Result<bool> {
+    if !path.is_dir() {
+        return Ok(false);
+    }
+    let mut entries = std::fs::read_dir(path).map_err(|e| {
+        CalmError::Internal(format!(
+            "read workspace worktree directory {}: {e}",
+            path.display()
+        ))
+    })?;
+    match entries.next() {
+        Some(Ok(_)) => Ok(true),
+        Some(Err(e)) => Err(CalmError::Internal(format!(
+            "read workspace worktree directory {}: {e}",
+            path.display()
+        ))),
+        None => Ok(false),
+    }
 }
 
 fn remove_workspace_worktree_for_lease(lease: &WorkspaceLease) -> Result<()> {
@@ -1097,46 +1129,73 @@ fn workspace_lease_target_from_lease(
     validate_path_segment("wave_id", &lease.wave_id)?;
     validate_path_segment("card_id", &lease.card_id)?;
     let path = PathBuf::from(&lease.path);
-    if !path.is_absolute() {
-        return Ok(None);
-    }
-    let Some(card_dir) = path.file_name().and_then(|s| s.to_str()) else {
+    let Some(parts) = workspace_lease_path_parts(&path) else {
         return Ok(None);
     };
-    let Some(wave_dir_path) = path.parent() else {
-        return Ok(None);
-    };
-    let Some(wave_dir) = wave_dir_path.file_name().and_then(|s| s.to_str()) else {
-        return Ok(None);
-    };
-    let Some(worktrees_path) = wave_dir_path.parent() else {
-        return Ok(None);
-    };
-    let Some(worktrees_dir) = worktrees_path.file_name().and_then(|s| s.to_str()) else {
-        return Ok(None);
-    };
-    let Some(claude_path) = worktrees_path.parent() else {
-        return Ok(None);
-    };
-    let Some(claude_dir) = claude_path.file_name().and_then(|s| s.to_str()) else {
-        return Ok(None);
-    };
-    let Some(repo_root) = claude_path.parent() else {
-        return Ok(None);
-    };
-    if card_dir != lease.card_id
-        || wave_dir != lease.wave_id
-        || worktrees_dir != "worktrees"
-        || claude_dir != ".claude"
-        || !repo_root.is_absolute()
-    {
+    if parts.card_id != lease.card_id || parts.wave_id != lease.wave_id {
         return Ok(None);
     }
     Ok(Some(WorkspaceLeaseTarget {
-        repo_root: repo_root.to_path_buf(),
+        repo_root: parts.repo_root,
         path,
         branch: workspace_slice_branch_for(&lease.wave_id, &lease.card_id)?,
     }))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorkspaceLeasePathParts {
+    repo_root: PathBuf,
+    wave_id: String,
+    card_id: String,
+}
+
+fn workspace_lease_path_parts(path: &Path) -> Option<WorkspaceLeasePathParts> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let card_id = path.file_name()?.to_str()?;
+    let wave_path = path.parent()?;
+    let wave_id = wave_path.file_name()?.to_str()?;
+    let worktrees_path = wave_path.parent()?;
+    let worktrees_dir = worktrees_path.file_name()?.to_str()?;
+    let claude_path = worktrees_path.parent()?;
+    let claude_dir = claude_path.file_name()?.to_str()?;
+    let repo_root = claude_path.parent()?;
+    if worktrees_dir != "worktrees" || claude_dir != ".claude" || !repo_root.is_absolute() {
+        return None;
+    }
+    Some(WorkspaceLeasePathParts {
+        repo_root: repo_root.to_path_buf(),
+        wave_id: wave_id.to_string(),
+        card_id: card_id.to_string(),
+    })
+}
+
+fn ensure_lease_owned_worktree_target(target: &WorkspaceLeaseTarget) -> Result<()> {
+    let Some(parts) = workspace_lease_path_parts(&target.path) else {
+        return Err(CalmError::Internal(format!(
+            "refusing to clear non-lease workspace worktree path {}",
+            target.path.display()
+        )));
+    };
+    validate_path_segment("wave_id", &parts.wave_id)?;
+    validate_path_segment("card_id", &parts.card_id)?;
+    if parts.repo_root.as_path() != target.repo_root.as_path() {
+        return Err(CalmError::Internal(format!(
+            "refusing to clear workspace worktree path {} outside repo root {}",
+            target.path.display(),
+            target.repo_root.display()
+        )));
+    }
+    let expected_branch = workspace_slice_branch_for(&parts.wave_id, &parts.card_id)?;
+    if target.branch != expected_branch {
+        return Err(CalmError::Internal(format!(
+            "refusing to clear workspace worktree path {} for unexpected branch {}",
+            target.path.display(),
+            target.branch
+        )));
+    }
+    Ok(())
 }
 
 fn git_repo_available(repo_root: &Path) -> bool {
@@ -1465,6 +1524,47 @@ mod tests {
         assert!(
             target.path.is_dir(),
             "stale registration is re-provisioned as a real worktree"
+        );
+        assert_eq!(
+            git_worktree_registration(&target.repo_root, &target.path).unwrap(),
+            GitWorktreeRegistration::Present
+        );
+        let top_level = git_stdout(&target.path, ["rev-parse", "--show-toplevel"]);
+        assert_eq!(
+            PathBuf::from(top_level.trim()).canonicalize().unwrap(),
+            target.path.canonicalize().unwrap(),
+            "re-provisioned path is a usable git worktree"
+        );
+    }
+
+    #[test]
+    fn workspace_worktree_provision_clears_stale_unregistered_non_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        let target = WorkspaceLeaseTarget {
+            repo_root: tmp.path().to_path_buf(),
+            path: tmp
+                .path()
+                .join(".claude/worktrees/wave-unregistered/card-unregistered"),
+            branch: workspace_slice_branch_for("wave-unregistered", "card-unregistered").unwrap(),
+        };
+        std::fs::create_dir_all(&target.path).unwrap();
+        std::fs::write(target.path.join("stale.txt"), "partial worktree add\n").unwrap();
+        assert_eq!(
+            git_worktree_registration(&target.repo_root, &target.path).unwrap(),
+            GitWorktreeRegistration::Absent,
+            "test setup leaves a non-empty directory without worktree registration"
+        );
+
+        provision_workspace_worktree(&target).unwrap();
+
+        assert!(
+            target.path.is_dir(),
+            "stale unregistered directory is re-provisioned as a real worktree"
+        );
+        assert!(
+            !target.path.join("stale.txt").exists(),
+            "stale unregistered contents are cleared before git worktree add"
         );
         assert_eq!(
             git_worktree_registration(&target.repo_root, &target.path).unwrap(),
