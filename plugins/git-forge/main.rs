@@ -450,6 +450,9 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
     )
 }
 
+const ISSUE_CLOSE_PROBE_SCRIPT: &str = "out=$(gh issue view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
+     case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
+
 fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
     let issue = required_u64(args, "issue")?;
@@ -465,7 +468,18 @@ fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
         format!("gh.issue.close:{repo}:{issue}"),
         Some(event_spec("forge.issue.closed", [])),
         json!({ "issue_number": issue }),
-        None,
+        Some(json!({
+            // Verdict-only recovery: CLOSED => 0/Landed, open => 1/NotLanded,
+            // and gh invocation failure => 3/Unknown so infra outages stay retryable.
+            "probe_argv": [
+                "sh",
+                "-c",
+                ISSUE_CLOSE_PROBE_SCRIPT,
+                "sh",
+                issue.to_string(),
+                repo
+            ]
+        })),
         true,
     )
 }
@@ -980,6 +994,7 @@ mod tests {
 
     #[test]
     fn lowers_gh_issue_close() {
+        let expected_probe_script = "out=$(gh issue view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
         let payload = lower(
             "gh.issue.close",
             &json!({
@@ -1006,10 +1021,20 @@ mod tests {
                 },
                 "subject": null,
                 "context": { "issue_number": 808 },
-                "probe": null,
+                "probe": {
+                    "probe_argv": [
+                        "sh",
+                        "-c",
+                        expected_probe_script,
+                        "sh",
+                        "808",
+                        "owner/repo"
+                    ]
+                },
                 "parked": true
             })
         );
+        assert!(payload["probe"]["output_probe_argv"].is_null());
         assert_no_reserved_context(&payload, &["wave_id"]);
         assert_supported_event_kind(&payload);
     }
