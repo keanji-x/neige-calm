@@ -1297,13 +1297,14 @@ fn build_forge_event(
                 reason: format!("gate-infra: forge event deserialize failed: {e}"),
             }
         })?;
-    let result = json!({
-        "exit_code": exit_code,
-        "event_kind": spec.event_kind,
-        "event": payload_value,
-        "stdout": stdout,
-    });
-    Ok((Some(event), result))
+    let mut result = Map::new();
+    result.insert("exit_code".into(), json!(exit_code));
+    result.insert("event_kind".into(), Value::String(spec.event_kind.clone()));
+    result.insert("event".into(), payload_value);
+    if spec.event_kind == "forge.issue.read" {
+        result.insert("stdout".into(), Value::String(stdout.to_owned()));
+    }
+    Ok((Some(event), Value::Object(result)))
 }
 
 async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {

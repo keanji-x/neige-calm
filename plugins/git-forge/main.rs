@@ -459,6 +459,10 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
             issue.to_string(),
             "--repo".into(),
             repo.clone(),
+            "--json".into(),
+            "body".into(),
+            "--jq".into(),
+            ".body".into(),
         ],
         format!("gh.issue.view:{repo}:{issue}"),
         Some(event_spec("forge.issue.read", [])),
@@ -1017,7 +1021,11 @@ mod tests {
                     "view",
                     "808",
                     "--repo",
-                    "owner/repo"
+                    "owner/repo",
+                    "--json",
+                    "body",
+                    "--jq",
+                    ".body"
                 ],
                 "idem_key": "gh.issue.view:owner/repo:808",
                 "event_spec": {

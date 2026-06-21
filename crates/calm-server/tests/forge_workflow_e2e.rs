@@ -298,6 +298,12 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
     )
     .await;
     assert_tool_succeeded(&diff_resp, "gh.pr.diff");
+    assert!(
+        diff_resp["result"]["structuredContent"]["result"]
+            .get("stdout")
+            .is_none(),
+        "gh.pr.diff must not inline patch stdout"
+    );
     let diff_rows = wait_for_event_count(&fx.repo, "forge.pr.diff.read", 1).await;
     let diff = diff_rows[0].clone();
     assert_wave_event(&diff, &fx.wave_id);
@@ -1968,16 +1974,24 @@ case "$area:$verb" in
     issue=$1
     repo=$(get_arg --repo "$@") || exit 2
     json_fields=$(get_arg --json "$@" || true)
+    jq_expr=$(get_arg --jq "$@" || true)
     state=$(ensure_state "$repo")
     issue_state=OPEN
     if [ -f "$state/issues/$issue.closed" ]; then
       issue_state=CLOSED
     fi
-    if [ "$json_fields" = "state" ]; then
-      printf '{"state":"%s"}\n' "$issue_state"
-    else
-      printf '# Issue %s\n\nFake issue body for issue-development ingestion.\n' "$issue"
-    fi
+    case "$json_fields:$jq_expr" in
+      state:*)
+        printf '{"state":"%s"}\n' "$issue_state"
+        ;;
+      body:.body)
+        printf '# Issue %s\n\nFake issue body for issue-development ingestion.\n' "$issue"
+        ;;
+      *)
+        echo "unsupported gh issue view --json $json_fields --jq $jq_expr" >&2
+        exit 2
+        ;;
+    esac
     ;;
   issue:close)
     [ "$#" -ge 1 ] || exit 2

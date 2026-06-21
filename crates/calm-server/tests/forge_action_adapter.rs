@@ -1589,11 +1589,13 @@ async fn forge_action_pr_diff_persists_artifact_and_injects_path() -> CalmResult
         .submit(FORGE_ACTION_KIND, op_key(idem), input)
         .await?;
     let result = boot.runtime.wait(&op_id).await?;
-    assert!(
-        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
-        "{:?}",
-        result.outcome
-    );
+    match result.outcome {
+        OperationOutcome::Succeeded { result } => {
+            assert_eq!(result["event_kind"], "forge.pr.diff.read");
+            assert!(result.get("stdout").is_none());
+        }
+        other => panic!("expected pr diff read success, got {other:?}"),
+    }
 
     let event = latest_event_payload(&boot.repo, "forge.pr.diff.read").await;
     assert_eq!(event["wave_id"], json!(boot.wave_id));

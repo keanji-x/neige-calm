@@ -1490,6 +1490,11 @@ mod tests {
             head_sha: "head-sha".into(),
             artifact_path: "/tmp/diff.patch".into(),
         })));
+        assert!(!filter.matches(&env(Event::ForgeIssueRead {
+            wave_id: wave.clone(),
+            issue_number: 1,
+            artifact_path: "/tmp/issue.md".into(),
+        })));
         assert!(!filter.matches(&env(Event::WorktreeRemoved {
             wave_id: wave.clone(),
             card_id: CardId::from("worker"),
