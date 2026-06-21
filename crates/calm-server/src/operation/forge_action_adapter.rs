@@ -156,8 +156,8 @@ mod tests {
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewCove, NewWave, new_id, now_ms};
     use crate::operation::{
-        OperationKey, OperationOutcome, OperationResult, OperationRuntime, ProviderAdapter,
-        SpawnCtx, SqlxOperationRepo,
+        OperationKey, OperationOutcome, OperationRepo, OperationResult, OperationRuntime,
+        ProviderAdapter, SpawnCtx, SqlxOperationRepo,
     };
     use crate::state::DaemonClient;
     use crate::terminal_renderer::TerminalRendererRegistry;
@@ -309,6 +309,107 @@ mod tests {
             }
             other => panic!("merge should fail when probe reports open: {other:?}"),
         }
+        assert_eq!(event_count(&fx.repo, "forge.pr.merged").await, 0);
+    }
+
+    #[tokio::test]
+    async fn landed_probe_completion_tx_error_leaves_operation_parked() {
+        let fx = forge_runtime_fixture().await;
+        let payload = merge_payload(
+            &fx,
+            vec!["/bin/sh".into(), "-c".into(), "exit 7".into()],
+            ProbeSpec {
+                probe_argv: shell_probe("exit 0"),
+                output_probe_argv: Some(shell_probe(
+                    "printf '%s\n' '{\"headRefOid\":\"1111111111111111111111111111111111111111\",\"mergeCommit\":{\"oid\":\"2222222222222222222222222222222222222222\"}}'",
+                )),
+            },
+        );
+        let operation_repo = SqlxOperationRepo::new(fx.repo.pool().clone());
+        let op_id = operation_repo
+            .insert_operation(
+                FORGE_ACTION_KIND,
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(payload.idem_key.clone()),
+                    payload_hash: "landed-probe-tx-error".into(),
+                },
+                serde_json::to_value(&payload).expect("payload json"),
+            )
+            .await
+            .expect("insert operation");
+        let frozen = FrozenForge {
+            wave_id: payload.wave_id,
+            cove_id: "cove-1".into(),
+            card_id: payload.card_id,
+            subject: payload.subject,
+            argv: payload.argv,
+            idem_key: payload.idem_key,
+            event_spec: payload.event_spec,
+            context: payload.context,
+            probe: payload.probe.clone(),
+            cwd_lease: payload.cwd_lease,
+            result_path: payload.result_path,
+            deadline_ms: payload.deadline_ms,
+        };
+        let mut output = TxOutput::new("wave", Some(frozen.wave_id.clone()), json!({}));
+        output.data = serde_json::to_value(&frozen).expect("frozen json");
+        sqlx::query(
+            r#"UPDATE operations
+               SET tx_output_json = ?1,
+                   phase = 'parked',
+                   parked_at_ms = ?2,
+                   parked_deadline_ms = ?3,
+                   spawn_artifacts_json = ?4
+               WHERE id = ?5"#,
+        )
+        .bind(serde_json::to_string(&output).expect("tx output json"))
+        .bind(now_ms())
+        .bind(frozen.deadline_ms)
+        .bind(
+            serde_json::to_string(&SpawnArtifacts {
+                pid: 1,
+                pgid: 1,
+                start_time: 1,
+                boot_id: "boot-test".into(),
+                log_path: None,
+                extra: json!({}),
+            })
+            .expect("spawn artifacts json"),
+        )
+        .bind(&op_id)
+        .execute(fx.repo.pool())
+        .await
+        .expect("park operation");
+        sqlx::query(
+            r#"CREATE TRIGGER fail_forge_success_update
+               BEFORE UPDATE OF phase ON operations
+               WHEN NEW.phase = 'succeeded'
+               BEGIN
+                 SELECT RAISE(ABORT, 'injected success tx failure');
+               END"#,
+        )
+        .execute(fx.repo.pool())
+        .await
+        .expect("install trigger");
+
+        resolve_post_release_via_probe(
+            fx.repo.pool(),
+            &OperationCompletionBus::new(),
+            &EventBus::new(),
+            fx.repo.as_ref(),
+            &op_id,
+            &frozen,
+            "test ambiguous outcome",
+        )
+        .await;
+
+        let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(fx.repo.pool())
+            .await
+            .expect("read phase");
+        assert_eq!(phase, "parked");
         assert_eq!(event_count(&fx.repo, "forge.pr.merged").await, 0);
     }
 
@@ -1506,7 +1607,9 @@ async fn complete_from_probe(
 /// Resolve an ambiguous post-release outcome. Once the go-token has been
 /// released, the probe is authoritative for whether the irreversible action
 /// landed; gate-infra is only terminal when no probe exists or the probe cannot
-/// produce a landed/not-landed verdict.
+/// produce a landed/not-landed verdict. If `complete_from_probe` returns `Err`,
+/// the probe has already reported `Landed`; only the typed-event completion tx
+/// failed, so the parked row must remain available for a later retry.
 async fn resolve_post_release_via_probe(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
@@ -1557,14 +1660,11 @@ async fn resolve_post_release_via_probe(
         }
         Ok(_) => {}
         Err(e) => {
-            let _ = complete_forge_op_failed(
-                pool,
-                completion,
+            tracing::error!(
                 op_id,
-                e.to_string(),
-                Some("gate-infra".into()),
-            )
-            .await;
+                error = %e,
+                "forge: landed-verdict completion tx failed transiently; leaving op parked for retry"
+            );
         }
     }
 }

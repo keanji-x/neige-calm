@@ -184,6 +184,7 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
     let base = required_string(args, "base")?;
     let title = required_string(args, "title")?;
     let body = required_string(args, "body")?;
+    let idem_key = format!("gh.pr.create:{repo}:{base}:{head}");
     forge_payload(
         vec![
             "gh".into(),
@@ -200,7 +201,7 @@ fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
             "--body".into(),
             body,
         ],
-        format!("gh.pr.create:{repo}:{head}"),
+        idem_key,
         Some(event_spec(
             "forge.pr.opened",
             [
@@ -677,7 +678,7 @@ mod tests {
                     "--body",
                     "Body"
                 ],
-                "idem_key": "gh.pr.create:owner/repo:feature",
+                "idem_key": "gh.pr.create:owner/repo:main:feature",
                 "event_spec": {
                     "event_kind": "forge.pr.opened",
                     "fields": {
