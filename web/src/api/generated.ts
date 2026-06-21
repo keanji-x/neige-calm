@@ -1808,6 +1808,7 @@ export interface components {
             title: string;
             /** Format: int64 */
             updated_at: number;
+            /** @description `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`. */
             workflow_id?: string | null;
         };
         /**

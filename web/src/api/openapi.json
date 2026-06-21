@@ -5071,7 +5071,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "`#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`."
           }
         }
       },
