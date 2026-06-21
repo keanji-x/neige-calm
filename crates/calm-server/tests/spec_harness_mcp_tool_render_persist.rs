@@ -33,6 +33,7 @@ async fn seed_harness(
             title: "items persist".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

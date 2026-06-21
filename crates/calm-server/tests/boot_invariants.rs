@@ -56,6 +56,7 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
             title: "boot invariant".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

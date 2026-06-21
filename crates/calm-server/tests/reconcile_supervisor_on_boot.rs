@@ -155,6 +155,7 @@ impl TestFixture {
                 title: "reconcile-e2e".into(),
                 sort: None,
                 cwd: workspace_root().display().to_string(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })

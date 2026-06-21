@@ -341,6 +341,7 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
             title: format!("wave-{idx}"),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

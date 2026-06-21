@@ -32,6 +32,7 @@ pub mod actor;
 pub mod aspect;
 pub mod auth;
 pub mod card_kind;
+pub mod forge_trust;
 pub mod harness;
 pub mod liveness_feeder;
 pub mod provider_registry;

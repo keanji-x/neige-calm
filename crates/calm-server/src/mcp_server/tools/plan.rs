@@ -59,7 +59,7 @@ use crate::mcp_server::tools::lifecycle_args::{
 };
 use crate::model::{CardRole, Task, TaskKind, TaskStatus, Wave, now_ms};
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -94,43 +94,43 @@ where
 // Input shapes + per-task validation (design §4.1)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PlanTaskInput {
-    key: String,
-    kind: String,
-    goal: String,
+pub struct PlanTaskInput {
+    pub key: String,
+    pub kind: String,
+    pub goal: String,
     #[serde(default)]
-    context: Option<Value>,
+    pub context: Option<Value>,
     #[serde(default)]
-    acceptance_criteria: Option<String>,
+    pub acceptance_criteria: Option<String>,
     #[serde(default)]
-    cwd: Option<String>,
+    pub cwd: Option<String>,
     #[serde(default)]
-    depends_on: Vec<String>,
+    pub depends_on: Vec<String>,
     #[serde(default)]
-    priority: Option<i64>,
+    pub priority: Option<i64>,
     #[serde(default)]
-    gate: Option<GateInput>,
+    pub gate: Option<GateInput>,
     #[serde(default)]
-    no_gate_reason: Option<String>,
+    pub no_gate_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GateInput {
+pub struct GateInput {
     #[serde(default)]
-    cwd: Option<String>,
+    pub cwd: Option<String>,
     #[serde(default)]
-    timeout_secs: Option<i64>,
-    steps: Vec<GateStepInput>,
+    pub timeout_secs: Option<i64>,
+    pub steps: Vec<GateStepInput>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GateStepInput {
-    name: String,
-    cmd: String,
+pub struct GateStepInput {
+    pub name: String,
+    pub cmd: String,
 }
 
 /// A batch entry after field-level validation + normalization. The
@@ -162,7 +162,7 @@ struct NormalizedTask {
 /// Rule 1 key shape: `^[a-z0-9][a-z0-9._-]{0,63}$` (1..=64 chars).
 /// Hand-rolled — the crate has no regex dependency and the grammar is
 /// trivial.
-fn key_is_valid(key: &str) -> bool {
+pub(crate) fn key_is_valid(key: &str) -> bool {
     let bytes = key.as_bytes();
     if bytes.is_empty() || bytes.len() > 64 {
         return false;
@@ -302,6 +302,20 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
     })
 }
 
+/// Validate a workflow/template batch as a fresh plan. This intentionally
+/// reuses the same normalization and dependency resolver that
+/// `calm.plan.upsert` uses before writes, so manifest-declared plan
+/// templates cannot drift weaker than the install path.
+pub(crate) fn validate_new_plan_batch(inputs: &[PlanTaskInput]) -> Result<(), String> {
+    let batch: Vec<NormalizedTask> = inputs
+        .iter()
+        .cloned()
+        .map(normalize_task_input)
+        .collect::<Result<_, _>>()?;
+    resolve_plan_batch(&[], &batch)?;
+    Ok(())
+}
+
 /// Rule 7 + canonicalization: validate the gate shape and render the
 /// canonical `gate_json` (a pure function of the input — `None` fields
 /// omitted, fixed key insertion order — so rule-5 byte-identical
@@ -335,7 +349,7 @@ fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
 /// ASCII control characters (same check as the codex-create cwd
 /// normalization), absolute `cwd` when present, `timeout_secs` in
 /// `1..=7200` (default 1800).
-fn validate_gate_shape(key: &str, gate: &GateInput) -> Result<(), String> {
+pub(crate) fn validate_gate_shape(key: &str, gate: &GateInput) -> Result<(), String> {
     if gate.steps.is_empty() {
         return Err(format!("task {key}: gate.steps must be non-empty"));
     }

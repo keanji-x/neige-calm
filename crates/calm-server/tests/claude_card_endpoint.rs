@@ -97,6 +97,7 @@ where
             title: "claude-endpoint".into(),
             sort: None,
             cwd: "/workspace".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

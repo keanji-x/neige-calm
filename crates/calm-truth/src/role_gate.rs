@@ -515,6 +515,7 @@ mod tests {
             pinned_at: None,
             lifecycle: WaveLifecycle::Draft,
             cwd: String::new(),
+            workflow_id: None,
             terminal_at: None,
             created_at: 0,
             updated_at: 0,

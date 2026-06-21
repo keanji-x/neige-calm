@@ -1399,6 +1399,7 @@ mod tests {
                 title: "claude workspace leases".into(),
                 sort: None,
                 cwd: String::new(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },

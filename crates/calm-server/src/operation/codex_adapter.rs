@@ -1899,6 +1899,7 @@ mod tests {
                 title: "workspace leases".into(),
                 sort: None,
                 cwd: repo_root.path().display().to_string(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },

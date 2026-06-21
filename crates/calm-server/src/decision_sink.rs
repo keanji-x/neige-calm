@@ -637,6 +637,7 @@ mod tests {
                 title: "worker report preserve".into(),
                 sort: None,
                 cwd: repo_root.path().display().to_string(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
@@ -763,6 +764,7 @@ mod tests {
                 title: "shadow wave".into(),
                 sort: None,
                 cwd: String::new(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
@@ -889,6 +891,7 @@ mod tests {
                 title: "root wave".into(),
                 sort: None,
                 cwd: String::new(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })

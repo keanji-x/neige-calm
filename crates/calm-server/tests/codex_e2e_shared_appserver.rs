@@ -45,6 +45,7 @@ async fn seed_card(repo: &SqlxRepo, name: &str) -> String {
             title: "e2e".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

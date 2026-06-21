@@ -86,6 +86,7 @@ pub struct WaveRow {
     #[sqlx(try_from = "String")]
     pub lifecycle: WaveLifecycle,
     pub cwd: String,
+    pub workflow_id: Option<String>,
     pub terminal_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -102,6 +103,7 @@ impl From<WaveRow> for Wave {
             pinned_at: r.pinned_at,
             lifecycle: r.lifecycle,
             cwd: r.cwd,
+            workflow_id: r.workflow_id,
             terminal_at: r.terminal_at,
             created_at: r.created_at,
             updated_at: r.updated_at,

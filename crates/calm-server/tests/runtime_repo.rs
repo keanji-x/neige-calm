@@ -45,6 +45,7 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         title: "runtime repo".into(),
         sort: None,
         cwd: String::new(),
+        workflow_id: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })

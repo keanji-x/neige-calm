@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::{Event, EventBus, EventScope};
+use crate::forge_trust::trusted_forge_plugin;
 use crate::harness::HarnessRegistry;
 use crate::ids::ActorId;
 use crate::mcp_server::McpServer;
@@ -93,6 +94,7 @@ pub use calm_truth::state::WriteContext;
 pub struct RouteState {
     pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
+    pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
     pub write: WriteContext,
     pub aspects: Arc<AspectRegistry>,
@@ -167,6 +169,7 @@ impl BootState {
         let route = RouteState {
             repo: route_repo.clone(),
             events: self.events.clone(),
+            plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
             write: write.clone(),
             aspects: self.aspects.clone(),
@@ -983,7 +986,7 @@ impl AppState {
 
         let running_plugin_ids = plugin.running_plugin_ids().await;
         for manifest in plugin.registry().list() {
-            let plugin_id = manifest.id;
+            let plugin_id = manifest.id.clone();
             if !running_plugin_ids.contains(&plugin_id) {
                 continue;
             }
@@ -1010,6 +1013,33 @@ impl AppState {
                         error = %e,
                         "plugin_tool_registered event log failed"
                     );
+                }
+            }
+            if trusted_forge_plugin(&plugin_id) {
+                for workflow in manifest.workflows {
+                    let workflow_id = workflow.id;
+                    if let Err(e) = repo
+                        .log_pure_event(
+                            ActorId::Kernel,
+                            EventScope::System,
+                            None,
+                            &events,
+                            &card_role_cache,
+                            &wave_cove_cache,
+                            Event::WorkflowRegistered {
+                                plugin_id: plugin_id.clone(),
+                                workflow_id: workflow_id.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            plugin_id = %plugin_id,
+                            workflow_id = %workflow_id,
+                            error = %e,
+                            "workflow_registered event log failed"
+                        );
+                    }
                 }
             }
         }

@@ -59,6 +59,7 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
             title: "demo".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

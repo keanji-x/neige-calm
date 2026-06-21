@@ -4323,6 +4323,12 @@
           },
           "title": {
             "type": "string"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false
@@ -5060,6 +5066,13 @@
           "updated_at": {
             "type": "integer",
             "format": "int64"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`."
           }
         }
       },

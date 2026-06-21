@@ -162,6 +162,7 @@ async fn boot() -> Boot {
             title: "reset route auth".into(),
             sort: None,
             cwd: "/tmp/spec-card-reset".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -229,6 +230,7 @@ async fn boot_shared() -> Boot {
             title: "shared reset goal".into(),
             sort: None,
             cwd: "/tmp/spec-card-reset-shared".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

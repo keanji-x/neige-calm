@@ -2286,6 +2286,7 @@ mod tests {
                 title: "w".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },

@@ -1417,6 +1417,7 @@ export interface components {
              */
             theme: components["schemas"]["RequestTheme"];
             title: string;
+            workflow_id?: string | null;
         };
         Overlay: {
             entity_id: string;
@@ -1807,6 +1808,8 @@ export interface components {
             title: string;
             /** Format: int64 */
             updated_at: number;
+            /** @description `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`. */
+            workflow_id?: string | null;
         };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and

@@ -203,6 +203,7 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   },
   'plugin.state': noop('No plugin list query exists yet.'),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists yet.'),
+  'workflow.registered': noop('No workflow catalog query exists yet.'),
   'codex.hook': {
     requiresContext: waveFilesDerivedEventKeys,
     reason: 'Codex card topic consumers handle codex hook payloads directly.',

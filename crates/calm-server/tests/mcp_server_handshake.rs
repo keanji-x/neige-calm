@@ -101,6 +101,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
             title: "mcp-handshake-test".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

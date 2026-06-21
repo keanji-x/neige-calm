@@ -61,6 +61,7 @@ async fn boot() -> Boot {
             title: "wave-vcs-pr2".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

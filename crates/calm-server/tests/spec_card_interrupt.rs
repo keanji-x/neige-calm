@@ -77,6 +77,7 @@ async fn boot() -> Boot {
             title: "interrupt route".into(),
             sort: None,
             cwd: "/tmp/spec-card-interrupt".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

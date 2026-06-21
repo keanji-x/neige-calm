@@ -239,7 +239,7 @@ export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.delet
  * ts-rs would emit `last_error: string | null` which would diverge
  * from what the server actually serializes.)
  */
-last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "codex.hook", "data": { 
+last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "workflow.registered", "data": { pluginId: string, workflowId: string, } } | { "ev": "codex.hook", "data": { 
 /**
  * Owning card id — topic key `card:<card_id>`.
  */
@@ -365,6 +365,10 @@ lifecycle: WaveLifecycle,
  * real path — the migration default is the "old data only" fallback.
  */
 cwd: string, 
+/**
+ * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
+ */
+workflow_id: string | null, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
@@ -509,6 +513,10 @@ lifecycle: WaveLifecycle,
  * real path — the migration default is the "old data only" fallback.
  */
 cwd: string, 
+/**
+ * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
+ */
+workflow_id: string | null, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),

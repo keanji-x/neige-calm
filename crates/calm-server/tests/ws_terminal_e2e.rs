@@ -94,6 +94,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             title: "e2e".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

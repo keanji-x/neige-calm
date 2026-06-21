@@ -40,6 +40,7 @@ async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
         title: title.into(),
         sort: None,
         cwd: String::new(),
+        workflow_id: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
@@ -209,6 +210,7 @@ async fn wave_crud_round_trip() {
             title: "x".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

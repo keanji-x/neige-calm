@@ -78,6 +78,7 @@ async fn boot_with_registry_and_daemon_hash(
             title: "mcp-thread-identity-test".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -250,6 +251,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
             title: "mcp-token-wrapper".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -339,6 +341,7 @@ async fn remint_updates_one_worker_session_hash_row() {
             title: "mcp-token-remint".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

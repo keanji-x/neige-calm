@@ -60,6 +60,7 @@ async fn user_prompt_card_first_turn_true_binary() {
             title: "e2e-user-prompt".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

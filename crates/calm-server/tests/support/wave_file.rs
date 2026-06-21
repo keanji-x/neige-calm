@@ -55,6 +55,7 @@ pub async fn boot() -> Boot {
             title: "wave file test".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -102,6 +103,7 @@ pub async fn boot() -> Boot {
             title: "other wave".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

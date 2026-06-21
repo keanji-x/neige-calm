@@ -662,6 +662,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
             title: "mcp-plugin-forge-action".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -762,6 +763,7 @@ async fn create_wave_caller(fx: &Fixture, role: CardRole) -> Caller {
             title: "mcp-plugin-forge-action-extra".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

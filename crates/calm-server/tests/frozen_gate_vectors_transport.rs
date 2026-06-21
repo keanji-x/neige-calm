@@ -87,6 +87,7 @@ async fn boot_with_registry(
             title: "transport-vector-test".into(),
             sort: None,
             cwd: String::new(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -568,6 +569,7 @@ impl PrincipalFixture {
                 title: "principal-delta".into(),
                 sort: None,
                 cwd: String::new(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
             })

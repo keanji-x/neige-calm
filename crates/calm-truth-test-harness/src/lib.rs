@@ -57,6 +57,7 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
             title: "truth conformance".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: true,
             theme: RequestTheme::default_dark(),
         })

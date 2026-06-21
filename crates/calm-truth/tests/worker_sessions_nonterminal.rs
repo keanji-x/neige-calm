@@ -28,6 +28,7 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
             title: "worker-session-scan".into(),
             sort: None,
             cwd: "/tmp".into(),
+            workflow_id: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

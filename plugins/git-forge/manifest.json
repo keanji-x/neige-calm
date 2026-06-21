@@ -54,5 +54,53 @@
       "kind": "forge-action"
     }
   ],
+  "workflows": [
+    {
+      "id": "issue-development",
+      "plan_template": [
+        {
+          "key": "inspect-issue",
+          "kind": "codex",
+          "goal": "Inspect the source issue and summarize the requested change.",
+          "context": {
+            "tools": ["gh.issue.view"]
+          },
+          "acceptance_criteria": "The issue requirements and constraints are captured for the wave."
+        },
+        {
+          "key": "implement-change",
+          "kind": "codex",
+          "goal": "Create a worktree, implement the change, and commit the result.",
+          "context": {
+            "tools": ["git.worktree.add", "git.commit"]
+          },
+          "depends_on": ["inspect-issue"],
+          "acceptance_criteria": "The change is committed in the wave worktree."
+        },
+        {
+          "key": "open-pr",
+          "kind": "codex",
+          "goal": "Open a pull request and check its diff/check status.",
+          "context": {
+            "tools": ["gh.pr.create", "gh.pr.list", "gh.pr.diff", "gh.pr.checks"]
+          },
+          "depends_on": ["implement-change"],
+          "acceptance_criteria": "A pull request exists with readable diff and check status."
+        }
+      ],
+      "gates": [
+        {
+          "steps": [
+            {
+              "name": "test",
+              "cmd": "cargo test"
+            }
+          ]
+        }
+      ],
+      "spec_instructions": "For wave {wave_id}, drive a concise issue-development workflow: inspect the issue, make the implementation in a worktree, commit it, open a PR, review diff/check status, and close the issue only after merge readiness is established. Keep review choreography and ratification protocol out of this descriptor.",
+      "card_kinds": []
+    }
+  ],
   "permissions": {}
 }

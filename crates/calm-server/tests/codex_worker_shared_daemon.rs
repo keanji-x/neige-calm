@@ -132,6 +132,7 @@ async fn boot(start_shared: bool) -> Boot {
             title: "worker-shared".into(),
             sort: None,
             cwd: repo_root.display().to_string(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -548,6 +549,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
             title: "worker recovery".into(),
             sort: None,
             cwd: repo_root.display().to_string(),
+            workflow_id: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

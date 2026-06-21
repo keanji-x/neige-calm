@@ -546,6 +546,7 @@ mod tests {
                 title: "forge-action-adapter-test".into(),
                 sort: None,
                 cwd: cwd.path().display().to_string(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })

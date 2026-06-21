@@ -30,6 +30,7 @@ describe('WaveInfoViewer', () => {
           cove_id: 'cove_1',
           lifecycle: 'working',
           cwd: '/repo/neige-calm',
+          workflow_id: null,
           sort: 7,
           archived_at: new Date('2026-06-10T10:00:00Z').getTime(),
           pinned_at: new Date('2026-06-10T11:55:00Z').getTime(),
@@ -65,6 +66,7 @@ describe('WaveInfoViewer', () => {
           cove_id: 'cove_min',
           lifecycle: 'draft',
           cwd: '',
+          workflow_id: null,
           sort: 0,
           archived_at: null,
           pinned_at: null,
@@ -89,6 +91,7 @@ describe('WaveInfoViewer', () => {
       cove_id: 'cove_untitled',
       lifecycle: 'working',
       cwd: '/repo/neige-calm',
+      workflow_id: null,
       sort: 0,
       archived_at: null,
       pinned_at: null,
@@ -104,6 +107,29 @@ describe('WaveInfoViewer', () => {
       screen.getByRole('heading', { name: 'Untitled wave' }),
     ).toHaveClass('wave-fs-viewer-primary');
     expect(screen.getByText('wave_untitled')).toBeInTheDocument();
+    expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
+  });
+
+  it('defaults missing workflow_id on legacy wave.json snapshots', () => {
+    const raw = JSON.stringify({
+      title: 'Legacy wave',
+      id: 'wave_legacy',
+      cove_id: 'cove_legacy',
+      lifecycle: 'working',
+      cwd: '/repo/neige-calm',
+      sort: 0,
+      archived_at: null,
+      pinned_at: null,
+      terminal_at: null,
+      created_at: 0,
+      updated_at: 0,
+    });
+    registerWaveFsViewer(WaveInfoViewer);
+
+    render(<ResolvedWaveFsViewer path="wave.json" raw={raw} />);
+
+    expect(screen.getByRole('heading', { name: 'Legacy wave' })).toBeTruthy();
+    expect(screen.getByText('wave_legacy')).toBeInTheDocument();
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 

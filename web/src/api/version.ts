@@ -63,10 +63,15 @@
  *   backend `SYNC_EVENT_VERSION` bumped 7 → 8 in lockstep. Older
  *   frontends' zod schemas don't know the new discriminators and would
  *   silently drop forge/worktree invalidation frames, so bump here.
+ * * `10` — trusted workflow registration events (issue #760 slice ④-a):
+ *   `workflow.registered` joins the WS event union with backend
+ *   `SYNC_EVENT_VERSION` bumped 8 → 9 in lockstep. Older frontends'
+ *   zod schemas don't know the new discriminator and would silently
+ *   drop workflow-registration frames, so bump here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 9;
+export const WEB_COMPAT_VERSION = 10;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

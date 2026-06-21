@@ -334,7 +334,9 @@ impl EventScope {
 ///   advance past those rows and fail zod before refreshing.
 /// * `8` — git/forge toolset substrate kinds (issue #760 slice ③-a).
 ///   Adds 5 forge.* and 2 worktree.* events to the union.
-pub const SYNC_EVENT_VERSION: u32 = 8;
+/// * `9` — workflow registration descriptor events (issue #760 slice ④-a).
+///   Adds `workflow.registered` to the event union.
+pub const SYNC_EVENT_VERSION: u32 = 9;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -565,6 +567,11 @@ pub enum Event {
     PluginToolRegistered {
         plugin_id: String,
         tool_name: String,
+    },
+    #[serde(rename = "workflow.registered", rename_all = "camelCase")]
+    WorkflowRegistered {
+        plugin_id: String,
+        workflow_id: String,
     },
 
     /// Codex CLI hook passthrough. The `neige-codex-bridge` subprocess POSTs
@@ -928,7 +935,7 @@ impl ForgeEventSpec {
 ///
 /// `plugin_id` is set only for `Event::OverlaySet`,
 /// `Event::OverlayDeleted`, `Event::PluginState`, and
-/// `Event::PluginToolRegistered`; every other variant has no plugin
+/// `Event::PluginToolRegistered`, and `Event::WorkflowRegistered`; every other variant has no plugin
 /// attribution. `entity_kind` / `entity_id` are set only for events with a
 /// filterable entity surface. The PR4 dispatcher/task-lifecycle variants
 /// (`Event::CodexWorkerRequested`, `Event::TerminalWorkerRequested`,
@@ -1057,7 +1064,8 @@ impl Event {
                 entity_kind: None,
                 entity_id: Some(id.clone()),
             },
-            Event::PluginToolRegistered { plugin_id, .. } => EventMetadata {
+            Event::PluginToolRegistered { plugin_id, .. }
+            | Event::WorkflowRegistered { plugin_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: Some(plugin_id.clone()),
                 entity_kind: None,
@@ -1180,6 +1188,7 @@ impl Event {
             Event::TerminalDeleted { .. } => "terminal.deleted",
             Event::PluginState { .. } => "plugin.state",
             Event::PluginToolRegistered { .. } => "plugin.tool.registered",
+            Event::WorkflowRegistered { .. } => "workflow.registered",
             Event::CodexHook { .. } => "codex.hook",
             Event::ClaudeHook { .. } => "claude.hook",
             Event::CodexWorkerRequested { .. } => "codex.worker_requested",
@@ -1338,7 +1347,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::PluginState { id, .. } => {
             vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]
         }
-        Event::PluginToolRegistered { plugin_id, .. } => {
+        Event::PluginToolRegistered { plugin_id, .. }
+        | Event::WorkflowRegistered { plugin_id, .. } => {
             vec![
                 format!("plugin:{}", plugin_id),
                 "plugin:*".into(),
@@ -1756,6 +1766,12 @@ mod scope_tests {
             user_message_enqueued.kind_tag(),
             "harness.user_message.enqueued"
         );
+
+        let workflow_registered = Event::WorkflowRegistered {
+            plugin_id: "dev.neige.git-forge".into(),
+            workflow_id: "issue-development".into(),
+        };
+        assert_eq!(workflow_registered.kind_tag(), "workflow.registered");
     }
 
     #[test]
@@ -2571,6 +2587,10 @@ mod scope_tests {
                 plugin_id: "plugin-1".into(),
                 tool_name: "calm.plugin.echo".into(),
             },
+            Event::WorkflowRegistered {
+                plugin_id: "plugin-1".into(),
+                workflow_id: "issue-development".into(),
+            },
             Event::CodexHook {
                 card_id: CardId::from("card-codex"),
                 kind: "hook.codex.stop".into(),
@@ -2698,6 +2718,7 @@ mod scope_tests {
             pinned_at: None,
             lifecycle: WaveLifecycle::Draft,
             cwd: String::new(),
+            workflow_id: None,
             terminal_at: None,
             created_at: 0,
             updated_at: 0,

@@ -16,9 +16,13 @@
 //! NOTE: This file is Slice A only. Slice B will read the parsed `Manifest`
 //! to spawn the process; Slice C will consult `Permissions` on every callback.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use crate::card_kind::CardKindRegistry;
+use crate::mcp_server::tools::plan::{
+    GateInput, PlanTaskInput, key_is_valid, validate_gate_shape, validate_new_plan_batch,
+};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,6 +78,13 @@ pub struct Manifest {
     /// routing; unrelated to iframe→kernel `permissions.tools`.
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
+
+    /// Trusted forge plugins may declare durable workflow descriptors. The
+    /// registry/binding layer ignores this field for untrusted plugins; the
+    /// manifest parser still validates the shape so broken descriptors fail
+    /// close to the authoring point.
+    #[serde(default)]
+    pub workflows: Vec<WorkflowDescriptor>,
 
     /// Missing block treated as the most-restrictive permission set.
     #[serde(default)]
@@ -200,6 +211,19 @@ pub struct ExposedTool {
     pub description: Option<String>,
     #[serde(default)]
     pub kind: Option<ToolKind>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkflowDescriptor {
+    pub id: String,
+    #[serde(default)]
+    pub plan_template: Vec<PlanTaskInput>,
+    #[serde(default)]
+    pub gates: Vec<GateInput>,
+    #[serde(default)]
+    pub spec_instructions: String,
+    #[serde(default)]
+    pub card_kinds: Vec<String>,
 }
 
 /// Permissions the plugin requests. Kernel enforces at the callback dispatch
@@ -340,6 +364,10 @@ impl Manifest {
             view.validate(i)?;
         }
 
+        for (i, workflow) in self.workflows.iter().enumerate() {
+            workflow.validate(i)?;
+        }
+
         self.permissions.validate()?;
 
         Ok(())
@@ -387,6 +415,165 @@ impl View {
         }
         Ok(())
     }
+}
+
+impl WorkflowDescriptor {
+    fn validate(&self, idx: usize) -> Result<(), ManifestError> {
+        let path = |s: &str| format!("workflows[{idx}].{s}");
+
+        if !key_is_valid(&self.id) {
+            return Err(ManifestError::invalid(
+                path("id"),
+                "must match ^[a-z0-9][a-z0-9._-]{0,63}$",
+            ));
+        }
+
+        validate_new_plan_batch(&self.plan_template).map_err(|reason| {
+            ManifestError::invalid(
+                plan_template_error_field(idx, &self.plan_template, &reason),
+                reason,
+            )
+        })?;
+
+        for (gate_idx, gate) in self.gates.iter().enumerate() {
+            validate_gate_shape(&self.id, gate).map_err(|reason| {
+                ManifestError::invalid(
+                    gate_error_field(path(&format!("gates[{gate_idx}]")), &reason),
+                    reason,
+                )
+            })?;
+        }
+
+        if self.spec_instructions.len() > 8192 {
+            return Err(ManifestError::invalid(
+                path("spec_instructions"),
+                "must be at most 8192 bytes",
+            ));
+        }
+        if self
+            .spec_instructions
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+        {
+            return Err(ManifestError::invalid(
+                path("spec_instructions"),
+                "must not contain control characters other than newline or tab",
+            ));
+        }
+
+        let builtins = CardKindRegistry::builtins();
+        for (kind_idx, kind) in self.card_kinds.iter().enumerate() {
+            if builtins.claims_kind(kind) {
+                return Err(ManifestError::invalid(
+                    path(&format!("card_kinds[{kind_idx}]")),
+                    format!("card kind `{kind}` collides with a built-in card kind"),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn plan_template_error_field(workflow_idx: usize, tasks: &[PlanTaskInput], reason: &str) -> String {
+    let path = |s: &str| format!("workflows[{workflow_idx}].{s}");
+
+    if let Some(key) = backtick_value_after(reason, "invalid task key `") {
+        let task_idx = tasks
+            .iter()
+            .position(|task| task.key == key)
+            .or_else(|| tasks.iter().position(|task| !key_is_valid(&task.key)));
+        if let Some(task_idx) = task_idx {
+            return path(&format!("plan_template[{task_idx}].key"));
+        }
+    }
+
+    if let Some(key) = backtick_value_after(reason, "duplicate key `") {
+        let mut seen = HashSet::new();
+        for (task_idx, task) in tasks.iter().enumerate() {
+            let duplicate = !seen.insert(task.key.as_str());
+            if duplicate && task.key == key {
+                return path(&format!("plan_template[{task_idx}].key"));
+            }
+        }
+    }
+
+    let Some(key) = task_key_from_plan_error(reason) else {
+        return path("plan_template");
+    };
+    let Some(task_idx) = tasks.iter().position(|task| task.key == key) else {
+        return path("plan_template");
+    };
+
+    if reason.contains("unknown kind") {
+        return path(&format!("plan_template[{task_idx}].kind"));
+    }
+    if reason.contains("`goal`") {
+        return path(&format!("plan_template[{task_idx}].goal"));
+    }
+    if reason.contains("gate.") {
+        return gate_error_field(path(&format!("plan_template[{task_idx}].gate")), reason);
+    }
+    if reason.contains("cwd") {
+        return path(&format!("plan_template[{task_idx}].cwd"));
+    }
+    if reason.contains("unknown dependency")
+        && let Some(dep) = backtick_value_after(reason, "unknown dependency `")
+        && let Some(dep_idx) = tasks[task_idx]
+            .depends_on
+            .iter()
+            .position(|candidate| candidate == dep)
+    {
+        return path(&format!("plan_template[{task_idx}].depends_on[{dep_idx}]"));
+    }
+    if reason.contains("`no_gate_reason`") {
+        return path(&format!("plan_template[{task_idx}].no_gate_reason"));
+    }
+    if reason.contains("requires `context`") {
+        return path(&format!("plan_template[{task_idx}].context"));
+    }
+
+    path(&format!("plan_template[{task_idx}]"))
+}
+
+fn task_key_from_plan_error(reason: &str) -> Option<&str> {
+    reason
+        .strip_prefix("task ")?
+        .split_once(':')
+        .map(|(key, _)| key)
+}
+
+fn backtick_value_after<'a>(reason: &'a str, prefix: &str) -> Option<&'a str> {
+    let start = reason.find(prefix)? + prefix.len();
+    reason[start..].split_once('`').map(|(value, _)| value)
+}
+
+fn gate_error_field(base: String, reason: &str) -> String {
+    if reason.contains("gate.steps must be non-empty") {
+        return format!("{base}.steps");
+    }
+    if let Some(step_idx) = indexed_field(reason, "gate.steps[") {
+        if reason.contains(&format!("gate.steps[{step_idx}].name")) {
+            return format!("{base}.steps[{step_idx}].name");
+        }
+        if reason.contains(&format!("gate.steps[{step_idx}].cmd")) {
+            return format!("{base}.steps[{step_idx}].cmd");
+        }
+        return format!("{base}.steps[{step_idx}]");
+    }
+    if reason.contains("gate.timeout_secs") {
+        return format!("{base}.timeout_secs");
+    }
+    if reason.contains("gate.cwd") {
+        return format!("{base}.cwd");
+    }
+    base
+}
+
+fn indexed_field(reason: &str, needle: &str) -> Option<usize> {
+    let start = reason.find(needle)? + needle.len();
+    let end = reason[start..].find(']')?;
+    reason[start..start + end].parse().ok()
 }
 
 impl Permissions {
@@ -480,6 +667,7 @@ impl fmt::Display for Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn hello_world() -> &'static str {
         r#"{
@@ -552,6 +740,234 @@ mod tests {
         // Missing permissions block → default Permissions (no grants).
         assert!(!m.permissions.cards_create);
         assert!(m.permissions.overlays_write.is_empty());
+    }
+
+    fn workflow_manifest_value() -> Value {
+        json!({
+            "manifest_version": 1,
+            "id": "dev.neige.workflow-test",
+            "version": "1.0.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Workflow Test",
+            "entrypoint": { "command": "bin/workflow-test" },
+            "workflows": [
+                {
+                    "id": "issue-development",
+                    "plan_template": [
+                        {
+                            "key": "inspect",
+                            "kind": "codex",
+                            "goal": "Inspect the issue.",
+                            "depends_on": [],
+                            "gate": {
+                                "steps": [
+                                    { "name": "test", "cmd": "cargo test" }
+                                ]
+                            }
+                        },
+                        {
+                            "key": "implement",
+                            "kind": "claude",
+                            "goal": "Implement the change.",
+                            "depends_on": ["inspect"]
+                        }
+                    ],
+                    "gates": [
+                        {
+                            "steps": [
+                                { "name": "fmt", "cmd": "cargo fmt --all --check" }
+                            ]
+                        }
+                    ],
+                    "spec_instructions": "Use the workflow descriptor for wave {wave_id}.\nKeep it concise.",
+                    "card_kinds": ["plugin:dev.neige.workflow-test:custom"]
+                }
+            ],
+            "permissions": {}
+        })
+    }
+
+    fn parse_manifest_value(v: Value) -> Result<Manifest, ManifestError> {
+        Manifest::parse(&serde_json::to_string(&v).expect("serialize manifest value"))
+    }
+
+    #[test]
+    fn parses_workflow_descriptor() {
+        let m = parse_manifest_value(workflow_manifest_value()).expect("workflow manifest");
+        assert_eq!(m.workflows.len(), 1);
+        assert_eq!(m.workflows[0].id, "issue-development");
+        assert_eq!(m.workflows[0].plan_template.len(), 2);
+        assert_eq!(m.workflows[0].gates.len(), 1);
+    }
+
+    #[test]
+    fn parses_shipped_issue_development_descriptor() {
+        let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        assert!(
+            m.workflows
+                .iter()
+                .any(|workflow| workflow.id == "issue-development")
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_invalid_shapes() {
+        let cases: Vec<(&str, Value, &str)> = vec![
+            ("empty id", json!(""), "workflows[0].id"),
+            ("bad id", json!("Bad Id"), "workflows[0].id"),
+        ];
+        for (label, id, field) in cases {
+            let mut v = workflow_manifest_value();
+            v["workflows"][0]["id"] = id;
+            let err = parse_manifest_value(v).expect_err(label);
+            assert!(
+                matches!(err, ManifestError::Invalid { field: ref actual, .. } if actual == field),
+                "{label}: got {err:?}"
+            );
+        }
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["key"] = json!("Bad Key");
+        let err = parse_manifest_value(v).expect_err("bad plan key");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].key")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][1]["depends_on"] = json!(["missing"]);
+        let err = parse_manifest_value(v).expect_err("missing dependency");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[1].depends_on[0]")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["kind"] = json!("worker");
+        let err = parse_manifest_value(v).expect_err("unknown task kind");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].kind")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["steps"] = json!([]);
+        let err = parse_manifest_value(v).expect_err("empty workflow gate");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].gates[0].steps")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["steps"] = json!([]);
+        let err = parse_manifest_value(v).expect_err("empty task gate");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].gate.steps")
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_plan_template_cycles() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["depends_on"] = json!(["implement"]);
+        v["workflows"][0]["plan_template"][1]["depends_on"] = json!(["inspect"]);
+        let err = parse_manifest_value(v).expect_err("cycle");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template" && reason.contains("dependency cycle")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["depends_on"] = json!(["inspect"]);
+        let err = parse_manifest_value(v).expect_err("self dependency");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template" && reason.contains("dependency cycle: inspect -> inspect")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_plan_gate_content_like_plan_upsert() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["steps"][0]["cmd"] = json!("  ");
+        let err = parse_manifest_value(v).expect_err("blank task gate cmd");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.steps[0].cmd" && reason.contains("cmd must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["steps"][0]["name"] = json!("");
+        let err = parse_manifest_value(v).expect_err("blank task gate name");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.steps[0].name" && reason.contains("name must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"][0]["gate"]["timeout_secs"] = json!(7201);
+        let err = parse_manifest_value(v).expect_err("task gate timeout too high");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.timeout_secs" && reason.contains("1..=7200")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_workflow_gate_content_like_plan_upsert() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["steps"][0]["cmd"] = json!("  ");
+        let err = parse_manifest_value(v).expect_err("blank workflow gate cmd");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].steps[0].cmd" && reason.contains("cmd must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["steps"][0]["name"] = json!("");
+        let err = parse_manifest_value(v).expect_err("blank workflow gate name");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].steps[0].name" && reason.contains("name must be non-empty")),
+            "got {err:?}"
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["gates"][0]["timeout_secs"] = json!(7201);
+        let err = parse_manifest_value(v).expect_err("workflow gate timeout too high");
+        assert!(
+            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].timeout_secs" && reason.contains("1..=7200")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_bad_spec_instructions() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["spec_instructions"] = json!("x".repeat(8193));
+        let err = parse_manifest_value(v).expect_err("oversized spec instructions");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].spec_instructions")
+        );
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["spec_instructions"] = json!("bad\u{0007}");
+        let err = parse_manifest_value(v).expect_err("control char spec instructions");
+        assert!(
+            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].spec_instructions")
+        );
+    }
+
+    #[test]
+    fn workflow_descriptor_rejects_builtin_card_kind_collision() {
+        for (label, kind) in [
+            ("exact built-in", "terminal"),
+            ("builtin prefix", "ui://dev.neige.workflow-test/custom"),
+        ] {
+            let mut v = workflow_manifest_value();
+            v["workflows"][0]["card_kinds"] = json!([kind]);
+            let err = parse_manifest_value(v).expect_err(label);
+            assert!(
+                matches!(err, ManifestError::Invalid { ref field, .. } if field == "workflows[0].card_kinds[0]"),
+                "{label}: got {err:?}"
+            );
+        }
     }
 
     #[test]

@@ -132,6 +132,7 @@ describe('wireEventSchema', () => {
         pinned_at: null,
         lifecycle: 'dispatching',
         cwd: '/repo',
+        workflow_id: null,
         terminal_at: null,
         created_at: 1,
         updated_at: 2,
@@ -460,6 +461,21 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+
+  it('parses a valid workflow.registered (#760 slice 4a)', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'workflow.registered',
+      data: {
+        pluginId: 'dev.echo',
+        workflowId: 'daily-summary',
+      },
+    });
+    expect(parsed.ev).toBe('workflow.registered');
+    if (parsed.ev === 'workflow.registered') {
+      expect(parsed.data.pluginId).toBe('dev.echo');
+      expect(parsed.data.workflowId).toBe('daily-summary');
+    }
   });
 });
 

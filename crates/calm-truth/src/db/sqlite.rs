@@ -749,8 +749,8 @@ pub async fn wave_create_tx(
     // by construction; `WaveLifecycle::is_terminal` returns false for it).
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, NULL, ?7, ?8)"#,
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, NULL, ?8, ?9)"#,
     )
     .bind(&id)
     .bind(p.cove_id.as_str())
@@ -758,6 +758,7 @@ pub async fn wave_create_tx(
     .bind(sort)
     .bind(lifecycle.as_db_str())
     .bind(&p.cwd)
+    .bind(p.workflow_id.as_deref())
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -777,6 +778,7 @@ pub async fn wave_create_tx(
         pinned_at: None,
         lifecycle,
         cwd: p.cwd,
+        workflow_id: p.workflow_id,
         terminal_at: None,
         created_at: now,
         updated_at: now,
@@ -789,7 +791,7 @@ pub async fn wave_update_tx(
     p: WavePatch,
 ) -> Result<Wave> {
     let mut w = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)
@@ -4253,7 +4255,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
@@ -4264,7 +4266,7 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -4287,8 +4289,8 @@ impl RepoRead for SqlxRepo {
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
         let mut sql = String::from(
-            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, \
-             created_at, updated_at FROM waves",
+            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, \
+             terminal_at, created_at, updated_at FROM waves",
         );
         let mut where_clauses: Vec<&str> = Vec::new();
         if cove_id.is_some() {
@@ -4326,7 +4328,7 @@ impl RepoRead for SqlxRepo {
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
         let mut tx = self.pool.begin().await?;
         let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -6813,6 +6815,7 @@ mod workspace_lease_lookup_tests {
                 title: "workspace lease lookup".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -6944,6 +6947,7 @@ mod write_path_gate_wiring_tests {
                 title: format!("hp1-b-i {label}"),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -7139,6 +7143,7 @@ mod runtime_read_flip_tests {
                 title: format!("read flip {label}"),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -7246,6 +7251,7 @@ mod runtime_read_flip_tests {
                 title: format!("read flip {label}"),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -7305,6 +7311,7 @@ mod runtime_read_flip_tests {
                 title: format!("read flip {label}"),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -8473,6 +8480,7 @@ mod worker_flow_items_tests {
                 title: "w".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -8678,6 +8686,7 @@ mod worker_flow_cursor_tests {
                 title: "w".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -8842,6 +8851,7 @@ mod session_record_activity_tests {
                 title: "w".into(),
                 sort: None,
                 cwd: "/tmp".into(),
+                workflow_id: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },

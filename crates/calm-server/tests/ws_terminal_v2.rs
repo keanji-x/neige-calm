@@ -201,6 +201,7 @@ async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str)
             title: format!("scrollback-{label}"),
             sort: None,
             cwd: fixture._tmp.path().display().to_string(),
+            workflow_id: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
