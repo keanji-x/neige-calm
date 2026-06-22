@@ -541,6 +541,82 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn forge_action_git_commit_dirty_index_failure_does_not_emit_worktree_committed_event() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fx = forge_runtime_fixture().await;
+        init_clean_git_repo(fx.cwd.path());
+        let hooks_dir = fx.cwd.path().join(".git").join("hooks");
+        let hook_path = hooks_dir.join("pre-commit");
+        std::fs::write(&hook_path, "#!/bin/sh\nexit 1\n").expect("write failing hook");
+        let mut permissions = std::fs::metadata(&hook_path)
+            .expect("hook metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&hook_path, permissions).expect("chmod hook");
+        std::fs::write(fx.cwd.path().join("change.txt"), "change\n").expect("write change");
+
+        let commit_script = "git add -A || exit 1; if git diff --cached --quiet; then :; else git commit -m \"$1\" || exit 1; fi; git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$2\"'\"}'";
+        let payload = ForgeActionPayload {
+            wave_id: fx.wave_id.clone(),
+            card_id: "card-1".into(),
+            subject: None,
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                commit_script.into(),
+                "sh".into(),
+                "should fail".into(),
+                "neige/wave-1/card-1".into(),
+            ],
+            idem_key: "git.commit:dirty-index-failure".into(),
+            event_spec: Some(ForgeEventSpec {
+                event_kind: "worktree.committed".into(),
+                fields: std::collections::BTreeMap::from([
+                    (
+                        "branch".into(),
+                        FieldSource::JsonField {
+                            path: "/branch".into(),
+                        },
+                    ),
+                    (
+                        "commit_sha".into(),
+                        FieldSource::JsonField {
+                            path: "/commit".into(),
+                        },
+                    ),
+                ]),
+            }),
+            context: Map::new(),
+            probe: Some(ProbeSpec {
+                probe_argv: shell_probe(
+                    "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi",
+                ),
+                output_probe_argv: Some(shell_probe(
+                    "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                )),
+            }),
+            cwd_lease: fx.cwd.path().to_path_buf(),
+            result_path: fx.result_path("commit-dirty-failure"),
+            deadline_ms: now_ms() + 60_000,
+        };
+
+        let result = submit_and_wait(&fx, payload, "commit-dirty-failure-hash").await;
+
+        assert!(
+            matches!(result.outcome, OperationOutcome::Failed { .. }),
+            "dirty-index commit failure should fail the op: {:?}",
+            result.outcome
+        );
+        assert_eq!(
+            git_stdout(fx.cwd.path(), ["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+        assert_eq!(event_count(&fx.repo, "worktree.committed").await, 0);
+    }
+
+    #[tokio::test]
     async fn forge_action_idempotency_retry_with_different_argv_collapses_to_one_operation() {
         let fx = forge_runtime_fixture().await;
         let mut first = no_event_payload(
