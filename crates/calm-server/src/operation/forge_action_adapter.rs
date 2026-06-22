@@ -50,6 +50,7 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.pr.checks",
     "forge.issue.closed",
     "worktree.provisioned",
+    "worktree.committed",
     "worktree.removed",
 ];
 
@@ -479,6 +480,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forge_action_nonzero_git_commit_clean_index_probe_extracts_worktree_committed_event() {
+        let fx = forge_runtime_fixture().await;
+        init_clean_git_repo(fx.cwd.path());
+        let head = git_stdout(fx.cwd.path(), ["rev-parse", "HEAD"]);
+        let payload = ForgeActionPayload {
+            wave_id: fx.wave_id.clone(),
+            card_id: "card-1".into(),
+            subject: None,
+            argv: vec!["git".into(), "commit".into(), "-m".into(), "nothing".into()],
+            idem_key: "git.commit:clean-index-event".into(),
+            event_spec: Some(ForgeEventSpec {
+                event_kind: "worktree.committed".into(),
+                fields: std::collections::BTreeMap::from([
+                    (
+                        "branch".into(),
+                        FieldSource::JsonField {
+                            path: "/branch".into(),
+                        },
+                    ),
+                    (
+                        "commit_sha".into(),
+                        FieldSource::JsonField {
+                            path: "/commit".into(),
+                        },
+                    ),
+                ]),
+            }),
+            context: Map::new(),
+            probe: Some(ProbeSpec {
+                probe_argv: shell_probe(
+                    "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi",
+                ),
+                output_probe_argv: Some(shell_probe(
+                    "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                )),
+            }),
+            cwd_lease: fx.cwd.path().to_path_buf(),
+            result_path: fx.result_path("commit-clean-event"),
+            deadline_ms: now_ms() + 60_000,
+        };
+
+        let result = submit_and_wait(&fx, payload, "commit-clean-event-hash").await;
+
+        assert!(
+            matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+            "clean-index commit should succeed via JSON output probe: {:?}",
+            result.outcome
+        );
+        assert_eq!(
+            git_stdout(fx.cwd.path(), ["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+        let payloads = event_payloads(&fx.repo, "worktree.committed").await;
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0]["wave_id"], fx.wave_id);
+        assert_eq!(payloads[0]["card_id"], "card-1");
+        assert_eq!(payloads[0]["commit_sha"], head);
+        assert_eq!(payloads[0]["branch"], "neige/wave-1/card-1");
+    }
+
+    #[tokio::test]
     async fn forge_action_idempotency_retry_with_different_argv_collapses_to_one_operation() {
         let fx = forge_runtime_fixture().await;
         let mut first = no_event_payload(
@@ -688,6 +750,18 @@ mod tests {
             .expect("event count")
     }
 
+    async fn event_payloads(repo: &SqlxRepo, kind: &str) -> Vec<Value> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT payload FROM events WHERE kind = ?1 ORDER BY id ASC")
+                .bind(kind)
+                .fetch_all(repo.pool())
+                .await
+                .expect("event payload rows");
+        rows.into_iter()
+            .map(|(payload,)| serde_json::from_str(&payload).expect("event payload json"))
+            .collect()
+    }
+
     async fn operation_count_for_idem(repo: &SqlxRepo, idem_key: &str) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE idempotency_key = ?1")
             .bind(idem_key)
@@ -703,6 +777,21 @@ mod tests {
         std::fs::write(path.join("README.md"), "initial\n").expect("write README");
         run_git(path, ["add", "README.md"]);
         run_git(path, ["commit", "-m", "initial"]);
+    }
+
+    fn git_stdout<const N: usize>(path: &Path, args: [&str; N]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     fn run_git<const N: usize>(path: &Path, args: [&str; N]) {
@@ -998,6 +1087,7 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
         "forge.pr.checks" => &[("pr_number", U64), ("conclusion", Str)],
         "forge.issue.closed" => &[("issue_number", U64)],
         "worktree.provisioned" | "worktree.removed" => &[("path", Str)],
+        "worktree.committed" => &[("commit_sha", Str), ("branch", Str)],
         _ => &[],
     }
 }
@@ -1009,7 +1099,9 @@ fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
     match event_kind {
         "forge.pr.merged" => &["wave_id", "subject"],
         "forge.pr.diff.read" | "forge.issue.read" => &["wave_id", "artifact_path"],
-        "worktree.provisioned" | "worktree.removed" => &["wave_id", "card_id"],
+        "worktree.provisioned" | "worktree.committed" | "worktree.removed" => {
+            &["wave_id", "card_id"]
+        }
         _ => &["wave_id"],
     }
 }

@@ -159,10 +159,34 @@ fn lower_git_worktree_add(args: &Value) -> Result<Value, String> {
 fn lower_git_commit(args: &Value) -> Result<Value, String> {
     let message = required_string(args, "message")?;
     let idem = required_string(args, "idem")?;
+    let branch = required_string(args, "branch")?;
     forge_payload(
-        vec!["git".into(), "commit".into(), "-m".into(), message],
+        vec![
+            "sh".into(),
+            "-c".into(),
+            GIT_COMMIT_SCRIPT.into(),
+            "sh".into(),
+            message,
+            branch.clone(),
+        ],
         format!("git.commit:{idem}"),
-        None,
+        Some(event_spec(
+            "worktree.committed",
+            [
+                (
+                    "commit_sha",
+                    FieldSource::JsonField {
+                        path: "/commit".into(),
+                    },
+                ),
+                (
+                    "branch",
+                    FieldSource::JsonField {
+                        path: "/branch".into(),
+                    },
+                ),
+            ],
+        )),
         json!({}),
         Some(json!({
             // Idempotent contract: after a nonzero `git commit`, an empty index
@@ -172,6 +196,13 @@ fn lower_git_commit(args: &Value) -> Result<Value, String> {
                 "-c",
                 GIT_COMMIT_PROBE_SCRIPT,
                 "sh"
+            ],
+            "output_probe_argv": [
+                "sh",
+                "-c",
+                GIT_COMMIT_OUTPUT_PROBE_SCRIPT,
+                "sh",
+                branch
             ]
         })),
         false,
@@ -504,6 +535,10 @@ const PR_CREATE_PROBE_SCRIPT: &str = "n=$(gh pr list --repo \"$2\" --head \"$1\"
      case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
 const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
      if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
+const GIT_COMMIT_SCRIPT: &str = "git add -A && git commit -m \"$1\" || true; \
+     git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$2\"'\"}'";
+const GIT_COMMIT_OUTPUT_PROBE_SCRIPT: &str =
+    "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$1\"'\"}'";
 
 fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
@@ -658,14 +693,37 @@ mod tests {
     #[test]
     fn lowers_git_commit() {
         let expected_probe_script = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
-        let payload = lower("git.commit", &json!({ "message": "m", "idem": "step-1" }))
-            .expect("lower commit");
+        let expected_commit_script = "git add -A && git commit -m \"$1\" || true; git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$2\"'\"}'";
+        let expected_output_probe_script =
+            "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$1\"'\"}'";
+        let payload = lower(
+            "git.commit",
+            &json!({
+                "message": "neige: worker card-1 @ wave wave-1",
+                "idem": "step-1",
+                "branch": "neige/wave-1/card-1"
+            }),
+        )
+        .expect("lower commit");
         assert_eq!(
             payload,
             json!({
-                "argv": ["git", "commit", "-m", "m"],
+                "argv": [
+                    "sh",
+                    "-c",
+                    expected_commit_script,
+                    "sh",
+                    "neige: worker card-1 @ wave wave-1",
+                    "neige/wave-1/card-1"
+                ],
                 "idem_key": "git.commit:step-1",
-                "event_spec": null,
+                "event_spec": {
+                    "event_kind": "worktree.committed",
+                    "fields": {
+                        "branch": { "json_field": { "path": "/branch" } },
+                        "commit_sha": { "json_field": { "path": "/commit" } }
+                    }
+                },
                 "subject": null,
                 "context": {},
                 "probe": {
@@ -674,12 +732,27 @@ mod tests {
                         "-c",
                         expected_probe_script,
                         "sh"
+                    ],
+                    "output_probe_argv": [
+                        "sh",
+                        "-c",
+                        expected_output_probe_script,
+                        "sh",
+                        "neige/wave-1/card-1"
                     ]
                 },
                 "parked": false
             })
         );
-        assert_no_reserved_context(&payload, &["wave_id"]);
+        assert_no_reserved_context(&payload, &["wave_id", "card_id"]);
+        assert_supported_event_kind(&payload);
+        let rendered = serde_json::to_string(&payload).expect("payload json");
+        for needle in ["worktree.committed", "neige: worker "] {
+            assert!(
+                rendered.contains(needle),
+                "git.commit lowering missing needle {needle:?}: {rendered}"
+            );
+        }
     }
 
     #[test]

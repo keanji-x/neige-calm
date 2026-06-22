@@ -866,6 +866,13 @@ pub enum Event {
         card_id: CardId,
         path: String,
     },
+    #[serde(rename = "worktree.committed")]
+    WorktreeCommitted {
+        wave_id: WaveId,
+        card_id: CardId,
+        commit_sha: String,
+        branch: String,
+    },
     #[serde(rename = "worktree.removed")]
     WorktreeRemoved {
         wave_id: WaveId,
@@ -1200,14 +1207,14 @@ impl Event {
                 entity_kind: Some("wave".into()),
                 entity_id: Some(wave_id.to_string()),
             },
-            Event::WorktreeProvisioned { card_id, .. } | Event::WorktreeRemoved { card_id, .. } => {
-                EventMetadata {
-                    kind_tag,
-                    plugin_id: None,
-                    entity_kind: Some("card".into()),
-                    entity_id: Some(card_id.to_string()),
-                }
-            }
+            Event::WorktreeProvisioned { card_id, .. }
+            | Event::WorktreeCommitted { card_id, .. }
+            | Event::WorktreeRemoved { card_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("card".into()),
+                entity_id: Some(card_id.to_string()),
+            },
             // Issue #644 PR-C — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via
             // the events kind clause + the envelope's wave scope.
@@ -1269,6 +1276,7 @@ impl Event {
             Event::ForgeIssueRead { .. } => "forge.issue.read",
             Event::ForgeIssueClosed { .. } => "forge.issue.closed",
             Event::WorktreeProvisioned { .. } => "worktree.provisioned",
+            Event::WorktreeCommitted { .. } => "worktree.committed",
             Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
@@ -1460,6 +1468,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
         }
 
         Event::WorktreeProvisioned {
+            wave_id, card_id, ..
+        }
+        | Event::WorktreeCommitted {
             wave_id, card_id, ..
         }
         | Event::WorktreeRemoved {
@@ -1815,6 +1826,14 @@ mod scope_tests {
             path: "/tmp/worktree".into(),
         };
         assert_eq!(worktree_provisioned.kind_tag(), "worktree.provisioned");
+
+        let worktree_committed = Event::WorktreeCommitted {
+            wave_id: WaveId::from("wave-1"),
+            card_id: CardId::from("card-1"),
+            commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            branch: "neige/wave-1/card-1".into(),
+        };
+        assert_eq!(worktree_committed.kind_tag(), "worktree.committed");
 
         let worktree_removed = Event::WorktreeRemoved {
             wave_id: WaveId::from("wave-1"),
@@ -2825,6 +2844,12 @@ mod scope_tests {
                 card_id: CardId::from("card-worktree"),
                 path: "/tmp/worktree".into(),
             },
+            Event::WorktreeCommitted {
+                wave_id: WaveId::from("wave-1"),
+                card_id: CardId::from("card-worktree"),
+                commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                branch: "neige/wave-1/card-worktree".into(),
+            },
             Event::WorktreeRemoved {
                 wave_id: WaveId::from("wave-1"),
                 card_id: CardId::from("card-worktree"),
@@ -3108,6 +3133,16 @@ mod scope_tests {
                     "wave_id": "wave-1",
                     "card_id": "card-1",
                     "path": "/tmp/worktree",
+                }),
+            ),
+            (
+                "worktree.committed",
+                "worktree.committed",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "card_id": "card-1",
+                    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "branch": "neige/wave-1/card-1",
                 }),
             ),
             (

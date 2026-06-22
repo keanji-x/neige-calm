@@ -4,7 +4,8 @@
 //! binary is available. The test keeps GitHub fake via a local `gh` shim, but
 //! runs a real local Codex app-server and a real Codex worker against a local
 //! bare git origin. The worker must write a small file on its leased worktree;
-//! the deterministic commit path is tracked separately in issue #834.
+//! the kernel must then commit that leased worktree and emit
+//! `worktree.committed`.
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
@@ -95,9 +96,8 @@ struct Fixture {
 
 #[tokio::test]
 async fn real_codex_worker_writes_code_on_leased_worktree() {
-    // This asserts the real-worker-writes-code integration seam. The
-    // deterministic commit/forge-tool path is tracked in issue #834 and covered
-    // by the scripted forge_workflow_e2e.rs.
+    // This asserts the real-worker-writes-code integration seam and the #834
+    // kernel-owned deterministic commit path.
     let Some(codex_bin) = resolve_codex_bin() else {
         eprintln!("[codex-forge-e2e] SKIP: no codex bin");
         return;
@@ -128,8 +128,10 @@ async fn real_codex_worker_writes_code_on_leased_worktree() {
         .as_ref()
         .expect("codex-worker tx_output persisted");
     let worker_cwd = PathBuf::from(output_string(output, "cwd"));
+    let worker_card_id = output_string(output, "card_id");
 
     assert_worker_wrote_marker_file(&fx, &worker_cwd).await;
+    assert_worker_commit_landed(&fx, &worker_cwd, &worker_card_id, budget).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -507,6 +509,64 @@ async fn assert_worker_wrote_marker_file(fx: &Fixture, worker_cwd: &Path) {
     );
 }
 
+async fn assert_worker_commit_landed(
+    fx: &Fixture,
+    worker_cwd: &Path,
+    worker_card_id: &str,
+    budget: Duration,
+) {
+    let row = wait_for_worktree_committed_event(fx, budget).await;
+    assert_eq!(row.actor, ActorId::KernelDispatcher);
+    assert_eq!(row.scope_kind, "card");
+    assert_eq!(row.scope_wave.as_deref(), Some(fx.wave_id.as_str()));
+    assert_eq!(row.scope_card.as_deref(), Some(worker_card_id));
+    assert_eq!(row.payload["wave_id"], fx.wave_id.as_str());
+    assert_eq!(row.payload["card_id"], worker_card_id);
+
+    let head = git_stdout(worker_cwd, ["rev-parse", "HEAD"]);
+    assert!(
+        is_hex_sha(&head),
+        "worker worktree HEAD should be a 40-char hex sha, got {head:?}"
+    );
+    let origin_main = git_stdout(worker_cwd, ["rev-parse", "origin/main"]);
+    assert_ne!(
+        head, origin_main,
+        "worker worktree HEAD should diverge from origin/main after kernel commit"
+    );
+    assert_eq!(row.payload["commit_sha"], head);
+    assert_eq!(
+        row.payload["branch"],
+        format!("neige/{}/{}", fx.wave_id.as_str(), worker_card_id)
+    );
+
+    let marker_at_head = git_stdout(worker_cwd, ["show", "HEAD:FORGE_E2E.md"]);
+    assert_eq!(
+        marker_at_head.trim(),
+        "forge-e2e-ok",
+        "FORGE_E2E.md content at committed HEAD mismatch"
+    );
+}
+
+async fn wait_for_worktree_committed_event(fx: &Fixture, budget: Duration) -> CommittedEventRow {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows = committed_event_rows(&fx.repo).await;
+        if !rows.is_empty() {
+            assert_eq!(
+                rows.len(),
+                1,
+                "expected exactly one worktree.committed event"
+            );
+            return rows.into_iter().next().expect("one committed event row");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out after {budget:?} waiting for worktree.committed"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn panic_with_debug(fx: &Fixture, task_id: &str, reason: String) -> ! {
     let worker = worker_operation_for_task(&fx.repo, task_id).await;
     let worker_summary = worker
@@ -614,6 +674,17 @@ struct OperationRow {
     last_error: Option<String>,
 }
 
+#[derive(Debug)]
+struct CommittedEventRow {
+    actor: ActorId,
+    scope_kind: String,
+    scope_wave: Option<String>,
+    scope_card: Option<String>,
+    payload: Value,
+}
+
+type RawCommittedEventRow = (String, String, Option<String>, Option<String>, String);
+
 async fn task_failed_reason(repo: &SqlxRepo, task_id: &str) -> Option<String> {
     let rows = event_payloads(repo, "task.failed").await;
     rows.into_iter()
@@ -630,6 +701,27 @@ async fn event_payloads(repo: &SqlxRepo, kind: &str) -> Vec<Value> {
             .expect("event payload rows");
     rows.into_iter()
         .map(|(payload,)| serde_json::from_str(&payload).expect("event payload json"))
+        .collect()
+}
+
+async fn committed_event_rows(repo: &SqlxRepo) -> Vec<CommittedEventRow> {
+    let rows: Vec<RawCommittedEventRow> = sqlx::query_as(
+        "SELECT actor, scope_kind, scope_wave, scope_card, payload \
+         FROM events WHERE kind = 'worktree.committed' ORDER BY id ASC",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .expect("worktree.committed event rows");
+    rows.into_iter()
+        .map(
+            |(actor, scope_kind, scope_wave, scope_card, payload)| CommittedEventRow {
+                actor: serde_json::from_str(&actor).expect("event actor json"),
+                scope_kind,
+                scope_wave,
+                scope_card,
+                payload: serde_json::from_str(&payload).expect("event payload json"),
+            },
+        )
         .collect()
 }
 
@@ -995,6 +1087,23 @@ fn git_stdout_no_cwd<const N: usize>(args: [&str; N]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn git_stdout<const N: usize>(repo: &Path, args: [&str; N]) -> String {
+    let output = run_git_output(Some(repo), args);
+    assert!(
+        output.status.success(),
+        "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+        args,
+        repo.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn is_hex_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn run_git_inner<const N: usize>(repo: Option<&Path>, args: [&str; N]) {

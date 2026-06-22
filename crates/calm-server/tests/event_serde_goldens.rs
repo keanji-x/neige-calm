@@ -852,6 +852,17 @@ golden_test!(
 );
 
 golden_test!(
+    worktree_committed,
+    "worktree_committed.json",
+    Event::WorktreeCommitted {
+        wave_id: WaveId::from("wave-01"),
+        card_id: CardId::from("card-01"),
+        commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+        branch: "neige/wave-01/card-01".into(),
+    }
+);
+
+golden_test!(
     worktree_removed,
     "worktree_removed.json",
     Event::WorktreeRemoved {
@@ -927,7 +938,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 45] = [
+const ALL_KIND_TAGS: [&str; 46] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -971,6 +982,7 @@ const ALL_KIND_TAGS: [&str; 45] = [
     "forge.issue.read",
     "forge.issue.closed",
     "worktree.provisioned",
+    "worktree.committed",
     "worktree.removed",
     "task.gate_result",
 ];
@@ -1071,6 +1083,7 @@ fn kind_tag_list_matches_enum() {
             Event::ForgeIssueRead { .. } => "forge.issue.read",
             Event::ForgeIssueClosed { .. } => "forge.issue.closed",
             Event::WorktreeProvisioned { .. } => "worktree.provisioned",
+            Event::WorktreeCommitted { .. } => "worktree.committed",
             Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::TaskGateResult { .. } => "task.gate_result",
         }
@@ -1081,7 +1094,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        45,
+        46,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

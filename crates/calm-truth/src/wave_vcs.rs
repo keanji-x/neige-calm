@@ -2220,6 +2220,7 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         | Event::ForgeIssueRead { .. }
         | Event::ForgeIssueClosed { .. }
         | Event::WorktreeProvisioned { .. }
+        | Event::WorktreeCommitted { .. }
         | Event::WorktreeRemoved { .. } => {}
     }
     delta

@@ -29,20 +29,34 @@
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
-use crate::event::Event;
+use crate::event::{Event, FieldSource, ForgeEventSpec};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     register_deprecated_alias, require_role, role_gated_write_annotations,
 };
 use crate::mcp_server::tools::lifecycle_args::{lifecycle_schema, message_schema};
+use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action};
 use crate::model::CardRole;
+use crate::operation::forge_action_adapter::ProbeSpec;
+use crate::operation::workspace_lease::{
+    git_repo_root_for_wave_cwd, workspace_lease_path_for, workspace_slice_branch_for,
+};
+use serde_json::Map;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub const TOOL_TASK_DISPATCH: &str = "calm.task.dispatch";
 pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
+const GIT_FORGE_PLUGIN_ID: &str = "dev.neige.git-forge";
+const GIT_COMMIT_SCRIPT: &str = "git add -A && git commit -m \"$1\" || true; \
+     git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$2\"'\"}'";
+const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
+     if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
+const GIT_COMMIT_OUTPUT_PROBE_SCRIPT: &str =
+    "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"'\"$1\"'\"}'";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(task_dispatch_descriptor(), wrap(task_dispatch));
@@ -165,7 +179,109 @@ async fn task_complete(
         agent_message: None,
     };
     commit_worker_task_report_for_identity(&ctx, &identity, event).await?;
+    if let Err(error) = submit_worker_success_commit(&ctx, &identity).await {
+        tracing::warn!(
+            card_id = %identity.card_id,
+            wave_id = identity.wave_id.as_deref().unwrap_or("<missing>"),
+            error = %error,
+            "task_complete: worker success persisted but deterministic commit enqueue failed"
+        );
+    }
     Ok(json!({ "status": "emitted" }))
+}
+
+async fn submit_worker_success_commit(
+    ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
+) -> Result<(), String> {
+    let wave_id = identity
+        .wave_id
+        .clone()
+        .ok_or_else(|| "worker success commit requires a wave-scoped caller".to_string())?;
+    let wave = ctx
+        .repo
+        .wave_get(&wave_id)
+        .await
+        .map_err(|e| format!("worker success commit wave lookup: {e}"))?
+        .ok_or_else(|| format!("unknown wave `{wave_id}`"))?;
+    if wave.cove_id.as_str() != identity.cove_id.as_str() {
+        return Err("worker success commit wave belongs to a different cove".into());
+    }
+
+    let repo_root = git_repo_root_for_wave_cwd(&wave_id, &wave.cwd)
+        .map_err(|e| format!("worker success commit repo root: {e}"))?;
+    let card_id = identity.card_id.clone();
+    let cwd_lease = workspace_lease_path_for(&repo_root, &wave_id, &card_id)
+        .map_err(|e| format!("worker success commit worktree path: {e}"))?;
+    let branch = workspace_slice_branch_for(&wave_id, &card_id)
+        .map_err(|e| format!("worker success commit branch: {e}"))?;
+    let message = format!("neige: worker {card_id} @ wave {wave_id}");
+
+    let payload = PluginForgePayload {
+        argv: vec![
+            "sh".into(),
+            "-c".into(),
+            GIT_COMMIT_SCRIPT.into(),
+            "sh".into(),
+            message,
+            branch.clone(),
+        ],
+        idem_key: "git.commit:auto".into(),
+        event_spec: Some(worktree_committed_event_spec()),
+        subject: None,
+        context: Map::new(),
+        probe: Some(ProbeSpec {
+            probe_argv: vec![
+                "sh".into(),
+                "-c".into(),
+                GIT_COMMIT_PROBE_SCRIPT.into(),
+                "sh".into(),
+            ],
+            output_probe_argv: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                GIT_COMMIT_OUTPUT_PROBE_SCRIPT.into(),
+                "sh".into(),
+                branch,
+            ]),
+        }),
+        parked: false,
+    };
+
+    match submit_forge_action(
+        ctx,
+        GIT_FORGE_PLUGIN_ID,
+        wave_id,
+        card_id,
+        cwd_lease,
+        payload,
+    )
+    .await
+    .map_err(|e| e.to_string())?
+    {
+        Ok(_submission) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn worktree_committed_event_spec() -> ForgeEventSpec {
+    ForgeEventSpec {
+        event_kind: "worktree.committed".into(),
+        fields: BTreeMap::from([
+            (
+                "branch".into(),
+                FieldSource::JsonField {
+                    path: "/branch".into(),
+                },
+            ),
+            (
+                "commit_sha".into(),
+                FieldSource::JsonField {
+                    path: "/commit".into(),
+                },
+            ),
+        ]),
+    }
 }
 
 // ---------------------------------------------------------------------------

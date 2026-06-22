@@ -276,7 +276,7 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
         &fx,
         11,
         COMMIT_TOOL,
-        json!({ "message": "e2e feature", "idem": "slice-810-e2e-commit" }),
+        json!({ "message": "e2e feature", "idem": "slice-810-e2e-commit", "branch": head }),
     )
     .await;
     assert_tool_succeeded(&commit_resp, "git.commit");
@@ -447,7 +447,11 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
         &fx,
         20,
         COMMIT_TOOL,
-        json!({ "message": "merge crash e2e", "idem": "slice-810-e2e-merge-crash-commit" }),
+        json!({
+            "message": "merge crash e2e",
+            "idem": "slice-810-e2e-merge-crash-commit",
+            "branch": head
+        }),
     )
     .await;
     assert_tool_succeeded(&commit_resp, "git.commit");
@@ -571,7 +575,11 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
         &fx,
         24,
         COMMIT_TOOL,
-        json!({ "message": "merge never ran e2e", "idem": "slice-810-e2e-merge-never-ran-commit" }),
+        json!({
+            "message": "merge never ran e2e",
+            "idem": "slice-810-e2e-merge-never-ran-commit",
+            "branch": head
+        }),
     )
     .await;
     assert_tool_succeeded(&commit_resp, "git.commit");
@@ -2088,7 +2096,7 @@ async fn drive_pr_to_diff(
         fx,
         id_base + 1,
         COMMIT_TOOL,
-        json!({ "message": title, "idem": format!("{head}-commit") }),
+        json!({ "message": title, "idem": format!("{head}-commit"), "branch": head }),
     )
     .await;
     assert_tool_succeeded(&commit_resp, "git.commit");
