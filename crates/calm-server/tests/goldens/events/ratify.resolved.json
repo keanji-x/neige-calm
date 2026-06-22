@@ -1,0 +1,10 @@
+{
+  "description": "ratify.resolved carries the wave routing id and the lower-case user ratification decision",
+  "wire": {
+    "ev": "ratify.resolved",
+    "data": {
+      "wave_id": "wave-01",
+      "decision": "grant"
+    }
+  }
+}

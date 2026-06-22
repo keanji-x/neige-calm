@@ -1,0 +1,30 @@
+{
+  "description": "review.round carries the wave routing id, logical review subject, convergence count, channel verdicts, and durable idempotency key",
+  "wire": {
+    "ev": "review.round",
+    "data": {
+      "wave_id": "wave-01",
+      "subject": {
+        "phase": "impl",
+        "slice_id": "5b",
+        "pr_number": 760
+      },
+      "head_sha": "head-sha",
+      "n": 1,
+      "cap": 8,
+      "converged": false,
+      "channels": [
+        {
+          "role": "design-correctness",
+          "verdict": "changes_requested"
+        },
+        {
+          "role": "failure-path",
+          "verdict": "approved"
+        }
+      ],
+      "root_cause": "tests failing",
+      "idempotency_key": "review.round:wave-01:impl:5b:760:1"
+    }
+  }
+}

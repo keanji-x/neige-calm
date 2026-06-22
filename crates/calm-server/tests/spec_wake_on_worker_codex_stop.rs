@@ -7,15 +7,16 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
 use calm_server::card_role_cache::CardRoleCache;
+use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
-use calm_server::event::EventBus;
+use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, HookKind, Observation,
     SpecHarness, SpecHarnessParams,
 };
-use calm_server::ids::{CardId, WaveId};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -26,6 +27,7 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_types::event::{ChannelVerdict, ReviewSubject};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -35,6 +37,7 @@ struct Boot {
     events: EventBus,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
+    cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
@@ -178,6 +181,7 @@ async fn boot() -> Boot {
         events,
         card_role_cache,
         wave_cove_cache,
+        cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -246,6 +250,25 @@ async fn wait_for_worker_hook_stop(harness: &SpecHarness) -> Vec<Observation> {
     }
 }
 
+async fn wait_for_turn_text_containing(shared: &SharedCodexAppServer, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let turns = shared.started_turns_for_test();
+        for (_thread_id, items) in &turns {
+            assert_eq!(items.len(), 1);
+            let InputItem::Text { text } = &items[0];
+            if text.contains(needle) {
+                return text.clone();
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for started turn containing {needle:?}; turns={turns:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test]
 async fn worker_codex_stop_hook_reaches_spec_harness_observation_queue() {
     let boot = boot().await;
@@ -289,4 +312,54 @@ async fn worker_codex_stop_hook_reaches_spec_harness_observation_queue() {
     assert_ne!(boot.worker_card_id, boot.spec_card_id);
     assert!(boot.harness_registry.get(&boot.runtime_id).is_some());
     boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn live_review_round_event_reaches_spec_harness_and_issues_turn() {
+    let boot = boot().await;
+    let _dispatcher = spawn_dispatcher(&boot);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    boot.repo
+        .log_pure_event(
+            ActorId::AiSpec(boot.spec_card_id.clone()),
+            EventScope::Wave {
+                wave: boot.wave_id.clone(),
+                cove: boot.cove_id.clone(),
+            },
+            None,
+            &boot.events,
+            &boot.card_role_cache,
+            &boot.wave_cove_cache,
+            Event::ReviewRound {
+                wave_id: boot.wave_id.clone(),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: "5b".into(),
+                    pr_number: Some(760),
+                },
+                head_sha: Some("head-sha".into()),
+                n: 1,
+                cap: 8,
+                converged: false,
+                channels: vec![
+                    ChannelVerdict {
+                        role: "design-correctness".into(),
+                        verdict: "changes_requested".into(),
+                    },
+                    ChannelVerdict {
+                        role: "failure-path".into(),
+                        verdict: "approved".into(),
+                    },
+                ],
+                root_cause: Some("tests failing".into()),
+                idempotency_key: format!("review.round:{}:impl:5b:760:1", boot.wave_id),
+            },
+        )
+        .await
+        .expect("persist review.round event");
+
+    let text = wait_for_turn_text_containing(&boot.shared, "Review round 1/8").await;
+    assert!(text.contains("Review round 1/8"), "turn text={text}");
+    assert!(text.contains("converged=false"), "turn text={text}");
 }

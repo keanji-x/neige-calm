@@ -534,6 +534,9 @@ pub async fn commit_events_with_author_in_tx(
             Event::WorkspaceLeased { .. }
                 | Event::WorkspaceReleased { .. }
                 | Event::ForgePrMerged { .. }
+                | Event::ReviewRound { .. }
+                | Event::RatifyRequested { .. }
+                | Event::RatifyResolved { .. }
                 | Event::ForgeScanCompleted { .. }
                 | Event::ForgePrOpened { .. }
                 | Event::ForgePrDiffRead { .. }
@@ -2207,6 +2210,9 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         // history for the git/forge toolset substrate. No wave-fs
         // projection consumes them in this pass.
         Event::ForgePrMerged { .. }
+        | Event::ReviewRound { .. }
+        | Event::RatifyRequested { .. }
+        | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
         | Event::ForgePrOpened { .. }
         | Event::ForgePrDiffRead { .. }
@@ -3367,6 +3373,7 @@ mod tests {
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
     use crate::event::ForgeMergeSubject;
     use crate::model::{NewCove, NewWave, RequestTheme};
+    use calm_types::event::{ChannelVerdict, RatifyDecision, ReviewSubject};
 
     #[test]
     fn commit_hash_ignores_author_metadata() {
@@ -3440,6 +3447,94 @@ mod tests {
         )
         .await
         .expect("commit forge.pr.merged batch");
+        tx.commit().await.expect("commit transaction");
+
+        let after = head(repo.pool(), &wave.id).await.expect("head after");
+        let commit_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM wave_vcs_commits WHERE wave_id = ?1")
+                .bind(wave.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .expect("commit count");
+        assert_eq!(committed, None);
+        assert_eq!(after, before);
+        assert_eq!(commit_count, 0);
+    }
+
+    #[tokio::test]
+    async fn review_ratify_only_batch_does_not_advance_head() {
+        let repo = SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open sqlite repo");
+        let cove = repo
+            .cove_create(NewCove {
+                name: "cove".into(),
+                color: "#336699".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "wave".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let before = head(repo.pool(), &wave.id).await.expect("head before");
+
+        let events = vec![
+            Event::ReviewRound {
+                wave_id: wave.id.clone(),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: "5b".into(),
+                    pr_number: Some(760),
+                },
+                head_sha: Some("head-sha".into()),
+                n: 1,
+                cap: 8,
+                converged: false,
+                channels: vec![
+                    ChannelVerdict {
+                        role: "design-correctness".into(),
+                        verdict: "changes_requested".into(),
+                    },
+                    ChannelVerdict {
+                        role: "failure-path".into(),
+                        verdict: "approved".into(),
+                    },
+                ],
+                root_cause: Some("tests failing".into()),
+                idempotency_key: format!("review.round:{}:impl:5b:760:1", wave.id),
+            },
+            Event::RatifyRequested {
+                wave_id: wave.id.clone(),
+                reason: "cap_exhausted".into(),
+            },
+            Event::RatifyResolved {
+                wave_id: wave.id.clone(),
+                decision: RatifyDecision::Grant,
+            },
+        ];
+        let mut tx = begin_immediate_tx(repo.pool())
+            .await
+            .expect("begin transaction");
+        let committed = commit_events_with_author_in_tx(
+            &mut tx,
+            &wave.id,
+            Some(&ActorId::AiSpec(CardId::from("spec-card"))),
+            42,
+            &events,
+            MANIFEST_SCHEMA_VERSION,
+        )
+        .await
+        .expect("commit review/ratify batch");
         tx.commit().await.expect("commit transaction");
 
         let after = head(repo.pool(), &wave.id).await.expect("head after");

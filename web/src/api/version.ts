@@ -73,10 +73,16 @@
  *   `SYNC_EVENT_VERSION` bumped 9 → 10 in lockstep. Older frontends'
  *   zod schemas don't know the new discriminator and would silently
  *   drop issue-read frames, so bump here.
+ * * `12` — review/ratify workflow events (issue #760 slice ⑤-b-i):
+ *   `review.round`, `ratify.requested`, and `ratify.resolved` join the
+ *   WS event union with backend `SYNC_EVENT_VERSION` bumped 10 → 11 in
+ *   lockstep. Older frontends' zod schemas don't know the new
+ *   discriminators and would silently drop review/ratify frames, so bump
+ *   here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 11;
+export const WEB_COMPAT_VERSION = 12;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

@@ -31,6 +31,7 @@ use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
+use calm_types::event::{ChannelVerdict, RatifyDecision, ReviewSubject};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -734,6 +735,53 @@ golden_test!(
 );
 
 golden_test!(
+    review_round,
+    "review.round.json",
+    Event::ReviewRound {
+        wave_id: WaveId::from("wave-01"),
+        subject: ReviewSubject {
+            phase: "impl".into(),
+            slice_id: "5b".into(),
+            pr_number: Some(760),
+        },
+        head_sha: Some("head-sha".into()),
+        n: 1,
+        cap: 8,
+        converged: false,
+        channels: vec![
+            ChannelVerdict {
+                role: "design-correctness".into(),
+                verdict: "changes_requested".into(),
+            },
+            ChannelVerdict {
+                role: "failure-path".into(),
+                verdict: "approved".into(),
+            },
+        ],
+        root_cause: Some("tests failing".into()),
+        idempotency_key: "review.round:wave-01:impl:5b:760:1".into(),
+    }
+);
+
+golden_test!(
+    ratify_requested,
+    "ratify.requested.json",
+    Event::RatifyRequested {
+        wave_id: WaveId::from("wave-01"),
+        reason: "cap_exhausted".into(),
+    }
+);
+
+golden_test!(
+    ratify_resolved,
+    "ratify.resolved.json",
+    Event::RatifyResolved {
+        wave_id: WaveId::from("wave-01"),
+        decision: RatifyDecision::Grant,
+    }
+);
+
+golden_test!(
     forge_scan_completed,
     "forge_scan_completed.json",
     Event::ForgeScanCompleted {
@@ -879,7 +927,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 42] = [
+const ALL_KIND_TAGS: [&str; 45] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -913,6 +961,9 @@ const ALL_KIND_TAGS: [&str; 42] = [
     "workspace.leased",
     "workspace.released",
     "forge.pr.merged",
+    "review.round",
+    "ratify.requested",
+    "ratify.resolved",
     "forge.scan.completed",
     "forge.pr.opened",
     "forge.pr.diff.read",
@@ -956,7 +1007,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 61,
+        files, 64,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1010,6 +1061,9 @@ fn kind_tag_list_matches_enum() {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
+            Event::ReviewRound { .. } => "review.round",
+            Event::RatifyRequested { .. } => "ratify.requested",
+            Event::RatifyResolved { .. } => "ratify.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
             Event::ForgePrOpened { .. } => "forge.pr.opened",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
@@ -1027,7 +1081,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        42,
+        45,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }
