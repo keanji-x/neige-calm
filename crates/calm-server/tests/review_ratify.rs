@@ -216,6 +216,13 @@ async fn call_tool(
     handler(boot.ctx.clone(), spec_identity(boot), args).await
 }
 
+async fn request_ratification(
+    boot: &Boot,
+    reason: &str,
+) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
+    call_tool(boot, TOOL_RATIFY_REQUEST, json!({ "reason": reason })).await
+}
+
 fn valid_round_args(n: u32) -> Value {
     json!({
         "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
@@ -494,13 +501,9 @@ async fn review_round_gap_is_rejected() {
 #[tokio::test]
 async fn ratify_request_emits_event_and_flips_working_to_blocked() {
     let boot = boot().await;
-    call_tool(
-        &boot,
-        TOOL_RATIFY_REQUEST,
-        json!({ "reason": "cap_exhausted" }),
-    )
-    .await
-    .expect("ratify request");
+    request_ratification(&boot, "cap_exhausted")
+        .await
+        .expect("ratify request");
 
     let wave = boot
         .repo
@@ -512,6 +515,60 @@ async fn ratify_request_emits_event_and_flips_working_to_blocked() {
     let events = events_for_wave(&boot, &["ratify.requested"]).await;
     assert!(
         matches!(events.as_slice(), [Event::RatifyRequested { reason, .. }] if reason == "cap_exhausted")
+    );
+}
+
+#[tokio::test]
+async fn ratify_request_rejects_already_blocked_wave_without_requested_event() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;
+
+    let err = request_ratification(&boot, "retry while blocked")
+        .await
+        .expect_err("blocked wave without pending request must be rejected");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(
+        err.message.contains("not in `working`")
+            && err.message.contains("ratify request is already pending"),
+        "{err:?}"
+    );
+
+    let events = events_for_wave(&boot, &["ratify.requested"]).await;
+    assert!(
+        events.is_empty(),
+        "rejected request must not append: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn ratify_request_rejects_duplicate_pending_request_without_second_event() {
+    let boot = boot().await;
+    request_ratification(&boot, "cap_exhausted")
+        .await
+        .expect("first request");
+    set_wave_lifecycle(&boot, WaveLifecycle::Working).await;
+
+    let err = request_ratification(&boot, "cap_exhausted retry")
+        .await
+        .expect_err("pending request must reject duplicate");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(
+        err.message.contains("not in `working`")
+            && err.message.contains("ratify request is already pending"),
+        "{err:?}"
+    );
+
+    let events = events_for_wave(&boot, &["ratify.requested"]).await;
+    assert_eq!(
+        events.len(),
+        1,
+        "duplicate pending request must not append: {events:?}"
     );
 }
 
@@ -541,7 +598,7 @@ async fn post_ratify(boot: &Boot, decision: &str) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
-async fn ratify_route_rejects_non_blocked_wave_for_all_decisions_without_event() {
+async fn ratify_route_rejects_non_pending_wave_for_all_decisions_without_event() {
     let boot = boot().await;
 
     for decision in ["grant", "deny"] {
@@ -564,9 +621,35 @@ async fn ratify_route_rejects_non_blocked_wave_for_all_decisions_without_event()
 }
 
 #[tokio::test]
-async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_event() {
+async fn ratify_route_rejects_blocked_wave_without_pending_request_or_event() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;
+
+    for decision in ["grant", "deny"] {
+        let (status, body) = post_ratify(&boot, decision).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], json!("conflict"));
+        assert!(
+            body["error"].as_str().is_some_and(
+                |message| message.contains("ratify: wave is not awaiting ratification")
+            ),
+            "{body}",
+        );
+
+        let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+        assert!(
+            events.is_empty(),
+            "blocked-without-pending {decision} must not append: {events:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_event() {
+    let boot = boot().await;
+    request_ratification(&boot, "cap_exhausted")
+        .await
+        .expect("ratify request");
 
     let (status, body) = post_ratify(&boot, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -606,7 +689,9 @@ async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_ev
 #[tokio::test]
 async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;
+    request_ratification(&boot, "cap_exhausted")
+        .await
+        .expect("ratify request");
 
     let (status, body) = post_ratify(&boot, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -635,7 +720,9 @@ async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
 #[tokio::test]
 async fn ratify_route_deny_emits_resolved_and_stays_blocked() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;
+    request_ratification(&boot, "cap_exhausted")
+        .await
+        .expect("ratify request");
 
     let (status, body) = post_ratify(&boot, "deny").await;
     assert_eq!(status, StatusCode::OK, "{body}");

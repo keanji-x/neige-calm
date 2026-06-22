@@ -19,6 +19,7 @@ use crate::mcp_server::registry::{
     require_role, role_gated_write_annotations,
 };
 use crate::model::{CardRole, Wave, WaveLifecycle};
+use crate::ratify_state::ratify_request_pending_tx;
 use crate::wave_lifecycle::apply_requested_transition_in_tx;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -249,7 +250,16 @@ async fn ratify_request(
                 let reason = reason.clone();
                 Box::pin(async move {
                     let mut events = Vec::new();
-                    if let Some(lifecycle_events) = apply_requested_transition_in_tx(
+                    let lifecycle = wave_lifecycle_in_tx(tx, &wave_id).await?;
+                    let pending = ratify_request_pending_tx(tx, &wave_id).await?;
+                    if lifecycle != WaveLifecycle::Working || pending {
+                        return Err(CalmError::BadRequest(
+                            "ratify_request: wave is not in `working` or a ratify request is already pending"
+                                .into(),
+                        ));
+                    }
+
+                    let lifecycle_events = apply_requested_transition_in_tx(
                         tx,
                         &wave_id,
                         WaveLifecycle::Blocked,
@@ -257,13 +267,17 @@ async fn ratify_request(
                         reason.clone(),
                     )
                     .await?
-                    {
-                        events.extend(
-                            lifecycle_events
-                                .into_iter()
-                                .map(|event| (actor.clone(), scope.clone(), event)),
-                        );
-                    }
+                    .ok_or_else(|| {
+                        CalmError::BadRequest(
+                            "ratify_request: wave is not in `working` or a ratify request is already pending"
+                                .into(),
+                        )
+                    })?;
+                    events.extend(
+                        lifecycle_events
+                            .into_iter()
+                            .map(|event| (actor.clone(), scope.clone(), event)),
+                    );
                     events.push((actor, scope, Event::RatifyRequested { wave_id, reason }));
                     Ok(((), events))
                 })
@@ -452,6 +466,19 @@ fn review_round_for_subject(event: Event, subject: &ReviewSubject) -> Option<Eve
         } if event_subject == subject => Some(event),
         _ => None,
     }
+}
+
+async fn wave_lifecycle_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &WaveId,
+) -> Result<WaveLifecycle, CalmError> {
+    let lifecycle = sqlx::query_scalar::<_, String>("SELECT lifecycle FROM waves WHERE id = ?1")
+        .bind(wave_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", wave_id.as_str())))?;
+    WaveLifecycle::try_from(lifecycle)
+        .map_err(|e| CalmError::Internal(format!("waves.lifecycle decode: {e}")))
 }
 
 async fn resolve_wave_for_identity(

@@ -27,6 +27,7 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
+use crate::ratify_state::ratify_request_pending_tx;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::session_projection_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
@@ -621,18 +622,6 @@ pub struct SendSpecInputResponse {
     pub runtime_id: String,
 }
 
-async fn ratify_wave_lifecycle_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    wave_id: &WaveId,
-) -> Result<WaveLifecycle> {
-    let lifecycle = sqlx::query_scalar::<_, String>("SELECT lifecycle FROM waves WHERE id = ?1")
-        .bind(wave_id.as_str())
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {}", wave_id.as_str())))?;
-    WaveLifecycle::try_from(lifecycle).map_err(CalmError::Internal)
-}
-
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InterruptSpecCardResponse {
     #[schema(value_type = String)]
@@ -855,10 +844,9 @@ pub(crate) async fn ratify_card(
         let wave_id = wave_id.clone();
         let message = message.clone();
         Box::pin(async move {
-            let lifecycle = ratify_wave_lifecycle_in_tx(tx, &wave_id).await?;
-            if lifecycle != WaveLifecycle::Blocked {
+            if !ratify_request_pending_tx(tx, &wave_id).await? {
                 return Err(CalmError::Conflict(
-                    "ratify: wave is not awaiting ratification (lifecycle != blocked)".into(),
+                    "ratify: wave is not awaiting ratification".into(),
                 ));
             }
 
