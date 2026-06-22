@@ -387,18 +387,27 @@ fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
     let pr = required_u64(args, "pr")?;
     let phase = required_string(args, "phase")?;
     let slice_id = required_string(args, "slice_id")?;
+    let expected_head_sha = optional_string(args, "expected_head_sha")?;
+    let mut argv = vec![
+        "gh".into(),
+        "pr".into(),
+        "merge".into(),
+        pr.to_string(),
+        "--repo".into(),
+        repo.clone(),
+        "--squash".into(),
+        "--delete-branch".into(),
+    ];
+    let idem_key = if let Some(expected_head_sha) = expected_head_sha {
+        argv.push("--match-head-commit".into());
+        argv.push(expected_head_sha.clone());
+        format!("gh.pr.merge:{repo}:{pr}:{expected_head_sha}")
+    } else {
+        format!("gh.pr.merge:{repo}:{pr}")
+    };
     let mut payload = forge_payload(
-        vec![
-            "gh".into(),
-            "pr".into(),
-            "merge".into(),
-            pr.to_string(),
-            "--repo".into(),
-            repo.clone(),
-            "--squash".into(),
-            "--delete-branch".into(),
-        ],
-        format!("gh.pr.merge:{repo}:{pr}"),
+        argv,
+        idem_key,
         Some(event_spec(
             "forge.pr.merged",
             [
@@ -962,6 +971,72 @@ mod tests {
                     "--delete-branch"
                 ],
                 "idem_key": "gh.pr.merge:owner/repo:42",
+                "event_spec": {
+                    "event_kind": "forge.pr.merged",
+                    "fields": {
+                        "head_sha": { "json_field": { "path": "/headRefOid" } },
+                        "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
+                    }
+                },
+                "subject": {
+                    "phase": "impl",
+                    "slice_id": "809",
+                    "pr_number": 42
+                },
+                "context": {},
+                "probe": {
+                    "probe_argv": [
+                        "sh",
+                        "-c",
+                        expected_probe_script,
+                        "sh",
+                        "42",
+                        "owner/repo"
+                    ],
+                    "output_probe_argv": [
+                        "gh",
+                        "pr",
+                        "view",
+                        "42",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                        "headRefOid,mergeCommit"
+                    ]
+                },
+                "parked": true
+            })
+        );
+        assert_no_reserved_context(&payload, &["wave_id", "subject"]);
+        assert_supported_event_kind(&payload);
+
+        let payload = lower(
+            "gh.pr.merge",
+            &json!({
+                "repo": "owner/repo",
+                "pr": 42,
+                "phase": "impl",
+                "slice_id": "809",
+                "expected_head_sha": "abc123"
+            }),
+        )
+        .expect("lower gh pr merge with expected head sha");
+        assert_eq!(
+            payload,
+            json!({
+                "argv": [
+                    "gh",
+                    "pr",
+                    "merge",
+                    "42",
+                    "--repo",
+                    "owner/repo",
+                    "--squash",
+                    "--delete-branch",
+                    "--match-head-commit",
+                    "abc123"
+                ],
+                "idem_key": "gh.pr.merge:owner/repo:42:abc123",
                 "event_spec": {
                     "event_kind": "forge.pr.merged",
                     "fields": {

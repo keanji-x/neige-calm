@@ -68,13 +68,35 @@
           "acceptance_criteria": "The issue requirements and constraints are captured for the wave."
         },
         {
+          "key": "review-design-a",
+          "kind": "codex",
+          "goal": "Review the proposed design for correctness before implementation.",
+          "context": {
+            "channel": "a",
+            "reviewer_role": "design-correctness"
+          },
+          "depends_on": ["inspect-issue"],
+          "acceptance_criteria": "Channel a records a design verdict."
+        },
+        {
+          "key": "review-design-b",
+          "kind": "codex",
+          "goal": "Review the proposed design for failure paths before implementation.",
+          "context": {
+            "channel": "b",
+            "reviewer_role": "design-failure-path"
+          },
+          "depends_on": ["inspect-issue"],
+          "acceptance_criteria": "Channel b records a design verdict."
+        },
+        {
           "key": "implement-change",
           "kind": "codex",
           "goal": "Create a worktree, implement the change, and commit the result.",
           "context": {
             "tools": ["git.worktree.add", "git.commit"]
           },
-          "depends_on": ["inspect-issue"],
+          "depends_on": ["review-design-a", "review-design-b"],
           "acceptance_criteria": "The change is committed in the wave worktree."
         },
         {
@@ -86,6 +108,38 @@
           },
           "depends_on": ["implement-change"],
           "acceptance_criteria": "A pull request exists with readable diff and check status."
+        },
+        {
+          "key": "review-pr-a",
+          "kind": "codex",
+          "goal": "Review the pull request for correctness.",
+          "context": {
+            "channel": "a",
+            "reviewer_role": "pr-correctness"
+          },
+          "depends_on": ["open-pr"],
+          "acceptance_criteria": "Channel a records a PR verdict."
+        },
+        {
+          "key": "review-pr-b",
+          "kind": "codex",
+          "goal": "Review the pull request for failure paths.",
+          "context": {
+            "channel": "b",
+            "reviewer_role": "pr-failure-path"
+          },
+          "depends_on": ["open-pr"],
+          "acceptance_criteria": "Channel b records a PR verdict."
+        },
+        {
+          "key": "merge",
+          "kind": "codex",
+          "goal": "Merge the approved pull request and close the issue.",
+          "context": {
+            "tools": ["gh.pr.merge", "gh.issue.close"]
+          },
+          "depends_on": ["review-pr-a", "review-pr-b"],
+          "acceptance_criteria": "The approved PR is merged and the issue is closed."
         }
       ],
       "gates": [
@@ -98,7 +152,7 @@
           ]
         }
       ],
-      "spec_instructions": "For wave {wave_id}, drive a concise issue-development workflow: inspect the issue, make the implementation in a worktree, commit it, open a PR, review diff/check status, and close the issue only after merge readiness is established. Keep review choreography and ratification protocol out of this descriptor.",
+      "spec_instructions": "For wave {wave_id}, drive dual-review convergence for each review subject.\n\nAfter BOTH channels for a phase complete, call calm.review.round with subject:{phase,slice_id,pr_number?}, optional head_sha, n, cap, converged, channels:[both verdicts], and root_cause when known. converged is true only when ALL channels approve. For PR subjects, head_sha is the reviewed forge.pr.diff.read head_sha; omit head_sha for design subjects.\n\nFor each subject, set n to the last observed review.round n for that same subject plus 1. cap is the fixed policy constant 8.\n\nAlways re-review. Every fix re-dispatches BOTH channels before the next calm.review.round.\n\nMerge fence F4: call gh.pr.merge for a subject ONLY when that subject's latest review.round has converged:true. Pass expected_head_sha equal to that round's head_sha.\n\nIf n == cap and the round is non-approving, do not merge. Either GIVE-UP with calm.plan.upsert lifecycle failed for reviewing->failed, terminal; OR ASK-HUMAN by first moving reviewing->working with the normal lifecycle arg, then call calm.ratify.request with reason:\"cap_exhausted\" for working->blocked. On ratify.resolved grant, resume blocked->working->reviewing and continue until the subject may converge and merge.\n\nRecord root_cause each round; repeated facets should drive a class fix.",
       "card_kinds": []
     }
   ],

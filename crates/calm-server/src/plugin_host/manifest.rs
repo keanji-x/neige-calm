@@ -791,6 +791,25 @@ mod tests {
         Manifest::parse(&serde_json::to_string(&v).expect("serialize manifest value"))
     }
 
+    fn context_str<'a>(task: &'a PlanTaskInput, key: &str) -> &'a str {
+        task.context
+            .as_ref()
+            .and_then(|context| context.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("task {} missing context string {key}", task.key))
+    }
+
+    fn task<'a>(tasks: &'a HashMap<&str, &PlanTaskInput>, key: &str) -> &'a PlanTaskInput {
+        tasks
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| panic!("missing task {key}"))
+    }
+
+    fn depends_on(task: &PlanTaskInput) -> Vec<&str> {
+        task.depends_on.iter().map(String::as_str).collect()
+    }
+
     #[test]
     fn parses_workflow_descriptor() {
         let m = parse_manifest_value(workflow_manifest_value()).expect("workflow manifest");
@@ -804,11 +823,89 @@ mod tests {
     fn parses_shipped_issue_development_descriptor() {
         let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
-        assert!(
-            m.workflows
-                .iter()
-                .any(|workflow| workflow.id == "issue-development")
+        let workflow = m
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "issue-development")
+            .expect("issue-development workflow");
+        let tasks = workflow
+            .plan_template
+            .iter()
+            .map(|task| (task.key.as_str(), task))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(workflow.plan_template.len(), 8);
+        assert_eq!(
+            depends_on(task(&tasks, "review-design-a")),
+            vec!["inspect-issue"]
         );
+        assert_eq!(
+            depends_on(task(&tasks, "review-design-b")),
+            vec!["inspect-issue"]
+        );
+        assert_eq!(
+            depends_on(task(&tasks, "implement-change")),
+            vec!["review-design-a", "review-design-b"]
+        );
+        assert_eq!(
+            depends_on(task(&tasks, "open-pr")),
+            vec!["implement-change"]
+        );
+        assert_eq!(depends_on(task(&tasks, "review-pr-a")), vec!["open-pr"]);
+        assert_eq!(depends_on(task(&tasks, "review-pr-b")), vec!["open-pr"]);
+        assert_eq!(
+            depends_on(task(&tasks, "merge")),
+            vec!["review-pr-a", "review-pr-b"]
+        );
+        assert_eq!(
+            context_str(task(&tasks, "review-design-a"), "reviewer_role"),
+            "design-correctness"
+        );
+        assert_eq!(
+            context_str(task(&tasks, "review-design-b"), "reviewer_role"),
+            "design-failure-path"
+        );
+        assert_ne!(
+            context_str(task(&tasks, "review-design-a"), "reviewer_role"),
+            context_str(task(&tasks, "review-design-b"), "reviewer_role")
+        );
+        assert_eq!(
+            context_str(task(&tasks, "review-pr-a"), "reviewer_role"),
+            "pr-correctness"
+        );
+        assert_eq!(
+            context_str(task(&tasks, "review-pr-b"), "reviewer_role"),
+            "pr-failure-path"
+        );
+        assert_ne!(
+            context_str(task(&tasks, "review-pr-a"), "reviewer_role"),
+            context_str(task(&tasks, "review-pr-b"), "reviewer_role")
+        );
+        assert_eq!(context_str(task(&tasks, "review-design-a"), "channel"), "a");
+        assert_eq!(context_str(task(&tasks, "review-design-b"), "channel"), "b");
+        assert_eq!(context_str(task(&tasks, "review-pr-a"), "channel"), "a");
+        assert_eq!(context_str(task(&tasks, "review-pr-b"), "channel"), "b");
+        assert!(workflow.spec_instructions.len() <= 8192);
+        assert!(
+            !workflow
+                .spec_instructions
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+        );
+        for needle in [
+            "calm.review.round",
+            "cap is the fixed policy constant 8",
+            "Always re-review",
+            "expected_head_sha",
+            "calm.ratify.request",
+            "reason:\"cap_exhausted\"",
+            "root_cause",
+        ] {
+            assert!(
+                workflow.spec_instructions.contains(needle),
+                "spec_instructions missing {needle}"
+            );
+        }
     }
 
     #[test]
