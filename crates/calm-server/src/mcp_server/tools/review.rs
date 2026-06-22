@@ -23,6 +23,7 @@ use crate::wave_lifecycle::apply_requested_transition_in_tx;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub const TOOL_REVIEW_ROUND: &str = "calm.review.round";
@@ -306,6 +307,16 @@ fn validate_review_round_args(args: &ReviewRoundArgs) -> Result<(), RpcError> {
     if args.channels.iter().any(|c| c.role.trim().is_empty()) {
         return Err(RpcError::invalid_params(
             "review_round: channel role must not be empty",
+        ));
+    }
+    let distinct_roles = args
+        .channels
+        .iter()
+        .map(|c| c.role.trim())
+        .collect::<HashSet<_>>();
+    if distinct_roles.len() != args.channels.len() {
+        return Err(RpcError::invalid_params(
+            "review_round: channel roles must be distinct (two independent reviewers required)",
         ));
     }
     if args.channels.iter().any(|c| c.verdict.trim().is_empty()) {

@@ -825,6 +825,11 @@ pub(crate) async fn ratify_card(
         .wave_get(card.wave_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {id}", card.wave_id)))?;
+    if body.decision == RatifyCardDecision::Grant && wave.lifecycle != WaveLifecycle::Blocked {
+        return Err(CalmError::Forbidden(
+            "ratify grant: wave is not awaiting ratification (lifecycle != blocked)".into(),
+        ));
+    }
 
     let actor_id = ActorId::User;
     let scope = EventScope::Wave {

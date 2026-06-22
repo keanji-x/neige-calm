@@ -277,6 +277,35 @@ async fn review_round_rejects_less_than_two_channels() {
 }
 
 #[tokio::test]
+async fn review_round_rejects_duplicate_channel_roles() {
+    let boot = boot().await;
+    let err = call_tool(
+        &boot,
+        TOOL_REVIEW_ROUND,
+        json!({
+            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
+            "n": 1,
+            "cap": 3,
+            "converged": true,
+            "channels": [
+                { "role": " reviewer-a ", "verdict": "approved" },
+                { "role": "reviewer-a", "verdict": "approved" }
+            ]
+        }),
+    )
+    .await
+    .expect_err("duplicate channel roles must be rejected");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(
+        err.message.contains("channel roles must be distinct"),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
 async fn review_round_rejects_n_above_cap() {
     let boot = boot().await;
     let err = call_tool(
@@ -333,6 +362,31 @@ async fn review_round_accepts_valid_round_and_emits_one_event() {
 }
 
 #[tokio::test]
+async fn review_round_accepts_monotonic_append() {
+    let boot = boot().await;
+    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
+        .await
+        .unwrap();
+    let out = call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(2))
+        .await
+        .expect("n=2 after n=1 is monotonic");
+    assert_eq!(out["emitted"], json!(true));
+
+    let events = events_for_wave(&boot, &["review.round"]).await;
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                Event::ReviewRound { n: 1, .. },
+                Event::ReviewRound { n: 2, .. }
+            ]
+        ),
+        "{events:?}",
+    );
+}
+
+#[tokio::test]
 async fn review_round_idempotent_resubmit_is_noop() {
     let boot = boot().await;
     call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
@@ -378,6 +432,63 @@ async fn review_round_stale_same_n_with_different_payload_is_rejected() {
 
     let events = events_for_wave(&boot, &["review.round"]).await;
     assert_eq!(events.len(), 1, "stale write must not append: {events:?}");
+}
+
+#[tokio::test]
+async fn review_round_stale_n_after_later_round_with_different_payload_is_rejected() {
+    let boot = boot().await;
+    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
+        .await
+        .unwrap();
+    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(2))
+        .await
+        .unwrap();
+
+    let err = call_tool(
+        &boot,
+        TOOL_REVIEW_ROUND,
+        json!({
+            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
+            "head_sha": "stale-different",
+            "n": 1,
+            "cap": 3,
+            "converged": true,
+            "channels": [
+                { "role": "reviewer-a", "verdict": "approved" },
+                { "role": "reviewer-b", "verdict": "approved" }
+            ]
+        }),
+    )
+    .await
+    .expect_err("stale n=1 after n=2 must be rejected");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(err.message.contains("stale/out-of-order"), "{err:?}");
+
+    let events = events_for_wave(&boot, &["review.round"]).await;
+    assert_eq!(events.len(), 2, "stale write must not append: {events:?}");
+}
+
+#[tokio::test]
+async fn review_round_gap_is_rejected() {
+    let boot = boot().await;
+    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
+        .await
+        .unwrap();
+
+    let err = call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(3))
+        .await
+        .expect_err("n=3 after n=1 leaves a gap");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(err.message.contains("stale/out-of-order"), "{err:?}");
+
+    let events = events_for_wave(&boot, &["review.round"]).await;
+    assert_eq!(events.len(), 1, "gap write must not append: {events:?}");
 }
 
 #[tokio::test]
@@ -427,6 +538,27 @@ async fn post_ratify(boot: &Boot, decision: &str) -> (StatusCode, Value) {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
+}
+
+#[tokio::test]
+async fn ratify_route_grant_rejects_non_blocked_wave_with_clear_error() {
+    let boot = boot().await;
+
+    let (status, body) = post_ratify(&boot, "grant").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], json!("forbidden"));
+    assert!(
+        body["error"].as_str().is_some_and(
+            |message| message.contains("ratify grant: wave is not awaiting ratification")
+        ),
+        "{body}",
+    );
+
+    let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+    assert!(
+        events.is_empty(),
+        "rejected grant must not append: {events:?}"
+    );
 }
 
 #[tokio::test]
