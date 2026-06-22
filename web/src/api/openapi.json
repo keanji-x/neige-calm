@@ -334,6 +334,87 @@
         }
       }
     },
+    "/api/cards/{id}/ratify": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "ratify_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Spec card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RatifyCardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Human ratify verdict recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatifyCardResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a spec codex card, or actor is not the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card or wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/spec/input": {
       "post": {
         "tags": [
@@ -4539,6 +4620,50 @@
             "description": "Wire-name string per design §7.1: `running | spawning | crashed |\ndisabled | installing | installed`."
           },
           "version": {
+            "type": "string"
+          }
+        }
+      },
+      "RatifyCardDecision": {
+        "type": "string",
+        "enum": [
+          "grant",
+          "deny"
+        ]
+      },
+      "RatifyCardRequest": {
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/RatifyCardDecision"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RatifyCardResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "wave_id",
+          "decision"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/RatifyCardDecision"
+          },
+          "wave_id": {
             "type": "string"
           }
         }

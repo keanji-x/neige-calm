@@ -121,6 +121,12 @@ pub enum RoleViolation {
     )]
     NotKernelForTaskGateResult { actor: String },
 
+    #[error("only spec cards may emit review/ratify request events (actor={actor})")]
+    NotSpecForReviewRatify { actor: String },
+
+    #[error("only User may emit ratify.resolved (actor={actor})")]
+    NotUserForRatifyResolved { actor: String },
+
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
 
@@ -332,6 +338,49 @@ pub fn enforce_role(
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
                     session: session.clone(),
+                });
+            }
+        }
+    }
+
+    // --- (2.8) `review.round` + `ratify.requested` are spec-only. ---
+    //
+    // Issue #760 slice 5b. These are policy records authored by the spec
+    // agent after it has correlated reviewer channels or decided a human
+    // ratify gate is needed. Unlike the older wave-write/dispatch arms,
+    // User/Kernel/Plugin do NOT pass here: letting any non-spec actor forge
+    // `converged=true` or a ratify request would bypass the review protocol.
+    if matches!(
+        event,
+        Event::ReviewRound { .. } | Event::RatifyRequested { .. }
+    ) {
+        match actor {
+            ActorId::AiSpec(card_id) => {
+                if cache.get(card_id) != Some(CardRole::Spec) {
+                    return Err(RoleViolation::NotSpecForReviewRatify {
+                        actor: actor.to_string(),
+                    });
+                }
+            }
+            _ => {
+                return Err(RoleViolation::NotSpecForReviewRatify {
+                    actor: actor.to_string(),
+                });
+            }
+        }
+    }
+
+    // --- (2.9) `ratify.resolved` is User-only. ---
+    //
+    // The grant/deny decision is the human half of the ratify gate. It must
+    // not be forgeable by the spec, workers, plugins, or the kernel, or an
+    // AI actor could self-approve the pause.
+    if matches!(event, Event::RatifyResolved { .. }) {
+        match actor {
+            ActorId::User => {}
+            _ => {
+                return Err(RoleViolation::NotUserForRatifyResolved {
+                    actor: actor.to_string(),
                 });
             }
         }
@@ -1128,6 +1177,47 @@ mod tests {
         }
     }
 
+    fn review_round() -> Event {
+        Event::ReviewRound {
+            wave_id: WaveId::from("w"),
+            subject: crate::event::ReviewSubject {
+                phase: "impl".into(),
+                slice_id: "5b".into(),
+                pr_number: Some(760),
+            },
+            head_sha: Some("abc123".into()),
+            n: 1,
+            cap: 3,
+            converged: true,
+            channels: vec![
+                crate::event::ChannelVerdict {
+                    role: "reviewer-a".into(),
+                    verdict: "approved".into(),
+                },
+                crate::event::ChannelVerdict {
+                    role: "reviewer-b".into(),
+                    verdict: "approved".into(),
+                },
+            ],
+            root_cause: None,
+            idempotency_key: "review.round:w:impl:5b:760:1".into(),
+        }
+    }
+
+    fn ratify_requested() -> Event {
+        Event::RatifyRequested {
+            wave_id: WaveId::from("w"),
+            reason: "cap_exhausted".into(),
+        }
+    }
+
+    fn ratify_resolved_grant() -> Event {
+        Event::RatifyResolved {
+            wave_id: WaveId::from("w"),
+            decision: crate::event::RatifyDecision::Grant,
+        }
+    }
+
     fn session_actors() -> [(ActorId, &'static str); 3] {
         [
             (
@@ -1398,6 +1488,85 @@ mod tests {
         for actor in [ActorId::User, ActorId::Kernel, ActorId::KernelDispatcher] {
             let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
             assert!(res.is_ok(), "{actor:?} emitting task.gate_result: {res:?}");
+        }
+    }
+
+    #[test]
+    fn review_round_and_ratify_requested_are_spec_only_760() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let spec = CardId::from("spec-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+
+        for event in [review_round(), ratify_requested()] {
+            let res = enforce_role(
+                &ActorId::AiSpec(spec.clone()),
+                &event,
+                &wave_scope("w", "c"),
+                &cache,
+                &wcc,
+            );
+            assert!(
+                res.is_ok(),
+                "spec should emit {}: {res:?}",
+                event.kind_tag()
+            );
+
+            for (actor, label) in [
+                (ActorId::Plugin("p".into()), "Plugin(p)"),
+                (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+                (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+                (ActorId::User, "User"),
+                (ActorId::Kernel, "Kernel"),
+                (ActorId::KernelDispatcher, "KernelDispatcher"),
+                (
+                    ActorId::AiSpecSession(WorkerSessionId::from("sess-unresolved")),
+                    "AiSpecSession(unresolved)",
+                ),
+            ] {
+                let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                    .expect_err(&format!("{label} must be refused {}", event.kind_tag()));
+                assert!(
+                    matches!(err, RoleViolation::NotSpecForReviewRatify { .. }),
+                    "{label}: expected NotSpecForReviewRatify, got {err:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ratify_resolved_is_user_only_760() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let spec = CardId::from("spec-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        let event = ratify_resolved_grant();
+
+        let res = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc);
+        assert!(res.is_ok(), "User should emit ratify.resolved: {res:?}");
+
+        for (actor, label) in [
+            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (ActorId::Plugin("p".into()), "Plugin(p)"),
+            (ActorId::Kernel, "Kernel"),
+            (ActorId::KernelDispatcher, "KernelDispatcher"),
+            (
+                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
+                "AiSpecSession(unresolved)",
+            ),
+        ] {
+            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused ratify.resolved"));
+            assert!(
+                matches!(err, RoleViolation::NotUserForRatifyResolved { .. }),
+                "{label}: expected NotUserForRatifyResolved, got {err:?}",
+            );
         }
     }
 
