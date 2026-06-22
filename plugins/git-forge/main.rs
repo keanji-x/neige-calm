@@ -387,18 +387,47 @@ fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
     let pr = required_u64(args, "pr")?;
     let phase = required_string(args, "phase")?;
     let slice_id = required_string(args, "slice_id")?;
-    let mut payload = forge_payload(
-        vec![
-            "gh".into(),
-            "pr".into(),
-            "merge".into(),
+    let expected_head_sha = optional_string(args, "expected_head_sha")?;
+    let mut argv = vec![
+        "gh".into(),
+        "pr".into(),
+        "merge".into(),
+        pr.to_string(),
+        "--repo".into(),
+        repo.clone(),
+        "--squash".into(),
+        "--delete-branch".into(),
+    ];
+    let idem_key = if let Some(expected_head_sha) = expected_head_sha.as_deref() {
+        argv.push("--match-head-commit".into());
+        argv.push(expected_head_sha.to_string());
+        format!("gh.pr.merge:{repo}:{pr}:{expected_head_sha}")
+    } else {
+        format!("gh.pr.merge:{repo}:{pr}")
+    };
+    let probe_argv = if let Some(expected_head_sha) = expected_head_sha.as_deref() {
+        json!([
+            "sh",
+            "-c",
+            PR_MERGE_HEAD_MATCH_PROBE_SCRIPT,
+            "sh",
             pr.to_string(),
-            "--repo".into(),
-            repo.clone(),
-            "--squash".into(),
-            "--delete-branch".into(),
-        ],
-        format!("gh.pr.merge:{repo}:{pr}"),
+            repo,
+            expected_head_sha
+        ])
+    } else {
+        json!([
+            "sh",
+            "-c",
+            PR_MERGE_PROBE_SCRIPT,
+            "sh",
+            pr.to_string(),
+            repo
+        ])
+    };
+    let mut payload = forge_payload(
+        argv,
+        idem_key,
         Some(event_spec(
             "forge.pr.merged",
             [
@@ -418,14 +447,7 @@ fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
         )),
         json!({}),
         Some(json!({
-            "probe_argv": [
-                "sh",
-                "-c",
-                PR_MERGE_PROBE_SCRIPT,
-                "sh",
-                pr.to_string(),
-                repo
-            ],
+            "probe_argv": probe_argv,
             "output_probe_argv": [
                 "gh",
                 "pr",
@@ -476,6 +498,8 @@ const ISSUE_CLOSE_PROBE_SCRIPT: &str = "out=$(gh issue view \"$1\" --repo \"$2\"
      case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
 const PR_MERGE_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
      case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac";
+const PR_MERGE_HEAD_MATCH_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --json state,headRefOid 2>/dev/null) || exit 3; \
+     case \"$out\" in *'\"state\":\"MERGED\"'*) case \"$out\" in *'\"headRefOid\":\"'\"$3\"'\"'*) exit 0 ;; *) exit 1 ;; esac ;; *) exit 1 ;; esac";
 const PR_CREATE_PROBE_SCRIPT: &str = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; \
      case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
 const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
@@ -937,7 +961,6 @@ mod tests {
 
     #[test]
     fn lowers_gh_pr_merge() {
-        let expected_probe_script = "out=$(gh pr view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac";
         let payload = lower(
             "gh.pr.merge",
             &json!({
@@ -979,7 +1002,7 @@ mod tests {
                     "probe_argv": [
                         "sh",
                         "-c",
-                        expected_probe_script,
+                        PR_MERGE_PROBE_SCRIPT,
                         "sh",
                         "42",
                         "owner/repo"
@@ -1000,6 +1023,130 @@ mod tests {
         );
         assert_no_reserved_context(&payload, &["wave_id", "subject"]);
         assert_supported_event_kind(&payload);
+
+        let payload = lower(
+            "gh.pr.merge",
+            &json!({
+                "repo": "owner/repo",
+                "pr": 42,
+                "phase": "impl",
+                "slice_id": "809",
+                "expected_head_sha": "abc123"
+            }),
+        )
+        .expect("lower gh pr merge with expected head sha");
+        assert_eq!(
+            payload,
+            json!({
+                "argv": [
+                    "gh",
+                    "pr",
+                    "merge",
+                    "42",
+                    "--repo",
+                    "owner/repo",
+                    "--squash",
+                    "--delete-branch",
+                    "--match-head-commit",
+                    "abc123"
+                ],
+                "idem_key": "gh.pr.merge:owner/repo:42:abc123",
+                "event_spec": {
+                    "event_kind": "forge.pr.merged",
+                    "fields": {
+                        "head_sha": { "json_field": { "path": "/headRefOid" } },
+                        "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
+                    }
+                },
+                "subject": {
+                    "phase": "impl",
+                    "slice_id": "809",
+                    "pr_number": 42
+                },
+                "context": {},
+                "probe": {
+                    "probe_argv": [
+                        "sh",
+                        "-c",
+                        PR_MERGE_HEAD_MATCH_PROBE_SCRIPT,
+                        "sh",
+                        "42",
+                        "owner/repo",
+                        "abc123"
+                    ],
+                    "output_probe_argv": [
+                        "gh",
+                        "pr",
+                        "view",
+                        "42",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                        "headRefOid,mergeCommit"
+                    ]
+                },
+                "parked": true
+            })
+        );
+        assert_no_reserved_context(&payload, &["wave_id", "subject"]);
+        assert_supported_event_kind(&payload);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pr_merge_head_match_probe_checks_state_and_head() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "git-forge-head-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp_dir).expect("create temp dir");
+        let gh_path = temp_dir.join("gh");
+        std::fs::write(
+            &gh_path,
+            "#!/bin/sh\nprintf '%s\\n' \"$GH_FAKE_JSON\"\nexit ${GH_FAKE_STATUS:-0}\n",
+        )
+        .expect("write fake gh");
+        let mut permissions = std::fs::metadata(&gh_path)
+            .expect("fake gh metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&gh_path, permissions).expect("chmod fake gh");
+
+        let path = format!(
+            "{}:{}",
+            temp_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+
+        let run_probe = |json: &str| -> i32 {
+            std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    PR_MERGE_HEAD_MATCH_PROBE_SCRIPT,
+                    "sh",
+                    "42",
+                    "owner/repo",
+                    "abc123",
+                ])
+                .env("PATH", &path)
+                .env("GH_FAKE_JSON", json)
+                .status()
+                .expect("run head-match probe")
+                .code()
+                .expect("probe exits normally")
+        };
+
+        assert_eq!(run_probe(r#"{"headRefOid":"abc123","state":"MERGED"}"#), 0);
+        assert_eq!(run_probe(r#"{"state":"MERGED","headRefOid":"def456"}"#), 1);
+        assert_eq!(run_probe(r#"{"state":"OPEN","headRefOid":"abc123"}"#), 1);
+
+        std::fs::remove_dir_all(temp_dir).expect("remove temp dir");
     }
 
     #[test]
