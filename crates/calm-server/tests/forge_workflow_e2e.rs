@@ -788,6 +788,8 @@ async fn dual_review_converges_then_merges() {
 
     let fx = boot_fixture().await;
     let design_round = emit_review_round(&fx, &ReviewRoundInput::design("760")).await;
+    // Scripted dispatch: CI lacks the real scheduler/Codex path, matching this slice's scripted verdict spine.
+    let impl_dispatch = emit_scripted_impl_dispatch(&fx, "760").await;
     let pr = drive_pr_to_diff(
         &fx,
         40,
@@ -812,12 +814,10 @@ async fn dual_review_converges_then_merges() {
     })
     .await;
 
-    if let Some(first_impl_dispatch) = event_rows(&fx.repo, "task.dispatched").await.first() {
-        assert!(
-            design_round.id < first_impl_dispatch.id,
-            "design review must precede first impl dispatch"
-        );
-    }
+    assert!(
+        design_round.id < impl_dispatch.id,
+        "design review must precede scripted impl dispatch"
+    );
     assert!(
         design_round.id < merged.id,
         "design review must precede merge"
@@ -881,6 +881,7 @@ async fn cap_exhausted_give_up_fails_terminal() {
     .await;
     assert_eq!(failed.payload["from"], "reviewing");
     assert!(cap_round.id < failed.id);
+    // Scripted-event-spine coverage: the spine ordering/cap guard is in scope; production merge intent is not.
     assert!(
         event_rows(&fx.repo, "forge.pr.merged")
             .await
@@ -967,6 +968,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         }),
         "ASK-HUMAN must not use a direct reviewing->blocked edge"
     );
+    // Scripted-event-spine coverage: pre-grant merge absence scopes the cap guard, not production Codex bytes.
     assert!(
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
         "merge must be absent while latest subject round is unconverged before grant"
@@ -1155,9 +1157,11 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     wait_for_counter(&state.join("pr_merge_count"), 1).await;
     wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
 
+    let release_count_before = event_rows(&fx.repo, "workspace.released").await.len();
     let status = delete_wave(&fx).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(workspace_lease_state(&fx.repo, &fx.lease_id).await, "held");
+    assert_event_count_stays(&fx.repo, "workspace.released", release_count_before).await;
     assert!(
         fx.lease_abs.exists(),
         "lease path must survive fenced teardown"
@@ -1173,15 +1177,15 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
     close_issue(&fx, 76, &pr.repo_arg, 763).await;
 
-    let release_count_before_teardown = event_rows(&fx.repo, "workspace.released").await.len();
     let status = delete_wave(&fx).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let released_rows = wait_for_event_count(
-        &fx.repo,
-        "workspace.released",
-        release_count_before_teardown + 1,
-    )
-    .await;
+    let released_rows =
+        wait_for_event_count(&fx.repo, "workspace.released", release_count_before + 1).await;
+    assert_eq!(
+        released_rows.len(),
+        release_count_before + 1,
+        "successful teardown must emit exactly one new workspace.released row"
+    );
     let released = released_rows
         .iter()
         .find(|row| row.payload["lease_id"] == json!(fx.lease_id))
@@ -1993,6 +1997,56 @@ async fn transition_wave_along(fx: &Fixture, targets: &[WaveLifecycle], message:
     )
     .await
     .expect("transition wave lifecycle");
+}
+
+async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
+    let wave_id = WaveId::from(fx.wave_id.clone());
+    let scope = EventScope::Wave {
+        wave: wave_id,
+        cove: CoveId::from(fx.cove_id.clone()),
+    };
+    let task_key = format!("impl-review-{slice_id}");
+    let idempotency_key = format!("{}:{task_key}", fx.wave_id);
+    let agent_message = format!("[scheduler] dispatching task {task_key}");
+    let (_, event_ids) = write_with_actor_events_typed::<(), _>(
+        fx.repo.as_ref(),
+        None,
+        &fx.events,
+        &fx.write,
+        move |_tx| {
+            let scope = scope.clone();
+            let idempotency_key = idempotency_key.clone();
+            let agent_message = agent_message.clone();
+            Box::pin(async move {
+                Ok((
+                    (),
+                    vec![(
+                        ActorId::KernelDispatcher,
+                        scope,
+                        Event::TaskDispatched {
+                            idempotency_key,
+                            kind: "codex".to_string(),
+                            agent_message: Some(agent_message),
+                        },
+                    )],
+                ))
+            })
+        },
+    )
+    .await
+    .expect("scripted impl dispatch");
+    let event_id = event_ids
+        .first()
+        .copied()
+        .expect("scripted impl dispatch persisted event id");
+    let dispatch = event_rows(&fx.repo, "task.dispatched")
+        .await
+        .into_iter()
+        .find(|row| row.id == event_id)
+        .expect("scripted impl dispatch row");
+    assert_eq!(dispatch.scope_kind, "wave");
+    assert_eq!(dispatch.scope_wave.as_deref(), Some(fx.wave_id.as_str()));
+    dispatch
 }
 
 #[derive(Clone, Debug)]
