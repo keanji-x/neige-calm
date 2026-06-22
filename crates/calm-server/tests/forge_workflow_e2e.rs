@@ -1023,6 +1023,12 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
 
 #[tokio::test]
 async fn review_round_recovers_into_pending_queue() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _env = setup_forge_env();
+
     let fx = boot_fixture().await;
     transition_wave_along(
         &fx,
