@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufWriter, Write};
 
 use calm_types::event::{FieldSource, ForgeEventSpec};
+use calm_types::forge_git::{
+    GIT_COMMIT_OUTPUT_PROBE_SCRIPT, GIT_COMMIT_PROBE_SCRIPT, GIT_COMMIT_SCRIPT,
+};
 use serde_json::{Value, json};
 
 fn main() {
@@ -539,10 +542,6 @@ const PR_MERGE_HEAD_MATCH_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \
      case \"$out\" in *'\"state\":\"MERGED\"'*) case \"$out\" in *'\"headRefOid\":\"'\"$3\"'\"'*) exit 0 ;; *) exit 1 ;; esac ;; *) exit 1 ;; esac";
 const PR_CREATE_PROBE_SCRIPT: &str = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; \
      case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
-const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
-     if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
-const GIT_COMMIT_SCRIPT: &str = r#"branch=${2:-$(git rev-parse --abbrev-ref HEAD)} || exit 1; git add -A || exit 1; if git diff --cached --quiet; then :; else git commit -m "$1" || exit 1; fi; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); printf "%s", s }' "$1"; }; commit=$(git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
-const GIT_COMMIT_OUTPUT_PROBE_SCRIPT: &str = r#"branch=${1:-$(git rev-parse --abbrev-ref HEAD)} || exit 1; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); printf "%s", s }' "$1"; }; commit=$(git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
 
 fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
@@ -696,7 +695,7 @@ mod tests {
 
     #[test]
     fn lowers_git_commit() {
-        let expected_probe_script = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
+        let expected_probe_script = GIT_COMMIT_PROBE_SCRIPT;
         let expected_commit_script = GIT_COMMIT_SCRIPT;
         let expected_output_probe_script = GIT_COMMIT_OUTPUT_PROBE_SCRIPT;
         let payload = lower(
@@ -789,6 +788,26 @@ mod tests {
     }
 
     #[test]
+    fn git_commit_lowering_uses_shared_scripts_as_drift_lock() {
+        let payload = lower(
+            "git.commit",
+            &json!({
+                "message": "neige: worker card-1 @ wave wave-1",
+                "idem": "step-1",
+                "branch": "neige/wave-1/card-1"
+            }),
+        )
+        .expect("lower commit");
+
+        assert_eq!(payload["argv"][2], GIT_COMMIT_SCRIPT);
+        assert_eq!(payload["probe"]["probe_argv"][2], GIT_COMMIT_PROBE_SCRIPT);
+        assert_eq!(
+            payload["probe"]["output_probe_argv"][2],
+            GIT_COMMIT_OUTPUT_PROBE_SCRIPT
+        );
+    }
+
+    #[test]
     fn git_commit_output_probe_json_escapes_branch_argument() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         run_git(temp_dir.path(), ["init"]);
@@ -801,7 +820,7 @@ mod tests {
         run_git(temp_dir.path(), ["add", "README.md"]);
         run_git(temp_dir.path(), ["commit", "-m", "init"]);
 
-        let branch = "feature/quote\"and\nline";
+        let branch = "feature/quote\"and\nline\twith\rreturn";
         let output = std::process::Command::new("sh")
             .args(["-c", GIT_COMMIT_OUTPUT_PROBE_SCRIPT, "sh", branch])
             .current_dir(temp_dir.path())

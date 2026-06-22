@@ -43,6 +43,9 @@ use crate::operation::workspace_lease::{
     git_repo_root_for_wave_cwd, workspace_lease_path_for, workspace_slice_branch_for,
 };
 use crate::session_projection_repo::AgentProvider;
+use calm_types::forge_git::{
+    GIT_COMMIT_OUTPUT_PROBE_SCRIPT, GIT_COMMIT_PROBE_SCRIPT, GIT_COMMIT_SCRIPT,
+};
 use serde_json::Map;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -54,10 +57,6 @@ pub const TOOL_TASK_DISPATCH: &str = "calm.task.dispatch";
 pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
 const GIT_FORGE_PLUGIN_ID: &str = "dev.neige.git-forge";
-const GIT_COMMIT_SCRIPT: &str = r#"branch=${2:-$(git rev-parse --abbrev-ref HEAD)} || exit 1; git add -A || exit 1; if git diff --cached --quiet; then :; else git commit -m "$1" || exit 1; fi; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); printf "%s", s }' "$1"; }; commit=$(git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
-const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
-     if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi";
-const GIT_COMMIT_OUTPUT_PROBE_SCRIPT: &str = r#"branch=${1:-$(git rev-parse --abbrev-ref HEAD)} || exit 1; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); printf "%s", s }' "$1"; }; commit=$(git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(task_dispatch_descriptor(), wrap(task_dispatch));
@@ -516,6 +515,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_success_commit_payload_uses_shared_git_scripts_as_drift_lock() {
+        let fx = commit_guard_fixture().await;
+        let codex_worktree = fx
+            .worker_with_runtime(
+                WorkerSessionKind::CodexCard,
+                Some(AgentProvider::Codex),
+                AgentProvider::Codex,
+            )
+            .await;
+        let codex_worktree_path = fx.worktree_path(&codex_worktree.card_id);
+        let branch =
+            workspace_slice_branch_for(&fx.wave_id, &codex_worktree.card_id).expect("slice branch");
+        fx.add_git_worktree(&codex_worktree_path, &branch);
+        fx.lease(&codex_worktree.card_id, &codex_worktree_path)
+            .await;
+
+        submit_worker_success_commit(&fx.ctx, &codex_worktree)
+            .await
+            .expect("codex worktree enqueue");
+
+        let idem_key = format!(
+            "{GIT_FORGE_PLUGIN_ID}:{}:{}:git.commit:auto",
+            fx.wave_id, codex_worktree.card_id
+        );
+        let payload = forge_payload_by_idem(&fx.repo, &idem_key).await;
+        let message = format!(
+            "neige: worker {} @ wave {}",
+            codex_worktree.card_id, fx.wave_id
+        );
+        assert_eq!(
+            payload["argv"],
+            json!(["sh", "-c", GIT_COMMIT_SCRIPT, "sh", message, branch.clone()])
+        );
+        assert_eq!(
+            payload["probe"]["probe_argv"],
+            json!(["sh", "-c", GIT_COMMIT_PROBE_SCRIPT, "sh"])
+        );
+        assert_eq!(
+            payload["probe"]["output_probe_argv"],
+            json!(["sh", "-c", GIT_COMMIT_OUTPUT_PROBE_SCRIPT, "sh", branch])
+        );
+    }
+
+    #[tokio::test]
     async fn worker_success_commit_emits_after_codex_workspace_lease_released() {
         let fx = commit_guard_fixture().await;
         let codex_worktree = fx
@@ -741,6 +784,18 @@ mod tests {
             .fetch_one(repo.pool())
             .await
             .expect("count forge ops")
+    }
+
+    async fn forge_payload_by_idem(repo: &SqlxRepo, idem_key: &str) -> Value {
+        let payload: String = sqlx::query_scalar(
+            "SELECT payload_json FROM operations WHERE kind = ?1 AND idempotency_key = ?2",
+        )
+        .bind(FORGE_ACTION_KIND)
+        .bind(idem_key)
+        .fetch_one(repo.pool())
+        .await
+        .expect("operation payload lookup");
+        serde_json::from_str(&payload).expect("operation payload json")
     }
 
     async fn wait_for_event_payloads(repo: &SqlxRepo, kind: &str, expected: usize) -> Vec<Value> {

@@ -151,6 +151,7 @@ impl FrozenForge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calm_types::forge_git::GIT_COMMIT_PROBE_SCRIPT;
     use std::process::Command;
     use std::sync::Arc;
 
@@ -448,7 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forge_action_nonzero_git_commit_clean_index_probe_succeeds() {
+    async fn forge_action_nonzero_git_commit_clean_worktree_probe_succeeds() {
         let fx = forge_runtime_fixture().await;
         init_clean_git_repo(fx.cwd.path());
         let payload = ForgeActionPayload {
@@ -460,9 +461,7 @@ mod tests {
             event_spec: None,
             context: Map::new(),
             probe: Some(ProbeSpec {
-                probe_argv: shell_probe(
-                    "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi",
-                ),
+                probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
                 output_probe_argv: None,
             }),
             cwd_lease: fx.cwd.path().to_path_buf(),
@@ -474,13 +473,13 @@ mod tests {
 
         assert!(
             matches!(result.outcome, OperationOutcome::Succeeded { .. }),
-            "clean-index commit should succeed via probe: {:?}",
+            "clean-worktree commit should succeed via probe: {:?}",
             result.outcome
         );
     }
 
     #[tokio::test]
-    async fn forge_action_nonzero_git_commit_clean_index_probe_extracts_worktree_committed_event() {
+    async fn forge_action_clean_worktree_probe_extracts_worktree_committed_event() {
         let fx = forge_runtime_fixture().await;
         init_clean_git_repo(fx.cwd.path());
         let head = git_stdout(fx.cwd.path(), ["rev-parse", "HEAD"]);
@@ -509,9 +508,7 @@ mod tests {
             }),
             context: Map::new(),
             probe: Some(ProbeSpec {
-                probe_argv: shell_probe(
-                    "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi",
-                ),
+                probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
                 output_probe_argv: Some(shell_probe(
                     "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
                 )),
@@ -525,7 +522,7 @@ mod tests {
 
         assert!(
             matches!(result.outcome, OperationOutcome::Succeeded { .. }),
-            "clean-index commit should succeed via JSON output probe: {:?}",
+            "clean-worktree commit should succeed via JSON output probe: {:?}",
             result.outcome
         );
         assert_eq!(
@@ -590,9 +587,7 @@ mod tests {
             }),
             context: Map::new(),
             probe: Some(ProbeSpec {
-                probe_argv: shell_probe(
-                    "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; if git diff --cached --quiet 2>/dev/null; then exit 0; else exit 1; fi",
-                ),
+                probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
                 output_probe_argv: Some(shell_probe(
                     "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
                 )),
@@ -612,6 +607,76 @@ mod tests {
         assert_eq!(
             git_stdout(fx.cwd.path(), ["rev-list", "--count", "HEAD"]),
             "1"
+        );
+        assert_eq!(event_count(&fx.repo, "worktree.committed").await, 0);
+    }
+
+    #[tokio::test]
+    async fn git_add_failure_dirty_worktree_clean_index_does_not_emit_worktree_committed() {
+        let fx = forge_runtime_fixture().await;
+        init_clean_git_repo(fx.cwd.path());
+
+        let commit_script = r#"git() { if [ "$1" = add ]; then return 1; fi; command git "$@"; }; printf '%s\n' dirty > worker-output.txt; git add -A || exit 1; if git diff --cached --quiet; then :; else git commit -m "$1" || exit 1; fi; git log -1 --format='{"commit":"%H","branch":"'"$2"'"}'"#;
+        let payload = ForgeActionPayload {
+            wave_id: fx.wave_id.clone(),
+            card_id: "card-1".into(),
+            subject: None,
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                commit_script.into(),
+                "sh".into(),
+                "should fail before staging".into(),
+                "neige/wave-1/card-1".into(),
+            ],
+            idem_key: "git.commit:add-failure-dirty-worktree".into(),
+            event_spec: Some(ForgeEventSpec {
+                event_kind: "worktree.committed".into(),
+                fields: std::collections::BTreeMap::from([
+                    (
+                        "branch".into(),
+                        FieldSource::JsonField {
+                            path: "/branch".into(),
+                        },
+                    ),
+                    (
+                        "commit_sha".into(),
+                        FieldSource::JsonField {
+                            path: "/commit".into(),
+                        },
+                    ),
+                ]),
+            }),
+            context: Map::new(),
+            probe: Some(ProbeSpec {
+                probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
+                output_probe_argv: Some(shell_probe(
+                    "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                )),
+            }),
+            cwd_lease: fx.cwd.path().to_path_buf(),
+            result_path: fx.result_path("commit-add-failure-dirty-worktree"),
+            deadline_ms: now_ms() + 60_000,
+        };
+
+        let result = submit_and_wait(&fx, payload, "commit-add-failure-dirty-worktree-hash").await;
+
+        assert!(
+            matches!(result.outcome, OperationOutcome::Failed { .. }),
+            "git add failure with dirty worktree should fail the op: {:?}",
+            result.outcome
+        );
+        assert_eq!(
+            git_stdout(fx.cwd.path(), ["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+        assert_eq!(
+            git_stdout(fx.cwd.path(), ["diff", "--cached", "--name-only"]),
+            ""
+        );
+        assert_eq!(
+            git_stdout(fx.cwd.path(), ["status", "--porcelain"]),
+            "?? worker-output.txt"
         );
         assert_eq!(event_count(&fx.repo, "worktree.committed").await, 0);
     }
