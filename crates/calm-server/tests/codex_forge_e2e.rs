@@ -56,14 +56,12 @@ use tokio::time::{Instant, sleep};
 const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
 const FORGE_BIN: &str = env!("CARGO_BIN_EXE_git-forge");
 const PLUGIN_ID: &str = "dev.neige.git-forge";
+const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
 const COMMIT_PLUGIN_IDEM: &str = "git.commit:forge-e2e-commit";
 const TASK_KEY: &str = "forge-e2e";
 const SPEC_SESSION_ID: &str = "codex-forge-e2e-spec-session";
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-const GOAL: &str = r#"Goal: At the repository root, create a file named `FORGE_E2E.md` whose entire contents are the single line `forge-e2e-ok`. Then stage it by running `git add FORGE_E2E.md`. Then commit it by calling the `git.commit` MCP tool with arguments message `forge-e2e: add marker` and idem `forge-e2e-commit`. Do not modify any other file, do not run `git push`, and do not open a pull request.
-Acceptance: `FORGE_E2E.md` exists with exactly that content, it is staged, and exactly one commit was created via the `git.commit` MCP tool."#;
 
 #[allow(dead_code)]
 struct Fixture {
@@ -117,7 +115,8 @@ async fn real_codex_worker_writes_and_commits_via_git_commit_tool() {
     };
 
     let _dispatcher = spawn_dispatcher(&fx);
-    plan_codex_task(&fx, TASK_KEY, GOAL).await;
+    let goal = forge_goal();
+    plan_codex_task(&fx, TASK_KEY, &goal).await;
 
     let budget = e2e_budget();
     let task_id = task_id(&fx, TASK_KEY);
@@ -158,6 +157,15 @@ async fn real_codex_worker_writes_and_commits_via_git_commit_tool() {
         .await
         .expect("stop git-forge plugin");
     shutdown_shared_codex(&fx.shared).await;
+}
+
+fn forge_goal() -> String {
+    format!(
+        r#"Goal: Complete BOTH steps. The task is INCOMPLETE until step 2's tool call succeeds -- creating the file alone is NOT enough.
+Step 1: At the repository root, create a file `FORGE_E2E.md` whose entire contents are exactly the single line `forge-e2e-ok`, then run the shell command `git add FORGE_E2E.md` to stage it.
+Step 2: Call the MCP tool named exactly `{COMMIT_TOOL}` with arguments {{"message": "forge-e2e: add marker", "idem": "forge-e2e-commit"}} to commit the staged file. You MUST actually invoke this tool -- it is in your available tools list. Do not simulate it, do not run a raw `git commit` instead, do not push, and do not open a pull request.
+Acceptance: the `{COMMIT_TOOL}` tool was invoked successfully and created exactly one new commit containing `FORGE_E2E.md`."#
+    )
 }
 
 async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, String> {
@@ -302,7 +310,7 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
     home.ensure_daemon_mcp_config(&server.shim_config, &daemon_token)
         .expect("write shared daemon MCP config");
     assert_daemon_mcp_config(home.path(), &server.shim_config.socket_path);
-    preflight_initialize_through_shim(&server.shim_config.socket_path, &daemon_token).await;
+    preflight_mcp_through_shim(&server.shim_config.socket_path, &daemon_token).await;
 
     let shared = SharedCodexAppServer::new_with_pending(&cfg, home.clone(), repo_dyn.clone(), None);
     let codex_stderr_log = cfg
@@ -438,7 +446,9 @@ async fn plan_codex_task(fx: &Fixture, key: &str, goal: &str) {
                 "kind": "codex",
                 "goal": goal,
                 "context": { "from": "codex-forge-e2e" },
-                "acceptance_criteria": "FORGE_E2E.md exists and git.commit created exactly one commit",
+                "acceptance_criteria": format!(
+                    "FORGE_E2E.md exists and {COMMIT_TOOL} created exactly one commit"
+                ),
                 "no_gate_reason": "real-codex forge E2E"
             }],
             "message": "plan real codex forge worker"
@@ -804,7 +814,7 @@ fn assert_daemon_mcp_config(home: &Path, socket_path: &Path) {
     );
 }
 
-async fn preflight_initialize_through_shim(socket: &Path, daemon_token: &str) {
+async fn preflight_mcp_through_shim(socket: &Path, daemon_token: &str) {
     let shim_bin = locate_shim_bin();
     let mut child = TokioCommand::new(&shim_bin)
         .env("NEIGE_MCP_SOCKET", socket)
@@ -844,6 +854,42 @@ async fn preflight_initialize_through_shim(socket: &Path, daemon_token: &str) {
     assert!(
         resp["result"]["protocolVersion"].is_string(),
         "preflight initialize did not return protocolVersion: {resp}",
+    );
+
+    let list_frame = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    });
+    stdin
+        .write_all(format!("{list_frame}\n").as_bytes())
+        .await
+        .expect("write tools/list");
+    stdin.flush().await.expect("flush tools/list");
+
+    resp_line.clear();
+    let n = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut resp_line))
+        .await
+        .expect("preflight tools/list response within 5s")
+        .expect("read tools/list response");
+    assert!(n > 0, "MCP shim hung up before tools/list response");
+    let resp: Value = serde_json::from_str(resp_line.trim_end())
+        .unwrap_or_else(|e| panic!("non-JSON tools/list response {resp_line:?}: {e}"));
+    let tools = resp["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list missing result.tools array: {resp}"));
+    let found = tools
+        .iter()
+        .any(|tool| tool["name"].as_str() == Some(COMMIT_TOOL));
+    assert!(
+        found,
+        "{COMMIT_TOOL} missing from tools/list: {}",
+        tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
     drop(stdin);
