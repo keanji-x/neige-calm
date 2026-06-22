@@ -541,24 +541,26 @@ async fn post_ratify(boot: &Boot, decision: &str) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
-async fn ratify_route_grant_rejects_non_blocked_wave_with_clear_error() {
+async fn ratify_route_rejects_non_blocked_wave_for_all_decisions_without_event() {
     let boot = boot().await;
 
-    let (status, body) = post_ratify(&boot, "grant").await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["code"], json!("forbidden"));
-    assert!(
-        body["error"].as_str().is_some_and(
-            |message| message.contains("ratify grant: wave is not awaiting ratification")
-        ),
-        "{body}",
-    );
+    for decision in ["grant", "deny"] {
+        let (status, body) = post_ratify(&boot, decision).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], json!("conflict"));
+        assert!(
+            body["error"].as_str().is_some_and(
+                |message| message.contains("ratify: wave is not awaiting ratification")
+            ),
+            "{body}",
+        );
 
-    let events = events_for_wave(&boot, &["ratify.resolved"]).await;
-    assert!(
-        events.is_empty(),
-        "rejected grant must not append: {events:?}"
-    );
+        let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+        assert!(
+            events.is_empty(),
+            "rejected {decision} must not append: {events:?}"
+        );
+    }
 }
 
 #[tokio::test]

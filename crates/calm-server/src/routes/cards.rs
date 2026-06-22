@@ -791,6 +791,7 @@ pub(crate) async fn send_spec_input(
         (status = 400, description = "Malformed request", body = ErrorBody),
         (status = 403, description = "Card is not a spec codex card, or actor is not the authenticated user", body = ErrorBody),
         (status = 404, description = "Card or wave not found", body = ErrorBody),
+        (status = 409, description = "Wave is not awaiting ratification", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -825,9 +826,9 @@ pub(crate) async fn ratify_card(
         .wave_get(card.wave_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {id}", card.wave_id)))?;
-    if body.decision == RatifyCardDecision::Grant && wave.lifecycle != WaveLifecycle::Blocked {
-        return Err(CalmError::Forbidden(
-            "ratify grant: wave is not awaiting ratification (lifecycle != blocked)".into(),
+    if wave.lifecycle != WaveLifecycle::Blocked {
+        return Err(CalmError::Conflict(
+            "ratify: wave is not awaiting ratification (lifecycle != blocked)".into(),
         ));
     }
 

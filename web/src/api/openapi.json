@@ -402,6 +402,16 @@
               }
             }
           },
+          "409": {
+            "description": "Wave is not awaiting ratification",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
