@@ -894,6 +894,8 @@ mod tests {
         );
         for needle in [
             "calm.review.round",
+            "approved",
+            "changes_requested",
             "cap is the fixed policy constant 8",
             "Always re-review",
             "expected_head_sha",
