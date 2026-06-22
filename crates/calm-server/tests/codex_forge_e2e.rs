@@ -169,7 +169,7 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
         .ok_or_else(|| format!("codex binary has no parent: {}", codex_bin.display()))?;
     let proxy_env = apply_proxy_env();
 
-    let tmp = target_tmpdir("cf").expect("target tempdir");
+    let tmp = target_tmpdir("cf").map_err(|e| format!("target tempdir: {e}"))?;
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
@@ -1115,9 +1115,15 @@ fn short_tempdir(prefix: &str) -> std::io::Result<TempDir> {
     tempfile::Builder::new().prefix(prefix).tempdir_in(base)
 }
 
+fn scratch_base() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let base = Path::new(&home).join(".cache").join("neige-forge-e2e");
+    std::fs::create_dir_all(&base).ok()?;
+    Some(base)
+}
+
 fn target_tmpdir(prefix: &str) -> std::io::Result<TempDir> {
-    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("fwe");
-    std::fs::create_dir_all(&base)?;
+    let base = scratch_base().ok_or_else(|| std::io::Error::other("no HOME for scratch base"))?;
     tempfile::Builder::new().prefix(prefix).tempdir_in(base)
 }
 
