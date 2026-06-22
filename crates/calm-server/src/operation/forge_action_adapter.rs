@@ -612,6 +612,92 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn git_status_probe_infra_failure_does_not_emit_worktree_committed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fx = forge_runtime_fixture().await;
+        init_clean_git_repo(fx.cwd.path());
+        let fake_git_dir = tempfile::tempdir().expect("fake git dir");
+        let real_git = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("locate git");
+        assert!(
+            real_git.status.success(),
+            "locate git failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&real_git.stdout),
+            String::from_utf8_lossy(&real_git.stderr)
+        );
+        let real_git = String::from_utf8_lossy(&real_git.stdout).trim().to_string();
+        let fake_git = fake_git_dir.path().join("git");
+        std::fs::write(
+            &fake_git,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = status ] && [ \"$2\" = --porcelain ]; then exit 42; fi\nexec {} \"$@\"\n",
+                shell_quote(&real_git)
+            ),
+        )
+        .expect("write fake git");
+        let mut permissions = std::fs::metadata(&fake_git)
+            .expect("fake git metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_git, permissions).expect("chmod fake git");
+        let probe_script = format!(
+            "PATH={}:$PATH; {}",
+            shell_quote(&fake_git_dir.path().display().to_string()),
+            GIT_COMMIT_PROBE_SCRIPT
+        );
+        let payload = ForgeActionPayload {
+            wave_id: fx.wave_id.clone(),
+            card_id: "card-1".into(),
+            subject: None,
+            argv: vec!["/bin/sh".into(), "-c".into(), "exit 7".into()],
+            idem_key: "git.commit:status-probe-infra-failure".into(),
+            event_spec: Some(ForgeEventSpec {
+                event_kind: "worktree.committed".into(),
+                fields: std::collections::BTreeMap::from([
+                    (
+                        "branch".into(),
+                        FieldSource::JsonField {
+                            path: "/branch".into(),
+                        },
+                    ),
+                    (
+                        "commit_sha".into(),
+                        FieldSource::JsonField {
+                            path: "/commit".into(),
+                        },
+                    ),
+                ]),
+            }),
+            context: Map::new(),
+            probe: Some(ProbeSpec {
+                probe_argv: shell_probe(&probe_script),
+                output_probe_argv: Some(shell_probe(
+                    "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/wave-1/card-1\"}'",
+                )),
+            }),
+            cwd_lease: fx.cwd.path().to_path_buf(),
+            result_path: fx.result_path("commit-status-probe-infra-failure"),
+            deadline_ms: now_ms() + 60_000,
+        };
+
+        let result = submit_and_wait(&fx, payload, "commit-status-probe-infra-failure-hash").await;
+
+        match result.outcome {
+            OperationOutcome::Failed {
+                last_error_class, ..
+            } => {
+                assert_eq!(last_error_class.as_deref(), Some("gate-infra"));
+            }
+            other => panic!("git status infra failure should fail op: {other:?}"),
+        }
+        assert_eq!(event_count(&fx.repo, "worktree.committed").await, 0);
+    }
+
+    #[tokio::test]
     async fn git_add_failure_dirty_worktree_clean_index_does_not_emit_worktree_committed() {
         let fx = forge_runtime_fixture().await;
         init_clean_git_repo(fx.cwd.path());
@@ -854,6 +940,10 @@ mod tests {
 
     fn shell_probe(script: &str) -> Vec<String> {
         vec!["/bin/sh".into(), "-c".into(), script.into()]
+    }
+
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 
     async fn submit_and_wait(
