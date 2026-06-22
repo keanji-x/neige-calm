@@ -47,6 +47,7 @@ use crate::model::{
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::workspace_lease::{
     release_workspace_leases_for_wave_tx, sweep_workspace_worktrees_for_waves_repo,
+    wave_has_active_forge_action,
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::cards::interrupt_shared_card_active_turn;
@@ -868,6 +869,19 @@ pub(crate) async fn delete_wave(
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
     let cove_id = wave.cove_id.clone();
     let wave_id = wave.id.clone();
+
+    // Defensive TOCTOU guard only: this non-transactional read happens before
+    // the teardown tx, so a forge-action can still become in-flight before the
+    // sweep. It shrinks the race; durable parked recovery is the backstop, and
+    // the airtight in-tx/lease-hold guard belongs to slice ⑤.
+    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+        CalmError::Internal("delete_wave forge-action fence requires sqlite-backed repo".into())
+    })?;
+    if wave_has_active_forge_action(&pool, wave_id.as_str()).await? {
+        return Err(CalmError::Conflict(format!(
+            "wave {id} has an in-flight forge-action; retry after it settles"
+        )));
+    }
 
     let mut terminal_ids: Vec<String> = Vec::new();
     let mut active_runtime_ids: Vec<String> = Vec::new();

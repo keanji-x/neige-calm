@@ -29,7 +29,8 @@ use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Cove, CoveKind, CovePatch, NewCove};
 use crate::operation::workspace_lease::{
-    release_workspace_leases_for_wave_tx, sweep_workspace_worktrees_for_waves_repo,
+    any_wave_has_active_forge_action, release_workspace_leases_for_wave_tx,
+    sweep_workspace_worktrees_for_waves_repo,
 };
 use crate::state::{AppState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -313,6 +314,24 @@ pub(crate) async fn delete_cove(
         )));
     }
 
+    let waves = s.repo.waves_by_cove(&id).await?;
+    let wave_ids = waves
+        .iter()
+        .map(|wave| wave.id.as_str())
+        .collect::<Vec<_>>();
+    // Defensive TOCTOU guard only: this non-transactional read happens before
+    // the teardown tx, so a forge-action can still become in-flight before the
+    // sweep. It shrinks the race; durable parked recovery is the backstop, and
+    // the airtight in-tx/lease-hold guard belongs to slice ⑤.
+    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+        CalmError::Internal("delete_cove forge-action fence requires sqlite-backed repo".into())
+    })?;
+    if any_wave_has_active_forge_action(&pool, &wave_ids).await? {
+        return Err(CalmError::Conflict(format!(
+            "cove {id} has a child wave with an in-flight forge-action; retry after it settles"
+        )));
+    }
+
     // Issue #197 — eager teardown for every terminal under the cove.
     // `terminals.card_id` is `ON DELETE RESTRICT` (migration 0011), so
     // a cove delete that would orphan a terminal row aborts the
@@ -320,7 +339,6 @@ pub(crate) async fn delete_cove(
     // waves → cards → terminal_get_by_card; reap the daemon + socket
     // for each; collect the terminal ids for the in-txn row delete. The
     // overlay sweep derives current wave/card ids inside the write txn.
-    let waves = s.repo.waves_by_cove(&id).await?;
     let mut terminal_ids: Vec<String> = Vec::new();
     for wave in &waves {
         let cards = s.repo.cards_by_wave(wave.id.as_str()).await?;

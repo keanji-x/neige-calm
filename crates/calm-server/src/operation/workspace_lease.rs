@@ -5,7 +5,7 @@ use std::{
     process::{Command, Output},
 };
 
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 use crate::db::sqlite::{append_decision_event_in_tx, begin_immediate_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
@@ -16,7 +16,8 @@ use crate::model::{new_id, now_ms};
 use crate::proc_identity::read_boot_id;
 use calm_truth::decision_gate::PermissiveGate;
 
-use super::{TimestampMs, Tx};
+use super::forge_action_adapter::FORGE_ACTION_KIND;
+use super::{PhaseTag, TimestampMs, Tx};
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceLease {
@@ -33,6 +34,62 @@ pub(crate) struct WorkspaceLeaseTarget {
     pub repo_root: PathBuf,
     pub path: PathBuf,
     pub branch: String,
+}
+
+const RECOVERABLE_OPERATION_PHASES: &[PhaseTag] = &[
+    PhaseTag::Pending,
+    PhaseTag::TxCommitted,
+    PhaseTag::AppServerInteract,
+    PhaseTag::SpawnStarted,
+    PhaseTag::SpawnSucceeded,
+    PhaseTag::Parked,
+    PhaseTag::Compensating,
+];
+
+/// Defensive wave/cove teardown fence for in-flight forge actions.
+///
+/// This is a non-transactional read used before the teardown transaction, so it
+/// has a TOCTOU window: a forge-action could enter a recoverable phase after
+/// this check and before the worktree sweep. It shrinks the route-level race;
+/// the durable forge-op parked-recovery contract remains the real backstop.
+/// The airtight in-tx/lease-hold guard is intentionally left to slice ⑤.
+pub(crate) async fn wave_has_active_forge_action(pool: &SqlitePool, wave_id: &str) -> Result<bool> {
+    any_wave_has_active_forge_action(pool, &[wave_id]).await
+}
+
+/// Cove-friendly variant of [`wave_has_active_forge_action`].
+pub(crate) async fn any_wave_has_active_forge_action(
+    pool: &SqlitePool,
+    wave_ids: &[&str],
+) -> Result<bool> {
+    if wave_ids.is_empty() {
+        return Ok(false);
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM operations
+             WHERE kind = "#,
+    );
+    query.push_bind(FORGE_ACTION_KIND);
+    query.push(" AND target_type = 'wave' AND target_id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for wave_id in wave_ids {
+            separated.push_bind(*wave_id);
+        }
+        separated.push_unseparated(") AND phase IN (");
+    }
+    {
+        let mut separated = query.separated(", ");
+        for phase in RECOVERABLE_OPERATION_PHASES {
+            separated.push_bind(phase.as_str());
+        }
+        separated.push_unseparated("))");
+    }
+
+    let exists = query.build_query_scalar().fetch_one(pool).await?;
+    Ok(exists)
 }
 
 impl WorkspaceLeaseTarget {
@@ -1019,16 +1076,9 @@ async fn workspace_lease_should_reclaim_on_boot(
 }
 
 fn operation_phase_is_recoverable(phase: &str) -> bool {
-    matches!(
-        phase,
-        "pending"
-            | "tx_committed"
-            | "app_server_interact"
-            | "spawn_started"
-            | "spawn_succeeded"
-            | "parked"
-            | "compensating"
-    )
+    RECOVERABLE_OPERATION_PHASES
+        .iter()
+        .any(|tag| tag.as_str() == phase)
 }
 
 fn remove_workspace_dir_if_exists(path: &str) -> Result<bool> {
