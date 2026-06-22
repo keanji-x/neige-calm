@@ -169,7 +169,7 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
         .ok_or_else(|| format!("codex binary has no parent: {}", codex_bin.display()))?;
     let proxy_env = apply_proxy_env();
 
-    let tmp = short_tempdir("cf").expect("tempdir");
+    let tmp = target_tmpdir("cf").expect("target tempdir");
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
@@ -1111,6 +1111,12 @@ fn short_tempdir(prefix: &str) -> std::io::Result<TempDir> {
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("fwe");
+    std::fs::create_dir_all(&base)?;
+    tempfile::Builder::new().prefix(prefix).tempdir_in(base)
+}
+
+fn target_tmpdir(prefix: &str) -> std::io::Result<TempDir> {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("fwe");
     std::fs::create_dir_all(&base)?;
     tempfile::Builder::new().prefix(prefix).tempdir_in(base)
 }
