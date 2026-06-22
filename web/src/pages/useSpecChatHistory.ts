@@ -12,6 +12,10 @@ export type VisibleChatEntry = ChatEntry & {
   queued?: boolean;
 };
 
+type QueuedUserEntry = Extract<ChatEntry, { kind: 'user' }> & {
+  queued?: boolean;
+};
+
 export interface SpecChatHistorySnapshot {
   entries: VisibleChatEntry[];
   hasEarlier: boolean;
@@ -49,12 +53,9 @@ type SystemNote = {
 
 function isCompletedMessageItem(
   method: string,
-  itemType: string | null,
+  _itemType: string | null,
 ): boolean {
-  return (
-    method === 'item/completed' &&
-    (itemType === 'userMessage' || itemType === 'agentMessage')
-  );
+  return method === 'item/completed';
 }
 
 function parseRows(rows: HarnessItem[]): ChatEntry[] {
@@ -117,7 +118,7 @@ export function useSpecChatHistory(
   const initialLoadDoneRef = useRef(false);
 
   const [entries, setEntries] = useState<ChatEntry[]>([]);
-  const [echoes, setEchoes] = useState<VisibleChatEntry[]>([]);
+  const [echoes, setEchoes] = useState<QueuedUserEntry[]>([]);
   const [systemNotes, setSystemNotes] = useState<SystemNote[]>([]);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadEarlierPending, setLoadEarlierPending] = useState(false);

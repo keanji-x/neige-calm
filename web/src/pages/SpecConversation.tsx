@@ -118,6 +118,11 @@ function EntryMeta({
   );
 }
 
+function durationText(durationMs: number | null): string | null {
+  if (durationMs == null) return null;
+  return `${durationMs}ms`;
+}
+
 function ConvoEntry({
   entry,
   expanded,
@@ -145,6 +150,183 @@ function ConvoEntry({
           </ReactMarkdown>
         </div>
       </section>
+    );
+  }
+
+  if (entry.kind === 'run') {
+    const exitFailed = entry.exitCode != null && entry.exitCode !== 0;
+    const statusWarn = entry.status !== '' && entry.status !== 'completed';
+    const duration = durationText(entry.durationMs);
+    return (
+      <section
+        className={
+          'report-convo-entry report-convo-entry--run' +
+          (statusWarn ? ' report-convo-entry--warn' : '')
+        }
+      >
+        <EntryMeta author="Command" atMs={entry.atMs} />
+        <div className="report-convo-artifact-head">
+          <code className="report-convo-command">
+            {entry.command || '(command)'}
+          </code>
+          {statusWarn && (
+            <span className="report-convo-chip report-convo-chip--warn">
+              {entry.status}
+            </span>
+          )}
+          <span
+            className={
+              'report-convo-chip' +
+              (exitFailed ? ' report-convo-chip--fail' : '')
+            }
+          >
+            exit {entry.exitCode ?? 'n/a'}
+          </span>
+          {duration != null && (
+            <span className="report-convo-chip">{duration}</span>
+          )}
+        </div>
+        {entry.output && (
+          <details className="report-convo-details">
+            <summary>Output</summary>
+            <pre>{entry.output}</pre>
+          </details>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'tool') {
+    const duration = durationText(entry.durationMs);
+    const author =
+      [entry.server, entry.tool].filter(Boolean).join(' · ') || 'Tool';
+    const statusWarn = entry.status !== '' && entry.status !== 'completed';
+    const warn = entry.isError || statusWarn;
+    return (
+      <section
+        className={
+          'report-convo-entry report-convo-entry--tool' +
+          (warn ? ' report-convo-entry--warn' : '')
+        }
+      >
+        <EntryMeta author={author} atMs={entry.atMs} />
+        <div className="report-convo-artifact-head">
+          {entry.isError && (
+            <span className="report-convo-chip report-convo-chip--warn">
+              error
+            </span>
+          )}
+          {!entry.isError && statusWarn && (
+            <span className="report-convo-chip report-convo-chip--warn">
+              {entry.status}
+            </span>
+          )}
+          {duration != null && (
+            <span className="report-convo-chip">{duration}</span>
+          )}
+        </div>
+        {entry.args && (
+          <details className="report-convo-details">
+            <summary>Arguments</summary>
+            <pre>{entry.args}</pre>
+          </details>
+        )}
+        {entry.result && (
+          <details className="report-convo-details">
+            <summary>{entry.isError ? 'Error' : 'Result'}</summary>
+            <pre>{entry.result}</pre>
+          </details>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'reasoning') {
+    const summary = entry.summary.trim();
+    const detail = entry.detail.trim();
+    return (
+      <section className="report-convo-entry report-convo-entry--reasoning">
+        <EntryMeta author="Reasoning" atMs={entry.atMs} />
+        {summary && (
+          <p className="report-convo-reasoning-summary">{entry.summary}</p>
+        )}
+        {detail && (
+          <details className="report-convo-details">
+            <summary>Detail</summary>
+            <div className="report-convo-reasoning-detail">
+              {entry.detail}
+            </div>
+          </details>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'edit') {
+    const statusWarn = entry.status !== '' && entry.status !== 'completed';
+    return (
+      <section
+        className={
+          'report-convo-entry report-convo-entry--edit' +
+          (statusWarn ? ' report-convo-entry--warn' : '')
+        }
+      >
+        <EntryMeta author="File changes" atMs={entry.atMs} />
+        {statusWarn && (
+          <div className="report-convo-artifact-head">
+            <span className="report-convo-chip report-convo-chip--warn">
+              {entry.status}
+            </span>
+          </div>
+        )}
+        {entry.changes.length === 0 ? (
+          <p className="report-convo-muted">(file changes)</p>
+        ) : (
+          <div className="report-convo-change-list">
+            {entry.changes.map((change, index) => (
+              <div
+                className="report-convo-change"
+                key={`${change.path}:${index}`}
+              >
+                <div className="report-convo-change-head">
+                  <code>{change.path || '(path)'}</code>
+                  <span className="report-convo-chip">
+                    {change.verb || 'change'}
+                  </span>
+                </div>
+                {change.diff && (
+                  <details className="report-convo-details">
+                    <summary>Diff</summary>
+                    <pre>{change.diff}</pre>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  if (entry.kind === 'compact') {
+    return (
+      <div
+        className="report-convo-entry report-convo-system report-convo-entry--compact"
+        title={entryTitle(entry.atMs)}
+      >
+        &middot; context compacted &middot;
+      </div>
+    );
+  }
+
+  if (entry.kind === 'unknown') {
+    return (
+      <div
+        className="report-convo-entry report-convo-system report-convo-entry--unknown"
+        title={entryTitle(entry.atMs)}
+      >
+        &middot; {entry.itemType} &middot;
+      </div>
     );
   }
 

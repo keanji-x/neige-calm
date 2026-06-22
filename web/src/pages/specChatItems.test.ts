@@ -149,13 +149,267 @@ describe('parseHarnessItem', () => {
     });
   });
 
-  it('returns null for non-completed and unknown item types', () => {
+  it('drops empty completed known message rows', () => {
+    expect(
+      parseHarnessItem(
+        harnessRow({
+          params: userParams('User says:\n   '),
+        }),
+      ),
+    ).toBeNull();
+
+    expect(
+      parseHarnessItem(
+        harnessRow({
+          item_type: 'agentMessage',
+          params: {
+            completedAtMs: 1780977421069,
+            item: {
+              id: 'msg_agent',
+              text: '   ',
+              type: 'agentMessage',
+            },
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('returns null for non-completed rows', () => {
     expect(
       parseHarnessItem(harnessRow({ method: 'item/started' })),
     ).toBeNull();
-    expect(
-      parseHarnessItem(harnessRow({ item_type: 'commandExecution' })),
-    ).toBeNull();
+  });
+
+  it('parses completed command executions', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'commandExecution',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'cmd_1',
+            type: 'commandExecution',
+            status: 'completed',
+            command: 'npm test',
+            aggregatedOutput: 'ok',
+            exitCode: 0,
+            durationMs: 1234,
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'run',
+      status: 'completed',
+      command: 'npm test',
+      output: 'ok',
+      exitCode: 0,
+      durationMs: 1234,
+      atMs: 1780977421069,
+    });
+  });
+
+  it('threads declined command execution status without an exit code', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'commandExecution',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'cmd_1',
+            type: 'commandExecution',
+            status: 'declined',
+            command: 'npm test',
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'run',
+      status: 'declined',
+      command: 'npm test',
+      exitCode: null,
+    });
+  });
+
+  it('parses errored MCP tool calls', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'mcpToolCall',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'tool_1',
+            type: 'mcpToolCall',
+            status: 'failed',
+            server: 'filesystem',
+            tool: 'read_file',
+            arguments: { path: 'src/app.ts' },
+            error: { message: 'denied' },
+            durationMs: 42,
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'tool',
+      server: 'filesystem',
+      tool: 'read_file',
+      args: JSON.stringify({ path: 'src/app.ts' }, null, 2),
+      result: JSON.stringify({ message: 'denied' }, null, 2),
+      isError: true,
+      status: 'failed',
+      durationMs: 42,
+    });
+  });
+
+  it('threads declined MCP tool status without an error', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'mcpToolCall',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'tool_1',
+            type: 'mcpToolCall',
+            status: 'declined',
+            server: 'filesystem',
+            tool: 'read_file',
+            arguments: { path: 'src/app.ts' },
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'tool',
+      status: 'declined',
+      isError: false,
+      result: '',
+    });
+  });
+
+  it('parses multi-file changes', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'fileChange',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'edit_1',
+            type: 'fileChange',
+            status: 'declined',
+            changes: [
+              {
+                path: 'src/a.ts',
+                diff: '--- a\n+++ b',
+                kind: { type: 'update' },
+              },
+              {
+                path: 'src/b.ts',
+                diff: 'new file',
+                kind: { type: 'add' },
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'edit',
+      status: 'declined',
+      changes: [
+        { path: 'src/a.ts', diff: '--- a\n+++ b', verb: 'update' },
+        { path: 'src/b.ts', diff: 'new file', verb: 'add' },
+      ],
+    });
+  });
+
+  it('drops empty reasoning rows', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'reasoning',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'reason_1',
+            type: 'reasoning',
+            summary: [],
+            content: [],
+          },
+        },
+      }),
+    );
+
+    expect(entry).toBeNull();
+  });
+
+  it('parses populated reasoning rows', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'reasoning',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'reason_1',
+            type: 'reasoning',
+            summary: ['Thinking about X'],
+            content: ['detail Y'],
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'reasoning',
+      summary: 'Thinking about X',
+      detail: 'detail Y',
+    });
+  });
+
+  it('parses context compaction rows', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: 'contextCompaction',
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'compact_1',
+            type: 'contextCompaction',
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'compact',
+      atMs: 1780977421069,
+    });
+  });
+
+  it('falls back for unknown completed item types', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        item_type: null,
+        params: {
+          completedAtMs: 1780977421069,
+          item: {
+            id: 'legacy_1',
+            type: 'legacyThing',
+          },
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'unknown',
+      itemType: 'legacyThing',
+    });
   });
 
   it('joins multi-part user content before parsing', () => {
