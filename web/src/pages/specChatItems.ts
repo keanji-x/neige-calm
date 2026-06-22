@@ -1,13 +1,70 @@
 import type { HarnessItem } from '../api/generated-events';
 
-export type ChatEntry = {
+type ChatEntryBase = {
   id: number;
-  kind: 'user' | 'agent' | 'system';
+  atMs: number;
+};
+
+type UserChatEntry = ChatEntryBase & {
+  kind: 'user';
   text: string;
   label?: string;
-  atMs: number;
   clamp?: boolean;
 };
+
+type AgentChatEntry = ChatEntryBase & {
+  kind: 'agent';
+  text: string;
+  label?: string;
+  clamp?: boolean;
+};
+
+type SystemChatEntry = ChatEntryBase & {
+  kind: 'system';
+  text: string;
+  label?: string;
+  clamp?: boolean;
+};
+
+export type ChatEntry =
+  | UserChatEntry
+  | AgentChatEntry
+  | SystemChatEntry
+  | (ChatEntryBase & {
+      kind: 'run';
+      status: string;
+      command: string;
+      output: string;
+      exitCode: number | null;
+      durationMs: number | null;
+    })
+  | (ChatEntryBase & {
+      kind: 'tool';
+      server: string;
+      tool: string;
+      args: string;
+      result: string;
+      isError: boolean;
+      status: string;
+      durationMs: number | null;
+    })
+  | (ChatEntryBase & {
+      kind: 'reasoning';
+      summary: string;
+      detail: string;
+    })
+  | (ChatEntryBase & {
+      kind: 'edit';
+      status: string;
+      changes: Array<{ path: string; diff: string; verb: string }>;
+    })
+  | (ChatEntryBase & {
+      kind: 'compact';
+    })
+  | (ChatEntryBase & {
+      kind: 'unknown';
+      itemType: string;
+    });
 
 type ParsedParams = {
   completedAtMs?: unknown;
@@ -50,6 +107,38 @@ function completedAtMs(row: HarnessItem, params: ParsedParams): number {
 function itemObject(params: ParsedParams): Record<string, unknown> | null {
   if (params.item === null || typeof params.item !== 'object') return null;
   return params.item as Record<string, unknown>;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function numberField(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function displayJson(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value == null) return '';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function joinedContent(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value
+    .map((part) => {
+      if (typeof part === 'string') return part;
+      if (part !== null && typeof part === 'object') {
+        const text = (part as { text?: unknown }).text;
+        return typeof text === 'string' ? text : '';
+      }
+      return '';
+    })
+    .join('');
 }
 
 function stripDiffBlockPrefix(text: string): string {
@@ -132,16 +221,129 @@ function parseUserMessage(
   };
 }
 
+function parseCommandExecution(
+  row: HarnessItem,
+  params: ParsedParams,
+): ChatEntry {
+  const item = itemObject(params);
+  return {
+    id: row.id,
+    kind: 'run',
+    status: stringField(item?.status),
+    command: stringField(item?.command),
+    output: stringField(item?.aggregatedOutput),
+    exitCode: numberField(item?.exitCode),
+    durationMs: numberField(item?.durationMs),
+    atMs: completedAtMs(row, params),
+  };
+}
+
+function parseMcpToolCall(row: HarnessItem, params: ParsedParams): ChatEntry {
+  const item = itemObject(params);
+  const error = item?.error;
+  return {
+    id: row.id,
+    kind: 'tool',
+    server: stringField(item?.server),
+    tool: stringField(item?.tool),
+    args: displayJson(item?.arguments),
+    result: displayJson(error ?? item?.result),
+    isError: error != null,
+    status: stringField(item?.status),
+    durationMs: numberField(item?.durationMs),
+    atMs: completedAtMs(row, params),
+  };
+}
+
+function parseReasoning(row: HarnessItem, params: ParsedParams): ChatEntry | null {
+  const item = itemObject(params);
+  const summary = joinedContent(item?.summary);
+  const detail = joinedContent(item?.content);
+  if (summary.trim() === '' && detail.trim() === '') return null;
+
+  return {
+    id: row.id,
+    kind: 'reasoning',
+    summary,
+    detail,
+    atMs: completedAtMs(row, params),
+  };
+}
+
+function parseFileChange(row: HarnessItem, params: ParsedParams): ChatEntry {
+  const item = itemObject(params);
+  const changes = Array.isArray(item?.changes) ? item.changes : [];
+  return {
+    id: row.id,
+    kind: 'edit',
+    status: stringField(item?.status),
+    changes: changes.map((change) => {
+      const record =
+        change !== null && typeof change === 'object'
+          ? (change as Record<string, unknown>)
+          : {};
+      const kind = record.kind;
+      const kindRecord =
+        kind !== null && typeof kind === 'object'
+          ? (kind as Record<string, unknown>)
+          : {};
+      return {
+        path: stringField(record.path),
+        diff: stringField(record.diff),
+        verb: stringField(kindRecord.type),
+      };
+    }),
+    atMs: completedAtMs(row, params),
+  };
+}
+
+function parseContextCompaction(
+  row: HarnessItem,
+  params: ParsedParams,
+): ChatEntry {
+  return {
+    id: row.id,
+    kind: 'compact',
+    atMs: completedAtMs(row, params),
+  };
+}
+
+function parseUnknownItem(
+  row: HarnessItem,
+  params: ParsedParams | null,
+): ChatEntry {
+  const item = params ? itemObject(params) : null;
+  const itemType = (row.item_type ?? stringField(item?.type)) || 'unknown';
+  return {
+    id: row.id,
+    kind: 'unknown',
+    itemType,
+    atMs: params ? completedAtMs(row, params) : row.created_at_ms,
+  };
+}
+
 export function parseHarnessItem(row: HarnessItem): ChatEntry | null {
   if (row.method !== 'item/completed') return null;
-  if (row.item_type !== 'userMessage' && row.item_type !== 'agentMessage') {
-    return null;
-  }
 
   const params = parseParams(row.params);
-  if (!params) return null;
+  if (!params) return parseUnknownItem(row, null);
 
-  return row.item_type === 'agentMessage'
-    ? parseAgentMessage(row, params)
-    : parseUserMessage(row, params);
+  switch (row.item_type) {
+    case 'userMessage':
+      return parseUserMessage(row, params);
+    case 'agentMessage':
+      return parseAgentMessage(row, params);
+    case 'commandExecution':
+      return parseCommandExecution(row, params);
+    case 'mcpToolCall':
+      return parseMcpToolCall(row, params);
+    case 'fileChange':
+      return parseFileChange(row, params);
+    case 'reasoning':
+      return parseReasoning(row, params);
+    case 'contextCompaction':
+      return parseContextCompaction(row, params);
+    default:
+      return parseUnknownItem(row, params);
+  }
 }

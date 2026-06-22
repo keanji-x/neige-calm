@@ -2682,6 +2682,96 @@ select:-webkit-autofill {
   margin-top: var(--space-3);
   overflow-wrap: anywhere;
 }
+.report-convo-entry--run,
+.report-convo-entry--tool,
+.report-convo-entry--reasoning,
+.report-convo-entry--edit {
+  border-left: 2px solid var(--hairline-strong);
+  padding-left: var(--space-5);
+}
+.report-convo-entry--reasoning {
+  color: var(--text-3);
+}
+.report-convo-entry--warn {
+  border-left-color: var(--warn);
+}
+.report-convo-artifact-head,
+.report-convo-change-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-top: var(--space-3);
+}
+.report-convo-command,
+.report-convo-change-head code {
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.report-convo-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  padding: var(--space-0) var(--space-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: var(--leading-none);
+  white-space: nowrap;
+}
+.report-convo-chip--fail,
+.report-convo-chip--warn {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.report-convo-details {
+  margin-top: var(--space-3);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+.report-convo-details summary {
+  cursor: pointer;
+}
+.report-convo-details pre {
+  overflow-x: auto;
+  margin: var(--space-2) var(--space-0) var(--space-0);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-base);
+  white-space: pre-wrap;
+}
+.report-convo-muted {
+  margin: var(--space-3) var(--space-0) var(--space-0);
+  color: var(--text-4);
+  font-size: var(--text-sm);
+}
+.report-convo-reasoning-summary,
+.report-convo-reasoning-detail {
+  margin: var(--space-3) var(--space-0) var(--space-0);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.report-convo-change-list {
+  display: grid;
+  gap: var(--space-3);
+}
+.report-convo-entry--compact,
+.report-convo-entry--unknown {
+  opacity: 0.85;
+}
 .report-convo-system {
   color: var(--text-4);
   font-size: var(--text-xs);
